@@ -13,7 +13,7 @@ The user does:
     print(e.get("/home/note"))
     elastik.stop()
 
-…and never sees a Cargo.toml.
+...and never sees a Cargo.toml.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ _proc: Optional[subprocess.Popen] = None
 
 def _load_dotenv(path: str = ".env") -> None:
     """Minimal .env loader. KEY=VALUE per line, # comments, optional
-    surrounding "..." or '...' on values. Existing env vars win — .env
+    surrounding "..." or '...' on values. Existing env vars win; .env
     only fills in what isn't already set. No interpolation, no exports,
     no shell substitution. Stdlib-only, deliberately small.
     """
@@ -166,23 +166,23 @@ def start(
     global _proc
     if _proc is not None and _proc.poll() is None:
         raise RuntimeError(
-            "elastik already running in this process — call elastik.stop() first"
+            "elastik already running in this process; call elastik.stop() first"
         )
 
     host = host or os.getenv("ELASTIK_HOST", "127.0.0.1")
     if port is None:
         port = int(os.getenv("ELASTIK_PORT", "3105"))
     # ELASTIK_KEY: no constant default. The audit chain HMAC computed
-    # against a publicly-known key is meaningless — anyone could forge
+    # against a publicly-known key is meaningless: anyone could forge
     # events. Caller passes `key=...`, the env provides ELASTIK_KEY,
     # or .env (already loaded by `import elastik`) supplies it.
-    # Validate before checking the binary — a missing key is a config
+    # Validate before checking the binary: a missing key is a config
     # error the user can fix; a missing binary is an install error.
     key = key or os.getenv("ELASTIK_KEY")
     if not key:
         raise RuntimeError(
-            "ELASTIK_KEY required — set it in .env, export it in the shell, "
-            "or pass key=… to elastik.start().\n"
+            "ELASTIK_KEY required: set it in .env, export it in the shell, "
+            "or pass key=... to elastik.start().\n"
             "Generate one with: "
             "python -c \"import secrets; print(secrets.token_hex(32))\""
         )
@@ -288,7 +288,7 @@ def default_url() -> str:
 
 
 def binary_info() -> dict:
-    """Where is the bundled binary? How big? Does it exist? — useful
+    """Where is the bundled binary? How big? Does it exist? Useful
     for `python -m elastik` debugging."""
     p = _binary_path()
     return {

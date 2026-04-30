@@ -1,4 +1,4 @@
-"""`python -m elastik` — quick info + REPL helpers.
+"""`python -m elastik`: quick info + REPL helpers.
 
   python -m elastik                  # show binary info
   python -m elastik run               # spawn the bundled core, block
