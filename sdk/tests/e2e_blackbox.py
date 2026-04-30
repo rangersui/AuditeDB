@@ -131,6 +131,22 @@ def main() -> int:
     approve_token = "approve-e2e"
     key = "e2e-key-" + os.urandom(16).hex()
 
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        occupied_port = int(blocker.getsockname()[1])
+        try:
+            elastik.start(port=occupied_port, key=key, quiet=True)
+        except RuntimeError as e:
+            check(
+                "port already in use" in str(e),
+                "start refuses to attach to occupied port",
+                str(e),
+            )
+        else:
+            elastik.stop()
+            raise AssertionError("FAIL: start() accepted an occupied port")
+
     with tempfile.TemporaryDirectory(prefix="elastik-sdk-e2e-") as data_dir:
         os.environ["ELASTIK_URL"] = base
         e = elastik.start(

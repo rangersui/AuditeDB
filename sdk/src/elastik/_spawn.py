@@ -23,6 +23,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -76,6 +78,34 @@ def _wait_for_port(host: str, port: int, deadline_s: float = 10.0) -> bool:
     return False
 
 
+def _connect_host(host: str) -> str:
+    """Host a local client should use for follow-up probes."""
+    return "127.0.0.1" if host in ("0.0.0.0", "::") else host
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    """Best-effort preflight so start() does not attach to a stranger server."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, port))
+        return True
+    except OSError:
+        return False
+
+
+def _probe_core(host: str, port: int, token: str = "") -> bool:
+    """Confirm that the accepting socket is actually elastik-core."""
+    url = f"http://{_connect_host(host)}:{port}/proc/version"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
+            body = r.read(128)
+            return r.status == 200 and body.startswith(b"elastik-core ")
+    except (OSError, urllib.error.URLError):
+        return False
+
+
 def start(
     port: int | None = None,
     host: str | None = None,
@@ -126,6 +156,8 @@ def start(
             "  cp core/target/release/elastik-core* sdk/src/elastik/_bin/\n"
             f"Expected binary directory: {binary.parent}"
         )
+    if not _port_is_free(host, port):
+        raise RuntimeError(f"port already in use before elastik start: {host}:{port}")
     read_token = (
         os.getenv("ELASTIK_READ_TOKEN", "") if read_token is None else read_token
     )
@@ -166,6 +198,14 @@ def start(
         raise RuntimeError(
             f"elastik-core failed to start on {host}:{port} within 10s"
         )
+    if _proc is None or _proc.poll() is not None:
+        code = None if _proc is None else _proc.returncode
+        stop()
+        raise RuntimeError(f"elastik-core exited during startup (code={code})")
+    probe_token = approve_token or token or read_token
+    if not _probe_core(host, port, probe_token):
+        stop()
+        raise RuntimeError(f"port {host}:{port} did not answer as elastik-core")
 
     # Re-import here to dodge a circular import at module load
     from elastik.sdk import Elastik

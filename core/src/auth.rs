@@ -3,9 +3,10 @@
 //!   ELASTIK_TOKEN          → tier "auth"    (T2: writes /home/*)
 //!   ELASTIK_APPROVE_TOKEN  → tier "approve" (T3: writes /lib/, /etc/)
 //!
-//! Constant-time comparison via hmac::digest::CtOutput. UTF-8 bytes on
-//! both sides — non-ASCII passwords don't crash, and the core does not
-//! depend on any SDK/runtime language to make auth decisions.
+//! Token comparison uses a small local byte loop that avoids early exit
+//! once lengths match. UTF-8 bytes on both sides — non-ASCII passwords
+//! don't crash, and the core does not depend on any SDK/runtime language
+//! to make auth decisions.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
