@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elastik"
-version = "0.0.2"
+version = "6.0.0"
 description = "Pastebin with HMAC that accidentally became a web OS. pip install one ring."
 readme = "README.md"
 requires-python = ">=3.10"
