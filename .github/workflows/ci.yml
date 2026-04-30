@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  rust-core:
+    name: rust core checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: format
+        working-directory: core
+        run: cargo fmt --check
+      - name: clippy
+        working-directory: core
+        run: cargo clippy -- -D warnings
+      - name: unit tests
+        working-directory: core
+        run: cargo test
+
+  sdk-blackbox:
+    name: sdk blackbox (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: python sdk blackbox
+        run: python sdk/tests/e2e_blackbox.py
+      - name: trusted shell pool
+        run: python sdk/tests/test_tools.py
+      - name: python compileall
+        run: python -m compileall -q sdk/src sdk/tests
