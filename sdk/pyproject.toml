@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=70.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,13 +8,12 @@ version = "0.0.2"
 description = "Pastebin with HMAC that accidentally became a web OS. pip install one ring."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Ranger Chen" }]
 keywords = ["http", "pastebin", "local-first", "ai", "web-os", "rust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
@@ -22,7 +21,7 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Internet :: WWW/HTTP",
 ]
-dependencies = []                  # stdlib only — no httpx, no requests
+dependencies = []                  # stdlib only; no httpx, no requests
 
 [project.scripts]
 elastik = "elastik.__main__:main"

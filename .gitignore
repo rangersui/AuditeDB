@@ -74,7 +74,6 @@ INSIGHTS.md
 
 # Keep this branch code-first; root README remains the upstream Elastik README.
 core/README.md
-sdk/README.md
 sdk-js/README.md
 sdk-rs/README.md
 

@@ -1,0 +1,111 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheels:
+    name: build wheel (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: macos-x64
+            os: macos-13
+          - name: macos-arm64
+            os: macos-14
+          - name: windows-x64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: show platform
+        run: python -c "import platform, sys; print(sys.platform, platform.machine())"
+
+      - name: build core
+        run: cargo build --release --manifest-path core/Cargo.toml
+
+      - name: bundle core binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force sdk/src/elastik/_bin | Out-Null
+          Copy-Item core/target/release/elastik-core.exe sdk/src/elastik/_bin/elastik-core.exe
+
+      - name: bundle core binary (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p sdk/src/elastik/_bin
+          cp core/target/release/elastik-core sdk/src/elastik/_bin/elastik-core
+          chmod +x sdk/src/elastik/_bin/elastik-core
+
+      - name: build wheel
+        run: |
+          python -m pip install --upgrade pip build wheel
+          python -m build --wheel sdk
+
+      - name: smoke wheel artifact
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          wheels = glob.glob("sdk/dist/*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, got {wheels}")
+          wheel = wheels[0]
+          if wheel.endswith("none-any.whl"):
+              raise SystemExit(f"wheel must be platform-specific, got {wheel}")
+          with zipfile.ZipFile(wheel) as z:
+              names = z.namelist()
+          if not any(name.endswith("elastik/_bin/elastik-core") or name.endswith("elastik/_bin/elastik-core.exe") for name in names):
+              raise SystemExit("wheel does not contain elastik-core binary")
+          print(wheel)
+          PY
+
+      - name: upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: elastik-wheel-${{ matrix.name }}
+          path: sdk/dist/*.whl
+          if-no-files-found: error
+
+  publish-pypi:
+    name: publish to PyPI
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: elastik-wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: list wheels
+        run: ls -lah dist
+
+      - name: publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
