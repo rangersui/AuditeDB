@@ -79,7 +79,7 @@ __all__ = [
     "put", "post", "get", "head", "delete", "list_worlds", "request",
 ]
 
-__version__ = "6.0.0"
+__version__ = "6.0.1"
 
 
 # ── module-level singleton client ──────────────────────────────────
