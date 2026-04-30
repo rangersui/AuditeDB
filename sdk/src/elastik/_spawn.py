@@ -145,6 +145,50 @@ def _probe_core(host: str, port: int, token: str = "") -> bool:
         return False
 
 
+def _token_state(read_token: str, token: str, approve_token: str) -> str:
+    return "\n".join(
+        [
+            "auth:",
+            "  read:    "
+            + (
+                "token required"
+                if read_token
+                else "public (ELASTIK_READ_TOKEN not set)"
+            ),
+            "  write:   "
+            + (
+                "token required"
+                if token
+                else "disabled (ELASTIK_TOKEN not set)"
+            ),
+            "  approve: "
+            + (
+                "token required"
+                if approve_token
+                else "disabled (ELASTIK_APPROVE_TOKEN not set)"
+            ),
+        ]
+    )
+
+
+def _warn_token_state(read_token: str, token: str, approve_token: str) -> None:
+    if read_token and token and approve_token:
+        return
+    print(_token_state(read_token, token, approve_token), file=sys.stderr, flush=True)
+    if not token:
+        print(
+            "warning: ELASTIK_TOKEN not set; ordinary PUT/POST are disabled.",
+            file=sys.stderr,
+            flush=True,
+        )
+    if not approve_token:
+        print(
+            "warning: ELASTIK_APPROVE_TOKEN not set; DELETE and system writes are disabled.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def start(
     port: int | None = None,
     host: str | None = None,
@@ -247,6 +291,8 @@ def start(
     if not _probe_core(host, port, probe_token):
         stop()
         raise RuntimeError(f"port {host}:{port} did not answer as elastik-core")
+    if quiet:
+        _warn_token_state(read_token, token, approve_token)
 
     # Re-import here to dodge a circular import at module load
     from elastik.sdk import Elastik

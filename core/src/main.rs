@@ -173,7 +173,7 @@ async fn main() {
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
     std::fs::create_dir_all(&data).expect("create data dir");
     let hmac_key = std::env::var("ELASTIK_KEY")
-        .expect("ELASTIK_KEY required — the audit chain has no meaning without it")
+        .expect("ELASTIK_KEY required: the audit chain has no meaning without it")
         .into_bytes();
 
     let (events, _) = broadcast::channel(1024);
@@ -195,18 +195,7 @@ async fn main() {
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
-    // Warn if the env declares tokens but leaves them empty. `from_env`
-    // already treats those as unset, but the user almost certainly
-    // meant to fill them in — silent acceptance was the old footgun.
-    if auth::env_set_but_empty("ELASTIK_READ_TOKEN") {
-        eprintln!("  auth: empty ELASTIK_READ_TOKEN treated as unset (reads public)");
-    }
-    if auth::env_set_but_empty("ELASTIK_TOKEN") {
-        eprintln!("  auth: ⚠ ELASTIK_TOKEN set but empty — treated as unset (T2 disabled)");
-    }
-    if auth::env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
-        eprintln!("  auth: ⚠ ELASTIK_APPROVE_TOKEN set but empty — treated as unset (T3 disabled)");
-    }
+    print_auth_summary(&state.tokens);
     let app = Router::new()
         .route("/", any(root_hint))
         .route("/listen/*pattern", any(listen::handler))
@@ -222,6 +211,56 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await
         .unwrap();
+}
+
+fn print_auth_summary(tokens: &auth::Tokens) {
+    eprintln!("auth:");
+    eprintln!(
+        "  read:    {}",
+        if tokens.read_required() {
+            "token required"
+        } else {
+            "public (ELASTIK_READ_TOKEN not set)"
+        }
+    );
+    eprintln!(
+        "  write:   {}",
+        if tokens.auth.is_some() {
+            "token required"
+        } else {
+            "disabled (ELASTIK_TOKEN not set)"
+        }
+    );
+    eprintln!(
+        "  approve: {}",
+        if tokens.approve.is_some() {
+            "token required"
+        } else {
+            "disabled (ELASTIK_APPROVE_TOKEN not set)"
+        }
+    );
+    // Warn if the env declares tokens but leaves them empty. `from_env`
+    // already treats those as unset, but the user almost certainly
+    // meant to fill them in; silent acceptance was the old footgun.
+    if auth::env_set_but_empty("ELASTIK_READ_TOKEN") {
+        eprintln!("  warning: empty ELASTIK_READ_TOKEN treated as unset (reads public)");
+    }
+    if auth::env_set_but_empty("ELASTIK_TOKEN") {
+        eprintln!("  warning: empty ELASTIK_TOKEN treated as unset (PUT/POST disabled)");
+    }
+    if auth::env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
+        eprintln!(
+            "  warning: empty ELASTIK_APPROVE_TOKEN treated as unset (DELETE/system writes disabled)"
+        );
+    }
+    if tokens.auth.is_none() {
+        eprintln!("  warning: ELASTIK_TOKEN not set; ordinary PUT/POST are disabled.");
+    }
+    if tokens.approve.is_none() {
+        eprintln!(
+            "  warning: ELASTIK_APPROVE_TOKEN not set; DELETE and system writes are disabled."
+        );
+    }
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
