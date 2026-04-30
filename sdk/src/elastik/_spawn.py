@@ -1,0 +1,189 @@
+"""Spawn the bundled elastik-core Rust binary as a child process.
+
+This is the "NumPy ships C kernels in the wheel" trick. The Rust
+binary lives at `elastik/_bin/elastik-core[.exe]`, was built once on a
+build machine, and is shipped as `package_data`. `elastik.start()`
+launches it in a subprocess and returns a pre-bound `Elastik` client.
+
+The user does:
+
+    import elastik
+    e = elastik.start(token="x")
+    e.put("/home/note", "hi")
+    print(e.get("/home/note", raw=True))
+    elastik.stop()
+
+…and never sees a Cargo.toml.
+"""
+from __future__ import annotations
+
+import atexit
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Optional
+
+
+_proc: Optional[subprocess.Popen] = None
+
+
+def _binary_path() -> Path:
+    """Locate the bundled binary inside the installed package."""
+    here = Path(__file__).resolve().parent / "_bin"
+    name = "elastik-core.exe" if sys.platform == "win32" else "elastik-core"
+    return here / name
+
+
+def _wait_for_port(host: str, port: int, deadline_s: float = 10.0) -> bool:
+    """Poll until the server accepts a TCP connection or we give up."""
+    end = time.time() + deadline_s
+    while time.time() < end:
+        try:
+            with socket.create_connection((host, port), timeout=0.3):
+                return True
+        except OSError:
+            time.sleep(0.05)
+    return False
+
+
+def start(
+    port: int | None = None,
+    host: str | None = None,
+    key: str | None = None,
+    token: str | None = None,
+    approve_token: str | None = None,
+    data_dir: Optional[str] = None,
+    listeners: str | None = None,
+    cors_origins: str | None = None,
+    quiet: bool = True,
+):
+    """Launch the bundled elastik-core. Returns a pre-bound Elastik client.
+
+    All process state is the user's: token, port, key, data dir. We only
+    set sane defaults so `elastik.start()` with no arguments produces a
+    working instance pinned to localhost.
+    """
+    global _proc
+    binary = _binary_path()
+    if not binary.exists():
+        raise RuntimeError(
+            f"bundled binary not found: {binary}\n"
+            "If you're working from source, build it first:\n"
+            "  cd Elastik-core && cargo build --release\n"
+            "  cp target/release/elastik-core* "
+            f"{binary.parent}/"
+        )
+
+    if _proc is not None and _proc.poll() is None:
+        raise RuntimeError(
+            "elastik already running in this process — call elastik.stop() first"
+        )
+
+    host = host or os.getenv("ELASTIK_HOST", "127.0.0.1")
+    if port is None:
+        port = int(os.getenv("ELASTIK_PORT", "3105"))
+    key = key or os.getenv("ELASTIK_KEY", "elastik-default-key")
+    token = os.getenv("ELASTIK_TOKEN", "") if token is None else token
+    approve_token = (
+        os.getenv("ELASTIK_APPROVE_TOKEN", "")
+        if approve_token is None else approve_token
+    )
+    data_dir = data_dir if data_dir is not None else os.getenv("ELASTIK_DATA")
+    listeners = (
+        os.getenv("ELASTIK_LISTENERS", "")
+        if listeners is None else listeners
+    )
+    cors_origins = (
+        os.getenv("ELASTIK_CORS_ORIGINS", "")
+        if cors_origins is None else cors_origins
+    )
+
+    env = os.environ.copy()
+    env["ELASTIK_HOST"] = host
+    env["ELASTIK_PORT"] = str(port)
+    env["ELASTIK_KEY"] = key
+    if token:
+        env["ELASTIK_TOKEN"] = token
+    else:
+        env.pop("ELASTIK_TOKEN", None)
+    if approve_token:
+        env["ELASTIK_APPROVE_TOKEN"] = approve_token
+    else:
+        env.pop("ELASTIK_APPROVE_TOKEN", None)
+    if data_dir:
+        env["ELASTIK_DATA"] = str(data_dir)
+    else:
+        env.pop("ELASTIK_DATA", None)
+    if listeners:
+        env["ELASTIK_LISTENERS"] = listeners
+    else:
+        env.pop("ELASTIK_LISTENERS", None)
+    if cors_origins:
+        env["ELASTIK_CORS_ORIGINS"] = cors_origins
+    else:
+        env.pop("ELASTIK_CORS_ORIGINS", None)
+
+    out = subprocess.DEVNULL if quiet else None
+    _proc = subprocess.Popen([str(binary)], env=env, stdout=out, stderr=out)
+    atexit.register(stop)
+
+    if not _wait_for_port(host, port):
+        stop()
+        raise RuntimeError(
+            f"elastik-core failed to start on {host}:{port} within 10s"
+        )
+
+    # Re-import here to dodge a circular import at module load
+    from elastik.sdk import Elastik
+
+    return Elastik(f"http://{host}:{port}", token=token)
+
+
+def stop() -> None:
+    """Kill the launched binary, if any. Safe to call multiple times."""
+    global _proc
+    if _proc is None:
+        return
+    try:
+        _proc.terminate()
+        try:
+            _proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            _proc.kill()
+            _proc.wait(timeout=2)
+    except OSError:
+        pass
+    _proc = None
+
+
+def is_running() -> bool:
+    return _proc is not None and _proc.poll() is None
+
+
+def default_url() -> str:
+    """Where the module-level `elastik.put`/`elastik.get` calls land by
+    default. Override with `ELASTIK_URL`. Otherwise derive the Rust core
+    URL from `ELASTIK_HOST` + `ELASTIK_PORT`."""
+    explicit = os.getenv("ELASTIK_URL")
+    if explicit:
+        return explicit
+    host = os.getenv("ELASTIK_HOST", "127.0.0.1")
+    if host in ("0.0.0.0", "::"):
+        host = "127.0.0.1"
+    port = os.getenv("ELASTIK_PORT", "3105")
+    return f"http://{host}:{port}"
+
+
+def binary_info() -> dict:
+    """Where is the bundled binary? How big? Does it exist? — useful
+    for `python -m elastik` debugging."""
+    p = _binary_path()
+    return {
+        "path": str(p),
+        "exists": p.exists(),
+        "size_bytes": p.stat().st_size if p.exists() else None,
+        "platform": sys.platform,
+    }

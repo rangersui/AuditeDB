@@ -47,3 +47,37 @@ semantic-results.md
 
 # mini.py test worlds
 examples/worlds/
+# --- pytorch-style branch additions ---
+# Rust / JS / SDK build outputs
+/target/
+**/target/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+
+# Rust lockfiles for SDK/crate experiments until release policy is fixed
+Cargo.lock
+
+# Local generated package mirror and private research/plans
+package/
+research/
+archived/
+result.md
+PLAN*.md
+INSIGHTS.md
+
+# Keep this branch code-first; root README remains the upstream Elastik README.
+core/README.md
+sdk/README.md
+sdk-js/README.md
+sdk-rs/README.md
+
+# Python SDK embedded binaries are local build artifacts for now.
+sdk/src/elastik/_bin/
+**/build/

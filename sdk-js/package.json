@@ -1,0 +1,43 @@
+{
+  "name": "@elastikjs/client",
+  "version": "0.0.1",
+  "description": "JavaScript client for elastik — pastebin with HMAC that accidentally became a web OS. fetch is all you need.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "src/elastik.js",
+  "module": "src/elastik.js",
+  "exports": {
+    ".": {
+      "import": "./src/elastik.js",
+      "default": "./src/elastik.js"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ],
+  "keywords": [
+    "elastik",
+    "http",
+    "pastebin",
+    "local-first",
+    "ai",
+    "web-os"
+  ],
+  "license": "MIT",
+  "author": "Ranger Chen",
+  "homepage": "https://github.com/rangersui/Elastik#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rangersui/Elastik.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rangersui/Elastik/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false
+}
