@@ -19,7 +19,7 @@ The package ships a platform-specific `elastik-core` binary in
 
 ```powershell
 py -m pip install elastik
-py -m elastik run --key dev-hmac-key --token write-token --approve-token approve-token
+py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
 ```
 
 ## Source Checkout
@@ -28,5 +28,5 @@ py -m elastik run --key dev-hmac-key --token write-token --approve-token approve
 git clone https://github.com/rangersui/Elastik
 cd Elastik
 python -m pip install -e .\sdk
-python -m elastik run --key dev-hmac-key --token write-token --approve-token approve-token
+python -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
 ```

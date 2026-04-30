@@ -43,6 +43,7 @@ Start the Rust core:
 ```powershell
 cd C:\Users\chenh\Elastik-franchise\Elastik-playground\core
 $env:ELASTIK_KEY = "dev-hmac-key"
+$env:ELASTIK_READ_TOKEN = "read-token"
 $env:ELASTIK_TOKEN = "write-token"
 cargo run
 ```
@@ -55,9 +56,9 @@ curl.exe -X PUT http://127.0.0.1:3105/home/hello `
   -H "Content-Type: text/plain; charset=utf-8" `
   --data-binary "hello elastik"
 
-curl.exe http://127.0.0.1:3105/home/hello
-curl.exe -I http://127.0.0.1:3105/home/hello
-curl.exe http://127.0.0.1:3105/proc/worlds
+curl.exe http://127.0.0.1:3105/home/hello -H "Authorization: Bearer read-token"
+curl.exe -I http://127.0.0.1:3105/home/hello -H "Authorization: Bearer read-token"
+curl.exe http://127.0.0.1:3105/proc/worlds -H "Authorization: Bearer read-token"
 ```
 
 Expected shape:
@@ -493,7 +494,7 @@ py -m pip install elastik
 Run the bundled core:
 
 ```powershell
-py -m elastik run --key dev-hmac-key --token write-token --approve-token approve-token
+py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
 ```
 
 Install from source for local development:
@@ -505,7 +506,7 @@ python -m pip install -e .\sdk
 The same command works either way:
 
 ```powershell
-python -m elastik run --key dev-hmac-key --token write-token --approve-token approve-token
+python -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
 ```
 
 Use the atoms:
