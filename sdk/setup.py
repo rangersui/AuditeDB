@@ -9,6 +9,8 @@ misleading `py3-none-any`.
 
 from __future__ import annotations
 
+import os
+
 from setuptools import setup
 from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
 
@@ -20,6 +22,7 @@ class bdist_wheel(_bdist_wheel):
 
     def get_tag(self) -> tuple[str, str, str]:
         _python, _abi, platform = super().get_tag()
+        platform = os.environ.get("ELASTIK_WHEEL_PLATFORM_TAG") or platform
         return "py3", "none", platform
 
 
