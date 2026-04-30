@@ -58,7 +58,7 @@ dev:
 
 # ── workflow 2: test (HOST only) ───────────────────────────────────
 test: $(SDK_BIN)
-	$(PY) -c "import elastik; print('  binary:', elastik.binary_info())"
+	$(PY) sdk/tests/e2e_blackbox.py --no-build
 
 # ── workflow 3: build (HOST only) ──────────────────────────────────
 build: $(SDK_BIN) wheel

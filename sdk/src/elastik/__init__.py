@@ -6,7 +6,7 @@ Quickstart (NumPy-style — module-level calls, no instantiation):
 
     e = elastik.start(token="x")          # spawns the bundled rust core
     e.put("/home/note", "hello")          # PUT
-    print(e.get("/home/note", raw=True))  # bytes back
+    print(e.get("/home/note"))            # bytes back
     elastik.stop()                        # kills the child
 
 Or skip the explicit start() and point at an already-running elastik
@@ -14,7 +14,7 @@ Or skip the explicit start() and point at an already-running elastik
 
     import elastik
     elastik.put("/home/note", "hello")
-    print(elastik.get("/home/note", raw=True))
+    print(elastik.get("/home/note"))
 
 Reactor (declarative event handlers — see Elastik-core/README.md §L2):
 
@@ -24,28 +24,24 @@ Reactor (declarative event handlers — see Elastik-core/README.md §L2):
             return elastik.Reply(f"/home/alerts/{world.split('/')[-1]}", body)
         return elastik.Archive()
 
-    elastik.serve(port=3200)              # runs as fanout sidecar
-
 Bundled binary lives at `elastik/_bin/elastik-core[.exe]` and is invoked
 as a child process. No FFI, no compile-on-install. Same shape as
 NumPy shipping precompiled C kernels.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
-from elastik.sdk import Elastik, ElastikError
+from elastik.sdk import Elastik, ElastikError, Response
 from elastik.reactor import (
     listen,
+    run,
     MoveTo,
     Reply,
     Archive,
     Drop,
     Action,
     Ctx,
-    finalize,
-    serve,
 )
 from elastik._spawn import (
     start,
@@ -53,19 +49,34 @@ from elastik._spawn import (
     is_running,
     default_url,
     binary_info,
+    _load_dotenv,
 )
+from elastik.tools import (
+    TrustedShellPool,
+    ShellPool,
+    ShellResult,
+    ShellPoolError,
+)
+
+# Pull values from .env in CWD into os.environ once, on import. Existing
+# env vars win — .env only fills holes. Module-level elastik.put/get
+# read os.environ for ELASTIK_URL/TOKEN/etc., and start() reads
+# ELASTIK_KEY, so the load has to happen before either path uses them.
+_load_dotenv()
 
 __all__ = [
     # Class — for users who want explicit instances
     "Elastik",
     "ElastikError",
+    "Response",
     # Reactor sugar
-    "listen", "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
-    "finalize", "serve",
+    "listen", "run", "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
     # Lifecycle
     "start", "stop", "is_running", "default_url", "binary_info",
+    # Trusted local execution helpers for @listen handlers
+    "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     # Module-level convenience (NumPy-shaped)
-    "put", "get", "head", "delete", "list_worlds", "shaped",
+    "put", "post", "get", "head", "delete", "list_worlds", "request",
 ]
 
 __version__ = "0.0.2"
@@ -90,10 +101,7 @@ def _client() -> Elastik:
     """
     global _default_client
     if _default_client is None:
-        _default_client = Elastik(
-            default_url(),
-            token=os.getenv("ELASTIK_TOKEN", ""),
-        )
+        _default_client = Elastik(default_url())
     return _default_client
 
 
@@ -120,15 +128,63 @@ def start(*args: Any, **kwargs: Any):  # type: ignore[no-redef]
 # These are the "np.array([...])" of elastik. Brutal. One import,
 # call.
 
-def put(path: str, data, **meta: Any) -> dict:
-    """elastik.put('/home/note', 'hello', actor='me') -> {'ok': True, ...}"""
-    return _client().put(path, data, **meta)
+def put(
+    path: str,
+    data,
+    *,
+    content_type: str | None = None,
+    content_encoding: str | None = None,
+    content_language: str | None = None,
+    content_disposition: str | None = None,
+    cache_control: str | None = None,
+    if_match: str | None = None,
+    if_none_match: bool | str = False,
+    headers: dict[str, str] | None = None,
+    **meta: Any,
+) -> dict:
+    """elastik.put('/home/note', 'hello', actor='me') -> {'status': 201, ...}"""
+    return _client().put(
+        path,
+        data,
+        content_type=content_type,
+        content_encoding=content_encoding,
+        content_language=content_language,
+        content_disposition=content_disposition,
+        cache_control=cache_control,
+        if_match=if_match,
+        if_none_match=if_none_match,
+        headers=headers,
+        **meta,
+    )
 
 
-def get(path: str, raw: bool = False) -> Any:
-    """elastik.get('/home/note', raw=True) -> bytes
-       elastik.get('/home/note')           -> dict envelope"""
-    return _client().get(path, raw=raw)
+def post(
+    path: str,
+    data,
+    *,
+    if_match: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict:
+    """elastik.post('/home/log', 'more') -> {'status': 200, ...}"""
+    return _client().post(path, data, if_match=if_match, headers=headers)
+
+
+def get(
+    path: str,
+    *,
+    range: tuple[int, int] | None = None,
+    if_none_match: str | None = None,
+    if_range: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> bytes | None:
+    """elastik.get('/home/note') -> bytes"""
+    return _client().get(
+        path,
+        range=range,
+        if_none_match=if_none_match,
+        if_range=if_range,
+        headers=headers,
+    )
 
 
 def head(path: str) -> dict[str, str]:
@@ -136,9 +192,9 @@ def head(path: str) -> dict[str, str]:
     return _client().head(path)
 
 
-def delete(path: str) -> bool:
+def delete(path: str, *, if_match: str | None = None) -> bool:
     """elastik.delete('/home/note') -> True/False"""
-    return _client().delete(path)
+    return _client().delete(path, if_match=if_match)
 
 
 def list_worlds() -> list[str]:
@@ -146,6 +202,11 @@ def list_worlds() -> list[str]:
     return _client().list()
 
 
-def shaped(path: str, accept: str = "text/html", intent: str = "") -> bytes:
-    """elastik.shaped('/home/x', accept='text/html', intent='render as card')"""
-    return _client().shaped(path, accept=accept, intent=intent)
+def request(
+    method: str,
+    path: str,
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> Response:
+    """elastik.request('OPTIONS', '/home/x') -> Response"""
+    return _client().request(method, path, body, headers)

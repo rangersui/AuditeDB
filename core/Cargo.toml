@@ -6,7 +6,8 @@ description = "elastik bedrock — minimal HTTP+SQLite+HMAC core. Extensions spe
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 hmac = "0.12"
 sha2 = "0.10"

@@ -32,7 +32,14 @@ use std::time::Duration;
 
 // Encode chars that confuse Windows / POSIX filesystems. Decoded form
 // is the canonical world key; encoded form is the on-disk dir name.
+//
+// Phoenix data-layout note: this intentionally encodes '%' and '.'.
+// Older playground data dirs created before that hardening will not be
+// found by the new layout. Wipe data/ when crossing that boundary; no
+// migrator is promised for the Phoenix kernel.
 const DISK_ENCODE: &AsciiSet = &CONTROLS
+    .add(b'%')
+    .add(b'.')
     .add(b'/')
     .add(b'\\')
     .add(b':')
@@ -115,7 +122,10 @@ pub struct AppendResult {
     pub body_sha256_after: String,
 }
 
-pub fn read(data_root: &Path, world: &str) -> Option<Stage> {
+/// Read body/meta and latest audit hmac through one SQLite connection.
+/// This keeps GET/HEAD from pairing an old body with a newer ETag when
+/// a write lands between two independent reads.
+pub fn read_with_hmac(data_root: &Path, world: &str) -> Option<(Stage, Option<String>)> {
     let path = world_db(data_root, world);
     if !path.exists() {
         return None;
@@ -143,11 +153,21 @@ pub fn read(data_root: &Path, world: &str) -> Option<Stage> {
             }
         }
     }
-    Some(Stage {
-        body,
-        content_type,
-        headers,
-    })
+    let latest_hmac = c
+        .query_row(
+            "SELECT hmac FROM events ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    Some((
+        Stage {
+            body,
+            content_type,
+            headers,
+        },
+        latest_hmac,
+    ))
 }
 
 pub fn write(
@@ -361,4 +381,36 @@ pub fn list(data_root: &Path) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disk_names_do_not_alias_literal_percent_with_encoded_slash() {
+        assert_ne!(disk_name("home/a%2Fb"), disk_name("home/a/b"));
+    }
+
+    #[test]
+    fn disk_names_encode_dot_segments_even_if_called_directly() {
+        assert_ne!(disk_name("."), ".");
+        assert_ne!(disk_name(".."), "..");
+        assert_eq!(
+            percent_encoding::percent_decode_str(&disk_name("home/file.pdf"))
+                .decode_utf8()
+                .unwrap(),
+            "home/file.pdf"
+        );
+    }
+
+    #[test]
+    fn disk_names_roundtrip_unicode_worlds() {
+        let world = "home/销售/报告";
+        let disk = disk_name(world);
+        let decoded = percent_encoding::percent_decode_str(&disk)
+            .decode_utf8()
+            .unwrap();
+        assert_eq!(decoded, world);
+    }
 }

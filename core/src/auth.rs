@@ -1,4 +1,5 @@
-//! Bearer + Basic auth check. Two tokens, two tiers:
+//! Bearer + Basic auth check. Three tokens, three tiers:
+//!   ELASTIK_READ_TOKEN     -> tier "read"    (T1: reads when enabled)
 //!   ELASTIK_TOKEN          → tier "auth"    (T2: writes /home/*)
 //!   ELASTIK_APPROVE_TOKEN  → tier "approve" (T3: writes /lib/, /etc/)
 //!
@@ -11,12 +12,14 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     Anon,
+    Read,
     Auth,
     Approve,
 }
 
 #[derive(Clone)]
 pub struct Tokens {
+    pub read: Option<Vec<u8>>,
     pub auth: Option<Vec<u8>>,
     pub approve: Option<Vec<u8>>,
 }
@@ -28,9 +31,14 @@ impl Tokens {
     /// silently grant T2 to anyone sending `Authorization: Bearer `.
     pub fn from_env() -> Self {
         Self {
+            read: nonempty_env("ELASTIK_READ_TOKEN"),
             auth: nonempty_env("ELASTIK_TOKEN"),
             approve: nonempty_env("ELASTIK_APPROVE_TOKEN"),
         }
+    }
+
+    pub fn read_required(&self) -> bool {
+        self.read.is_some()
     }
 
     /// Resolve the request's tier from an Authorization header.
@@ -70,6 +78,11 @@ impl Tokens {
         if let Some(t) = &self.auth {
             if ct_eq(candidate, t) {
                 return Tier::Auth;
+            }
+        }
+        if let Some(t) = &self.read {
+            if ct_eq(candidate, t) {
+                return Tier::Read;
             }
         }
         Tier::Anon
@@ -119,6 +132,7 @@ mod tests {
     }
 
     struct EnvGuard {
+        read: Option<String>,
         token: Option<String>,
         approve: Option<String>,
     }
@@ -126,6 +140,7 @@ mod tests {
     impl EnvGuard {
         fn capture() -> Self {
             Self {
+                read: std::env::var("ELASTIK_READ_TOKEN").ok(),
                 token: std::env::var("ELASTIK_TOKEN").ok(),
                 approve: std::env::var("ELASTIK_APPROVE_TOKEN").ok(),
             }
@@ -134,6 +149,10 @@ mod tests {
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
+            match &self.read {
+                Some(v) => std::env::set_var("ELASTIK_READ_TOKEN", v),
+                None => std::env::remove_var("ELASTIK_READ_TOKEN"),
+            }
             match &self.token {
                 Some(v) => std::env::set_var("ELASTIK_TOKEN", v),
                 None => std::env::remove_var("ELASTIK_TOKEN"),
@@ -149,15 +168,18 @@ mod tests {
     fn from_env_treats_empty_tokens_as_disabled() {
         let _lock = env_lock().lock().unwrap();
         let _env = EnvGuard::capture();
+        std::env::set_var("ELASTIK_READ_TOKEN", " ");
         std::env::set_var("ELASTIK_TOKEN", "");
         std::env::set_var("ELASTIK_APPROVE_TOKEN", "   ");
 
         let tokens = Tokens::from_env();
 
+        assert_eq!(tokens.read, None);
         assert_eq!(tokens.auth, None);
         assert_eq!(tokens.approve, None);
         assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
         assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
+        assert!(env_set_but_empty("ELASTIK_READ_TOKEN"));
         assert!(env_set_but_empty("ELASTIK_TOKEN"));
         assert!(env_set_but_empty("ELASTIK_APPROVE_TOKEN"));
     }
@@ -165,6 +187,7 @@ mod tests {
     #[test]
     fn empty_authorization_candidate_never_matches() {
         let tokens = Tokens {
+            read: Some(Vec::new()),
             auth: Some(Vec::new()),
             approve: Some(Vec::new()),
         };
@@ -176,11 +199,13 @@ mod tests {
     #[test]
     fn nonempty_tokens_still_authenticate() {
         let tokens = Tokens {
+            read: Some(b"reader".to_vec()),
             auth: Some(b"writer".to_vec()),
             approve: Some(b"approve".to_vec()),
         };
         let basic_writer = B64.encode("user:writer");
 
+        assert_eq!(tokens.check(Some("Bearer reader")), Tier::Read);
         assert_eq!(tokens.check(Some("Bearer writer")), Tier::Auth);
         assert_eq!(
             tokens.check(Some(&format!("Basic {basic_writer}"))),

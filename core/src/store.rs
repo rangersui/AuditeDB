@@ -6,9 +6,9 @@
 //! `MemoryStore` is a small Redis-shaped substrate that keeps the
 //! elastik shape: same port, same HTTP, only the path prefix changes
 //! the backend. Useful for agent scratchpads, transient queues,
-//! latest-state caches, and framebuffers. Push subscriptions are not
-//! a core concern; SDKs can build polling/SSE/bridge adapters on top
-//! of these same HTTP atoms.
+//! latest-state caches, and framebuffers. `/listen/*` reports changes
+//! as control-plane events, but the memory backend itself only stores
+//! latest bytes and metadata.
 //!
 //! Audit/HMAC chain only fires on durable writes — memory worlds are
 //! by definition not tamper-evident across restarts.
@@ -16,7 +16,7 @@
 use crate::world::{self, AppendResult, Stage};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 pub fn is_memory_world(world: &str) -> bool {
     world.starts_with("tmp/") || world.starts_with("dev/") || world.starts_with("sys/")
@@ -46,7 +46,7 @@ impl MemoryStore {
     }
 
     pub fn read(&self, world: &str) -> Option<Stage> {
-        let map = self.map.lock().ok()?;
+        let map = self.map_guard();
         let e = map.get(world)?;
         Some(Stage {
             body: e.body.clone(),
@@ -62,7 +62,7 @@ impl MemoryStore {
         content_type: &str,
         headers: &[(String, String)],
     ) {
-        let mut map = self.map.lock().expect("memory store lock");
+        let mut map = self.map_guard();
         let e = map.entry(world.to_string()).or_default();
         e.body = body.to_vec();
         e.content_type = content_type.to_string();
@@ -70,7 +70,7 @@ impl MemoryStore {
     }
 
     pub fn append(&self, world: &str, body: &[u8]) -> Option<AppendResult> {
-        let mut map = self.map.lock().ok()?;
+        let mut map = self.map_guard();
         let e = map.get_mut(world)?;
         e.body.extend_from_slice(body);
         let after = world::sha256_hex(&e.body);
@@ -80,18 +80,18 @@ impl MemoryStore {
     }
 
     pub fn delete(&self, world: &str) -> bool {
-        let mut map = self.map.lock().expect("memory store lock");
+        let mut map = self.map_guard();
         map.remove(world).is_some()
     }
 
     pub fn list(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .map
-            .lock()
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
+        let mut out: Vec<String> = self.map_guard().keys().cloned().collect();
         out.sort();
         out
+    }
+
+    fn map_guard(&self) -> MutexGuard<'_, HashMap<String, MemEntry>> {
+        self.map.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 }
 

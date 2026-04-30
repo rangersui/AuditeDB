@@ -22,11 +22,10 @@ def main() -> int:
     p_run.add_argument("--host", default=None)
     p_run.add_argument("--port", type=int, default=None)
     p_run.add_argument("--key", default=None)
+    p_run.add_argument("--read-token", dest="read_token", default=None)
     p_run.add_argument("--token", default=None)
     p_run.add_argument("--approve-token", dest="approve_token", default=None)
     p_run.add_argument("--data-dir", dest="data_dir", default=None)
-    p_run.add_argument("--listeners", default=None)
-    p_run.add_argument("--cors-origins", dest="cors_origins", default=None)
 
     args = parser.parse_args()
 
@@ -42,11 +41,10 @@ def main() -> int:
                 host=args.host,
                 port=args.port,
                 key=args.key,
+                read_token=args.read_token,
                 token=args.token,
                 approve_token=args.approve_token,
                 data_dir=args.data_dir,
-                listeners=args.listeners,
-                cors_origins=args.cors_origins,
                 quiet=False,
             )
             print(f"elastik running at {client.url}", flush=True)

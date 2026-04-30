@@ -1,22 +1,38 @@
-"""L1 — atom bindings for elastik-core.
+"""L1 atom bindings for elastik-core.
 
 This is the SDK. It is not the frontend. The frontend is what you build
-*with* these atoms (see sdk.reactor + your own scripts).
+with these atoms.
 
-`e.put("/home/x", data)` is "Lumos" — a declaration. Underneath, the
-runtime may store, audit, fan out, broadcast, cache, log. The caller
-says three words.
+`e.put("/home/x", data)` is a declaration. Underneath, the core stores
+bytes and returns HTTP status + headers. The caller says three words.
 
-stdlib only — no httpx, no requests. urllib + json. ~80 lines.
+stdlib only: no httpx, no requests. urllib.
 """
 from __future__ import annotations
 
-import json
 import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Iterator
+
+
+_NAMESPACES = {"home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"}
+_PROC_ENDPOINTS = {"proc/version", "proc/worlds"}
+_RESERVED_WORLD_NAMES = {
+    "home",
+    "tmp",
+    "dev",
+    "sys",
+    "proc",
+    "etc",
+    "lib",
+    "boot",
+    "usr",
+    "var",
+    "var/log",
+}
 
 
 class ElastikError(Exception):
@@ -26,12 +42,37 @@ class ElastikError(Exception):
         super().__init__(f"elastik {status}: {body[:200]!r}")
 
 
+@dataclass(frozen=True)
+class Response:
+    """Thin HTTP response object returned by Elastik.request()."""
+
+    status: int
+    headers: dict[str, str]
+    body: bytes
+
+    @property
+    def ok(self) -> bool:
+        return self.status < 400
+
+    @property
+    def etag(self) -> str:
+        return self.headers.get("etag", "")
+
+    @property
+    def not_modified(self) -> bool:
+        return self.status == 304
+
+    @property
+    def created(self) -> bool:
+        return self.status == 201
+
+
 class Elastik:
     """Pythonic bindings to elastik-core's HTTP atoms.
 
     >>> e = Elastik("http://localhost:3105", token="t2")
-    >>> e.put("/home/note", b"hello")           # PUT, returns dict
-    >>> e.get("/home/note", raw=True)           # GET ?raw, returns bytes
+    >>> e.put("/home/note", b"hello")           # PUT
+    >>> e.get("/home/note")                     # GET, returns bytes
     >>> e.head("/home/note")                    # HEAD, returns headers dict
     >>> e.delete("/home/note")                  # DELETE
     >>> e.list()                                # GET /proc/worlds
@@ -42,94 +83,293 @@ class Elastik:
             from elastik._spawn import default_url
             url = default_url()
         if token is None:
-            token = os.getenv("ELASTIK_TOKEN", "")
+            token = _best_env_token()
         self.url = url.rstrip("/")
         self.token = token
 
-    # ── atoms ──────────────────────────────────────────────────────
+    def put(
+        self,
+        path: str,
+        data: bytes | str,
+        *,
+        content_type: str | None = None,
+        content_encoding: str | None = None,
+        content_language: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        if_match: str | None = None,
+        if_none_match: bool | str = False,
+        headers: dict[str, str] | None = None,
+        **meta: Any,
+    ) -> dict:
+        """PUT body to path.
 
-    def put(self, path: str, data: bytes | str, **meta: Any) -> dict:
-        """PUT body to path. kwargs become X-Meta-* headers."""
+        `content_type` and standard representation kwargs are stored
+        as HTTP representation metadata and returned verbatim by GET
+        and HEAD. Extra kwargs become X-Meta-* headers.
+        """
         body = data.encode("utf-8") if isinstance(data, str) else data
-        headers = {f"X-Meta-{k.replace('_', '-')}": str(v) for k, v in meta.items()}
-        return self._json("PUT", path, body, headers)
+        request_headers = dict(headers or {})
+        request_headers.update(
+            {f"X-Meta-{k.replace('_', '-')}": str(v) for k, v in meta.items()}
+        )
+        if content_type is None:
+            content_type = (
+                "text/plain; charset=utf-8"
+                if isinstance(data, str)
+                else "application/octet-stream"
+            )
+        request_headers["Content-Type"] = content_type
+        _set_if(request_headers, "Content-Encoding", content_encoding)
+        _set_if(request_headers, "Content-Language", content_language)
+        _set_if(request_headers, "Content-Disposition", content_disposition)
+        _set_if(request_headers, "Cache-Control", cache_control)
+        _set_if(request_headers, "If-Match", _etag_value(if_match))
+        if if_none_match:
+            request_headers["If-None-Match"] = (
+                "*" if if_none_match is True else _etag_value(str(if_none_match))
+            )
+        resp = self.request("PUT", path, body, request_headers)
+        if resp.status >= 400:
+            raise ElastikError(resp.status, resp.body)
+        return {
+            "status": resp.status,
+            "etag": resp.etag,
+        }
 
-    def get(self, path: str, raw: bool = False) -> Any:
-        """GET path. raw=True returns bytes; otherwise the JSON envelope."""
-        suffix = "?raw" if raw else ""
-        status, _, body = self._raw("GET", path + suffix)
-        if status == 404:
-            raise ElastikError(404, body)
-        if status >= 400:
-            raise ElastikError(status, body)
-        if raw:
-            return body
-        return json.loads(body)
+    def post(
+        self,
+        path: str,
+        data: bytes | str,
+        *,
+        if_match: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict:
+        """POST append bytes to an existing world."""
+        body = data.encode("utf-8") if isinstance(data, str) else data
+        request_headers = dict(headers or {})
+        _set_if(request_headers, "If-Match", _etag_value(if_match))
+        resp = self.request("POST", path, body, request_headers)
+        if resp.status >= 400:
+            raise ElastikError(resp.status, resp.body)
+        return {"status": resp.status, "etag": resp.etag}
+
+    def get(
+        self,
+        path: str,
+        *,
+        range: tuple[int, int] | None = None,
+        if_none_match: str | None = None,
+        if_range: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> bytes | None:
+        """GET path. Returns bytes exactly as stored, or None on 304."""
+        request_headers = dict(headers or {})
+        if range is not None:
+            start, end = range
+            request_headers["Range"] = f"bytes={start}-{end}"
+        _set_if(request_headers, "If-None-Match", _etag_value(if_none_match))
+        _set_if(request_headers, "If-Range", _etag_value(if_range))
+        resp = self.request("GET", path, headers=request_headers)
+        if resp.status == 304:
+            return None
+        if resp.status == 404:
+            raise ElastikError(404, resp.body)
+        if resp.status >= 400:
+            raise ElastikError(resp.status, resp.body)
+        return resp.body
 
     def head(self, path: str) -> dict[str, str]:
         """HEAD path. Returns headers as a lowercased dict."""
-        status, headers, _ = self._raw("HEAD", path)
-        if status == 404:
-            raise ElastikError(404, b"")
-        return headers
+        resp = self.request("HEAD", path)
+        if resp.status == 404:
+            raise ElastikError(404, resp.body)
+        if resp.status >= 400:
+            raise ElastikError(resp.status, resp.body)
+        return resp.headers
 
-    def delete(self, path: str) -> bool:
+    def delete(self, path: str, *, if_match: str | None = None) -> bool:
         """DELETE path. Returns True on 204, False on 404."""
-        status, _, _ = self._raw("DELETE", path)
-        if status == 204:
+        h = {}
+        _set_if(h, "If-Match", _etag_value(if_match))
+        resp = self.request("DELETE", path, headers=h)
+        if resp.status == 204:
             return True
-        if status == 404:
+        if resp.status == 404:
             return False
-        raise ElastikError(status, b"")
+        raise ElastikError(resp.status, resp.body)
 
     def list(self) -> list[str]:
-        """GET /proc/worlds. Returns list of world names."""
-        status, _, body = self._raw("GET", "/proc/worlds")
-        if status >= 400:
-            raise ElastikError(status, body)
-        return [w["name"] for w in json.loads(body)]
+        """GET /proc/worlds. Returns one world name per line."""
+        resp = self.request("GET", "/proc/worlds")
+        if resp.status >= 400:
+            raise ElastikError(resp.status, resp.body)
+        text = resp.body.decode("utf-8")
+        return [line for line in text.splitlines() if line]
 
-    def shaped(self, path: str, accept: str = "text/html",
-               intent: str = "") -> bytes:
-        """GET /shaped/<path> with Accept + X-Semantic-Intent. Forwards
-        to whatever shaper sidecar elastik routes /shaped/ to. Bytes back."""
-        headers = {"Accept": accept}
-        if intent:
-            headers["X-Semantic-Intent"] = intent
-        status, _, body = self._raw("GET", f"/shaped{path}", headers=headers)
-        if status >= 400:
-            raise ElastikError(status, body)
-        return body
+    def listen(self, pattern: str = "*") -> Iterator[dict[str, str]]:
+        """Yield Server-Sent Events from GET /listen/{pattern}.
 
-    # ── transport ─────────────────────────────────────────────────
+        Events are control-plane only:
+          event: put
+          data: path: /home/task/a
+          data: method: PUT
+          data: etag: hmac-...
 
-    def _raw(self, method: str, path: str, body: bytes | None = None,
-             headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
-        url = self.url + (path if path.startswith("/") else "/" + path)
+        The body is never embedded in the stream. Consumers that need
+        content call GET/HEAD with the path from the event.
+        """
+        url = self.url + "/listen/" + _quote_listen_pattern(pattern)
+        h = {}
+        if self.token:
+            h["Authorization"] = f"Bearer {self.token}"
+        req = urllib.request.Request(url, method="GET", headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=None) as r:
+                yield from _iter_sse(r)
+        except urllib.error.HTTPError as e:
+            raise ElastikError(e.code, e.read() if e.fp else b"") from e
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        """Raw HTTP escape hatch for any header/method the SDK hasn't sugared."""
+        url = self.url + _quote_path(path)
         h = dict(headers or {})
         if self.token:
             h.setdefault("Authorization", f"Bearer {self.token}")
         req = urllib.request.Request(url, data=body, method=method, headers=h)
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
-                return (
+                return Response(
                     r.status,
                     {k.lower(): v for k, v in r.headers.items()},
                     r.read(),
                 )
         except urllib.error.HTTPError as e:
-            return (
+            return Response(
                 e.code,
                 {k.lower(): v for k, v in (e.headers or {}).items()},
                 e.read() if e.fp else b"",
             )
 
-    def _json(self, method: str, path: str, body: bytes | None,
-              headers: dict[str, str] | None = None) -> dict:
-        status, _, raw = self._raw(method, path, body, headers)
-        if status >= 400:
-            raise ElastikError(status, raw)
-        try:
-            return json.loads(raw)
-        except (ValueError, json.JSONDecodeError):
-            return {"raw": raw}
+    def _raw(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        """Backward-compatible tuple escape hatch. Prefer request()."""
+        resp = self.request(method, path, body, headers)
+        return resp.status, resp.headers, resp.body
+
+
+def _quote_listen_pattern(pattern: str) -> str:
+    p = pattern.strip() or "*"
+    if p.startswith("/"):
+        p = p[1:]
+    if p != "*":
+        _validate_world_name(_canonical_world_name(p))
+    return urllib.parse.quote(p, safe="/-*")
+
+
+def _best_env_token() -> str:
+    return (
+        os.getenv("ELASTIK_APPROVE_TOKEN")
+        or os.getenv("ELASTIK_TOKEN")
+        or os.getenv("ELASTIK_READ_TOKEN", "")
+    )
+
+
+def _quote_path(path: str) -> str:
+    world = _canonical_world_name(path)
+    if world in _PROC_ENDPOINTS:
+        return "/" + urllib.parse.quote(world, safe="/")
+    if world == "proc" or world.startswith("proc/"):
+        raise ValueError("/proc is reserved; only /proc/version and /proc/worlds exist")
+    _validate_world_name(world)
+    return "/" + urllib.parse.quote(world, safe="/")
+
+
+def _canonical_world_name(path: str) -> str:
+    stripped = path.lstrip("/")
+    first = stripped.split("/", 1)[0]
+    if first in _NAMESPACES:
+        return stripped
+    return "home/" + stripped
+
+
+def _validate_world_name(world: str) -> None:
+    if not world:
+        raise ValueError("empty elastik path")
+    if world in _RESERVED_WORLD_NAMES or world.startswith("proc/"):
+        raise ValueError("namespace roots and /proc internals are reserved")
+    if "\\" in world:
+        raise ValueError("backslash is not allowed in elastik paths")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in world):
+        raise ValueError("control bytes are not allowed in elastik paths")
+    for segment in world.split("/"):
+        if segment in ("", ".", ".."):
+            raise ValueError("empty, dot, and dot-dot path segments are not allowed")
+
+
+def _set_if(headers: dict[str, str], name: str, value: str | None) -> None:
+    if value is not None:
+        headers[name] = str(value)
+
+
+def _etag_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    v = str(value).strip()
+    if v == "*":
+        return v
+    if v.startswith("W/"):
+        return v
+    if v.startswith('"') and v.endswith('"'):
+        return v
+    return f'"{v}"'
+
+
+def _iter_sse(resp) -> Iterator[dict[str, str]]:
+    event = "message"
+    event_id = ""
+    data_lines: list[str] = []
+    for raw in resp:
+        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+        if line == "":
+            if data_lines:
+                data = "\n".join(data_lines)
+                item = {
+                    "event": event,
+                    "id": event_id,
+                    "data": data,
+                }
+                item.update(_parse_event_data(data))
+                yield item
+            event = "message"
+            event_id = ""
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("id:"):
+            event_id = line[3:].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].lstrip(" "))
+
+
+def _parse_event_data(data: str) -> dict[str, str]:
+    out = {}
+    for line in data.splitlines():
+        k, sep, v = line.partition(":")
+        if sep:
+            out[k.strip().lower()] = v.lstrip(" ")
+    return out

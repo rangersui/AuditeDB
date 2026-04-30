@@ -10,7 +10,7 @@ The user does:
     import elastik
     e = elastik.start(token="x")
     e.put("/home/note", "hi")
-    print(e.get("/home/note", raw=True))
+    print(e.get("/home/note"))
     elastik.stop()
 
 …and never sees a Cargo.toml.
@@ -28,6 +28,33 @@ from typing import Optional
 
 
 _proc: Optional[subprocess.Popen] = None
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader. KEY=VALUE per line, # comments, optional
+    surrounding "..." or '...' on values. Existing env vars win — .env
+    only fills in what isn't already set. No interpolation, no exports,
+    no shell substitution. Stdlib-only, deliberately small.
+    """
+    p = Path(path)
+    if not p.exists():
+        return
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+            v = v[1:-1]
+        os.environ.setdefault(k, v)
 
 
 def _binary_path() -> Path:
@@ -53,11 +80,10 @@ def start(
     port: int | None = None,
     host: str | None = None,
     key: str | None = None,
+    read_token: str | None = None,
     token: str | None = None,
     approve_token: str | None = None,
     data_dir: Optional[str] = None,
-    listeners: str | None = None,
-    cors_origins: str | None = None,
     quiet: bool = True,
 ):
     """Launch the bundled elastik-core. Returns a pre-bound Elastik client.
@@ -67,6 +93,29 @@ def start(
     working instance pinned to localhost.
     """
     global _proc
+    if _proc is not None and _proc.poll() is None:
+        raise RuntimeError(
+            "elastik already running in this process — call elastik.stop() first"
+        )
+
+    host = host or os.getenv("ELASTIK_HOST", "127.0.0.1")
+    if port is None:
+        port = int(os.getenv("ELASTIK_PORT", "3105"))
+    # ELASTIK_KEY: no constant default. The audit chain HMAC computed
+    # against a publicly-known key is meaningless — anyone could forge
+    # events. Caller passes `key=...`, the env provides ELASTIK_KEY,
+    # or .env (already loaded by `import elastik`) supplies it.
+    # Validate before checking the binary — a missing key is a config
+    # error the user can fix; a missing binary is an install error.
+    key = key or os.getenv("ELASTIK_KEY")
+    if not key:
+        raise RuntimeError(
+            "ELASTIK_KEY required — set it in .env, export it in the shell, "
+            "or pass key=… to elastik.start().\n"
+            "Generate one with: "
+            "python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+
     binary = _binary_path()
     if not binary.exists():
         raise RuntimeError(
@@ -76,35 +125,24 @@ def start(
             "  cp target/release/elastik-core* "
             f"{binary.parent}/"
         )
-
-    if _proc is not None and _proc.poll() is None:
-        raise RuntimeError(
-            "elastik already running in this process — call elastik.stop() first"
-        )
-
-    host = host or os.getenv("ELASTIK_HOST", "127.0.0.1")
-    if port is None:
-        port = int(os.getenv("ELASTIK_PORT", "3105"))
-    key = key or os.getenv("ELASTIK_KEY", "elastik-default-key")
+    read_token = (
+        os.getenv("ELASTIK_READ_TOKEN", "") if read_token is None else read_token
+    )
     token = os.getenv("ELASTIK_TOKEN", "") if token is None else token
     approve_token = (
         os.getenv("ELASTIK_APPROVE_TOKEN", "")
         if approve_token is None else approve_token
     )
     data_dir = data_dir if data_dir is not None else os.getenv("ELASTIK_DATA")
-    listeners = (
-        os.getenv("ELASTIK_LISTENERS", "")
-        if listeners is None else listeners
-    )
-    cors_origins = (
-        os.getenv("ELASTIK_CORS_ORIGINS", "")
-        if cors_origins is None else cors_origins
-    )
 
     env = os.environ.copy()
     env["ELASTIK_HOST"] = host
     env["ELASTIK_PORT"] = str(port)
     env["ELASTIK_KEY"] = key
+    if read_token:
+        env["ELASTIK_READ_TOKEN"] = read_token
+    else:
+        env.pop("ELASTIK_READ_TOKEN", None)
     if token:
         env["ELASTIK_TOKEN"] = token
     else:
@@ -117,14 +155,6 @@ def start(
         env["ELASTIK_DATA"] = str(data_dir)
     else:
         env.pop("ELASTIK_DATA", None)
-    if listeners:
-        env["ELASTIK_LISTENERS"] = listeners
-    else:
-        env.pop("ELASTIK_LISTENERS", None)
-    if cors_origins:
-        env["ELASTIK_CORS_ORIGINS"] = cors_origins
-    else:
-        env.pop("ELASTIK_CORS_ORIGINS", None)
 
     out = subprocess.DEVNULL if quiet else None
     _proc = subprocess.Popen([str(binary)], env=env, stdout=out, stderr=out)
@@ -139,7 +169,7 @@ def start(
     # Re-import here to dodge a circular import at module load
     from elastik.sdk import Elastik
 
-    return Elastik(f"http://{host}:{port}", token=token)
+    return Elastik(f"http://{host}:{port}", token=approve_token or token or read_token)
 
 
 def stop() -> None:
