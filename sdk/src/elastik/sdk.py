@@ -207,7 +207,12 @@ class Elastik:
         text = resp.body.decode("utf-8")
         return [line for line in text.splitlines() if line]
 
-    def listen(self, pattern: str = "*") -> Iterator[dict[str, str]]:
+    def listen(
+        self,
+        pattern: str = "*",
+        *,
+        last_event_id: str | int | None = None,
+    ) -> Iterator[dict[str, str]]:
         """Yield Server-Sent Events from GET /listen/{pattern}.
 
         Events are control-plane only:
@@ -223,6 +228,8 @@ class Elastik:
         h = {}
         if self.token:
             h["Authorization"] = f"Bearer {self.token}"
+        if last_event_id is not None:
+            h["Last-Event-ID"] = str(last_event_id)
         req = urllib.request.Request(url, method="GET", headers=h)
         try:
             with urllib.request.urlopen(req, timeout=None) as r:

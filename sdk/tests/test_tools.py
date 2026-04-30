@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shlex
 import sys
+import time
 from pathlib import Path
 
 
@@ -79,6 +80,20 @@ def main() -> int:
         assert r.returncode == -1, r
         r = pool.run("echo after-timeout", check=True)
         assert "after-timeout" in r.stdout, r
+
+        # Pool size is a hard concurrency bound. Callers can choose
+        # fail-fast backpressure instead of blocking forever.
+        worker = pool._pool.get_nowait()
+        try:
+            started = time.monotonic()
+            try:
+                pool.run("echo blocked", acquire_timeout=0.05)
+            except TimeoutError:
+                assert time.monotonic() - started < 1.0
+            else:
+                raise AssertionError("acquire_timeout did not fire")
+        finally:
+            pool._pool.put(worker)
 
     print("PASS sdk tools")
     return 0

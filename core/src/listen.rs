@@ -6,8 +6,8 @@ use axum::{
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio_stream::{
+    iter,
     wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
-    StreamExt,
 };
 
 use crate::{can_read, method_not_allowed, options_response, unauthorized, Core};
@@ -48,11 +48,31 @@ pub(crate) async fn handler(
         return unauthorized("listen requires read token");
     }
     let pattern = pattern(&raw_pattern);
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
     let rx = core.events.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(move |item| {
+    let (lag, replay, live_floor) = replay_after(&core, last_event_id, &pattern);
+    let replay_mode = last_event_id.is_some();
+    let lag_stream = iter(lag.into_iter().map(|missed| {
+        Ok::<Event, Infallible>(
+            Event::default()
+                .event("lag")
+                .data(format!("missed: {missed}")),
+        )
+    }));
+    let replay_stream = iter(
+        replay
+            .into_iter()
+            .map(|change| Ok::<Event, Infallible>(sse_change_event(change))),
+    );
+    let live_stream = tokio_stream::StreamExt::filter_map(BroadcastStream::new(rx), move |item| {
         let pattern = pattern.clone();
         match item {
-            Ok(change) if matches(&pattern, &change.path) => {
+            Ok(change)
+                if (!replay_mode || change.id > live_floor) && matches(&pattern, &change.path) =>
+            {
                 Some(Ok::<Event, Infallible>(sse_change_event(change)))
             }
             Ok(_) => None,
@@ -61,14 +81,48 @@ pub(crate) async fn handler(
                 .data(format!("missed: {n}")))),
         }
     });
+    let mut shutdown = core.shutdown.clone();
+    let shutdown_signal = async move {
+        let _ = shutdown.changed().await;
+    };
+    let replay_stream = futures_util::StreamExt::chain(lag_stream, replay_stream);
+    let live_stream = futures_util::StreamExt::take_until(live_stream, shutdown_signal);
 
-    Sse::new(stream)
+    Sse::new(futures_util::StreamExt::chain(replay_stream, live_stream))
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))
                 .text("keepalive"),
         )
         .into_response()
+}
+
+fn replay_after(
+    core: &Core,
+    last_event_id: Option<u64>,
+    pattern: &str,
+) -> (Option<u64>, Vec<ChangeEvent>, u64) {
+    let Some(last_id) = last_event_id else {
+        return (None, Vec::new(), 0);
+    };
+    let log = core
+        .event_log
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let gap = log.front().and_then(|oldest| {
+        if last_id + 1 < oldest.id {
+            Some(oldest.id - last_id - 1)
+        } else {
+            None
+        }
+    });
+    let replay: Vec<_> = log
+        .iter()
+        .filter(|change| change.id > last_id && matches(pattern, &change.path))
+        .cloned()
+        .collect();
+    let live_floor = replay.last().map(|change| change.id).unwrap_or(last_id);
+    (gap, replay, live_floor)
 }
 
 pub(crate) fn pattern(raw: &str) -> String {
@@ -108,6 +162,13 @@ fn sse_change_event(change: ChangeEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{auth, store, Core};
+    use std::{
+        collections::VecDeque,
+        path::PathBuf,
+        sync::{atomic::AtomicU64, Arc, Mutex as StdMutex},
+    };
+    use tokio::sync::{broadcast, watch, Mutex};
 
     #[test]
     fn patterns_are_prefix_or_exact() {
@@ -137,5 +198,43 @@ mod tests {
         assert!(wire.contains("/home/task/a"));
         assert!(wire.contains("hmac-abc"));
         assert!(!wire.contains("body"));
+    }
+
+    #[test]
+    fn replay_after_reports_ring_gap_and_replays_available_events() {
+        let (events, _) = broadcast::channel(16);
+        let core = Core {
+            data: PathBuf::new(),
+            tokens: auth::Tokens {
+                read: None,
+                auth: None,
+                approve: None,
+            },
+            hmac_key: b"test-key".to_vec(),
+            mem: Arc::new(store::MemoryStore::new()),
+            events,
+            event_log: Arc::new(StdMutex::new(VecDeque::new())),
+            shutdown: watch::channel(false).1,
+            next_event: Arc::new(AtomicU64::new(0)),
+            write_lock: Arc::new(Mutex::new(())),
+        };
+        {
+            let mut log = core.event_log.lock().unwrap();
+            for id in 10..=12 {
+                log.push_back(ChangeEvent {
+                    id,
+                    method: "PUT",
+                    path: format!("/home/task/{id}"),
+                    etag: format!("hmac-{id}"),
+                });
+            }
+        }
+
+        let (gap, replay, floor) = replay_after(&core, Some(5), "/home/task/*");
+
+        assert_eq!(gap, Some(4));
+        assert_eq!(replay.len(), 3);
+        assert_eq!(replay[0].id, 10);
+        assert_eq!(floor, 12);
     }
 }

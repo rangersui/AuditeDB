@@ -50,12 +50,13 @@ use axum::{
     routing::any,
     Router,
 };
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex as StdMutex,
 };
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
 
 use crate::http_semantics as hs;
 use crate::world::{AppendResult, Stage};
@@ -67,6 +68,8 @@ struct Core {
     hmac_key: Vec<u8>,
     mem: Arc<store::MemoryStore>,
     events: broadcast::Sender<listen::ChangeEvent>,
+    event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
+    shutdown: watch::Receiver<bool>,
     next_event: Arc<AtomicU64>,
     // One writer at a time keeps If-Match/If-None-Match + write atomic.
     // tokio::Mutex avoids blocking a runtime worker while queued writers wait.
@@ -127,12 +130,23 @@ impl Core {
 
     fn notify(&self, method: &'static str, world: &str, etag: &str) {
         let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self.events.send(listen::ChangeEvent {
+        let change = listen::ChangeEvent {
             id,
             method,
             path: format!("/{world}"),
             etag: etag.to_owned(),
-        });
+        };
+        {
+            let mut log = self
+                .event_log
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            log.push_back(change.clone());
+            while log.len() > LISTEN_REPLAY_MAX {
+                log.pop_front();
+            }
+        }
+        let _ = self.events.send(change);
     }
 }
 
@@ -140,6 +154,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_ALLOW: &str = "GET, HEAD, OPTIONS";
 const PROC_ALLOW: &str = "GET, HEAD, OPTIONS";
 const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
+const LISTEN_REPLAY_MAX: usize = 1024;
 
 #[tokio::main]
 async fn main() {
@@ -155,12 +170,15 @@ async fn main() {
         .into_bytes();
 
     let (events, _) = broadcast::channel(1024);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Core {
         data,
         tokens: auth::Tokens::from_env(),
         hmac_key,
         mem: Arc::new(store::MemoryStore::new()),
         events,
+        event_log: Arc::new(StdMutex::new(VecDeque::new())),
+        shutdown: shutdown_rx,
         next_event: Arc::new(AtomicU64::new(0)),
         write_lock: Arc::new(Mutex::new(())),
     };
@@ -191,7 +209,16 @@ async fn main() {
         .with_state(Arc::new(state))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
+        .await
+        .unwrap();
+}
+
+async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
+    let _ = tokio::signal::ctrl_c().await;
+    eprintln!("elastik-core: shutdown signal received");
+    let _ = shutdown_tx.send(true);
 }
 
 /// Bare `GET /` — not protocol, not UI. Just a courtesy text/plain
@@ -1775,6 +1802,8 @@ mod tests {
                     hmac_key: b"test-key".to_vec(),
                     mem: Arc::new(store::MemoryStore::new()),
                     events,
+                    event_log: Arc::new(StdMutex::new(VecDeque::new())),
+                    shutdown: watch::channel(false).1,
                     next_event: Arc::new(AtomicU64::new(0)),
                     write_lock: Arc::new(Mutex::new(())),
                 }

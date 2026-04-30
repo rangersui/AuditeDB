@@ -122,6 +122,7 @@ class TrustedShellPool:
         *,
         shell: str | Iterable[str] | None = None,
         timeout: float = 30.0,
+        acquire_timeout: float | None = None,
         cwd: str | os.PathLike[str] | None = None,
         env: dict[str, str] | None = None,
         encoding: str = "utf-8",
@@ -130,6 +131,7 @@ class TrustedShellPool:
             raise ValueError("size must be >= 1")
         self.size = size
         self.timeout = timeout
+        self.acquire_timeout = acquire_timeout
         self.argv = _shell_argv(shell)
         self.cwd = str(Path(cwd)) if cwd is not None else None
         self.env = env
@@ -144,6 +146,7 @@ class TrustedShellPool:
         command: str,
         *,
         timeout: float | None = None,
+        acquire_timeout: float | None = None,
         check: bool = False,
     ) -> ShellResult:
         """Run command in a warmed shell and return captured output.
@@ -155,7 +158,15 @@ class TrustedShellPool:
         """
         if self._closed:
             raise RuntimeError("TrustedShellPool is closed")
-        worker = self._pool.get()
+        wait_for_worker = self.acquire_timeout if acquire_timeout is None else acquire_timeout
+        try:
+            worker = (
+                self._pool.get()
+                if wait_for_worker is None
+                else self._pool.get(timeout=wait_for_worker)
+            )
+        except queue.Empty as exc:
+            raise TimeoutError("no trusted shell worker became available") from exc
         if not worker.alive():
             worker.terminate()
             worker = self._new_worker()

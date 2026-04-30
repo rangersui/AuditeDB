@@ -320,6 +320,26 @@ def main() -> int:
             check("etag" in ev and ev["etag"].startswith("hmac-"), "SSE event has etag")
             check("payload" not in ev.get("data", ""), "SSE event does not embed body")
 
+            replay_events: list[dict[str, str]] = []
+            replay_done = threading.Event()
+            writer.put("/home/sdk/listen/b", b"payload-2")
+
+            def consume_replay() -> None:
+                for event in reader.listen(
+                    "/home/sdk/listen/*",
+                    last_event_id=ev.get("id"),
+                ):
+                    replay_events.append(event)
+                    replay_done.set()
+                    break
+
+            replay_t = threading.Thread(target=consume_replay, daemon=True)
+            replay_t.start()
+            check(replay_done.wait(5), "Last-Event-ID replays missed SSE event")
+            replay = replay_events[0]
+            check(replay.get("path") == "/home/sdk/listen/b", "replayed SSE event path")
+            check(int(replay.get("id", "0")) > int(ev.get("id", "0")), "replayed SSE id advances")
+
             print(f"\nPASS sdk e2e blackbox: {check.n} checks")
             return 0
         finally:

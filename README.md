@@ -99,6 +99,10 @@ directory and it serves another Elastik universe. Local SSD/tempdir is best for
 writes. Synced folders and network shares can be useful for distribution, but
 SQLite-on-network-filesystem is a tradeoff you should make deliberately.
 
+Run one writer process per `ELASTIK_DATA`. The core has a per-process write
+lock that makes conditional writes atomic inside one server, but it is not a
+distributed lock across multiple core processes pointed at the same directory.
+
 Empty token variables are treated as unset.
 
 ## Auth
@@ -390,6 +394,17 @@ Pattern examples:
 /listen/home/task/a    exact
 ```
 
+The core keeps a small in-memory replay ring. Reconnect with the standard SSE
+header to receive matching events after the last id you saw:
+
+```powershell
+curl.exe -N http://127.0.0.1:3105/listen/home/task/* -H "Last-Event-ID: 12"
+```
+
+This is not a durable queue. If the ring overflows, the stream emits
+`event: lag`; consumers that cannot lose work should store tasks as worlds and
+use `/listen/*` as a wakeup signal.
+
 ## Introspection
 
 ```powershell
@@ -482,7 +497,7 @@ For local agent pipelines, the SDK includes a warmed shell pool:
 ```python
 from elastik.tools import TrustedShellPool
 
-pool = TrustedShellPool(size=2)
+pool = TrustedShellPool(size=2, acquire_timeout=1.0)
 
 @elastik.listen("/home/task/shell/*")
 def run_shell(body, world, e):
@@ -492,6 +507,8 @@ def run_shell(body, world, e):
 
 It is called `Trusted` on purpose. Feeding arbitrary worlds into a shell is
 remote code execution. Use it for private local queues, not public inboxes.
+`size` is the concurrency limit; when every worker is busy, `acquire_timeout`
+lets callers fail fast instead of blocking the reactor forever.
 
 ## Build and Test
 

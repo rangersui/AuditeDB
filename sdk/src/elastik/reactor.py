@@ -188,9 +188,12 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
         curl -N http://127.0.0.1:3105/listen/*
     """
     e = e or Elastik()
+    last_event_id = ""
     while True:
         try:
-            for event in e.listen("*"):
+            for event in e.listen("*", last_event_id=last_event_id or None):
+                if event.get("id"):
+                    last_event_id = event["id"]
                 if event.get("event") == "lag":
                     print(
                         f"elastik reactor: missed SSE events: {event.get('data', '')}",
