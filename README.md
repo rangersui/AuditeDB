@@ -468,7 +468,21 @@ curl.exe -s http://127.0.0.1:3105/proc/worlds | Select-String '^home/'
 
 ## Python SDK
 
-The SDK is a nicer curl. It does not add a second protocol.
+The Python SDK is the primary SDK for this line.
+
+It is a nicer curl. It does not add a second protocol. Its job is glue:
+starting the local core, writing bytes, reading bytes, listening for changes,
+and connecting Elastik to CLI tools, AI workers, tests, and small local
+automation.
+
+Other SDKs are roadmap until the HTTP surface settles:
+
+| SDK | Status | Why |
+|---|---|---|
+| Python | primary | Best glue language for local agents, CLI wrappers, tests, and `@listen`. |
+| Go | roadmap | Good for single-binary sidecars and distribution. |
+| Rust | roadmap | Good for embedding close to the core once the ABI stops moving. |
+| JavaScript / browser | lowest priority | Browsers need CSP, sandboxing, origin policy, and UI decisions. That policy belongs outside the core. |
 
 Install from source:
 
