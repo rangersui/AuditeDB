@@ -67,6 +67,8 @@ struct Core {
     tokens: auth::Tokens,
     hmac_key: Vec<u8>,
     mem: Arc<store::MemoryStore>,
+    max_world_bytes: usize,
+    max_memory_bytes: usize,
     events: broadcast::Sender<listen::ChangeEvent>,
     event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
     shutdown: watch::Receiver<bool>,
@@ -155,6 +157,8 @@ const ROOT_ALLOW: &str = "GET, HEAD, OPTIONS";
 const PROC_ALLOW: &str = "GET, HEAD, OPTIONS";
 const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 const LISTEN_REPLAY_MAX: usize = 1024;
+const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() {
@@ -164,6 +168,8 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(3105);
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
+    let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
+    let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
     std::fs::create_dir_all(&data).expect("create data dir");
     let hmac_key = std::env::var("ELASTIK_KEY")
         .expect("ELASTIK_KEY required — the audit chain has no meaning without it")
@@ -176,6 +182,8 @@ async fn main() {
         tokens: auth::Tokens::from_env(),
         hmac_key,
         mem: Arc::new(store::MemoryStore::new()),
+        max_world_bytes,
+        max_memory_bytes,
         events,
         event_log: Arc::new(StdMutex::new(VecDeque::new())),
         shutdown: shutdown_rx,
@@ -207,12 +215,19 @@ async fn main() {
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
         .with_state(Arc::new(state))
-        .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
+        .layer(DefaultBodyLimit::max(DEFAULT_MAX_WORLD_BYTES));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await
         .unwrap();
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(default)
 }
 
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
@@ -536,6 +551,9 @@ async fn handle_put(
     if !can_write(world_name, tier) {
         return unauthorized("write requires token; system worlds need approve token");
     }
+    if body.len() > core.max_world_bytes {
+        return payload_too_large(core.max_world_bytes);
+    }
     let _write_guard = core.write_lock.lock().await;
     if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
         return resp;
@@ -558,6 +576,9 @@ async fn handle_put(
             Err(e) => return server_error(format!("storage/audit: {e}")),
         }
     } else {
+        if memory_write_projected_bytes(core, world_name, body.len()) > core.max_memory_bytes {
+            return payload_too_large(core.max_memory_bytes);
+        }
         match core.write_world(world_name, &body, &content_type, &meta) {
             Ok(()) => hs::body_etag(&body),
             Err(e) => return server_error(format!("storage: {e}")),
@@ -595,10 +616,16 @@ async fn handle_post(
     if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
         return resp;
     }
+    let Some(stage) = core.read_world(world_name) else {
+        return not_found();
+    };
+    let Some(projected_len) = stage.body.len().checked_add(body.len()) else {
+        return payload_too_large(core.max_world_bytes);
+    };
+    if projected_len > core.max_world_bytes {
+        return payload_too_large(core.max_world_bytes);
+    }
     let new_etag = if store::is_persistent(world_name) {
-        let Some(stage) = core.read_world(world_name) else {
-            return not_found();
-        };
         match world::append_with_audit(
             &core.data,
             world_name,
@@ -612,6 +639,9 @@ async fn handle_post(
             Err(e) => return server_error(format!("storage/audit: {e}")),
         }
     } else {
+        if memory_append_projected_bytes(core, world_name, body.len()) > core.max_memory_bytes {
+            return payload_too_large(core.max_memory_bytes);
+        }
         let result = match core.append_world(world_name, &body) {
             Ok(Some(r)) => r,
             Ok(None) => return not_found(),
@@ -631,8 +661,11 @@ async fn handle_delete(
     req_headers: &HeaderMap,
     tier: auth::Tier,
 ) -> Response {
-    if !can_write(world_name, tier) {
+    if !can_delete(tier) {
         return unauthorized("delete requires token; system worlds need approve token");
+    }
+    if world_name == "var/log/deletes" {
+        return unauthorized("delete ledger is append-only");
     }
     let _write_guard = core.write_lock.lock().await;
     if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
@@ -646,10 +679,14 @@ async fn handle_delete(
     };
     let body_sha256_before = world::sha256_hex(&stage.body);
 
-    // Audit BEFORE the disk op — write to a global ledger world, not
-    // the world being deleted (otherwise audit::append reopens its dir
-    // and recreates it). Memory deletes still audit here because the
-    // ledger itself is sqlite.
+    let ok = core.delete_world(world_name);
+    if !ok {
+        return server_error("delete failed after preflight".to_string());
+    }
+
+    // Audit AFTER the disk op, so the global ledger records successful
+    // deletion, not merely an attempt. The ledger itself is sqlite even
+    // when the deleted world was memory-backed.
     let delete_meta = hs::request_meta_headers(req_headers);
     if let Err(e) = audit::append(
         &core.data,
@@ -666,11 +703,6 @@ async fn handle_delete(
         &core.hmac_key,
     ) {
         return server_error(format!("audit: {e}"));
-    }
-
-    let ok = core.delete_world(world_name);
-    if !ok {
-        return not_found();
     }
     core.notify("DELETE", world_name, "");
     (StatusCode::NO_CONTENT, "").into_response()
@@ -693,6 +725,26 @@ fn can_write(world_name: &str, tier: auth::Tier) -> bool {
         auth::Tier::Auth => !needs_approve,
         auth::Tier::Approve => true,
     }
+}
+
+fn can_delete(tier: auth::Tier) -> bool {
+    matches!(tier, auth::Tier::Approve)
+}
+
+fn memory_write_projected_bytes(core: &Core, world_name: &str, new_len: usize) -> usize {
+    let current_len = core
+        .mem
+        .read(world_name)
+        .map(|stage| stage.body.len())
+        .unwrap_or(0);
+    core.mem
+        .total_bytes()
+        .saturating_sub(current_len)
+        .saturating_add(new_len)
+}
+
+fn memory_append_projected_bytes(core: &Core, _world_name: &str, add_len: usize) -> usize {
+    core.mem.total_bytes().saturating_add(add_len)
 }
 
 fn exact_or_child(world_name: &str, prefix: &str) -> bool {
@@ -768,6 +820,15 @@ fn bad_request(msg: &str) -> Response {
         .into_response()
 }
 
+fn payload_too_large(max_bytes: usize) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("payload too large: max bytes {max_bytes}\n"),
+    )
+        .into_response()
+}
+
 fn options_response(allow: &'static str) -> Response {
     (
         StatusCode::NO_CONTENT,
@@ -821,6 +882,90 @@ mod tests {
         assert!(!can_write("var/log/deletes", auth::Tier::Read));
         assert!(!can_write("var/log/deletes", auth::Tier::Auth));
         assert!(can_write("var/log/deletes", auth::Tier::Approve));
+    }
+
+    #[test]
+    fn delete_requires_approve_token() {
+        assert!(!can_delete(auth::Tier::Anon));
+        assert!(!can_delete(auth::Tier::Read));
+        assert!(!can_delete(auth::Tier::Auth));
+        assert!(can_delete(auth::Tier::Approve));
+    }
+
+    #[tokio::test]
+    async fn put_and_post_enforce_world_size_cap() {
+        let (mut core, dir) = test_core("world-size-cap");
+        core.max_world_bytes = 4;
+        let headers = HeaderMap::new();
+
+        let too_big = handle_put(
+            &core,
+            "home/too-big",
+            &headers,
+            Bytes::from_static(b"12345"),
+            auth::Tier::Auth,
+        )
+        .await;
+        assert_eq!(too_big.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let ok = handle_put(
+            &core,
+            "home/four",
+            &headers,
+            Bytes::from_static(b"1234"),
+            auth::Tier::Auth,
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::CREATED);
+
+        let append = handle_post(
+            &core,
+            "home/four",
+            &headers,
+            Bytes::from_static(b"5"),
+            auth::Tier::Auth,
+        )
+        .await;
+        assert_eq!(append.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn memory_backend_enforces_total_quota() {
+        let (mut core, dir) = test_core("memory-quota");
+        core.max_memory_bytes = 4;
+        let headers = HeaderMap::new();
+
+        let first = handle_put(
+            &core,
+            "tmp/a",
+            &headers,
+            Bytes::from_static(b"12"),
+            auth::Tier::Auth,
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+        let second = handle_put(
+            &core,
+            "tmp/b",
+            &headers,
+            Bytes::from_static(b"34"),
+            auth::Tier::Auth,
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::CREATED);
+        let third = handle_put(
+            &core,
+            "tmp/c",
+            &headers,
+            Bytes::from_static(b"5"),
+            auth::Tier::Auth,
+        )
+        .await;
+        assert_eq!(third.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1759,6 +1904,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_rejects_auth_token_and_append_only_ledger() {
+        let (core, dir) = test_core("delete-policy");
+        world::write_with_audit(
+            &core.data,
+            "home/delete-policy",
+            b"alive",
+            "text/plain; charset=utf-8",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        world::write_with_audit(
+            &core.data,
+            "var/log/deletes",
+            b"ledger",
+            "text/plain; charset=utf-8",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let headers = HeaderMap::new();
+
+        let auth_delete =
+            handle_delete(&core, "home/delete-policy", &headers, auth::Tier::Auth).await;
+        assert_eq!(auth_delete.status(), StatusCode::UNAUTHORIZED);
+        assert!(core.read_world("home/delete-policy").is_some());
+
+        let ledger_delete =
+            handle_delete(&core, "var/log/deletes", &headers, auth::Tier::Approve).await;
+        assert_eq!(ledger_delete.status(), StatusCode::UNAUTHORIZED);
+        assert!(core.read_world("var/log/deletes").is_some());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn delete_missing_world_does_not_write_delete_ledger() {
         let (core, dir) = test_core("delete-missing");
         let headers = HeaderMap::new();
@@ -1801,6 +1982,8 @@ mod tests {
                     },
                     hmac_key: b"test-key".to_vec(),
                     mem: Arc::new(store::MemoryStore::new()),
+                    max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
+                    max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
                     events,
                     event_log: Arc::new(StdMutex::new(VecDeque::new())),
                     shutdown: watch::channel(false).1,

@@ -110,8 +110,9 @@ fn replay_after(
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let gap = log.front().and_then(|oldest| {
-        if last_id + 1 < oldest.id {
-            Some(oldest.id - last_id - 1)
+        let expected_next = last_id.saturating_add(1);
+        if expected_next < oldest.id {
+            Some(oldest.id - expected_next)
         } else {
             None
         }
@@ -212,6 +213,8 @@ mod tests {
             },
             hmac_key: b"test-key".to_vec(),
             mem: Arc::new(store::MemoryStore::new()),
+            max_world_bytes: 1024,
+            max_memory_bytes: 1024,
             events,
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
@@ -236,5 +239,42 @@ mod tests {
         assert_eq!(replay.len(), 3);
         assert_eq!(replay[0].id, 10);
         assert_eq!(floor, 12);
+    }
+
+    #[test]
+    fn replay_after_handles_max_last_event_id_without_overflow() {
+        let (events, _) = broadcast::channel(16);
+        let core = Core {
+            data: PathBuf::new(),
+            tokens: auth::Tokens {
+                read: None,
+                auth: None,
+                approve: None,
+            },
+            hmac_key: b"test-key".to_vec(),
+            mem: Arc::new(store::MemoryStore::new()),
+            max_world_bytes: 1024,
+            max_memory_bytes: 1024,
+            events,
+            event_log: Arc::new(StdMutex::new(VecDeque::new())),
+            shutdown: watch::channel(false).1,
+            next_event: Arc::new(AtomicU64::new(0)),
+            write_lock: Arc::new(Mutex::new(())),
+        };
+        {
+            let mut log = core.event_log.lock().unwrap();
+            log.push_back(ChangeEvent {
+                id: u64::MAX,
+                method: "PUT",
+                path: "/home/task/max".to_string(),
+                etag: "hmac-max".to_string(),
+            });
+        }
+
+        let (gap, replay, floor) = replay_after(&core, Some(u64::MAX), "/home/task/*");
+
+        assert_eq!(gap, None);
+        assert!(replay.is_empty());
+        assert_eq!(floor, u64::MAX);
     }
 }

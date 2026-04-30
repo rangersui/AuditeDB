@@ -105,6 +105,17 @@ distributed lock across multiple core processes pointed at the same directory.
 
 Empty token variables are treated as unset.
 
+Resource caps:
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum stored size of one world after `PUT` or `POST`. |
+| `ELASTIK_MAX_MEMORY_BYTES` | `268435456` | Maximum total bytes in memory-backed worlds (`/tmp`, `/dev`, `/sys`). |
+
+The HTTP request body limit is 64 MiB. `POST` append also checks the projected
+final world size before writing. If a write would cross a cap, the core returns
+`413 Payload Too Large`.
+
 ## Auth
 
 There are three token levels:
@@ -227,6 +238,8 @@ curl.exe -X POST http://127.0.0.1:3105/home/log `
 ### DELETE: remove
 
 `DELETE` removes a world and requires the approve token.
+The global delete ledger at `/var/log/deletes` is append-only and cannot be
+deleted through HTTP.
 
 ```powershell
 curl.exe -X DELETE http://127.0.0.1:3105/home/old `
@@ -273,6 +286,34 @@ stored representation headers -> travel with the bytes
 request control headers       -> used once, then discarded
 core generated headers        -> ETag, Content-Length, Link, Location, Allow
 ```
+
+## Trust Model
+
+The core is a byte store, not a browser security product.
+
+If a client stores HTML with `Content-Type: text/html`, Elastik will serve HTML.
+If an AI stores JavaScript inside that HTML, Elastik will serve that JavaScript.
+The core does not sanitize HTML, rewrite scripts, strip iframes, invent CSP, or
+decide whether a page is safe to render.
+
+That is intentional. Curl, SDK workers, protocol bridges, and agents need exact
+bytes back. The browser is only one consumer, and it is the consumer with the
+most policy.
+
+Browser-facing surfaces should enforce browser policy outside the core:
+
+- Serve untrusted HTML through a sandboxed renderer or a separate origin.
+- Add `Content-Security-Policy` at the browser UI, JS SDK, reverse proxy, or
+  static shell layer.
+- Use escaping or text rendering when displaying untrusted worlds in
+  `index.html`.
+- Use read-only tokens for public browsing surfaces.
+- Do not give untrusted writers access to representation headers such as
+  `Cache-Control`, `Content-Disposition`, or `Content-Encoding` unless you want
+  them to control those HTTP semantics.
+
+Core rule: store what was written, return what was stored. Browser safety is a
+client or edge concern.
 
 ## ETag and Conditional Requests
 

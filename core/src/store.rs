@@ -90,6 +90,13 @@ impl MemoryStore {
         out
     }
 
+    pub fn total_bytes(&self) -> usize {
+        self.map_guard()
+            .values()
+            .map(|entry| entry.body.len())
+            .sum()
+    }
+
     fn map_guard(&self) -> MutexGuard<'_, HashMap<String, MemEntry>> {
         self.map.lock().unwrap_or_else(|poison| poison.into_inner())
     }

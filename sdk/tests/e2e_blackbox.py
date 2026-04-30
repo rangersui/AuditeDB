@@ -279,12 +279,24 @@ def main() -> int:
             del_etag = reader.head("/home/sdk/append")["etag"]
             expect_error(
                 lambda: writer.delete("/home/sdk/append", if_match=stale),
+                401,
+                check,
+                "write token cannot delete ordinary world",
+            )
+            expect_error(
+                lambda: approver.delete("/home/sdk/append", if_match=stale),
                 412,
                 check,
                 "SDK delete stale if_match raises 412",
             )
-            check(writer.delete("/home/sdk/append", if_match=del_etag), "SDK delete current if_match succeeds")
+            check(approver.delete("/home/sdk/append", if_match=del_etag), "SDK delete current if_match succeeds")
             expect_error(lambda: reader.get("/home/sdk/append"), 404, check, "deleted world is gone")
+            expect_error(
+                lambda: approver.delete("/var/log/deletes"),
+                401,
+                check,
+                "delete ledger is append-only",
+            )
 
             # OPTIONS / Allow / Link headers are visible at the wire.
             status, headers, _ = http(
