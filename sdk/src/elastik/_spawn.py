@@ -120,10 +120,11 @@ def start(
     if not binary.exists():
         raise RuntimeError(
             f"bundled binary not found: {binary}\n"
-            "If you're working from source, build it first:\n"
-            "  cd Elastik-core && cargo build --release\n"
-            "  cp target/release/elastik-core* "
-            f"{binary.parent}/"
+            "If you're working from source, build and bundle it from the repo root:\n"
+            "  cargo build --release --manifest-path core/Cargo.toml\n"
+            "  mkdir -p sdk/src/elastik/_bin\n"
+            "  cp core/target/release/elastik-core* sdk/src/elastik/_bin/\n"
+            f"Expected binary directory: {binary.parent}"
         )
     read_token = (
         os.getenv("ELASTIK_READ_TOKEN", "") if read_token is None else read_token
