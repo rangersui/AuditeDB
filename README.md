@@ -484,13 +484,25 @@ Other SDKs are roadmap until the HTTP surface settles:
 | Rust | roadmap | Good for embedding close to the core once the ABI stops moving. |
 | JavaScript / browser | lowest priority | Browsers need CSP, sandboxing, origin policy, and UI decisions. That policy belongs outside the core. |
 
-Install from source:
+Install from PyPI:
+
+```powershell
+py -m pip install elastik
+```
+
+Run the bundled core:
+
+```powershell
+py -m elastik run --key dev-hmac-key --token write-token --approve-token approve-token
+```
+
+Install from source for local development:
 
 ```powershell
 python -m pip install -e .\sdk
 ```
 
-Run the bundled core:
+The same command works either way:
 
 ```powershell
 python -m elastik run --key dev-hmac-key --token write-token --approve-token approve-token
