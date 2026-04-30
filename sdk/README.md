@@ -22,6 +22,12 @@ py -m pip install elastik
 py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
 ```
 
+`--key` is required. Token flags are optional capability gates:
+
+- omit `--read-token` to keep reads public.
+- omit `--token` to disable ordinary `PUT` and `POST`.
+- omit `--approve-token` to disable `DELETE` and system writes.
+
 ## Source Checkout
 
 ```powershell

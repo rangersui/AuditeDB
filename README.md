@@ -95,6 +95,13 @@ ELASTIK_APPROVE_TOKEN=
 `ELASTIK_KEY` is required. It signs the audit chain. A public or empty key makes
 the audit chain meaningless.
 
+Tokens are optional capability gates. Missing tokens do not stop the core from
+starting; they disable the corresponding protected operations:
+
+- no `ELASTIK_READ_TOKEN`: reads are public.
+- no `ELASTIK_TOKEN`: ordinary `PUT` and `POST` are disabled.
+- no `ELASTIK_APPROVE_TOKEN`: `DELETE` and system writes are disabled.
+
 `ELASTIK_DATA` is the universe selector. Point the same binary at another data
 directory and it serves another Elastik universe. Local SSD/tempdir is best for
 writes. Synced folders and network shares can be useful for distribution, but
@@ -137,6 +144,23 @@ Policy is small:
 - `DELETE` requires `ELASTIK_APPROVE_TOKEN`.
 
 Use `Authorization: Bearer <token>`.
+
+Startup requires only `ELASTIK_KEY`. Tokens are not required to boot:
+
+```powershell
+python -m elastik run --key dev-hmac-key
+```
+
+That creates a public-read server with writes and deletes disabled. For normal
+local development, pass all three tokens:
+
+```powershell
+python -m elastik run `
+  --key dev-hmac-key `
+  --read-token read-token `
+  --token write-token `
+  --approve-token approve-token
+```
 
 ```powershell
 curl.exe -X PUT http://127.0.0.1:3105/home/x `

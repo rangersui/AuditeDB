@@ -157,9 +157,11 @@ def start(
 ):
     """Launch the bundled elastik-core. Returns a pre-bound Elastik client.
 
-    All process state is the user's: token, port, key, data dir. We only
-    set sane defaults so `elastik.start()` with no arguments produces a
-    working instance pinned to localhost.
+    All process state is the user's: port, key, tokens, data dir. `key` is
+    required, either as an argument, in ELASTIK_KEY, or in .env. Token
+    arguments are optional capability gates: no read_token means public reads,
+    no token means ordinary writes are disabled, and no approve_token means
+    delete/system writes are disabled.
     """
     global _proc
     if _proc is not None and _proc.poll() is None:
