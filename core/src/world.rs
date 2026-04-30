@@ -130,22 +130,24 @@ pub fn read_with_hmac(data_root: &Path, world: &str) -> Option<(Stage, Option<St
     if !path.exists() {
         return None;
     }
-    let c = Connection::open(&path).ok()?;
+    let mut c = Connection::open(&path).ok()?;
     let _ = c.busy_timeout(Duration::from_millis(5000));
-    let mut stmt = c
-        .prepare("SELECT body, content_type FROM stage_meta WHERE id=1")
-        .ok()?;
-    let (body, content_type) = stmt
-        .query_row([], |r| {
+    let tx = c.transaction().ok()?;
+    let (body, content_type) = {
+        let mut stmt = tx
+            .prepare("SELECT body, content_type FROM stage_meta WHERE id=1")
+            .ok()?;
+        stmt.query_row([], |r| {
             Ok((
                 r.get::<_, Vec<u8>>(0).unwrap_or_default(),
                 r.get::<_, String>(1)
                     .unwrap_or_else(|_| "application/octet-stream".into()),
             ))
         })
-        .ok()?;
+        .ok()?
+    };
     let mut headers = Vec::new();
-    if let Ok(mut hs) = c.prepare("SELECT name, value FROM meta_headers ORDER BY name") {
+    if let Ok(mut hs) = tx.prepare("SELECT name, value FROM meta_headers ORDER BY name") {
         if let Ok(rows) = hs.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         {
             for pair in rows.flatten() {
@@ -153,13 +155,15 @@ pub fn read_with_hmac(data_root: &Path, world: &str) -> Option<(Stage, Option<St
             }
         }
     }
-    let latest_hmac = c
-        .query_row(
+    let latest_hmac = {
+        let result = tx.query_row(
             "SELECT hmac FROM events ORDER BY id DESC LIMIT 1",
             [],
             |r| r.get::<_, String>(0),
-        )
-        .ok();
+        );
+        result.ok()
+    };
+    tx.commit().ok()?;
     Some((
         Stage {
             body,

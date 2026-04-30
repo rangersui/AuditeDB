@@ -117,9 +117,13 @@ def main() -> int:
 
     sys.path.insert(0, str(SDK_SRC))
     import elastik
+    from elastik import _spawn
     from elastik.sdk import Elastik
 
     check = Check()
+    check(_spawn._connect_host("0.0.0.0") == "127.0.0.1", "wildcard IPv4 maps to loopback")
+    check(_spawn._client_url("0.0.0.0", 1234) == "http://127.0.0.1:1234", "wildcard IPv4 returns usable URL")
+    check(_spawn._client_url("::", 1234) == "http://[::1]:1234", "wildcard IPv6 URL is bracketed")
     with elastik.TrustedShellPool(size=1, timeout=2) as pool:
         shell = pool.run("echo sdk-shell", check=True)
         check("sdk-shell" in shell.stdout, "TrustedShellPool is exported and runs")
@@ -146,6 +150,28 @@ def main() -> int:
         else:
             elastik.stop()
             raise AssertionError("FAIL: start() accepted an occupied port")
+
+    wildcard_port = free_port()
+    with tempfile.TemporaryDirectory(prefix="elastik-sdk-wildcard-") as data_dir:
+        wildcard = elastik.start(
+            host="0.0.0.0",
+            port=wildcard_port,
+            key=key,
+            data_dir=data_dir,
+            quiet=True,
+        )
+        try:
+            check(
+                wildcard.url == f"http://127.0.0.1:{wildcard_port}",
+                "start(host=0.0.0.0) returns reachable loopback client URL",
+                wildcard.url,
+            )
+            check(
+                wildcard.get("/proc/version").startswith(b"elastik-core "),
+                "wildcard-bound core is probed through loopback",
+            )
+        finally:
+            elastik.stop()
 
     with tempfile.TemporaryDirectory(prefix="elastik-sdk-e2e-") as data_dir:
         os.environ["ELASTIK_URL"] = base

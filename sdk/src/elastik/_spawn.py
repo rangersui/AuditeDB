@@ -68,10 +68,11 @@ def _binary_path() -> Path:
 
 def _wait_for_port(host: str, port: int, deadline_s: float = 10.0) -> bool:
     """Poll until the server accepts a TCP connection or we give up."""
+    connect_host = _connect_host(host)
     end = time.time() + deadline_s
     while time.time() < end:
         try:
-            with socket.create_connection((host, port), timeout=0.3):
+            with socket.create_connection((connect_host, port), timeout=0.3):
                 return True
         except OSError:
             time.sleep(0.05)
@@ -80,22 +81,60 @@ def _wait_for_port(host: str, port: int, deadline_s: float = 10.0) -> bool:
 
 def _connect_host(host: str) -> str:
     """Host a local client should use for follow-up probes."""
-    return "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    stripped = host.strip("[]")
+    if stripped in ("", "0.0.0.0"):
+        return "127.0.0.1"
+    if stripped == "::":
+        return "::1"
+    return stripped
+
+
+def _url_host(host: str) -> str:
+    """Format a host for an http:// URL."""
+    connect_host = _connect_host(host)
+    if ":" in connect_host and not connect_host.startswith("["):
+        return f"[{connect_host}]"
+    return connect_host
+
+
+def _client_url(host: str, port: int) -> str:
+    """URL a local client should use after the core binds."""
+    return f"http://{_url_host(host)}:{port}"
 
 
 def _port_is_free(host: str, port: int) -> bool:
     """Best-effort preflight so start() does not attach to a stranger server."""
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((host, port))
-        return True
+        infos = socket.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM,
+            flags=socket.AI_PASSIVE,
+        )
     except OSError:
         return False
+    checked = False
+    # Be conservative: if any address family the host may bind is occupied,
+    # refuse to start. This avoids returning a client pointed at a stranger
+    # server when localhost resolves to multiple loopback families.
+    seen: set[tuple[int, tuple]] = set()
+    for family, socktype, proto, _canon, sockaddr in infos:
+        key = (family, sockaddr)
+        if key in seen:
+            continue
+        seen.add(key)
+        checked = True
+        try:
+            with socket.socket(family, socktype, proto) as s:
+                s.bind(sockaddr)
+        except OSError:
+            return False
+    return checked
 
 
 def _probe_core(host: str, port: int, token: str = "") -> bool:
     """Confirm that the accepting socket is actually elastik-core."""
-    url = f"http://{_connect_host(host)}:{port}/proc/version"
+    url = f"{_client_url(host, port)}/proc/version"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     req = urllib.request.Request(url, headers=headers)
     try:
@@ -210,7 +249,7 @@ def start(
     # Re-import here to dodge a circular import at module load
     from elastik.sdk import Elastik
 
-    return Elastik(f"http://{host}:{port}", token=approve_token or token or read_token)
+    return Elastik(_client_url(host, port), token=approve_token or token or read_token)
 
 
 def stop() -> None:

@@ -51,6 +51,7 @@ use axum::{
     Router,
 };
 use std::collections::VecDeque;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -191,7 +192,7 @@ async fn main() {
         write_lock: Arc::new(Mutex::new(())),
     };
 
-    let addr = format!("{}:{}", host, port);
+    let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
     // Warn if the env declares tokens but leaves them empty. `from_env`
@@ -228,6 +229,12 @@ fn env_usize(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+fn listen_addr(host: &str, port: u16) -> String {
+    host.parse::<IpAddr>()
+        .map(|ip| SocketAddr::new(ip, port).to_string())
+        .unwrap_or_else(|_| format!("{host}:{port}"))
 }
 
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
@@ -890,6 +897,14 @@ mod tests {
         assert!(!can_delete(auth::Tier::Read));
         assert!(!can_delete(auth::Tier::Auth));
         assert!(can_delete(auth::Tier::Approve));
+    }
+
+    #[test]
+    fn listen_addr_brackets_ipv6_hosts() {
+        assert_eq!(listen_addr("127.0.0.1", 3105), "127.0.0.1:3105");
+        assert_eq!(listen_addr("0.0.0.0", 3105), "0.0.0.0:3105");
+        assert_eq!(listen_addr("::1", 3105), "[::1]:3105");
+        assert_eq!(listen_addr("localhost", 3105), "localhost:3105");
     }
 
     #[tokio::test]
