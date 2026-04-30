@@ -124,6 +124,27 @@ def main() -> int:
     check(_spawn._connect_host("0.0.0.0") == "127.0.0.1", "wildcard IPv4 maps to loopback")
     check(_spawn._client_url("0.0.0.0", 1234) == "http://127.0.0.1:1234", "wildcard IPv4 returns usable URL")
     check(_spawn._client_url("::", 1234) == "http://[::1]:1234", "wildcard IPv6 URL is bracketed")
+    prior_host = os.environ.get("ELASTIK_HOST")
+    prior_port = os.environ.get("ELASTIK_PORT")
+    prior_url = os.environ.get("ELASTIK_URL")
+    try:
+        os.environ.pop("ELASTIK_URL", None)
+        os.environ["ELASTIK_HOST"] = "::"
+        os.environ["ELASTIK_PORT"] = "4321"
+        check(_spawn.default_url() == "http://[::1]:4321", "default_url reuses IPv6 client URL helper")
+    finally:
+        if prior_host is None:
+            os.environ.pop("ELASTIK_HOST", None)
+        else:
+            os.environ["ELASTIK_HOST"] = prior_host
+        if prior_port is None:
+            os.environ.pop("ELASTIK_PORT", None)
+        else:
+            os.environ["ELASTIK_PORT"] = prior_port
+        if prior_url is None:
+            os.environ.pop("ELASTIK_URL", None)
+        else:
+            os.environ["ELASTIK_URL"] = prior_url
     with elastik.TrustedShellPool(size=1, timeout=2) as pool:
         shell = pool.run("echo sdk-shell", check=True)
         check("sdk-shell" in shell.stdout, "TrustedShellPool is exported and runs")

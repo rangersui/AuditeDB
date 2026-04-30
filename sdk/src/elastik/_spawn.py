@@ -281,10 +281,8 @@ def default_url() -> str:
     if explicit:
         return explicit
     host = os.getenv("ELASTIK_HOST", "127.0.0.1")
-    if host in ("0.0.0.0", "::"):
-        host = "127.0.0.1"
-    port = os.getenv("ELASTIK_PORT", "3105")
-    return f"http://{host}:{port}"
+    port = int(os.getenv("ELASTIK_PORT", "3105"))
+    return _client_url(host, port)
 
 
 def binary_info() -> dict:

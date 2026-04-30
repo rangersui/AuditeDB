@@ -49,11 +49,15 @@ impl Tokens {
         let Some(value) = authorization else {
             return Tier::Anon;
         };
-        if let Some(rest) = value.strip_prefix("Bearer ") {
-            return self.check_token(rest.as_bytes());
+        let Some((scheme, credentials)) = value.split_once(char::is_whitespace) else {
+            return Tier::Anon;
+        };
+        let credentials = credentials.trim();
+        if scheme.eq_ignore_ascii_case("Bearer") {
+            return self.check_token(credentials.as_bytes());
         }
-        if let Some(rest) = value.strip_prefix("Basic ") {
-            if let Ok(decoded) = B64.decode(rest.trim()) {
+        if scheme.eq_ignore_ascii_case("Basic") {
+            if let Ok(decoded) = B64.decode(credentials) {
                 if let Some(idx) = decoded.iter().position(|&b| b == b':') {
                     return self.check_token(&decoded[idx + 1..]);
                 }
@@ -207,9 +211,14 @@ mod tests {
         let basic_writer = B64.encode("user:writer");
 
         assert_eq!(tokens.check(Some("Bearer reader")), Tier::Read);
+        assert_eq!(tokens.check(Some("bearer reader")), Tier::Read);
         assert_eq!(tokens.check(Some("Bearer writer")), Tier::Auth);
         assert_eq!(
             tokens.check(Some(&format!("Basic {basic_writer}"))),
+            Tier::Auth
+        );
+        assert_eq!(
+            tokens.check(Some(&format!("basic {basic_writer}"))),
             Tier::Auth
         );
         assert_eq!(tokens.check(Some("Bearer approve")), Tier::Approve);
