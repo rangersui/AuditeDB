@@ -1,19 +1,30 @@
-//! elastik-core — bedrock HTTP+SQLite+HMAC. Python glue lives elsewhere.
+//! elastik-core — bedrock HTTP+SQLite+HMAC.
 //!
-//! Scope (intentionally small):
-//!   GET    /<world>          → JSON envelope {body, version, headers, ext}
-//!   GET    /<world>?raw      → raw bytes with X-Elastik-* headers
-//!   PUT    /<world>          → store body, increment version, append audit event
-//!   DELETE /<world>          → drop world dir
-//!   HEAD   /<world>          → headers only (size, version, ext, x-meta-*)
-//!   GET    /proc/worlds      → JSON array of world keys
-//!   GET    /proc/version     → "core: <ver>\n"
+//! The core has exactly one interface: HTTP requests in, HTTP responses
+//! out. It does not know or care whether a request came from curl, a
+//! browser, WebDAV, SMTP, an AI agent, or an SDK bridge. Translation is
+//! external; the core only sees HTTP.
+//!
+//! v5.0 grammar:
+//!
+//!   GET    /<world>                → body bytes with stored Content-Type
+//!   HEAD   /<world>                → metadata headers, no body
+//!   PUT    /<world>                → replace body, update meta, audit
+//!   POST   /<world>                → append to body, no meta change, audit
+//!   DELETE /<world>                → drop world (sqlite) or evict (memory)
+//!   GET    /proc/worlds            → text/plain, one world per line
+//!   GET    /proc/version           → "elastik-core <ver>\n"
+//!
+//! Path prefix decides backend (one core, one port, no two daemons):
+//!
+//!   /home/* /etc/* /lib/* /boot/* /usr/* /var/*  → SQLite, durable, audited
+//!   /tmp/*  /dev/*  /sys/*                       → memory, transient
 //!
 //! Out of scope (deliberately):
-//!   /shaped/*       → defer to Python proxy (calls AI)
-//!   /lib/* execution → defer to Python plugin runtime
-//!   WebDAV/SMTP/etc → defer to Python sidecars
-//!   Cap tokens, NL auth, semantic router → defer to Python
+//!   protocol bridges      → SDK clients / external endpoint apps
+//!   AI shaping/routing    → SDK clients / external endpoint apps
+//!   /lib/* code running   → never in core; /lib is inert storage
+//!   application behavior  → outside core, expressed as HTTP
 //!
 //! Env:
 //!   ELASTIK_HOST           default 127.0.0.1
@@ -22,32 +33,72 @@
 //!   ELASTIK_TOKEN          T2 token  (writes to /home/*)
 //!   ELASTIK_APPROVE_TOKEN  T3 token  (writes to /lib/, /etc/, deletes)
 //!   ELASTIK_KEY            HMAC key for the audit chain (required)
-
 mod audit;
 mod auth;
-mod fanout;
+mod store;
 mod world;
 
 use axum::{
     body::Bytes,
-    extract::{Path as AxPath, Query, State},
+    extract::DefaultBodyLimit,
+    extract::{Path as AxPath, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::any,
+    routing::{any, get},
     Router,
 };
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tower_http::cors::{AllowOrigin, CorsLayer};
+
+use crate::world::{AppendResult, Stage};
 
 #[derive(Clone)]
 struct Core {
     data: PathBuf,
     tokens: auth::Tokens,
     hmac_key: Vec<u8>,
-    listeners: Vec<fanout::Listener>,
-    http: reqwest::Client,
+    mem: Arc<store::MemoryStore>,
+}
+
+impl Core {
+    fn read_world(&self, world: &str) -> Option<Stage> {
+        if store::is_memory_world(world) {
+            self.mem.read(world)
+        } else {
+            world::read(&self.data, world)
+        }
+    }
+
+    fn write_world(
+        &self,
+        world: &str,
+        body: &[u8],
+        content_type: &str,
+        headers: &[(String, String)],
+    ) -> rusqlite::Result<()> {
+        if store::is_memory_world(world) {
+            self.mem.write(world, body, content_type, headers);
+            Ok(())
+        } else {
+            world::write(&self.data, world, body, content_type, headers)
+        }
+    }
+
+    fn append_world(&self, world: &str, body: &[u8]) -> rusqlite::Result<Option<AppendResult>> {
+        if store::is_memory_world(world) {
+            Ok(self.mem.append(world, body))
+        } else {
+            world::append(&self.data, world, body)
+        }
+    }
+
+    fn delete_world(&self, world: &str) -> bool {
+        if store::is_memory_world(world) {
+            self.mem.delete(world)
+        } else {
+            world::delete(&self.data, world)
+        }
+    }
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -65,124 +116,47 @@ async fn main() {
         .expect("ELASTIK_KEY required — the audit chain has no meaning without it")
         .into_bytes();
 
-    let listeners = fanout::parse_env(
-        std::env::var("ELASTIK_LISTENERS")
-            .unwrap_or_default()
-            .as_str(),
-    );
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .expect("reqwest client");
-
     let state = Core {
         data,
         tokens: auth::Tokens::from_env(),
         hmac_key,
-        listeners,
-        http,
+        mem: Arc::new(store::MemoryStore::new()),
     };
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
-    {
-        let n = state.listeners.len();
-        if n == 0 {
-            eprintln!("  fanout: no listeners registered (ELASTIK_LISTENERS empty)");
-        } else {
-            eprintln!("  fanout: {n} listener(s) registered:");
-            for l in &state.listeners {
-                eprintln!("    {} → {}", l.pattern, l.url);
-            }
-        }
+    // Warn if the env declares tokens but leaves them empty. `from_env`
+    // already treats those as unset, but the user almost certainly
+    // meant to fill them in — silent acceptance was the old footgun.
+    if auth::env_set_but_empty("ELASTIK_TOKEN") {
+        eprintln!("  auth: ⚠ ELASTIK_TOKEN set but empty — treated as unset (T2 disabled)");
     }
-
-    // ── CORS (default: off) ────────────────────────────────────────
-    // ELASTIK_CORS_ORIGINS controls cross-origin browser access.
-    //   unset / empty   → no CORS headers; localhost-only browsers OK,
-    //                      cross-origin pages blocked. SAFE DEFAULT.
-    //   "*"             → allow ANY origin. WARNING printed loudly —
-    //                      any website the user visits could read this
-    //                      elastik. Useful only for true public APIs.
-    //   "https://a.com,http://localhost:5173"
-    //                   → allowlist of exact origins.
-    // OPTIONS preflight handled automatically by tower-http.
-    let cors_env = std::env::var("ELASTIK_CORS_ORIGINS").unwrap_or_default();
-    let cors_layer = build_cors(&cors_env);
-
+    if auth::env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
+        eprintln!("  auth: ⚠ ELASTIK_APPROVE_TOKEN set but empty — treated as unset (T3 disabled)");
+    }
     let app = Router::new()
+        .route("/", get(root_hint))
         .route("/proc/version", any(proc_version))
         .route("/proc/worlds", any(proc_worlds))
         .route("/*world", any(world_handler))
         .with_state(Arc::new(state))
-        .layer(cors_layer);
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
 
     axum::serve(listener, app).await.unwrap();
 }
 
-fn build_cors(spec: &str) -> CorsLayer {
-    let trimmed = spec.trim();
-    if trimmed.is_empty() {
-        eprintln!("  cors: disabled (set ELASTIK_CORS_ORIGINS to enable)");
-        return CorsLayer::new(); // no headers, default-deny via browser
-    }
-    let methods = [
-        Method::GET,
-        Method::PUT,
-        Method::POST,
-        Method::DELETE,
-        Method::HEAD,
-        Method::OPTIONS,
-    ];
-    // Headers we actually care about for clients to send. Wildcard
-    // can't be combined with credentials, but we don't require credentials.
-    let allow_headers = [
-        header::AUTHORIZATION,
-        header::CONTENT_TYPE,
-        header::ACCEPT,
-        HeaderName::from_static("x-semantic-intent"),
-        // x-meta-* — there's no wildcard support in tower-http for
-        // header-name prefixes, so we add a few common ones explicitly.
-        // Clients that send unusual x-meta-* names without listing them
-        // here will still write — only the *response* header exposure
-        // is restricted, not request acceptance.
-    ];
-    let expose_headers = [
-        HeaderName::from_static("x-elastik-version"),
-        HeaderName::from_static("x-elastik-ext"),
-    ];
-
-    if trimmed == "*" {
-        eprintln!("  cors: ⚠ ALLOW-ALL ORIGINS — any website the user visits");
-        eprintln!("        can read this elastik. Use only for public APIs.");
-        return CorsLayer::new()
-            .allow_origin(AllowOrigin::any())
-            .allow_methods(methods)
-            .allow_headers(allow_headers)
-            .expose_headers(expose_headers);
-    }
-
-    let origins: Vec<HeaderValue> = trimmed
-        .split(',')
-        .filter_map(|o| {
-            let o = o.trim();
-            if o.is_empty() {
-                None
-            } else {
-                HeaderValue::from_str(o).ok()
-            }
-        })
-        .collect();
-    eprintln!("  cors: enabled for {} origin(s):", origins.len());
-    for o in &origins {
-        eprintln!("    {}", o.to_str().unwrap_or("?"));
-    }
-    CorsLayer::new()
-        .allow_origin(AllowOrigin::list(origins))
-        .allow_methods(methods)
-        .allow_headers(allow_headers)
-        .expose_headers(expose_headers)
+/// Bare `GET /` — not protocol, not UI. Just a courtesy text/plain
+/// signpost so a curious human doesn't white-screen. The protocol
+/// surface starts under `/home`, `/tmp`, `/dev`, `/sys`, `/proc`,
+/// `/etc`, `/lib`, `/var`. Browser shells are SDK-app territory; core
+/// never serves HTML, never sets CSP, never thinks about iframes.
+async fn root_hint() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("elastik-core {VERSION}\ntry: curl /proc/worlds\n"),
+    )
 }
 
 // ─── /proc/version ──────────────────────────────────────────────────
@@ -196,139 +170,97 @@ async fn proc_version() -> impl IntoResponse {
 
 // ─── /proc/worlds ───────────────────────────────────────────────────
 async fn proc_worlds(State(core): State<Arc<Core>>) -> impl IntoResponse {
-    let names = world::list(&core.data);
-    let json = serde_json::to_vec(
-        &names
-            .iter()
-            .map(|n| serde_json::json!({ "name": n }))
-            .collect::<Vec<_>>(),
-    )
-    .unwrap();
+    let names = store::list_all(&core.data, &core.mem);
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-        json,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        world_list_body(&names),
     )
 }
 
-// ─── /<world> with all four methods ─────────────────────────────────
+// ─── /<world> all five methods ──────────────────────────────────────
 async fn world_handler(
     State(core): State<Arc<Core>>,
     method: Method,
     AxPath(path): AxPath<String>,
-    Query(qs): Query<HashMap<String, String>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let world_name = canonicalize_path(&path);
-    // The original URL path (e.g. "/home/inbox/test") is what listener
-    // patterns key off — they're addressed at the URL surface, not the
-    // canonical storage key.
-    let url_path = format!("/{}", path.trim_start_matches('/'));
-    let raw = qs.contains_key("raw");
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
     let tier = core.tokens.check(auth_header);
 
     match method {
-        Method::GET => handle_get(&core, &world_name, raw),
+        Method::GET => handle_get(&core, &world_name),
         Method::HEAD => handle_head(&core, &world_name),
-        Method::PUT => handle_put(&core, &world_name, &url_path, &headers, body, tier),
-        Method::DELETE => handle_delete(&core, &world_name, tier),
+        Method::PUT => handle_put(&core, &world_name, &headers, body, tier),
+        Method::POST => handle_post(&core, &world_name, &headers, body, tier),
+        Method::DELETE => handle_delete(&core, &world_name, &headers, tier),
         _ => (StatusCode::METHOD_NOT_ALLOWED, "method not allowed").into_response(),
     }
 }
 
-/// elastik convention: `/home/foo` and `/foo` address the same world key
-/// when the world was written under either. We canonicalize by stripping
-/// a leading `home/` so writes via `/home/x` and reads via `/x` line up
-/// — matches the Python reference's URL routing behaviour.
+/// Path prefix is policy: `/home/tmp/foo` must stay a durable home
+/// world, not silently become transient `/tmp/foo`. Bare `/foo` is the
+/// convenience spelling for `/home/foo`; explicit namespaces are kept.
 fn canonicalize_path(p: &str) -> String {
     let stripped = p.trim_start_matches('/');
-    stripped
-        .strip_prefix("home/")
-        .map(str::to_owned)
-        .unwrap_or_else(|| stripped.to_owned())
+    let first = stripped.split('/').next().unwrap_or("");
+    match first {
+        "home" | "tmp" | "dev" | "sys" | "proc" | "etc" | "lib" | "boot" | "usr" | "var" => {
+            stripped.to_owned()
+        }
+        _ => format!("home/{stripped}"),
+    }
 }
 
 // ─── handlers ───────────────────────────────────────────────────────
-fn handle_get(core: &Core, world_name: &str, raw: bool) -> Response {
-    let Some(stage) = world::read(&core.data, world_name) else {
+
+/// GET: body bytes with stored Content-Type. No JSON envelope.
+fn handle_get(core: &Core, world_name: &str) -> Response {
+    let Some(stage) = core.read_world(world_name) else {
         return not_found();
     };
+    let etag = current_etag(core, world_name, &stage);
     let mut resp_headers = vec![
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
-        (
-            HeaderName::from_static("x-elastik-version"),
-            HeaderValue::from_str(&stage.version.to_string())
-                .unwrap_or_else(|_| HeaderValue::from_static("0")),
-        ),
-        (
-            HeaderName::from_static("x-elastik-ext"),
-            HeaderValue::from_str(&stage.ext).unwrap_or_else(|_| HeaderValue::from_static("plain")),
-        ),
-    ];
-    apply_meta_headers(&stage.headers_json, &mut resp_headers);
-
-    if raw {
-        let ct = ext_to_ct(&stage.ext);
-        resp_headers.insert(
-            0,
-            (header::CONTENT_TYPE, HeaderValue::from_str(&ct).unwrap()),
-        );
-        return (StatusCode::OK, to_header_map(resp_headers), stage.body).into_response();
-    }
-    // Default JSON envelope
-    let envelope = serde_json::json!({
-        "stage_html": String::from_utf8_lossy(&stage.body),
-        "version": stage.version,
-        "ext": stage.ext,
-        "updated_at": stage.updated_at,
-        "headers": serde_json::from_str::<serde_json::Value>(&stage.headers_json)
-            .unwrap_or(serde_json::Value::Array(vec![])),
-    });
-    let body = serde_json::to_vec(&envelope).unwrap();
-    resp_headers.insert(
-        0,
         (
             header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json; charset=utf-8"),
+            HeaderValue::from_str(&stage.content_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
         ),
-    );
-    (StatusCode::OK, to_header_map(resp_headers), body).into_response()
+        (header::ETAG, etag_header(&etag)),
+    ];
+    apply_meta_headers(&stage.headers, &mut resp_headers);
+    (StatusCode::OK, to_header_map(resp_headers), stage.body).into_response()
 }
 
+/// HEAD — same headers as GET, no body.
 fn handle_head(core: &Core, world_name: &str) -> Response {
-    let Some(stage) = world::read(&core.data, world_name) else {
+    let Some(stage) = core.read_world(world_name) else {
         return not_found();
     };
+    let etag = current_etag(core, world_name, &stage);
     let mut resp_headers = vec![
         (
             header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json; charset=utf-8"),
-        ),
-        (
-            HeaderName::from_static("x-elastik-version"),
-            HeaderValue::from_str(&stage.version.to_string()).unwrap(),
-        ),
-        (
-            HeaderName::from_static("x-elastik-ext"),
-            HeaderValue::from_str(&stage.ext).unwrap(),
+            HeaderValue::from_str(&stage.content_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
         ),
         (
             header::CONTENT_LENGTH,
             HeaderValue::from_str(&stage.body.len().to_string()).unwrap(),
         ),
+        (header::ETAG, etag_header(&etag)),
     ];
-    apply_meta_headers(&stage.headers_json, &mut resp_headers);
+    apply_meta_headers(&stage.headers, &mut resp_headers);
     (StatusCode::OK, to_header_map(resp_headers), "").into_response()
 }
 
 fn handle_put(
     core: &Core,
     world_name: &str,
-    url_path: &str,
     req_headers: &HeaderMap,
     body: Bytes,
     tier: auth::Tier,
@@ -336,106 +268,129 @@ fn handle_put(
     if !can_write(world_name, tier) {
         return unauthorized("write requires token; system worlds need approve token");
     }
-    let ext = req_headers
-        .get(HeaderName::from_static("x-elastik-ext"))
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            req_headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(ct_to_ext)
-        })
-        .unwrap_or("plain")
-        .to_owned();
+    if let Err(resp) = check_write_preconditions(core, world_name, req_headers) {
+        return resp;
+    }
+    let existed = core.read_world(world_name).is_some();
+    let content_type = request_content_type(req_headers);
 
-    // Collect X-Meta-* headers as a JSON array of [key, value] pairs,
-    // matching server.py's headers column shape.
-    let meta: Vec<[String; 2]> = req_headers
-        .iter()
-        .filter_map(|(k, v)| {
-            let name = k.as_str();
-            if name.to_ascii_lowercase().starts_with("x-meta-") {
-                v.to_str()
-                    .ok()
-                    .map(|val| [name.to_string(), val.to_string()])
-            } else {
-                None
-            }
-        })
-        .collect();
-    let headers_json = serde_json::to_string(&meta).unwrap_or_else(|_| "[]".into());
+    let meta = request_meta_headers(req_headers);
 
-    let version = match world::write(&core.data, world_name, &body, &ext, &headers_json) {
-        Ok(v) => v,
-        Err(e) => return server_error(format!("storage: {e}")),
-    };
-    let payload = serde_json::json!({
-        "op": "put",
-        "world": world_name,
-        "version_after": version,
-        "size": body.len(),
-        "tier": format!("{:?}", tier).to_lowercase(),
-    })
-    .to_string();
-    let _ = audit::append(&core.data, world_name, "put", &payload, &core.hmac_key);
-
-    // Fanout to registered listeners. Same tokio runtime, fire-and-forget;
-    // PUT response does not gate on listener completion. This is the
-    // "PUT 进来 → 顺手看看有没有人 @listen → 触发" pattern, in tokio.
-    // Match against the URL path (what clients see), not the canonical
-    // storage key (what SQLite sees).
-    fanout::fanout(
-        &core.listeners,
-        &core.http,
-        url_path,
-        version,
-        body.clone(),
-        req_headers,
-    );
-
-    let resp = serde_json::json!({
-        "ok": true,
-        "version": version,
-        "world": world_name,
-        "size": body.len(),
-    });
-    let headers = [
-        (
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json; charset=utf-8"),
-        ),
-        (
-            HeaderName::from_static("x-elastik-version"),
-            HeaderValue::from_str(&version.to_string()).unwrap(),
-        ),
-    ];
-    let status = if version == 1 {
-        StatusCode::CREATED
+    let new_etag = if store::is_persistent(world_name) {
+        match world::write_with_audit(
+            &core.data,
+            world_name,
+            &body,
+            &content_type,
+            &meta,
+            &core.hmac_key,
+        ) {
+            Ok(h) => hmac_etag(&h),
+            Err(e) => return server_error(format!("storage/audit: {e}")),
+        }
     } else {
-        StatusCode::OK
+        match core.write_world(world_name, &body, &content_type, &meta) {
+            Ok(()) => body_etag(&body),
+            Err(e) => return server_error(format!("storage: {e}")),
+        }
     };
-    (status, headers, serde_json::to_vec(&resp).unwrap()).into_response()
+
+    let resp_headers = [(header::ETAG, etag_header(&new_etag))];
+    let status = if existed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    (status, resp_headers, "").into_response()
 }
 
-fn handle_delete(core: &Core, world_name: &str, tier: auth::Tier) -> Response {
-    // Harvard gate is symmetric: if T2 can write /home/foo, T2 can
-    // delete /home/foo. /lib/, /etc/, /boot/, /usr/ still need T3.
+/// POST — append body bytes to existing world. 404 if world absent
+/// (PUT is the create/replace path). Never updates X-Meta-*.
+fn handle_post(
+    core: &Core,
+    world_name: &str,
+    req_headers: &HeaderMap,
+    body: Bytes,
+    tier: auth::Tier,
+) -> Response {
+    if !can_write(world_name, tier) {
+        return unauthorized("write requires token; system worlds need approve token");
+    }
+    if let Err(resp) = check_write_preconditions(core, world_name, req_headers) {
+        return resp;
+    }
+    let content_type = request_content_type(req_headers);
+    let meta = request_meta_headers(req_headers);
+    let new_etag = if store::is_persistent(world_name) {
+        match world::append_with_audit(
+            &core.data,
+            world_name,
+            &body,
+            &content_type,
+            &meta,
+            &core.hmac_key,
+        ) {
+            Ok(Some((_result, h))) => hmac_etag(&h),
+            Ok(None) => return not_found(),
+            Err(e) => return server_error(format!("storage/audit: {e}")),
+        }
+    } else {
+        let result = match core.append_world(world_name, &body) {
+            Ok(Some(r)) => r,
+            Ok(None) => return not_found(),
+            Err(e) => return server_error(format!("storage: {e}")),
+        };
+        format!("sha256-{}", result.body_sha256_after)
+    };
+
+    let resp_headers = [(header::ETAG, etag_header(&new_etag))];
+    (StatusCode::OK, resp_headers, "").into_response()
+}
+
+fn handle_delete(
+    core: &Core,
+    world_name: &str,
+    req_headers: &HeaderMap,
+    tier: auth::Tier,
+) -> Response {
     if !can_write(world_name, tier) {
         return unauthorized("delete requires token; system worlds need approve token");
     }
-    // Audit the delete BEFORE the disk goes away. We append to a
-    // global ledger world (`var/log/deletes`), not the world being
-    // removed — otherwise audit::append would reopen the world dir
-    // and recreate it. Until that ledger world exists, this is a
-    // best-effort breadcrumb; failures are silent.
-    let _ = audit::append(
+    if let Err(resp) = check_write_preconditions(core, world_name, req_headers) {
+        return resp;
+    }
+
+    // Capture body hash BEFORE the world disappears, for the
+    // var/log/deletes ledger. If the world doesn't exist we'll 404
+    // below, but reading first is harmless.
+    let body_sha256_before = core
+        .read_world(world_name)
+        .map(|s| world::sha256_hex(&s.body))
+        .unwrap_or_default();
+
+    // Audit BEFORE the disk op — write to a global ledger world, not
+    // the world being deleted (otherwise audit::append reopens its dir
+    // and recreates it). Memory deletes still audit here because the
+    // ledger itself is sqlite.
+    let delete_meta = request_meta_headers(req_headers);
+    if let Err(e) = audit::append(
         &core.data,
         "var/log/deletes",
         "delete",
-        &format!(r#"{{"op":"delete","world":"{world_name}"}}"#),
+        world_name,
+        &body_sha256_before,
+        0,
+        req_headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        &delete_meta,
         &core.hmac_key,
-    );
-    let ok = world::delete(&core.data, world_name);
+    ) {
+        return server_error(format!("audit: {e}"));
+    }
+
+    let ok = core.delete_world(world_name);
     if !ok {
         return not_found();
     }
@@ -443,13 +398,16 @@ fn handle_delete(core: &Core, world_name: &str, tier: auth::Tier) -> Response {
 }
 
 // ─── helpers ────────────────────────────────────────────────────────
+
 fn can_write(world_name: &str, tier: auth::Tier) -> bool {
-    // Harvard gate: /lib/, /etc/, /boot/ require approve. /home/ and
-    // peers accept auth or approve. Unauthenticated writes are refused.
+    // Harvard gate: /lib/, /etc/, /boot/, /usr/, and audit logs
+    // require approve. /home/, /tmp/, /dev/, /sys/, and non-log
+    // /var/ worlds accept the normal token. Anon refused.
     let needs_approve = world_name.starts_with("lib/")
         || world_name.starts_with("etc/")
         || world_name.starts_with("boot/")
-        || world_name.starts_with("usr/");
+        || world_name.starts_with("usr/")
+        || world_name.starts_with("var/log/");
     match tier {
         auth::Tier::Anon => false,
         auth::Tier::Auth => !needs_approve,
@@ -457,40 +415,113 @@ fn can_write(world_name: &str, tier: auth::Tier) -> bool {
     }
 }
 
-fn ext_to_ct(ext: &str) -> String {
-    match ext {
-        "html" => "text/html; charset=utf-8",
-        "json" => "application/json; charset=utf-8",
-        "py" => "text/x-python; charset=utf-8",
-        "md" => "text/markdown; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" => "text/javascript; charset=utf-8",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "eml" => "message/rfc822",
-        "plain" | _ => "text/plain; charset=utf-8",
+fn current_etag(core: &Core, world_name: &str, stage: &Stage) -> String {
+    if store::is_persistent(world_name) {
+        if let Some(h) = audit::latest_hmac(&core.data, world_name) {
+            return hmac_etag(&h);
+        }
     }
-    .to_owned()
+    body_etag(&stage.body)
 }
 
-fn ct_to_ext(ct: &str) -> Option<&'static str> {
-    let base = ct
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    match base.as_str() {
-        "text/html" => Some("html"),
-        "application/json" => Some("json"),
-        "text/x-python" => Some("py"),
-        "text/markdown" => Some("md"),
-        "text/css" => Some("css"),
-        "text/javascript" | "application/javascript" => Some("js"),
-        "image/png" => Some("png"),
-        "image/jpeg" => Some("jpg"),
-        "message/rfc822" => Some("eml"),
-        _ => None,
+fn hmac_etag(hmac: &str) -> String {
+    format!("hmac-{hmac}")
+}
+
+fn body_etag(body: &[u8]) -> String {
+    format!("sha256-{}", world::sha256_hex(body))
+}
+
+fn etag_header(etag: &str) -> HeaderValue {
+    HeaderValue::from_str(&format!("\"{etag}\""))
+        .unwrap_or_else(|_| HeaderValue::from_static("\"invalid\""))
+}
+
+fn check_write_preconditions(
+    core: &Core,
+    world_name: &str,
+    req_headers: &HeaderMap,
+) -> Result<(), Response> {
+    let current = core.read_world(world_name);
+    let current_tag = current
+        .as_ref()
+        .map(|stage| current_etag(core, world_name, stage));
+
+    if let Some(h) = req_headers
+        .get(header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+    {
+        let Some(tag) = &current_tag else {
+            return Err(precondition_failed("If-Match requires an existing world"));
+        };
+        if !etag_list_strong_matches(h, tag) {
+            return Err(precondition_failed("If-Match did not match current ETag"));
+        }
+    }
+
+    if let Some(h) = req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(tag) = &current_tag {
+            if etag_list_weak_matches(h, tag) {
+                return Err(precondition_failed("If-None-Match matched current ETag"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn etag_list_strong_matches(header_value: &str, current: &str) -> bool {
+    header_value
+        .split(',')
+        .map(str::trim)
+        .any(|candidate| candidate == "*" || candidate == format!("\"{current}\""))
+}
+
+fn etag_list_weak_matches(header_value: &str, current: &str) -> bool {
+    header_value.split(',').map(str::trim).any(|candidate| {
+        candidate == "*"
+            || candidate == format!("\"{current}\"")
+            || candidate
+                .strip_prefix("W/")
+                .map(|weak| weak == format!("\"{current}\""))
+                .unwrap_or(false)
+    })
+}
+
+fn request_content_type(headers: &HeaderMap) -> String {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("application/octet-stream")
+        .to_owned()
+}
+
+fn request_meta_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter_map(|(k, v)| {
+            let name = k.as_str();
+            if name.to_ascii_lowercase().starts_with("x-meta-") {
+                v.to_str()
+                    .ok()
+                    .map(|val| (name.to_string(), val.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn world_list_body(names: &[String]) -> String {
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", names.join("\n"))
     }
 }
 
@@ -502,57 +533,277 @@ fn to_header_map(pairs: Vec<(HeaderName, HeaderValue)>) -> HeaderMap {
     hm
 }
 
-fn apply_meta_headers(headers_json: &str, out: &mut Vec<(HeaderName, HeaderValue)>) {
-    if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(headers_json) {
-        for pair in arr {
-            let serde_json::Value::Array(kv) = pair else {
-                continue;
-            };
-            if kv.len() != 2 {
-                continue;
-            }
-            let (Some(k), Some(v)) = (kv[0].as_str(), kv[1].as_str()) else {
-                continue;
-            };
-            let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
-                continue;
-            };
-            let Ok(val) = HeaderValue::from_str(v) else {
-                continue;
-            };
-            out.push((name, val));
-        }
+fn apply_meta_headers(headers: &[(String, String)], out: &mut Vec<(HeaderName, HeaderValue)>) {
+    for (k, v) in headers {
+        let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
+            continue;
+        };
+        let Ok(val) = HeaderValue::from_str(v) else {
+            continue;
+        };
+        out.push((name, val));
     }
 }
 
 fn not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
-        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-        r#"{"error":"world not found"}"#,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "world not found\n",
     )
         .into_response()
 }
 
 fn unauthorized(msg: &str) -> Response {
-    let body = serde_json::json!({"error": "auth required", "hint": msg});
     (
         StatusCode::UNAUTHORIZED,
         [
-            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
             (header::WWW_AUTHENTICATE, "Bearer realm=\"elastik\""),
         ],
-        serde_json::to_vec(&body).unwrap(),
+        format!("auth required: {msg}\n"),
+    )
+        .into_response()
+}
+
+fn precondition_failed(msg: &str) -> Response {
+    (
+        StatusCode::PRECONDITION_FAILED,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("precondition failed: {msg}\n"),
     )
         .into_response()
 }
 
 fn server_error(msg: String) -> Response {
-    let body = serde_json::json!({"error": "internal", "detail": msg});
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-        serde_json::to_vec(&body).unwrap(),
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("internal error: {msg}\n"),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn var_log_requires_approve_token() {
+        assert!(!can_write("var/log/deletes", auth::Tier::Anon));
+        assert!(!can_write("var/log/deletes", auth::Tier::Auth));
+        assert!(can_write("var/log/deletes", auth::Tier::Approve));
+    }
+
+    #[test]
+    fn non_log_var_still_accepts_auth_token() {
+        assert!(!can_write("var/cache/rag", auth::Tier::Anon));
+        assert!(can_write("var/cache/rag", auth::Tier::Auth));
+        assert!(can_write("var/cache/rag", auth::Tier::Approve));
+    }
+
+    #[test]
+    fn canonicalize_preserves_explicit_namespaces() {
+        assert_eq!(canonicalize_path("/home/tmp/foo"), "home/tmp/foo");
+        assert_eq!(canonicalize_path("/home/etc/foo"), "home/etc/foo");
+        assert_eq!(canonicalize_path("/tmp/foo"), "tmp/foo");
+        assert_eq!(canonicalize_path("/etc/foo"), "etc/foo");
+        assert_eq!(canonicalize_path("/foo"), "home/foo");
+    }
+
+    #[test]
+    fn etag_lists_match_http_strong_and_weak_rules() {
+        assert!(etag_list_strong_matches("\"hmac-abc\"", "hmac-abc"));
+        assert!(etag_list_strong_matches(
+            "\"other\", \"hmac-abc\"",
+            "hmac-abc"
+        ));
+        assert!(etag_list_strong_matches("*", "hmac-abc"));
+        assert!(!etag_list_strong_matches("W/\"hmac-abc\"", "hmac-abc"));
+        assert!(!etag_list_strong_matches("\"other\"", "hmac-abc"));
+
+        assert!(etag_list_weak_matches("W/\"hmac-abc\"", "hmac-abc"));
+    }
+
+    #[test]
+    fn if_none_match_star_blocks_existing_world() {
+        let (core, dir) = test_core("if-none-match-star");
+        core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+
+        assert!(check_write_preconditions(&core, "home/cas", &headers).is_err());
+        assert!(check_write_preconditions(&core, "home/new", &headers).is_ok());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn if_match_accepts_current_hmac_etag_only() {
+        let (core, dir) = test_core("if-match-hmac");
+        core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
+            .unwrap();
+        let h = audit::append(
+            &core.data,
+            "home/cas",
+            "put",
+            "home/cas",
+            &world::sha256_hex(b"one"),
+            3,
+            "text/plain; charset=utf-8",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let etag = format!("\"{}\"", hmac_etag(&h));
+
+        let mut good = HeaderMap::new();
+        good.insert(header::IF_MATCH, HeaderValue::from_str(&etag).unwrap());
+        assert!(check_write_preconditions(&core, "home/cas", &good).is_ok());
+
+        let mut stale = HeaderMap::new();
+        stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
+        assert!(check_write_preconditions(&core, "home/cas", &stale).is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn request_content_type_preserves_http_content_type_verbatim() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/pdf"),
+        );
+        assert_eq!(request_content_type(&headers), "application/pdf");
+
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        assert_eq!(request_content_type(&headers), "text/html; charset=utf-8");
+
+        headers.clear();
+        assert_eq!(request_content_type(&headers), "application/octet-stream");
+    }
+
+    #[test]
+    fn worlds_store_content_type_not_private_extensions() {
+        let (core, dir) = test_core("content-type");
+        core.write_world("home/pdf", b"%PDF-1.7", "application/pdf", &[])
+            .unwrap();
+
+        let stage = core.read_world("home/pdf").unwrap();
+        assert_eq!(stage.content_type, "application/pdf");
+        assert_eq!(stage.body, b"%PDF-1.7");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn audit_keeps_historical_metadata_without_json_payload() {
+        let (core, dir) = test_core("audit-meta");
+        let headers = vec![("x-meta-author".to_string(), "ranger".to_string())];
+        let h = world::write_with_audit(
+            &core.data,
+            "home/audit-meta",
+            b"hello",
+            "text/plain; charset=utf-8",
+            &headers,
+            &core.hmac_key,
+        )
+        .unwrap();
+
+        let c = rusqlite::Connection::open(world::world_db(&core.data, "home/audit-meta")).unwrap();
+        let (content_type, meta_sha256): (String, String) = c
+            .query_row(
+                "SELECT content_type, meta_sha256 FROM events WHERE hmac=?",
+                [h],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content_type, "text/plain; charset=utf-8");
+        assert_eq!(
+            meta_sha256,
+            audit::meta_sha256("text/plain; charset=utf-8", &headers)
+        );
+
+        let author: String = c
+            .query_row(
+                "SELECT value FROM event_headers WHERE name='x-meta-author'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(author, "ranger");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn delete_honors_if_match_before_audit_or_remove() {
+        let (core, dir) = test_core("delete-if-match");
+        let h = world::write_with_audit(
+            &core.data,
+            "home/delete-cas",
+            b"alive",
+            "text/plain; charset=utf-8",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+
+        let mut stale = HeaderMap::new();
+        stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
+        let resp = handle_delete(&core, "home/delete-cas", &stale, auth::Tier::Approve);
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(core.read_world("home/delete-cas").is_some());
+
+        let mut good = HeaderMap::new();
+        good.insert(
+            header::IF_MATCH,
+            HeaderValue::from_str(&format!("\"{}\"", hmac_etag(&h))).unwrap(),
+        );
+        let resp = handle_delete(&core, "home/delete-cas", &good, auth::Tier::Approve);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(core.read_world("home/delete-cas").is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proc_worlds_body_is_plain_lines() {
+        assert_eq!(world_list_body(&[]), "");
+        assert_eq!(
+            world_list_body(&["home/a".to_owned(), "tmp/b".to_owned()]),
+            "home/a\ntmp/b\n"
+        );
+    }
+
+    fn test_core(label: &str) -> (Core, PathBuf) {
+        let mut dir = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        dir.push(format!(
+            "elastik-core-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        (
+            Core {
+                data: dir.clone(),
+                tokens: auth::Tokens {
+                    auth: None,
+                    approve: None,
+                },
+                hmac_key: b"test-key".to_vec(),
+                mem: Arc::new(store::MemoryStore::new()),
+            },
+            dir,
+        )
+    }
 }
