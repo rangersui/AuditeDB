@@ -100,6 +100,12 @@ jobs:
               raise SystemExit(f"PyPI rejects raw linux platform tags: {wheel_name}")
           with zipfile.ZipFile(wheel) as z:
               names = z.namelist()
+              wheel_meta = next(name for name in names if name.endswith(".dist-info/WHEEL"))
+              wheel_text = z.read(wheel_meta).decode("utf-8")
+          if "Root-Is-Purelib: false" not in wheel_text:
+              raise SystemExit("wheel must be platlib, not purelib")
+          if any(".data/purelib/" in name for name in names):
+              raise SystemExit("native wheel must not install files into purelib")
           if not any(name.endswith("elastik/_bin/elastik-core") or name.endswith("elastik/_bin/elastik-core.exe") for name in names):
               raise SystemExit("wheel does not contain elastik-core binary")
           print(wheel)

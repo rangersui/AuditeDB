@@ -13,6 +13,15 @@ import os
 
 from setuptools import setup
 from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
+from setuptools.command.install import install as _install
+
+
+class install(_install):
+    def finalize_options(self) -> None:
+        super().finalize_options()
+        # auditwheel only repairs wheels whose native binaries live in platlib.
+        # root_is_pure=False fixes the tag; this fixes the install scheme.
+        self.install_lib = self.install_platlib
 
 
 class bdist_wheel(_bdist_wheel):
@@ -26,4 +35,4 @@ class bdist_wheel(_bdist_wheel):
         return "py3", "none", platform
 
 
-setup(cmdclass={"bdist_wheel": bdist_wheel})
+setup(cmdclass={"bdist_wheel": bdist_wheel, "install": install})
