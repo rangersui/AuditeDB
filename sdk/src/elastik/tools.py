@@ -320,8 +320,6 @@ def _shell_argv(shell: str | Iterable[str] | None) -> list[str]:
                 "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
-                "-NoExit",
-                "-Command",
                 "-",
             ]
         return ["bash", "--noprofile", "--norc"]
