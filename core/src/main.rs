@@ -215,7 +215,7 @@ async fn main() {
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
         .with_state(Arc::new(state))
-        .layer(DefaultBodyLimit::max(DEFAULT_MAX_WORLD_BYTES));
+        .layer(DefaultBodyLimit::max(max_world_bytes));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
