@@ -107,33 +107,18 @@ def _client_url(host: str, port: int) -> str:
 
 
 def _port_is_free(host: str, port: int) -> bool:
-    """Best-effort preflight so start() does not attach to a stranger server."""
+    """Best-effort preflight so start() does not attach to a stranger server.
+
+    Use a client-style connect probe instead of a bind probe. On POSIX, a
+    just-stopped local server can leave enough TCP state behind for a bind()
+    preflight to report "busy" even though no process is listening. What we
+    need to reject is simpler: an already-accepting server on the target URL.
+    """
     try:
-        infos = socket.getaddrinfo(
-            host,
-            port,
-            type=socket.SOCK_STREAM,
-            flags=socket.AI_PASSIVE,
-        )
-    except OSError:
-        return False
-    checked = False
-    # Be conservative: if any address family the host may bind is occupied,
-    # refuse to start. This avoids returning a client pointed at a stranger
-    # server when localhost resolves to multiple loopback families.
-    seen: set[tuple[int, tuple]] = set()
-    for family, socktype, proto, _canon, sockaddr in infos:
-        key = (family, sockaddr)
-        if key in seen:
-            continue
-        seen.add(key)
-        checked = True
-        try:
-            with socket.socket(family, socktype, proto) as s:
-                s.bind(sockaddr)
-        except OSError:
+        with socket.create_connection((_connect_host(host), port), timeout=0.2):
             return False
-    return checked
+    except OSError:
+        return True
 
 
 def _probe_core(host: str, port: int, token: str = "") -> bool:
