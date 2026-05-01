@@ -54,19 +54,19 @@ impl Tokens {
         };
         let credentials = credentials.trim();
         if scheme.eq_ignore_ascii_case("Bearer") {
-            return self.check_token(credentials.as_bytes());
+            return self.check_token_bytes(credentials.as_bytes());
         }
         if scheme.eq_ignore_ascii_case("Basic") {
             if let Ok(decoded) = B64.decode(credentials) {
                 if let Some(idx) = decoded.iter().position(|&b| b == b':') {
-                    return self.check_token(&decoded[idx + 1..]);
+                    return self.check_token_bytes(&decoded[idx + 1..]);
                 }
             }
         }
         Tier::Anon
     }
 
-    fn check_token(&self, candidate: &[u8]) -> Tier {
+    pub(crate) fn check_token_bytes(&self, candidate: &[u8]) -> Tier {
         // Defense in depth: even if a configured token is somehow
         // empty (config drift, test fixture, future cap-token bug),
         // never let a zero-length candidate match. The empty string
