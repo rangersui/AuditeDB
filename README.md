@@ -617,6 +617,10 @@ print(e.tree("home"))
 (e / "home" / "old").rmtree()
 ```
 
+Recursive deletion refuses namespace roots such as `home` and the empty prefix
+unless `force=True` is explicit. `mv()` is copy+delete and refuses overwrite by
+default; it is not an atomic filesystem rename.
+
 The on-disk `data/` directory is percent-encoded for filesystem safety:
 `home/note.txt` becomes `home%2Fnote%2Etxt/`. For ops/debugging:
 

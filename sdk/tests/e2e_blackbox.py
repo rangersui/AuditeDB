@@ -424,15 +424,45 @@ def main() -> int:
             tree_ref = reader / "home" / "sdk" / "tree"
             check(any(child.name == "sub" for child in tree_ref.iterdir()), "WorldRef.iterdir() returns child refs")
             check(any(ref.name == "b.txt" for ref in tree_ref.walk()), "WorldRef.walk() returns descendants")
-            check(any(ref.name == "a.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() filters by leaf name")
+            check(any(ref.name == "a.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() filters immediate leaf names")
+            check(not any(ref.name == "b.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() does not recurse")
+            check(any(ref.name == "b.txt" for ref in tree_ref.rglob("*.txt")), "WorldRef.rglob() recurses")
             file_ref = reader / "home" / "sdk" / "tree" / "a.txt"
             check(file_ref.name == "a.txt" and file_ref.stem == "a" and file_ref.suffix == ".txt", "WorldRef path properties match pathlib")
             check(file_ref.parent.name == "tree", "WorldRef.parent matches pathlib")
             check(reader.du("home/sdk/tree")["home/sdk/tree/sub/b.txt"] == 2, "du() reports Content-Length by path")
+            expect_error_type(
+                lambda: approver.rm("", recursive=True),
+                ValueError,
+                check,
+                "rm('', recursive=True) requires force",
+            )
+            expect_error_type(
+                lambda: approver.rm("home", recursive=True),
+                ValueError,
+                check,
+                "rm(namespace, recursive=True) requires force",
+            )
             approver.mv("home/sdk/tree/a.txt", "home/sdk/tree/a2.txt")
             check(reader.get("home/sdk/tree/a2.txt") == b"A", "mv() moves one path")
+            approver.put("home/sdk/tree/existing.txt", "old")
+            approver.put("home/sdk/tree/new.txt", "new")
+            expect_error_type(
+                lambda: approver.mv("home/sdk/tree/new.txt", "home/sdk/tree/existing.txt"),
+                FileExistsError,
+                check,
+                "mv() refuses overwrite by default",
+            )
+            approver.mv("home/sdk/tree/new.txt", "home/sdk/tree/existing.txt", overwrite=True)
+            check(reader.get("home/sdk/tree/existing.txt") == b"new", "mv(overwrite=True) replaces destination")
             renamed = (approver / "home" / "sdk" / "tree" / "a2.txt").rename("home/sdk/tree/a3.txt")
             check(renamed.name == "a3.txt" and reader.get("home/sdk/tree/a3.txt") == b"A", "WorldRef.rename() returns destination ref")
+            expect_error_type(
+                lambda: (approver / "home").rmtree(),
+                ValueError,
+                check,
+                "WorldRef.rmtree() guards namespace roots",
+            )
             removed = (approver / "home" / "sdk" / "tree").rmtree()
             check(removed >= 2 and not reader.exists("home/sdk/tree/sub/b.txt"), "WorldRef.rmtree() removes virtual subtree")
             ref = approver / "home" / "sdk" / "ref"

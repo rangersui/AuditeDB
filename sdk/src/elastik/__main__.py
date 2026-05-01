@@ -36,14 +36,17 @@ def main() -> int:
     p_rm = sub.add_parser("rm", help="delete a path from a running core")
     p_rm.add_argument("path")
     p_rm.add_argument("-r", "--recursive", action="store_true")
+    p_rm.add_argument("--force", action="store_true", help="confirm recursive deletion of namespace roots or all paths")
 
     p_mv = sub.add_parser("mv", help="move/rename paths from a running core")
     p_mv.add_argument("src")
     p_mv.add_argument("dst")
     p_mv.add_argument("-r", "--recursive", action="store_true")
+    p_mv.add_argument("--overwrite", action="store_true", help="allow replacing existing destination paths")
 
     p_du = sub.add_parser("du", help="show Content-Length usage from a running core")
     p_du.add_argument("prefix", nargs="?", default="")
+    p_du.add_argument("--max-workers", type=int, default=4)
 
     p_run = sub.add_parser(
         "run",
@@ -95,15 +98,15 @@ def main() -> int:
         return 0
 
     if args.cmd == "rm":
-        print(Elastik().rm(args.path, recursive=args.recursive))
+        print(Elastik().rm(args.path, recursive=args.recursive, force=args.force))
         return 0
 
     if args.cmd == "mv":
-        print(Elastik().mv(args.src, args.dst, recursive=args.recursive))
+        print(Elastik().mv(args.src, args.dst, recursive=args.recursive, overwrite=args.overwrite))
         return 0
 
     if args.cmd == "du":
-        for path, size in Elastik().du(args.prefix).items():
+        for path, size in Elastik().du(args.prefix, max_workers=args.max_workers).items():
             print(f"{size}\t{path}")
         return 0
 

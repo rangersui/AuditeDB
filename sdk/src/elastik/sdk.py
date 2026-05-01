@@ -618,10 +618,17 @@ class Elastik(MutableMapping[str, bytes]):
             walk(tree)
         return "\n".join(lines)
 
-    def rm(self, path: str, *, recursive: bool = False) -> int:
-        """Delete one path, or recursively delete all paths under a prefix."""
+    def rm(self, path: str, *, recursive: bool = False, force: bool = False) -> int:
+        """Delete one path, or recursively delete all paths under a prefix.
+
+        Recursive deletion refuses an empty prefix or namespace root such as
+        ``home`` unless ``force=True`` is explicit. Each delete is one HTTP
+        request; there is no transaction or rollback.
+        """
         if not recursive:
             return 1 if self.delete(path) else 0
+        root = _canonical_prefix(path)
+        _guard_destructive_prefix(root, "rm", force)
         targets = [p for p in self.ls(path, depth=-1) if not p.endswith("/")]
         count = 0
         for target in targets:
@@ -629,15 +636,35 @@ class Elastik(MutableMapping[str, bytes]):
                 count += 1
         return count
 
-    def mv(self, src: str, dst: str, *, recursive: bool = False) -> int:
-        """Move one path, or recursively move all paths under a prefix."""
+    def mv(
+        self,
+        src: str,
+        dst: str,
+        *,
+        recursive: bool = False,
+        overwrite: bool = False,
+    ) -> int:
+        """Move one path, or recursively move all paths under a prefix.
+
+        This is copy+delete, not an atomic filesystem rename. Partial failures
+        can leave source and destination paths side by side. Existing
+        destinations are rejected unless ``overwrite=True``.
+        """
         src_root = _canonical_prefix(src)
         dst_root = _canonical_prefix(dst)
         if not recursive:
+            if not overwrite and self.exists(dst_root):
+                raise FileExistsError(dst_root)
             self.copy(src_root, dst_root)
             self.delete(src_root)
             return 1
         targets = [p for p in self.ls(src_root, depth=-1) if not p.endswith("/")]
+        if not overwrite:
+            for target in targets:
+                suffix = target[len(src_root):]
+                candidate = dst_root + suffix
+                if self.exists(candidate):
+                    raise FileExistsError(candidate)
         count = 0
         for target in targets:
             suffix = target[len(src_root):]
@@ -646,13 +673,12 @@ class Elastik(MutableMapping[str, bytes]):
                 count += 1
         return count
 
-    def du(self, prefix: str = "") -> dict[str, int]:
+    def du(self, prefix: str = "", *, max_workers: int = 4) -> dict[str, int]:
         """Return Content-Length for each stored path under prefix."""
-        return {
-            path: self.sizeof(path)
-            for path in self.ls(prefix, depth=-1)
-            if not path.endswith("/")
-        }
+        paths = [path for path in self.ls(prefix, depth=-1) if not path.endswith("/")]
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {path: pool.submit(self.sizeof, path) for path in paths}
+            return {path: future.result() for path, future in futures.items()}
 
     def put_many(
         self,
@@ -876,18 +902,27 @@ class WorldRef:
         return self.iterdir(depth=-1)
 
     def glob(self, pattern: str) -> list["WorldRef"]:
+        """Return immediate children whose leaf name matches pattern."""
+        return [
+            ref
+            for ref in self.iterdir()
+            if not ref.path.endswith("/") and fnmatch.fnmatch(ref.name, pattern)
+        ]
+
+    def rglob(self, pattern: str) -> list["WorldRef"]:
+        """Return descendants whose leaf name matches pattern."""
         return [
             ref
             for ref in self.walk()
             if fnmatch.fnmatch(ref.name, pattern)
         ]
 
-    def rename(self, dst: str) -> "WorldRef":
-        self._e.mv(self._path, dst)
+    def rename(self, dst: str, *, overwrite: bool = False) -> "WorldRef":
+        self._e.mv(self._path, dst, overwrite=overwrite)
         return WorldRef(self._e, dst)
 
-    def rmtree(self) -> int:
-        return self._e.rm(self._path, recursive=True)
+    def rmtree(self, *, force: bool = False) -> int:
+        return self._e.rm(self._path, recursive=True, force=force)
 
     @property
     def parent(self) -> "WorldRef":
@@ -1034,6 +1069,18 @@ def _canonical_prefix(path: str) -> str:
     if root and root not in _RESERVED_WORLD_NAMES:
         _validate_world_name(root)
     return root
+
+
+def _guard_destructive_prefix(prefix: str, operation: str, force: bool) -> None:
+    if force:
+        return
+    if not prefix:
+        raise ValueError(f"{operation}(recursive=True) would delete every path; pass force=True to confirm")
+    if prefix in _NAMESPACES:
+        raise ValueError(
+            f"{operation}({prefix!r}, recursive=True) would delete the entire "
+            f"{prefix!r} namespace; pass force=True to confirm"
+        )
 
 
 def _cache_key(path: str) -> str:

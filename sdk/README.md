@@ -260,9 +260,14 @@ e.ls("home/sensor")              # immediate children; virtual dirs end in /
 e.ls("home/sensor", depth=-1)    # all descendants
 print(e.tree("home"))
 e.du("home/sensor")              # {path: content_length}
-e.mv("home/draft", "home/final") # GET + HEAD + PUT + DELETE
-e.rm("home/old", recursive=True) # delete all matching stored paths
+e.mv("home/draft", "home/final") # GET + HEAD + PUT + DELETE; refuses overwrite
+e.rm("home/old", recursive=True) # refuses "" or namespace roots without force=True
 ```
+
+`mv()` is copy+delete, not an atomic filesystem rename. Partial failures can
+leave source and destination paths side by side. `rm("home", recursive=True)`
+and `rm("", recursive=True)` are guarded footguns; pass `force=True` only when
+you really mean to delete a namespace or the whole store.
 
 `copy()` buffers the source body in Python memory. That is fine for ordinary
 objects; for huge blobs, use a streaming tool or curl pipeline.
@@ -305,7 +310,7 @@ print(report.stat()["etag"])
 for child in (e / "home" / "reports").iterdir():
     print(child.name, child.suffix)
 
-for pdf in (e / "home").glob("*.pdf"):
+for pdf in (e / "home").rglob("*.pdf"):
     print(pdf.path)
 ```
 
