@@ -1734,8 +1734,9 @@ mod tests {
     }
 
     #[test]
-    fn request_meta_headers_keep_standard_representation_headers() {
+    fn request_meta_headers_persist_safe_response_headers() {
         let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
         headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
         headers.insert(header::CONTENT_LANGUAGE, HeaderValue::from_static("zh-CN"));
         headers.insert(
@@ -1746,11 +1747,106 @@ mod tests {
             header::CACHE_CONTROL,
             HeaderValue::from_static("max-age=60"),
         );
+        headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+        headers.insert(
+            "access-control-allow-methods",
+            HeaderValue::from_static("GET, HEAD"),
+        );
+        headers.insert(
+            "access-control-expose-headers",
+            HeaderValue::from_static("ETag"),
+        );
+        headers.insert(
+            "content-security-policy",
+            HeaderValue::from_static("default-src 'self'"),
+        );
+        headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+        headers.insert("permissions-policy", HeaderValue::from_static("camera=()"));
+        headers.insert(
+            "cross-origin-resource-policy",
+            HeaderValue::from_static("same-origin"),
+        );
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
+        headers.insert("x-future-http-thing", HeaderValue::from_static("ok"));
         headers.insert("x-meta-author", HeaderValue::from_static("ranger"));
+
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        headers.insert(
+            "proxy-authorization",
+            HeaderValue::from_static("Bearer secret"),
+        );
+        headers.insert(header::COOKIE, HeaderValue::from_static("sid=secret"));
+        headers.insert(header::SET_COOKIE, HeaderValue::from_static("sid=secret"));
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:3105"));
+        headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
+        headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
+        headers.insert(
+            header::TRANSFER_ENCODING,
+            HeaderValue::from_static("chunked"),
+        );
+        headers.insert(header::TE, HeaderValue::from_static("trailers"));
+        headers.insert(header::TRAILER, HeaderValue::from_static("expires"));
+        headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert("http2-settings", HeaderValue::from_static("abc"));
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("999"));
+        headers.insert(header::ETAG, HeaderValue::from_static("\"fake\""));
+        headers.insert(header::ALLOW, HeaderValue::from_static("GET"));
+        headers.insert(header::LOCATION, HeaderValue::from_static("/elsewhere"));
+        headers.insert(header::LINK, HeaderValue::from_static("</x>; rel=\"next\""));
+        headers.insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer realm=\"x\""),
+        );
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
         headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN"));
+        headers.insert("accept-charset", HeaderValue::from_static("utf-8"));
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1"));
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("\"abc\""));
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"abc\""));
+        headers.insert(header::IF_RANGE, HeaderValue::from_static("\"abc\""));
+        headers.insert(
+            header::IF_MODIFIED_SINCE,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        headers.insert(
+            header::IF_UNMODIFIED_SINCE,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        headers.insert(header::EXPECT, HeaderValue::from_static("100-continue"));
+        headers.insert("sec-fetch-mode", HeaderValue::from_static("cors"));
+        headers.insert("sec-ch-ua", HeaderValue::from_static("\"Chromium\""));
+        headers.insert("dnt", HeaderValue::from_static("1"));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com"),
+        );
+        headers.insert(
+            header::REFERER,
+            HeaderValue::from_static("https://example.com/"),
+        );
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("curl"));
+        headers.insert(header::SERVER, HeaderValue::from_static("fake"));
+        headers.insert(
+            header::DATE,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        headers.insert(header::AGE, HeaderValue::from_static("10"));
+        headers.insert(header::VARY, HeaderValue::from_static("*"));
+        headers.insert("via", HeaderValue::from_static("1.1 proxy"));
+        headers.insert("forwarded", HeaderValue::from_static("for=127.0.0.1"));
+        headers.insert("x-forwarded-for", HeaderValue::from_static("127.0.0.1"));
+        headers.insert("x-forwarded-host", HeaderValue::from_static("example.com"));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
 
         let meta = hs::request_meta_headers(&headers);
+        let has = |name: &str| meta.iter().any(|(n, _)| n == name);
 
         assert!(meta.contains(&("content-encoding".to_string(), "gzip".to_string())));
         assert!(meta.contains(&("content-language".to_string(), "zh-CN".to_string())));
@@ -1760,8 +1856,64 @@ mod tests {
         )));
         assert!(meta.contains(&("cache-control".to_string(), "max-age=60".to_string())));
         assert!(meta.contains(&("x-meta-author".to_string(), "ranger".to_string())));
-        assert!(!meta.iter().any(|(name, _)| name == "accept-encoding"));
-        assert!(!meta.iter().any(|(name, _)| name == "range"));
+        assert!(meta.contains(&("access-control-allow-origin".to_string(), "*".to_string())));
+        assert!(meta.contains(&(
+            "content-security-policy".to_string(),
+            "default-src 'self'".to_string()
+        )));
+        assert!(meta.contains(&("x-frame-options".to_string(), "DENY".to_string())));
+        assert!(meta.contains(&("permissions-policy".to_string(), "camera=()".to_string())));
+        assert!(meta.contains(&("x-future-http-thing".to_string(), "ok".to_string())));
+
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+            "host",
+            "connection",
+            "keep-alive",
+            "transfer-encoding",
+            "te",
+            "trailer",
+            "upgrade",
+            "http2-settings",
+            "content-type",
+            "content-length",
+            "etag",
+            "allow",
+            "location",
+            "link",
+            "www-authenticate",
+            "accept",
+            "accept-encoding",
+            "accept-language",
+            "accept-charset",
+            "range",
+            "if-match",
+            "if-none-match",
+            "if-range",
+            "if-modified-since",
+            "if-unmodified-since",
+            "expect",
+            "sec-fetch-mode",
+            "sec-ch-ua",
+            "dnt",
+            "origin",
+            "referer",
+            "user-agent",
+            "server",
+            "date",
+            "age",
+            "vary",
+            "via",
+            "forwarded",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+        ] {
+            assert!(!has(name), "{name} should not be persisted");
+        }
     }
 
     #[test]
@@ -1784,6 +1936,12 @@ mod tests {
                 "content-disposition".to_string(),
                 "attachment; filename=\"report.pdf\"".to_string(),
             ),
+            ("access-control-allow-origin".to_string(), "*".to_string()),
+            (
+                "content-security-policy".to_string(),
+                "default-src 'self'".to_string(),
+            ),
+            ("x-frame-options".to_string(), "DENY".to_string()),
         ];
         core.write_world(
             "home/gzip",
@@ -1804,6 +1962,15 @@ mod tests {
             resp.headers().get(header::CONTENT_DISPOSITION).unwrap(),
             "attachment; filename=\"report.pdf\""
         );
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").unwrap(),
+            "*"
+        );
+        assert_eq!(
+            resp.headers().get("content-security-policy").unwrap(),
+            "default-src 'self'"
+        );
+        assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
 
         let _ = std::fs::remove_dir_all(dir);
     }

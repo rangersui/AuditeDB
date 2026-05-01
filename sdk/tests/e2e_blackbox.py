@@ -353,6 +353,31 @@ def main() -> int:
             check(head["cache-control"] == "max-age=60", "head cache-control")
             check(head["x-meta-author"] == "ranger", "head x-meta")
             check(head["accept-ranges"] == "bytes", "head accept-ranges")
+            writer.put(
+                "/home/sdk/logo.png",
+                b"\x89PNG\r\n",
+                content_type="image/png",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Content-Security-Policy": "default-src 'self'",
+                    "X-Frame-Options": "DENY",
+                    "X-Future-HTTP-Thing": "ok",
+                },
+            )
+            policy_head = reader.head("/home/sdk/logo.png")
+            check(
+                policy_head["access-control-allow-origin"] == "*",
+                "safe response policy header is stored",
+            )
+            check(
+                policy_head["content-security-policy"] == "default-src 'self'",
+                "content-security-policy is stored",
+            )
+            check(policy_head["x-frame-options"] == "DENY", "x-frame-options is stored")
+            check(
+                policy_head["x-future-http-thing"] == "ok",
+                "future safe response header is stored",
+            )
             check("home/sdk/text" in reader.list(), "sdk list sees world")
             check("home/sdk/text" in reader.list_paths(), "sdk list_paths aliases list")
             check("home/sdk/text" in reader.list_keys(), "sdk list_keys aliases list")
@@ -424,15 +449,76 @@ def main() -> int:
             tree_ref = reader / "home" / "sdk" / "tree"
             check(any(child.name == "sub" for child in tree_ref.iterdir()), "WorldRef.iterdir() returns child refs")
             check(any(ref.name == "b.txt" for ref in tree_ref.walk()), "WorldRef.walk() returns descendants")
-            check(any(ref.name == "a.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() filters by leaf name")
+            check(any(ref.name == "a.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() filters immediate leaf names")
+            check(not any(ref.name == "b.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() does not recurse")
+            check(any(ref.name == "sub" for ref in tree_ref.glob("sub*")), "WorldRef.glob() includes virtual directories")
+            check(any(ref.name == "b.txt" for ref in tree_ref.rglob("*.txt")), "WorldRef.rglob() recurses")
             file_ref = reader / "home" / "sdk" / "tree" / "a.txt"
             check(file_ref.name == "a.txt" and file_ref.stem == "a" and file_ref.suffix == ".txt", "WorldRef path properties match pathlib")
             check(file_ref.parent.name == "tree", "WorldRef.parent matches pathlib")
             check(reader.du("home/sdk/tree")["home/sdk/tree/sub/b.txt"] == 2, "du() reports Content-Length by path")
+            expect_error_type(
+                lambda: approver.rm("", recursive=True),
+                ValueError,
+                check,
+                "rm('', recursive=True) requires force",
+            )
+            expect_error_type(
+                lambda: approver.rm("home", recursive=True),
+                ValueError,
+                check,
+                "rm(namespace, recursive=True) requires force",
+            )
+            expect_error_type(
+                lambda: approver.mv("", "home/sdk/all", recursive=True),
+                ValueError,
+                check,
+                "mv('', recursive=True) requires non-empty source",
+            )
+            expect_error_type(
+                lambda: approver.mv("home/sdk/tree", "", recursive=True),
+                ValueError,
+                check,
+                "mv(recursive=True) requires non-empty destination",
+            )
+            expect_error_type(
+                lambda: approver.mv("home/sdk/tree", "home/sdk/tree", recursive=True),
+                ValueError,
+                check,
+                "mv(recursive=True) rejects identical source and destination",
+            )
+            expect_error_type(
+                lambda: reader.du("home/sdk/tree", max_workers=0),
+                ValueError,
+                check,
+                "du(max_workers=0) is rejected",
+            )
             approver.mv("home/sdk/tree/a.txt", "home/sdk/tree/a2.txt")
             check(reader.get("home/sdk/tree/a2.txt") == b"A", "mv() moves one path")
+            expect_error_type(
+                lambda: approver.mv("home/sdk/tree/a2.txt", "home/sdk/tree/a2.txt", overwrite=True),
+                ValueError,
+                check,
+                "mv() rejects identical source and destination",
+            )
+            approver.put("home/sdk/tree/existing.txt", "old")
+            approver.put("home/sdk/tree/new.txt", "new")
+            expect_error_type(
+                lambda: approver.mv("home/sdk/tree/new.txt", "home/sdk/tree/existing.txt"),
+                FileExistsError,
+                check,
+                "mv() refuses overwrite by default",
+            )
+            approver.mv("home/sdk/tree/new.txt", "home/sdk/tree/existing.txt", overwrite=True)
+            check(reader.get("home/sdk/tree/existing.txt") == b"new", "mv(overwrite=True) replaces destination")
             renamed = (approver / "home" / "sdk" / "tree" / "a2.txt").rename("home/sdk/tree/a3.txt")
             check(renamed.name == "a3.txt" and reader.get("home/sdk/tree/a3.txt") == b"A", "WorldRef.rename() returns destination ref")
+            expect_error_type(
+                lambda: (approver / "home").rmtree(),
+                ValueError,
+                check,
+                "WorldRef.rmtree() guards namespace roots",
+            )
             removed = (approver / "home" / "sdk" / "tree").rmtree()
             check(removed >= 2 and not reader.exists("home/sdk/tree/sub/b.txt"), "WorldRef.rmtree() removes virtual subtree")
             ref = approver / "home" / "sdk" / "ref"
@@ -461,10 +547,24 @@ def main() -> int:
                 "PUT",
                 "fake/raw",
                 b"raw",
-                headers={"Content-Type": "text/custom", "X-Meta-Test": "ok"},
+                headers={
+                    "Content-Type": "text/custom",
+                    "X-Meta-Test": "ok",
+                    "Access-Control-Allow-Origin": "*",
+                    "Content-Security-Policy": "default-src 'self'",
+                    "Authorization": "Bearer should-not-persist",
+                },
             )
             check(fake.head("fake/raw")["content-type"] == "text/custom", "FakeElastik request preserves Content-Type")
             check(fake.head("fake/raw")["x-meta-test"] == "ok", "FakeElastik request preserves X-Meta headers")
+            check(
+                fake.head("fake/raw")["access-control-allow-origin"] == "*",
+                "FakeElastik preserves safe response headers",
+            )
+            check(
+                "authorization" not in fake.head("fake/raw"),
+                "FakeElastik does not persist Authorization",
+            )
             config_buf = io.StringIO()
             with contextlib.redirect_stdout(config_buf):
                 elastik.show_config()
@@ -488,6 +588,27 @@ def main() -> int:
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")
             check(resp.etag == "", "Response.etag defaults empty when absent")
+            expect_error_type(
+                lambda: writer.put(
+                    "/home/sdk/bad-content-length",
+                    b"hi",
+                    headers={"Content-Length": "999"},
+                ),
+                ValueError,
+                check,
+                "SDK rejects user-supplied Content-Length",
+            )
+            expect_error_type(
+                lambda: writer.request(
+                    "PUT",
+                    "/home/sdk/bad-transfer-encoding",
+                    b"hi",
+                    headers={"Transfer-Encoding": "chunked"},
+                ),
+                ValueError,
+                check,
+                "SDK rejects user-supplied Transfer-Encoding",
+            )
 
             # Binary exactness: bytes in, bytes out, Content-Type preserved.
             binary = bytes(range(256))

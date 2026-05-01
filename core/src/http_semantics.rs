@@ -201,7 +201,7 @@ pub(crate) fn request_meta_headers(headers: &HeaderMap) -> Vec<(String, String)>
     let mut out = BTreeMap::new();
     for (k, v) in headers {
         let name = k.as_str().to_ascii_lowercase();
-        if is_persisted_representation_header(&name) {
+        if is_persisted_representation_header_lowercase(&name) {
             if let Ok(val) = v.to_str() {
                 out.insert(name, val.to_string());
             }
@@ -210,12 +210,73 @@ pub(crate) fn request_meta_headers(headers: &HeaderMap) -> Vec<(String, String)>
     out.into_iter().collect()
 }
 
-pub(crate) fn is_persisted_representation_header(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.starts_with("x-meta-")
+fn is_persisted_representation_header_lowercase(name: &str) -> bool {
+    !is_never_persisted_header(name)
+}
+
+fn is_never_persisted_header(name: &str) -> bool {
+    name.starts_with("sec-")
+        || name.starts_with("access-control-request-")
         || matches!(
-            n.as_str(),
-            "content-encoding" | "content-language" | "content-disposition" | "cache-control"
+            name,
+            // Credentials and ambient identity must never come back as stored data.
+            "authorization"
+                | "proxy-authorization"
+                | "cookie"
+                | "set-cookie"
+                // Hop-by-hop and transport headers are properties of this request,
+                // not the stored representation.
+                | "host"
+                | "connection"
+                | "keep-alive"
+                | "proxy-authenticate"
+                | "proxy-connection"
+                | "te"
+                | "trailer"
+                | "transfer-encoding"
+                | "upgrade"
+                | "http2-settings"
+                // Request controls are consumed at write/read time and then gone.
+                | "accept"
+                | "accept-charset"
+                | "accept-encoding"
+                | "accept-language"
+                | "expect"
+                | "from"
+                | "max-forwards"
+                | "origin"
+                | "prefer"
+                | "range"
+                | "referer"
+                | "referrer"
+                | "dnt"
+                | "user-agent"
+                | "if-match"
+                | "if-none-match"
+                | "if-range"
+                | "if-modified-since"
+                | "if-unmodified-since"
+                // Core-owned response headers are derived from stored bytes/audit.
+                // Content-Type is persisted separately as Stage.content_type.
+                | "content-type"
+                | "content-length"
+                | "etag"
+                | "accept-ranges"
+                | "content-range"
+                | "link"
+                | "location"
+                | "allow"
+                | "date"
+                | "server"
+                | "www-authenticate"
+                | "age"
+                | "vary"
+                // Proxy trail is about how the request arrived, not what was written.
+                | "forwarded"
+                | "via"
+                | "x-forwarded-for"
+                | "x-forwarded-host"
+                | "x-forwarded-proto"
         )
 }
 

@@ -480,19 +480,25 @@ def tree(prefix: str = "") -> str:
     return _client().tree(prefix)
 
 
-def rm(path: str, *, recursive: bool = False) -> int:
+def rm(path: str, *, recursive: bool = False, force: bool = False) -> int:
     """Delete one path, or all paths under a prefix when recursive=True."""
-    return _client().rm(path, recursive=recursive)
+    return _client().rm(path, recursive=recursive, force=force)
 
 
-def mv(src: str, dst: str, *, recursive: bool = False) -> int:
+def mv(
+    src: str,
+    dst: str,
+    *,
+    recursive: bool = False,
+    overwrite: bool = False,
+) -> int:
     """Move one path, or all paths under a prefix when recursive=True."""
-    return _client().mv(src, dst, recursive=recursive)
+    return _client().mv(src, dst, recursive=recursive, overwrite=overwrite)
 
 
-def du(prefix: str = "") -> dict[str, int]:
+def du(prefix: str = "", *, max_workers: int = 4) -> dict[str, int]:
     """Return Content-Length for each stored path under prefix."""
-    return _client().du(prefix)
+    return _client().du(prefix, max_workers=max_workers)
 
 
 def put_many(

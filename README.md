@@ -23,6 +23,55 @@ HTTP request in  ->  path policy  ->  storage backend  ->  HTTP response out
 If WebDAV, SMTP, MQTT, a browser, an AI agent, or a Python decorator can turn
 its work into HTTP, Elastik does not need to know where it came from.
 
+## The API Document Is The Path Convention
+
+Elastik integration is usually a naming agreement, not a generated API schema.
+
+```text
+/home/order/{id}    input written by UI
+/home/receipt/{id}  output written by worker
+```
+
+UI code and business logic do not need to call each other. They can meet at
+named paths.
+
+```js
+// Browser/UI: submit an order.
+await fetch("/home/order/123", {
+  method: "PUT",
+  body: JSON.stringify({ sku: "tea", qty: 2 }),
+  headers: { "Content-Type": "application/json" },
+});
+
+// Browser/UI: wait for the result.
+const receipts = new EventSource("/listen/home/receipt/*");
+receipts.onmessage = (event) => console.log(event.data);
+```
+
+```python
+# Business worker: process orders.
+import elastik
+
+@elastik.listen("/home/order/*")
+def on_order(body, path, e):
+    order_id = path.rsplit("/", 1)[-1]
+    e.put_json(f"/home/receipt/{order_id}", {"status": "accepted"})
+
+elastik.run()
+```
+
+Debugging is just HTTP:
+
+```powershell
+curl.exe http://127.0.0.1:3105/home/order/123
+curl.exe http://127.0.0.1:3105/home/receipt/123
+curl.exe -N http://127.0.0.1:3105/listen/*
+```
+
+There is no Swagger, GraphQL schema, protobuf file, controller method, or
+shared server object in the middle. If the UI can `PUT` bytes and the worker
+can `GET` or `@listen` the same path, they are integrated.
+
 ## Status
 
 This repository is the Phoenix core rewrite. It intentionally breaks from the
@@ -290,22 +339,40 @@ Accept-Ranges: bytes
 
 ## Representation Headers
 
-Elastik stores these request headers on `PUT` and replays them on read:
+Elastik stores safe representation/response headers from `PUT` and replays
+them on read. This is blacklist-based: core refuses credentials,
+hop-by-hop transport state, request controls, and headers it computes itself.
+Everything else travels with the bytes.
 
 - `Content-Type`
 - `Content-Encoding`
 - `Content-Language`
 - `Content-Disposition`
 - `Cache-Control`
+- `Access-Control-Allow-Origin`
+- `Content-Security-Policy`
+- `X-Frame-Options`
+- `Permissions-Policy`
+- future response headers the core does not understand
 - `X-Meta-*`
 
-Request-control headers are not stored:
+Headers that describe this request, this connection, or core-generated state
+are not stored:
 
 - `Authorization`
+- `Cookie`
+- `Connection`
+- `Transfer-Encoding`
+- `Host`
 - `Range`
 - `If-Match`
 - `If-None-Match`
 - `If-Range`
+- `ETag`
+- `Content-Length`
+- `Location`
+- `Link`
+- `Allow`
 - `Accept-*`
 
 That split is the core contract:
@@ -315,6 +382,21 @@ stored representation headers -> travel with the bytes
 request control headers       -> used once, then discarded
 core generated headers        -> ETag, Content-Length, Link, Location, Allow
 ```
+
+Static resources can carry their own browser policy as HTTP headers:
+
+```powershell
+curl.exe -X PUT http://127.0.0.1:3105/home/logo.png `
+  -H "Authorization: Bearer write-token" `
+  -H "Content-Type: image/png" `
+  -H "Access-Control-Allow-Origin: *" `
+  -H "X-Frame-Options: DENY" `
+  --data-binary "@logo.png"
+```
+
+`GET /home/logo.png` returns those policy headers with the image bytes. The
+core does not know what CORS or frame policy means; it just preserves safe
+response metadata for the client that does know.
 
 ## Trust Model
 
@@ -329,20 +411,28 @@ That is intentional. Curl, SDK workers, protocol bridges, and agents need exact
 bytes back. The browser is only one consumer, and it is the consumer with the
 most policy.
 
-Browser-facing surfaces should enforce browser policy outside the core:
+Browser-facing surfaces should enforce browser policy outside the core or make
+the resource carry its own policy:
 
 - Serve untrusted HTML through a sandboxed renderer or a separate origin.
 - Add `Content-Security-Policy` at the browser UI, reverse proxy, or
   static shell layer.
+- Or store response-policy headers such as `Content-Security-Policy`,
+  `Access-Control-Allow-Origin`, `X-Frame-Options`, and
+  `Permissions-Policy` with the resource on `PUT`.
+- Or make the HTML world carry its own browser policy with `<meta
+  http-equiv="Content-Security-Policy" ...>`. HTML is already a web app; the
+  policy can travel with the bytes that define the app.
 - Use escaping or text rendering when displaying untrusted worlds in
   `index.html`.
 - Use read-only tokens for public browsing surfaces.
 - Do not give untrusted writers access to representation headers such as
-  `Cache-Control`, `Content-Disposition`, or `Content-Encoding` unless you want
-  them to control those HTTP semantics.
+  `Cache-Control`, `Content-Disposition`, `Content-Encoding`, CORS, or CSP
+  unless you want them to control those HTTP semantics.
 
 Core rule: store what was written, return what was stored. Browser safety is a
-client or edge concern.
+content, client, or edge concern. Whoever writes the HTML should decide whether
+that HTML allows scripts, frames, network fetches, forms, or nothing at all.
 
 ## ETag and Conditional Requests
 
@@ -530,6 +620,38 @@ Every tag above is a `GET`. The core returns bytes plus `Content-Type`, and the
 browser does the rest: image decoding, CSS parsing, JavaScript execution, PDF
 rendering, or download handling.
 
+An HTML world can also carry its own browser policy:
+
+```html
+<!-- PUT /home/app.html with Content-Type: text/html -->
+<html>
+<head>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'none'; frame-ancestors 'none'">
+</head>
+<body>
+  I carry my own policy. The core stores bytes and returns bytes.
+</body>
+</html>
+```
+
+The browser reads the meta policy and enforces it. Elastik does not need to
+understand CSP to preserve it. For HTML, the document is already an app, and the
+app can ship its own rules with its own bytes.
+
+Non-HTML static resources can carry policy in their stored response headers:
+
+```powershell
+curl.exe -X PUT http://127.0.0.1:3105/home/logo.png `
+  -H "Authorization: Bearer write-token" `
+  -H "Content-Type: image/png" `
+  -H "Access-Control-Allow-Origin: *" `
+  --data-binary "@logo.png"
+```
+
+The later `GET /home/logo.png` returns `Access-Control-Allow-Origin: *`. The
+browser enforces it; Elastik only preserves it.
+
 The same applies to browser-native HTTP features:
 
 ```html
@@ -603,7 +725,13 @@ print(r.status, r.headers.get("allow"))
 ```
 
 `Elastik.request()` is the escape hatch. Any HTTP header the SDK has not sugared
-can still be sent directly.
+can still be sent directly, except wire-level headers managed by the HTTP
+client itself, such as `Content-Length`, `Transfer-Encoding`, `Host`, and
+`Connection`.
+
+If you pass `Authorization` explicitly in `headers=`, it takes precedence over
+the client's `bearer_token`. That is intentional: `headers=` is the escape
+hatch, so it wins.
 
 The core keyspace is flat. A path like `home/sensor/kitchen/temp` is one stored
 world, not three real directories. The Python SDK gives you a virtual hierarchy
@@ -616,6 +744,10 @@ print(e.tree("home"))
 (e / "home" / "sensor").iterdir()
 (e / "home" / "old").rmtree()
 ```
+
+Recursive deletion refuses namespace roots such as `home` and the empty prefix
+unless `force=True` is explicit. `mv()` is copy+delete and refuses overwrite by
+default; it is not an atomic filesystem rename.
 
 The on-disk `data/` directory is percent-encoded for filesystem safety:
 `home/note.txt` becomes `home%2Fnote%2Etxt/`. For ops/debugging:

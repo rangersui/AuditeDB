@@ -52,6 +52,70 @@ _REPRESENTATION_KWARGS = {
     "content_disposition",
     "cache_control",
 }
+_FORBIDDEN_USER_HEADERS = {
+    "content-length",
+    "transfer-encoding",
+    "host",
+    "connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "upgrade",
+    "http2-settings",
+}
+_NON_PERSISTED_RESPONSE_HEADERS = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "host",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "http2-settings",
+    "accept",
+    "accept-charset",
+    "accept-encoding",
+    "accept-language",
+    "expect",
+    "from",
+    "max-forwards",
+    "origin",
+    "prefer",
+    "range",
+    "referer",
+    "referrer",
+    "dnt",
+    "user-agent",
+    "if-match",
+    "if-none-match",
+    "if-range",
+    "if-modified-since",
+    "if-unmodified-since",
+    "content-type",
+    "content-length",
+    "etag",
+    "accept-ranges",
+    "content-range",
+    "link",
+    "location",
+    "allow",
+    "date",
+    "server",
+    "www-authenticate",
+    "age",
+    "vary",
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+}
 _log = logging.getLogger("elastik")
 
 
@@ -67,6 +131,19 @@ WorldMeta = TypedDict(
         "cache-control": str,
         "accept-ranges": str,
         "link": str,
+        "access-control-allow-origin": str,
+        "access-control-allow-methods": str,
+        "access-control-allow-headers": str,
+        "access-control-expose-headers": str,
+        "access-control-max-age": str,
+        "content-security-policy": str,
+        "x-frame-options": str,
+        "x-content-type-options": str,
+        "strict-transport-security": str,
+        "permissions-policy": str,
+        "cross-origin-opener-policy": str,
+        "cross-origin-embedder-policy": str,
+        "cross-origin-resource-policy": str,
     },
     total=False,
 )
@@ -618,10 +695,17 @@ class Elastik(MutableMapping[str, bytes]):
             walk(tree)
         return "\n".join(lines)
 
-    def rm(self, path: str, *, recursive: bool = False) -> int:
-        """Delete one path, or recursively delete all paths under a prefix."""
+    def rm(self, path: str, *, recursive: bool = False, force: bool = False) -> int:
+        """Delete one path, or recursively delete all paths under a prefix.
+
+        Recursive deletion refuses an empty prefix or namespace root such as
+        ``home`` unless ``force=True`` is explicit. Each delete is one HTTP
+        request; there is no transaction or rollback.
+        """
         if not recursive:
             return 1 if self.delete(path) else 0
+        root = _canonical_prefix(path)
+        _guard_destructive_prefix(root, "rm", force)
         targets = [p for p in self.ls(path, depth=-1) if not p.endswith("/")]
         count = 0
         for target in targets:
@@ -629,15 +713,41 @@ class Elastik(MutableMapping[str, bytes]):
                 count += 1
         return count
 
-    def mv(self, src: str, dst: str, *, recursive: bool = False) -> int:
-        """Move one path, or recursively move all paths under a prefix."""
+    def mv(
+        self,
+        src: str,
+        dst: str,
+        *,
+        recursive: bool = False,
+        overwrite: bool = False,
+    ) -> int:
+        """Move one path, or recursively move all paths under a prefix.
+
+        This is copy+delete, not an atomic filesystem rename. Partial failures
+        can leave source and destination paths side by side. Existing
+        destinations are rejected unless ``overwrite=True``.
+        """
         src_root = _canonical_prefix(src)
         dst_root = _canonical_prefix(dst)
+        if src_root == dst_root:
+            raise ValueError("mv() source and destination must be different")
         if not recursive:
+            if not overwrite and self.exists(dst_root):
+                raise FileExistsError(dst_root)
             self.copy(src_root, dst_root)
             self.delete(src_root)
             return 1
+        if not src_root:
+            raise ValueError("mv(recursive=True) requires a non-empty source prefix")
+        if not dst_root:
+            raise ValueError("mv(recursive=True) requires a non-empty destination prefix")
         targets = [p for p in self.ls(src_root, depth=-1) if not p.endswith("/")]
+        if not overwrite:
+            for target in targets:
+                suffix = target[len(src_root):]
+                candidate = dst_root + suffix
+                if self.exists(candidate):
+                    raise FileExistsError(candidate)
         count = 0
         for target in targets:
             suffix = target[len(src_root):]
@@ -646,13 +756,14 @@ class Elastik(MutableMapping[str, bytes]):
                 count += 1
         return count
 
-    def du(self, prefix: str = "") -> dict[str, int]:
+    def du(self, prefix: str = "", *, max_workers: int = 4) -> dict[str, int]:
         """Return Content-Length for each stored path under prefix."""
-        return {
-            path: self.sizeof(path)
-            for path in self.ls(prefix, depth=-1)
-            if not path.endswith("/")
-        }
+        if max_workers < 1:
+            raise ValueError("max_workers must be greater than 0")
+        paths = [path for path in self.ls(prefix, depth=-1) if not path.endswith("/")]
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {path: pool.submit(self.sizeof, path) for path in paths}
+            return {path: future.result() for path, future in futures.items()}
 
     def put_many(
         self,
@@ -780,9 +891,10 @@ class Elastik(MutableMapping[str, bytes]):
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> Response:
-        """Raw HTTP escape hatch for any header/method the SDK hasn't sugared."""
+        """Raw HTTP escape hatch for methods plus headers that pass wire checks."""
         url = self.url + _quote_path(path)
         h = dict(headers or {})
+        _reject_wire_headers(h)
         if self.bearer_token:
             h.setdefault("Authorization", f"Bearer {self.bearer_token}")
         req = urllib.request.Request(url, data=body, method=method, headers=h)
@@ -876,18 +988,27 @@ class WorldRef:
         return self.iterdir(depth=-1)
 
     def glob(self, pattern: str) -> list["WorldRef"]:
+        """Return immediate children whose leaf name matches pattern."""
+        return [
+            ref
+            for ref in self.iterdir()
+            if fnmatch.fnmatch(ref.name, pattern)
+        ]
+
+    def rglob(self, pattern: str) -> list["WorldRef"]:
+        """Return descendants whose leaf name matches pattern."""
         return [
             ref
             for ref in self.walk()
             if fnmatch.fnmatch(ref.name, pattern)
         ]
 
-    def rename(self, dst: str) -> "WorldRef":
-        self._e.mv(self._path, dst)
+    def rename(self, dst: str, *, overwrite: bool = False) -> "WorldRef":
+        self._e.mv(self._path, dst, overwrite=overwrite)
         return WorldRef(self._e, dst)
 
-    def rmtree(self) -> int:
-        return self._e.rm(self._path, recursive=True)
+    def rmtree(self, *, force: bool = False) -> int:
+        return self._e.rm(self._path, recursive=True, force=force)
 
     @property
     def parent(self) -> "WorldRef":
@@ -1036,6 +1157,18 @@ def _canonical_prefix(path: str) -> str:
     return root
 
 
+def _guard_destructive_prefix(prefix: str, operation: str, force: bool) -> None:
+    if force:
+        return
+    if not prefix:
+        raise ValueError(f"{operation}(recursive=True) would delete every path; pass force=True to confirm")
+    if prefix in _NAMESPACES:
+        raise ValueError(
+            f"{operation}({prefix!r}, recursive=True) would delete the entire "
+            f"{prefix!r} namespace; pass force=True to confirm"
+        )
+
+
 def _cache_key(path: str) -> str:
     return _canonical_world_name(path)
 
@@ -1057,6 +1190,30 @@ def _validate_world_name(world: str) -> None:
 def _set_if(headers: dict[str, str], name: str, value: str | None) -> None:
     if value is not None:
         headers[name] = str(value)
+
+
+def _reject_wire_headers(headers: dict[str, str]) -> None:
+    bad = [
+        name
+        for name in headers
+        if name.strip().lower() in _FORBIDDEN_USER_HEADERS
+    ]
+    if bad:
+        names = ", ".join(sorted(bad, key=str.lower))
+        raise ValueError(
+            "these headers are managed by the HTTP client and cannot be set "
+            f"via headers=: {names}"
+        )
+
+
+def _should_persist_response_header(name: str) -> bool:
+    n = name.strip().lower()
+    return (
+        bool(n)
+        and not n.startswith("sec-")
+        and not n.startswith("access-control-request-")
+        and n not in _NON_PERSISTED_RESPONSE_HEADERS
+    )
 
 
 def _body_bytes(data: bytes | str, method: str) -> bytes:
