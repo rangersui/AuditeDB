@@ -43,7 +43,7 @@ const MAX_IN_FLIGHT: usize = 1024;
 ///
 /// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
 /// of "Authorization: Bearer ..." for the playground adapter: absent means Anon,
-/// matching a configured token yields Read/Auth/Approve. Use CoAPS/DTLS-PSK at
+/// matching a configured token yields Read/Write/Approve. Use CoAPS/DTLS-PSK at
 /// the edge if the token should not be visible on the wire.
 const ELASTIK_AUTH_OPTION: u16 = 65001;
 
@@ -508,7 +508,7 @@ mod tests {
                 data: dir.clone(),
                 tokens: auth::Tokens {
                     read: Some(b"reader".to_vec()),
-                    auth: Some(b"writer".to_vec()),
+                    write: Some(b"writer".to_vec()),
                     approve: Some(b"approve".to_vec()),
                 },
                 hmac_key: b"test-key".to_vec(),
