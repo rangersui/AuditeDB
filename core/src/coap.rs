@@ -32,12 +32,13 @@
 
 use axum::http::StatusCode;
 use tokio::net::UdpSocket;
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 
 use crate::{auth, can_read, canonicalize_path, valid_world_name, Core};
 
 const MAX_DATAGRAM: usize = 1152;
 const RECV_BUF: usize = MAX_DATAGRAM + 1;
+const MAX_IN_FLIGHT: usize = 1024;
 /// Experimental critical CoAP option carrying the raw elastik token bytes.
 ///
 /// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
@@ -103,6 +104,7 @@ pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receive
         }
     };
     let socket = std::sync::Arc::new(socket);
+    let permits = std::sync::Arc::new(Semaphore::new(MAX_IN_FLIGHT));
     eprintln!("scoap: listening on coap://{bind}/");
     eprintln!("scoap: UDP curl surface; auth option {ELASTIK_AUTH_OPTION} maps to token tier");
     let mut buf = [0_u8; RECV_BUF];
@@ -129,9 +131,17 @@ pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receive
                     continue;
                 }
                 let data = Vec::from(&buf[..n]);
+                let permit = match permits.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        eprintln!("scoap: dropping datagram from {peer}: in-flight limit reached");
+                        continue;
+                    }
+                };
                 let socket = socket.clone();
                 let core = core.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let request = match parse_packet(&data) {
                         Ok(p) => p,
                         Err(e) => {
@@ -151,12 +161,12 @@ pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receive
 
 async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
     let Some(method) = request.method() else {
-        return encode_response(request, 133, None, b"method not allowed\n");
+        return encode_response(request, 133, Some(0), b"method not allowed\n");
     };
     let path = request_path(request);
     let world_name = canonicalize_path(&path);
     if !valid_world_name(&world_name) {
-        return encode_response(request, 128, None, b"bad world name\n");
+        return encode_response(request, 128, Some(0), b"bad world name\n");
     }
     let tier = request
         .auth_token
@@ -276,7 +286,11 @@ fn parse_packet(data: &[u8]) -> Result<Packet<'_>, String> {
         let value = &data[i..i + len];
         i += len;
         match option_number {
-            11 => path.push(String::from_utf8_lossy(value).to_string()),
+            11 => {
+                let segment = std::str::from_utf8(value)
+                    .map_err(|_| "invalid utf-8 in Uri-Path option".to_owned())?;
+                path.push(segment.to_owned());
+            }
             12 => content_format = Some(parse_uint(value)?),
             ELASTIK_AUTH_OPTION => auth_token = Some(value),
             _ => {}
@@ -492,6 +506,19 @@ mod tests {
         assert_eq!(&out[7..], b"ok");
     }
 
+    #[tokio::test]
+    async fn textual_errors_carry_text_plain_content_format() {
+        let (core, dir) = test_core("error-format");
+        let p = packet(&[0x41, 0x63, 0x12, 0x34, 0xaa]); // unknown method code
+        let out = handle(&core, &p).await;
+        assert_eq!(out[1], 133);
+        assert_eq!(out[5], 0xc0); // Content-Format: text/plain
+        assert_eq!(out[6], 0xff);
+        assert_eq!(&out[7..], b"method not allowed\n");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn receive_buffer_can_detect_one_byte_oversize_datagrams() {
         assert_eq!(RECV_BUF, MAX_DATAGRAM + 1);
@@ -501,6 +528,12 @@ mod tests {
     fn extended_option_overflow_is_rejected() {
         let err = read_ext(14, &[0xff, 0xff]).unwrap_err();
         assert_eq!(err, "extended option overflow");
+    }
+
+    #[test]
+    fn invalid_utf8_uri_path_is_rejected() {
+        let err = parse_packet(&[0x40, 0x01, 0x12, 0x34, 0xb1, 0xff]).unwrap_err();
+        assert_eq!(err, "invalid utf-8 in Uri-Path option");
     }
 
     fn coap_put_packet(path: &[&[u8]], payload: &[u8], token: Option<&[u8]>) -> Vec<u8> {

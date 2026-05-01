@@ -1,9 +1,9 @@
 //! elastik-core — bedrock HTTP+SQLite+HMAC.
 //!
-//! The core has exactly one interface: HTTP requests in, HTTP responses
-//! out. It does not know or care whether a request came from curl, a
-//! browser, WebDAV, SMTP, an AI agent, or an SDK bridge. Translation is
-//! external; the core only sees HTTP.
+//! The core has one semantic interface: method + path + representation bytes.
+//! HTTP is the first-class surface. SCoAP is a small UDP-curl surface because
+//! CoAP has semantic zero distance from HTTP. Everything else must arrive
+//! through SDK/client adapters that collapse it into the same tuple.
 //!
 //! v5.0 grammar:
 //!
@@ -29,6 +29,8 @@
 //! Env:
 //!   ELASTIK_HOST           default 127.0.0.1
 //!   ELASTIK_PORT           default 3105
+//!   ELASTIK_COAP_HOST      default 127.0.0.1
+//!   ELASTIK_COAP_PORT      default 5683
 //!   ELASTIK_DATA           default ./data
 //!   ELASTIK_READ_TOKEN     T1 token  (optional read gate)
 //!   ELASTIK_TOKEN          T2 token  (writes to /home/*, includes read)
