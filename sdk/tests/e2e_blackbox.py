@@ -556,6 +556,27 @@ def main() -> int:
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")
             check(resp.etag == "", "Response.etag defaults empty when absent")
+            expect_error_type(
+                lambda: writer.put(
+                    "/home/sdk/bad-content-length",
+                    b"hi",
+                    headers={"Content-Length": "999"},
+                ),
+                ValueError,
+                check,
+                "SDK rejects user-supplied Content-Length",
+            )
+            expect_error_type(
+                lambda: writer.request(
+                    "PUT",
+                    "/home/sdk/bad-transfer-encoding",
+                    b"hi",
+                    headers={"Transfer-Encoding": "chunked"},
+                ),
+                ValueError,
+                check,
+                "SDK rejects user-supplied Transfer-Encoding",
+            )
 
             # Binary exactness: bytes in, bytes out, Content-Type preserved.
             binary = bytes(range(256))

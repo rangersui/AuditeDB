@@ -193,6 +193,14 @@ The core blacklists credentials, hop-by-hop transport state, request controls,
 and core-generated headers such as `ETag` and `Content-Length`. Everything else
 is stored and replayed without the SDK needing to understand it.
 
+The SDK also refuses wire-level headers that `urllib` must compute itself:
+`Content-Length`, `Transfer-Encoding`, `Host`, `Connection`, `Keep-Alive`,
+`TE`, `Trailer`, `Upgrade`, and `HTTP2-Settings`. Passing those through
+`headers=` raises `ValueError` instead of letting a bad length hang the request.
+
+`Authorization` is allowed as an explicit escape hatch. If you pass it in
+`headers=`, it takes precedence over the client's `bearer_token`.
+
 ## Bytes, Text, JSON
 
 `get()` is byte-exact:

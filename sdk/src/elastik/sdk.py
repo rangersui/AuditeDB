@@ -52,6 +52,17 @@ _REPRESENTATION_KWARGS = {
     "content_disposition",
     "cache_control",
 }
+_FORBIDDEN_USER_HEADERS = {
+    "content-length",
+    "transfer-encoding",
+    "host",
+    "connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "upgrade",
+    "http2-settings",
+}
 _log = logging.getLogger("elastik")
 
 
@@ -823,9 +834,10 @@ class Elastik(MutableMapping[str, bytes]):
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> Response:
-        """Raw HTTP escape hatch for any header/method the SDK hasn't sugared."""
+        """Raw HTTP escape hatch for any safe header/method the SDK hasn't sugared."""
         url = self.url + _quote_path(path)
         h = dict(headers or {})
+        _reject_wire_headers(h)
         if self.bearer_token:
             h.setdefault("Authorization", f"Bearer {self.bearer_token}")
         req = urllib.request.Request(url, data=body, method=method, headers=h)
@@ -1121,6 +1133,20 @@ def _validate_world_name(world: str) -> None:
 def _set_if(headers: dict[str, str], name: str, value: str | None) -> None:
     if value is not None:
         headers[name] = str(value)
+
+
+def _reject_wire_headers(headers: dict[str, str]) -> None:
+    bad = [
+        name
+        for name in headers
+        if name.strip().lower() in _FORBIDDEN_USER_HEADERS
+    ]
+    if bad:
+        names = ", ".join(sorted(bad, key=str.lower))
+        raise ValueError(
+            "these headers are managed by the HTTP client and cannot be set "
+            f"via headers=: {names}"
+        )
 
 
 def _body_bytes(data: bytes | str, method: str) -> bytes:

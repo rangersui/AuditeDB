@@ -676,7 +676,13 @@ print(r.status, r.headers.get("allow"))
 ```
 
 `Elastik.request()` is the escape hatch. Any HTTP header the SDK has not sugared
-can still be sent directly.
+can still be sent directly, except wire-level headers managed by the HTTP
+client itself, such as `Content-Length`, `Transfer-Encoding`, `Host`, and
+`Connection`.
+
+If you pass `Authorization` explicitly in `headers=`, it takes precedence over
+the client's `bearer_token`. That is intentional: `headers=` is the escape
+hatch, so it wins.
 
 The core keyspace is flat. A path like `home/sensor/kitchen/temp` is one stored
 world, not three real directories. The Python SDK gives you a virtual hierarchy

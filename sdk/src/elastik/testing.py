@@ -16,6 +16,7 @@ from elastik.sdk import (
     WorldMeta,
     _body_bytes,
     _canonical_world_name,
+    _reject_wire_headers,
     _validate_world_name,
 )
 
@@ -50,6 +51,7 @@ class FakeElastik(Elastik):
     ) -> dict:
         body = _body_bytes(data, "put")
         world = self._world(path)
+        _reject_wire_headers(headers or {})
         wire_headers = {k.lower(): v for k, v in (headers or {}).items()}
         if content_type is None:
             content_type = wire_headers.get(
@@ -128,6 +130,7 @@ class FakeElastik(Elastik):
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> Response:
+        _reject_wire_headers(headers or {})
         method = method.upper()
         if method == "GET":
             try:
