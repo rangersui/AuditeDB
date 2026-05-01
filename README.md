@@ -605,6 +605,26 @@ print(r.status, r.headers.get("allow"))
 `Elastik.request()` is the escape hatch. Any HTTP header the SDK has not sugared
 can still be sent directly.
 
+The core keyspace is flat. A path like `home/sensor/kitchen/temp` is one stored
+world, not three real directories. The Python SDK gives you a virtual hierarchy
+when that is the human-shaped view you want:
+
+```python
+e.ls("home/sensor")              # immediate children; virtual dirs end in /
+e.ls("home/sensor", depth=-1)    # all descendants
+print(e.tree("home"))
+(e / "home" / "sensor").iterdir()
+(e / "home" / "old").rmtree()
+```
+
+The on-disk `data/` directory is percent-encoded for filesystem safety:
+`home/note.txt` becomes `home%2Fnote%2Etxt/`. For ops/debugging:
+
+```powershell
+python -m elastik decode-path "home%2Fnote%2Etxt"
+python -m elastik ls-data .\data
+```
+
 ## Performance: Stateless First
 
 The Python SDK intentionally uses one-shot stdlib HTTP requests by default.

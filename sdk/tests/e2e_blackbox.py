@@ -403,6 +403,38 @@ def main() -> int:
             check(many["/home/sdk/many/a"] == b"A" and many["/home/sdk/many/b"] == b"B", "get_many/put_many use concurrent HTTP requests")
             writer.copy("/home/sdk/mapping", "/home/sdk/mapping-copy")
             check(reader.get("/home/sdk/mapping-copy") == b"remapped", "copy() uses GET HEAD PUT")
+            check(elastik.decode_disk_name("home%2Fnote%2Etxt") == "home/note.txt", "decode_disk_name explains data dirs")
+            check(elastik.encode_disk_name("home/note.txt") == "home%2Fnote%2Etxt", "encode_disk_name mirrors core disk naming")
+            cli_env = os.environ.copy()
+            cli_env["PYTHONPATH"] = str(SDK_SRC)
+            decoded = subprocess.check_output(
+                [sys.executable, "-m", "elastik", "decode-path", "home%2Fnote%2Etxt"],
+                text=True,
+                env=cli_env,
+            ).strip()
+            check(decoded == "home/note.txt", "CLI decode-path decodes disk names")
+            approver.put("/home/sdk/tree/a.txt", "A")
+            approver.put("/home/sdk/tree/sub/b.txt", "BB")
+            shallow = reader.ls("home/sdk/tree")
+            check("home/sdk/tree/a.txt" in shallow and "home/sdk/tree/sub/" in shallow, "ls() shows immediate virtual children")
+            deep = reader.ls("home/sdk/tree", depth=-1)
+            check("home/sdk/tree/sub/b.txt" in deep, "ls(depth=-1) shows descendants")
+            tree_text = reader.tree("home/sdk/tree")
+            check("a.txt" in tree_text and "sub" in tree_text, "tree() renders virtual hierarchy")
+            tree_ref = reader / "home" / "sdk" / "tree"
+            check(any(child.name == "sub" for child in tree_ref.iterdir()), "WorldRef.iterdir() returns child refs")
+            check(any(ref.name == "b.txt" for ref in tree_ref.walk()), "WorldRef.walk() returns descendants")
+            check(any(ref.name == "a.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() filters by leaf name")
+            file_ref = reader / "home" / "sdk" / "tree" / "a.txt"
+            check(file_ref.name == "a.txt" and file_ref.stem == "a" and file_ref.suffix == ".txt", "WorldRef path properties match pathlib")
+            check(file_ref.parent.name == "tree", "WorldRef.parent matches pathlib")
+            check(reader.du("home/sdk/tree")["home/sdk/tree/sub/b.txt"] == 2, "du() reports Content-Length by path")
+            approver.mv("home/sdk/tree/a.txt", "home/sdk/tree/a2.txt")
+            check(reader.get("home/sdk/tree/a2.txt") == b"A", "mv() moves one path")
+            renamed = (approver / "home" / "sdk" / "tree" / "a2.txt").rename("home/sdk/tree/a3.txt")
+            check(renamed.name == "a3.txt" and reader.get("home/sdk/tree/a3.txt") == b"A", "WorldRef.rename() returns destination ref")
+            removed = (approver / "home" / "sdk" / "tree").rmtree()
+            check(removed >= 2 and not reader.exists("home/sdk/tree/sub/b.txt"), "WorldRef.rmtree() removes virtual subtree")
             ref = approver / "home" / "sdk" / "ref"
             ref.write("ref-body")
             check(ref.read_text() == "ref-body", "WorldRef write/read_text round-trips")

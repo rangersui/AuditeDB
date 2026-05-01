@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from elastik._spawn import binary_info, start, stop
+from elastik.sdk import Elastik
+from elastik.tools import decode_disk_name
 
 
 def main() -> int:
@@ -17,6 +20,30 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("info", help="show bundled-binary info")
+    p_decode = sub.add_parser("decode-path", help="decode a data/ disk directory name")
+    p_decode.add_argument("disk_name", help="for example: home%2Fnote%2Etxt")
+
+    p_ls_data = sub.add_parser("ls-data", help="list decoded durable worlds in a data directory")
+    p_ls_data.add_argument("data_dir", nargs="?", default="./data", help="storage root (default: ./data)")
+
+    p_ls = sub.add_parser("ls", help="list virtual children from a running core")
+    p_ls.add_argument("prefix", nargs="?", default="")
+    p_ls.add_argument("--all", action="store_true", help="show all descendants")
+
+    p_tree = sub.add_parser("tree", help="show a virtual tree from a running core")
+    p_tree.add_argument("prefix", nargs="?", default="")
+
+    p_rm = sub.add_parser("rm", help="delete a path from a running core")
+    p_rm.add_argument("path")
+    p_rm.add_argument("-r", "--recursive", action="store_true")
+
+    p_mv = sub.add_parser("mv", help="move/rename paths from a running core")
+    p_mv.add_argument("src")
+    p_mv.add_argument("dst")
+    p_mv.add_argument("-r", "--recursive", action="store_true")
+
+    p_du = sub.add_parser("du", help="show Content-Length usage from a running core")
+    p_du.add_argument("prefix", nargs="?", default="")
 
     p_run = sub.add_parser(
         "run",
@@ -42,6 +69,42 @@ def main() -> int:
         info = binary_info()
         for k, v in info.items():
             print(f"  {k}: {v}")
+        return 0
+
+    if args.cmd == "decode-path":
+        print(decode_disk_name(args.disk_name))
+        return 0
+
+    if args.cmd == "ls-data":
+        data_root = Path(args.data_dir)
+        if not data_root.exists():
+            return 0
+        for child in sorted(data_root.iterdir()):
+            if child.is_dir() and child.joinpath("universe.db").exists():
+                print(f"{decode_disk_name(child.name)}\t(disk: {child.name}/)")
+        return 0
+
+    if args.cmd == "ls":
+        e = Elastik()
+        for path in e.ls(args.prefix, depth=-1 if args.all else 1):
+            print(path)
+        return 0
+
+    if args.cmd == "tree":
+        print(Elastik().tree(args.prefix))
+        return 0
+
+    if args.cmd == "rm":
+        print(Elastik().rm(args.path, recursive=args.recursive))
+        return 0
+
+    if args.cmd == "mv":
+        print(Elastik().mv(args.src, args.dst, recursive=args.recursive))
+        return 0
+
+    if args.cmd == "du":
+        for path, size in Elastik().du(args.prefix).items():
+            print(f"{size}\t{path}")
         return 0
 
     if args.cmd == "run":

@@ -29,6 +29,8 @@ No hidden object model: `put()` replaces bytes, `post()` appends bytes,
 | Use dict style | `e["note"] = b"hello"`, `del e["note"]`, `"note" in e` |
 | Stream a big read | `e.open(path)` (read-only file-like, Range-backed) |
 | Use pathlib style | `e / "home" / "note"` (`WorldRef`) |
+| Browse virtual directories | `e.ls("home")`, `e.tree("home")`, `ref.iterdir()` |
+| Move/delete prefixes | `e.mv(src, dst)`, `e.rm(prefix, recursive=True)` |
 | Read several paths | `e.get_many([...])` (concurrent HTTP requests) |
 | Watch changes | `@elastik.listen(pattern)` + `elastik.run(e)` |
 | Inspect metadata | `e.head`, `e.checksum`, `e.preview`, `e.diff` |
@@ -249,6 +251,19 @@ Stored paths are canonicalized to `<namespace>/<rest>` with no leading slash:
 Iteration returns that canonical core form from `/proc/worlds`, such as
 `home/src` or `tmp/scratch`.
 
+The core store is flat: `home/sensor/kitchen/temp` is one key, not three real
+directories. The SDK gives Python users a virtual hierarchy by splitting paths
+on `/`, like `pathlib`, `os`, and `shutil`:
+
+```python
+e.ls("home/sensor")              # immediate children; virtual dirs end in /
+e.ls("home/sensor", depth=-1)    # all descendants
+print(e.tree("home"))
+e.du("home/sensor")              # {path: content_length}
+e.mv("home/draft", "home/final") # GET + HEAD + PUT + DELETE
+e.rm("home/old", recursive=True) # delete all matching stored paths
+```
+
 `copy()` buffers the source body in Python memory. That is fine for ordinary
 objects; for huge blobs, use a streaming tool or curl pipeline.
 
@@ -286,6 +301,12 @@ report = e / "home" / "reports" / "q1"
 report.write("revenue up")
 print(report.read_text())
 print(report.stat()["etag"])
+
+for child in (e / "home" / "reports").iterdir():
+    print(child.name, child.suffix)
+
+for pdf in (e / "home").glob("*.pdf"):
+    print(pdf.path)
 ```
 
 Temporary paths are just `/tmp/*` paths with best-effort cleanup:
@@ -312,6 +333,20 @@ For bug reports and shell sanity checks:
 import elastik
 print(elastik.__version__)
 elastik.show_config()
+```
+
+If you look directly inside the durable `data/` directory, names are percent
+encoded because the core stores a flat keyspace safely on Windows and POSIX:
+
+```text
+home/note.txt  -> data/home%2Fnote%2Etxt/universe.db
+```
+
+Use the ops helpers when you need to translate that layout:
+
+```powershell
+python -m elastik decode-path "home%2Fnote%2Etxt"
+python -m elastik ls-data .\data
 ```
 
 ## Listening For Changes

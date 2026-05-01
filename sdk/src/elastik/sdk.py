@@ -14,6 +14,7 @@ import secrets
 import time
 import csv
 import difflib
+import fnmatch
 import gzip as gzip_mod
 import io
 import struct
@@ -551,6 +552,108 @@ class Elastik(MutableMapping[str, bytes]):
             **meta,
         )
 
+    def ls(self, prefix: str = "", *, depth: int = 1) -> list[str]:
+        """List paths under prefix, pretending flat world keys are a tree.
+
+        ``depth=1`` behaves like ``os.listdir``: immediate children only,
+        with virtual directories ending in ``/``. ``depth=-1`` returns all
+        descendants, like ``find``.
+        """
+        root = _canonical_prefix(prefix)
+        paths = self.list_paths()
+        children = [
+            path
+            for path in paths
+            if not root or path == root or path.startswith(root + "/")
+        ]
+        if depth == -1:
+            return children
+        if depth < 1:
+            raise ValueError("depth must be >= 1, or -1 for all descendants")
+        out: list[str] = []
+        seen: set[str] = set()
+        for path in children:
+            if root and path == root:
+                out.append(path)
+                continue
+            rest = path[len(root):].lstrip("/") if root else path
+            parts = rest.split("/")
+            if len(parts) <= depth:
+                out.append(path)
+                continue
+            name = "/".join(parts[:depth]) + "/"
+            virtual = f"{root}/{name}" if root else name
+            if virtual not in seen:
+                seen.add(virtual)
+                out.append(virtual)
+        return out
+
+    def tree(self, prefix: str = "") -> str:
+        """Return a text tree view of stored paths under prefix."""
+        root = _canonical_prefix(prefix)
+        paths = self.ls(root, depth=-1) if root else self.ls(depth=-1)
+        if not paths:
+            return "(empty)"
+        base_len = len(root.split("/")) if root else 0
+        tree: dict[str, Any] = {}
+        for path in paths:
+            parts = path.split("/")[base_len:] if root else path.split("/")
+            node = tree
+            for part in parts:
+                if part:
+                    node = node.setdefault(part, {})
+        lines: list[str] = []
+
+        def walk(node: dict[str, Any], indent: str = "") -> None:
+            items = sorted(node.items())
+            for index, (name, children) in enumerate(items):
+                last = index == len(items) - 1
+                lines.append(f"{indent}{'└── ' if last else '├── '}{name}")
+                walk(children, indent + ("    " if last else "│   "))
+
+        if root:
+            lines.append(root)
+            walk(tree)
+        else:
+            walk(tree)
+        return "\n".join(lines)
+
+    def rm(self, path: str, *, recursive: bool = False) -> int:
+        """Delete one path, or recursively delete all paths under a prefix."""
+        if not recursive:
+            return 1 if self.delete(path) else 0
+        targets = [p for p in self.ls(path, depth=-1) if not p.endswith("/")]
+        count = 0
+        for target in targets:
+            if self.delete(target):
+                count += 1
+        return count
+
+    def mv(self, src: str, dst: str, *, recursive: bool = False) -> int:
+        """Move one path, or recursively move all paths under a prefix."""
+        src_root = _canonical_prefix(src)
+        dst_root = _canonical_prefix(dst)
+        if not recursive:
+            self.copy(src_root, dst_root)
+            self.delete(src_root)
+            return 1
+        targets = [p for p in self.ls(src_root, depth=-1) if not p.endswith("/")]
+        count = 0
+        for target in targets:
+            suffix = target[len(src_root):]
+            self.copy(target, dst_root + suffix)
+            if self.delete(target):
+                count += 1
+        return count
+
+    def du(self, prefix: str = "") -> dict[str, int]:
+        """Return Content-Length for each stored path under prefix."""
+        return {
+            path: self.sizeof(path)
+            for path in self.ls(prefix, depth=-1)
+            if not path.endswith("/")
+        }
+
     def put_many(
         self,
         items: dict[str, bytes | str],
@@ -766,6 +869,48 @@ class WorldRef:
     def open(self, mode: str = "rb") -> "WorldReader":
         return self._e.open(self._path, mode)
 
+    def iterdir(self, depth: int = 1) -> list["WorldRef"]:
+        return [WorldRef(self._e, path) for path in self._e.ls(self._path, depth=depth)]
+
+    def walk(self) -> list["WorldRef"]:
+        return self.iterdir(depth=-1)
+
+    def glob(self, pattern: str) -> list["WorldRef"]:
+        return [
+            ref
+            for ref in self.walk()
+            if fnmatch.fnmatch(ref.name, pattern)
+        ]
+
+    def rename(self, dst: str) -> "WorldRef":
+        self._e.mv(self._path, dst)
+        return WorldRef(self._e, dst)
+
+    def rmtree(self) -> int:
+        return self._e.rm(self._path, recursive=True)
+
+    @property
+    def parent(self) -> "WorldRef":
+        if "/" not in self._path:
+            return WorldRef(self._e, "")
+        return WorldRef(self._e, self._path.rsplit("/", 1)[0])
+
+    @property
+    def name(self) -> str:
+        return self._path.rstrip("/").rsplit("/", 1)[-1]
+
+    @property
+    def suffix(self) -> str:
+        name = self.name
+        dot = name.rfind(".")
+        return name[dot:] if dot > 0 else ""
+
+    @property
+    def stem(self) -> str:
+        name = self.name
+        dot = name.rfind(".")
+        return name[:dot] if dot > 0 else name
+
     def __fspath__(self) -> str:
         return self._path
 
@@ -880,6 +1025,15 @@ def _canonical_world_name(path: str) -> str:
     if first in _NAMESPACES:
         return stripped
     return "home/" + stripped
+
+
+def _canonical_prefix(path: str) -> str:
+    if not path:
+        return ""
+    root = _canonical_world_name(path).rstrip("/")
+    if root and root not in _RESERVED_WORLD_NAMES:
+        _validate_world_name(root)
+    return root
 
 
 def _cache_key(path: str) -> str:

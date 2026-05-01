@@ -104,6 +104,8 @@ from elastik.tools import (
     ShellPool,
     ShellResult,
     ShellPoolError,
+    decode_disk_name,
+    encode_disk_name,
 )
 
 # Pull values from .env in CWD into os.environ once, on import unless
@@ -130,11 +132,13 @@ __all__ = [
     "load_dotenv", "show_config",
     # Trusted local execution helpers for @listen handlers
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
+    "decode_disk_name", "encode_disk_name",
     # Module-level convenience (NumPy-shaped)
     "put", "put_text", "put_json", "put_gzip", "put_csv", "put_struct",
     "post", "get", "get_cached", "get_gzip", "get_text", "get_json",
     "get_csv", "get_struct", "head", "delete", "exists", "sizeof",
     "checksum", "is_audited", "verify", "diff", "preview", "copy",
+    "ls", "tree", "rm", "mv", "du",
     "put_many", "get_many", "open", "tmp",
     "list_worlds", "list_paths", "list_keys", "request",
 ]
@@ -464,6 +468,31 @@ def preview(path: str, **kwargs: Any) -> str:
 def copy(src: str, dst: str, **meta: Any) -> dict:
     """elastik.copy('/home/a', '/home/b') -> {'status': 201, ...}"""
     return _client().copy(src, dst, **meta)
+
+
+def ls(prefix: str = "", *, depth: int = 1) -> list[str]:
+    """List paths under prefix, with virtual directory entries ending in /."""
+    return _client().ls(prefix, depth=depth)
+
+
+def tree(prefix: str = "") -> str:
+    """Return a text tree view of stored paths under prefix."""
+    return _client().tree(prefix)
+
+
+def rm(path: str, *, recursive: bool = False) -> int:
+    """Delete one path, or all paths under a prefix when recursive=True."""
+    return _client().rm(path, recursive=recursive)
+
+
+def mv(src: str, dst: str, *, recursive: bool = False) -> int:
+    """Move one path, or all paths under a prefix when recursive=True."""
+    return _client().mv(src, dst, recursive=recursive)
+
+
+def du(prefix: str = "") -> dict[str, int]:
+    """Return Content-Length for each stored path under prefix."""
+    return _client().du(prefix)
 
 
 def put_many(

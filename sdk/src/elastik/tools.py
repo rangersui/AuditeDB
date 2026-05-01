@@ -15,6 +15,7 @@ and dangerous for public queues.
 """
 from __future__ import annotations
 
+import string
 import os
 import queue
 import subprocess
@@ -24,6 +25,32 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import unquote
+
+
+_DISK_SAFE = string.ascii_letters + string.digits + "-_~"
+
+
+def encode_disk_name(world_name: str) -> str:
+    """Return the on-disk directory name for a canonical elastik path.
+
+    The core stores durable worlds in a flat data directory. Slashes and dots
+    are part of the world key, not filesystem hierarchy, so they are percent
+    encoded: ``home/note.txt`` -> ``home%2Fnote%2Etxt``.
+    """
+    out = []
+    for byte in world_name.encode("utf-8"):
+        ch = chr(byte)
+        if ch in _DISK_SAFE:
+            out.append(ch)
+        else:
+            out.append(f"%{byte:02X}")
+    return "".join(out)
+
+
+def decode_disk_name(disk_name: str) -> str:
+    """Return the canonical elastik path for an on-disk world directory name."""
+    return unquote(disk_name)
 
 
 @dataclass(frozen=True)
