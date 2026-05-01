@@ -1,10 +1,7 @@
-"""L1 atom bindings for elastik-core.
+"""Small Python bindings for elastik-core.
 
-This is the SDK. It is not the frontend. The frontend is what you build
-with these atoms.
-
-`e.put("/home/x", data)` is a declaration. Underneath, the core stores
-bytes and returns HTTP status + headers. The caller says three words.
+This package is deliberately boring: PUT stores bytes, GET returns bytes,
+HEAD returns metadata, and /listen emits change events.
 
 stdlib only: no httpx, no requests. urllib.
 """
@@ -69,14 +66,14 @@ class Response:
 
 
 class Elastik:
-    """Pythonic bindings to elastik-core's HTTP atoms.
+    """Pythonic bindings to elastik-core's HTTP surface.
 
     >>> e = Elastik("http://localhost:3105", token="t2")
-    >>> e.put("/home/note", b"hello")           # PUT
-    >>> e.get("/home/note")                     # GET, returns bytes
-    >>> e.head("/home/note")                    # HEAD, returns headers dict
-    >>> e.delete("/home/note")                  # DELETE
-    >>> e.list()                                # GET /proc/worlds
+    >>> e.put("note", b"hello")          # PUT /home/note
+    >>> e.get("note")                    # GET, returns bytes
+    >>> e.get_text("note")               # GET, decode to str
+    >>> e.head("note")                   # HEAD, lowercased headers dict
+    >>> e.list_paths()                   # GET /proc/worlds
     """
 
     def __init__(self, url: str | None = None, token: str | None = None):
@@ -103,11 +100,15 @@ class Elastik:
         headers: dict[str, str] | None = None,
         **meta: Any,
     ) -> dict:
-        """PUT body to path.
+        """PUT body to path, replacing any existing body.
 
         `content_type` and standard representation kwargs are stored
         as HTTP representation metadata and returned verbatim by GET
-        and HEAD. Extra kwargs become X-Meta-* headers.
+        and HEAD. Extra kwargs become X-Meta-* headers; they are plain
+        metadata, not auth or audit fields.
+
+        `if_none_match=True` sends `If-None-Match: *`.
+        `if_none_match="etag"` sends a quoted ETag validator.
         """
         body = data.encode("utf-8") if isinstance(data, str) else data
         request_headers = dict(headers or {})
@@ -146,7 +147,7 @@ class Elastik:
         if_match: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict:
-        """POST append bytes to an existing world."""
+        """POST byte-append to an existing path without changing metadata."""
         body = data.encode("utf-8") if isinstance(data, str) else data
         request_headers = dict(headers or {})
         _set_if(request_headers, "If-Match", _etag_value(if_match))
@@ -227,7 +228,12 @@ class Elastik:
         return json.loads(text)
 
     def head(self, path: str) -> dict[str, str]:
-        """HEAD path. Returns headers as a lowercased dict."""
+        """HEAD path. Returns lowercased HTTP headers.
+
+        Stable application headers include: etag, content-type,
+        content-length, accept-ranges, link, and any x-meta-* keys you
+        stored with put(..., **meta).
+        """
         resp = self.request("HEAD", path)
         if resp.status == 404:
             raise ElastikError(404, resp.body)
@@ -253,6 +259,14 @@ class Elastik:
             raise ElastikError(resp.status, resp.body)
         text = resp.body.decode("utf-8")
         return [line for line in text.splitlines() if line]
+
+    def list_paths(self) -> list[str]:
+        """Alias for list(). Returns stored paths/keys."""
+        return self.list()
+
+    def list_keys(self) -> list[str]:
+        """Alias for list_paths(), for KV-store-shaped code."""
+        return self.list()
 
     def listen(
         self,

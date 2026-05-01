@@ -1,6 +1,9 @@
-"""elastik — pastebin with HMAC that accidentally became a web OS.
+"""elastik — tiny HTTP byte store + event stream.
 
-Quickstart (NumPy-style — module-level calls, no instantiation):
+The first-class surface is intentionally small:
+  start, put, get, get_text, head, delete, list_paths, stop.
+
+Quickstart (module-level calls, no instantiation):
 
     import elastik
     import secrets
@@ -10,8 +13,9 @@ Quickstart (NumPy-style — module-level calls, no instantiation):
         token="write-token",              # T2: normal PUT/POST writes
         approve_token="admin-token",      # T3: DELETE + system namespaces
     )
-    e.put("note", "hello", actor="me")    # bare paths map to /home/*
+    e.put("note", "hello")                # PUT /home/note, replace body
     print(e.get_text("note"))             # "hello"
+    print(e.get("note"))                  # b"hello"
     elastik.stop()                        # kills the child
 
 Or skip the explicit start() and point at an already-running elastik
@@ -21,11 +25,12 @@ Or skip the explicit start() and point at an already-running elastik
     elastik.put("/home/note", "hello")
     print(elastik.get_text("/home/note"))
 
-Path rule: "foo" means "/home/foo". Explicit namespaces like /tmp,
-/dev, and /sys are allowed for their own storage policy, but namespace
-roots and /proc internals are reserved by the core.
+Path rule: "foo" and "/foo" both mean "/home/foo". Explicit namespaces
+like /tmp, /dev, and /sys are allowed for their own storage policy, but
+namespace roots and /proc internals are reserved by the core.
 
-put(..., actor="me") stores `X-Meta-Actor: me`. Standard HTTP
+put(..., project="demo") stores `X-Meta-Project: demo`. These kwargs
+are plain metadata, not auth or audit fields. Standard HTTP
 representation headers use named kwargs: content_type, cache_control,
 content_encoding, content_language, and content_disposition.
 
@@ -33,12 +38,14 @@ Reactor (declarative event handlers):
 
     @elastik.listen("/home/inbox/*")
     def triage(body, world, meta):
-        if b"urgent" in body:
-            return elastik.Reply(f"/home/alerts/{world.split('/')[-1]}", body)
-        return elastik.Archive()
+        if b"urgent" in body:             # body is always first
+            elastik.put(f"/home/alerts/{world.split('/')[-1]}", body)
 
     elastik.run()                         # blocks forever; only call after
                                           # registering at least one handler
+
+Handlers may either do side effects directly (normal Python) or return
+Action objects like Reply/Archive/MoveTo/Drop for declarative routing.
 
 Bundled binary lives at `elastik/_bin/elastik-core[.exe]` and is invoked
 as a child process. No FFI, no compile-on-install. Same shape as
@@ -101,7 +108,7 @@ __all__ = [
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     # Module-level convenience (NumPy-shaped)
     "put", "post", "get", "get_text", "get_json",
-    "head", "delete", "list_worlds", "request",
+    "head", "delete", "list_worlds", "list_paths", "list_keys", "request",
 ]
 
 __version__ = "6.0.1"
@@ -286,8 +293,18 @@ def delete(path: str, *, if_match: str | None = None) -> bool:
 
 
 def list_worlds() -> list[str]:
-    """elastik.list_worlds() -> ['inbox/x', 'archive/y', ...]"""
+    """Older name for list_paths()."""
     return _client().list()
+
+
+def list_paths() -> list[str]:
+    """elastik.list_paths() -> stored paths/keys."""
+    return _client().list_paths()
+
+
+def list_keys() -> list[str]:
+    """elastik.list_keys() -> stored paths/keys."""
+    return _client().list_keys()
 
 
 def request(

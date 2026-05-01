@@ -1,34 +1,41 @@
-# elastik
+# elastik Python SDK
 
-Python SDK and launcher for the Phoenix `elastik-core`.
+Tiny Python client and launcher for `elastik-core`: an HTTP byte store with
+metadata and change events.
 
-This package is intentionally thin:
+The beginner surface is five ideas:
 
-- `elastik.start()` launches the bundled Rust core binary.
-- `Elastik.put()` writes bytes over HTTP.
-- `Elastik.get()` reads bytes over HTTP.
-- `Elastik.head()` inspects HTTP metadata.
-- `@elastik.listen(...)` reacts to `/listen/*` SSE events.
+```python
+import secrets
+import elastik
 
-The package ships a platform-specific `elastik-core` binary in
-`elastik/_bin/`. For the full project README, see:
+e = elastik.start(key=secrets.token_hex(32), token="write-token")
+e.put("note", "hello")
+print(e.get("note"))       # b"hello"
+print(e.get_text("note"))  # hello
+print(e.head("note"))      # lowercased HTTP headers
+elastik.stop()
+```
 
-<https://github.com/rangersui/Elastik>
+No hidden object model: `put()` replaces bytes, `post()` appends bytes,
+`get()` returns bytes, and `head()` returns headers.
 
 ## Install
 
 ```powershell
 py -m pip install elastik
-py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
 ```
 
-`--key` is required. Token flags are optional capability gates:
+The package ships a platform-specific `elastik-core` binary in
+`elastik/_bin/`. No compile-on-install.
 
-- omit `--read-token` to keep reads public.
-- omit `--token` to disable ordinary `PUT` and `POST`.
-- omit `--approve-token` to disable `DELETE` and system writes.
+## Starting A Core
 
-## Quickstart
+You have two normal choices.
+
+### 1. Start from Python
+
+Use this in scripts, tests, notebooks, and local tools:
 
 ```python
 import secrets
@@ -36,33 +43,159 @@ import elastik
 
 e = elastik.start(
     key=secrets.token_hex(32),   # required HMAC key for the audit chain
-    token="write-token",         # ordinary PUT/POST
-    approve_token="admin-token", # DELETE and system namespaces
+    read_token="read-token",     # optional: omit for public reads
+    token="write-token",         # optional: ordinary PUT/POST
+    approve_token="admin-token", # optional: DELETE and system namespaces
 )
+```
 
-e.put("note", "hello", actor="me")  # bare paths map to /home/note
-print(e.get_text("note"))           # hello
-print(e.get("note"))                # b"hello"
+### 2. Start from a terminal
 
-elastik.stop()
+Use this when you want a long-running local service:
+
+```powershell
+py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token admin-token
+```
+
+Then connect from another process:
+
+```python
+from elastik import Elastik
+
+e = Elastik("http://127.0.0.1:3105", token="write-token")
 ```
 
 Module-level `elastik.put/get/...` calls require either a prior
 `elastik.start(...)` or explicit environment like `ELASTIK_URL` and
-`ELASTIK_TOKEN`. The SDK no longer silently assumes a random process on
+`ELASTIK_TOKEN`. They do not silently assume that an unknown process on
 `127.0.0.1:3105` is yours.
 
-Extra `put()` keyword arguments become metadata headers:
-`actor="me"` is stored as `X-Meta-Actor: me`. Use named arguments for standard
-HTTP representation headers: `content_type`, `cache_control`,
-`content_encoding`, `content_language`, and `content_disposition`.
+## Tokens
 
-Path rule: `"foo"` means `/home/foo`. Explicit `/tmp`, `/dev`, and `/sys`
-paths are valid storage namespaces. Namespace roots and `/proc` internals are
-reserved by the core.
+- `read_token`: gates `GET`, `HEAD`, `OPTIONS`, `/listen/*`, and `/proc/worlds`.
+- `token`: ordinary write token for `PUT` and `POST`.
+- `approve_token`: admin token for `DELETE` and system namespaces.
 
-`elastik.run()` is only for `@elastik.listen(...)` handlers. If you only need
-`put/get/head/delete`, do not call it.
+If `read_token` is omitted, reads are public. If `token` is omitted, ordinary
+writes are disabled. If `approve_token` is omitted, destructive/admin operations
+are disabled.
+
+## Paths
+
+`"foo"` and `"/foo"` both mean `/home/foo`.
+
+Explicit namespaces are allowed when you want their storage policy:
+
+- `/home/*`: durable SQLite storage.
+- `/tmp/*`, `/dev/*`, `/sys/*`: memory-backed storage.
+- `/proc/version`, `/proc/worlds`: core introspection endpoints.
+
+Namespace roots like `/home`, `/tmp`, `/lib`, `/etc`, `/var/log`, and `/proc/*`
+internals are reserved. Store application data under a child path such as
+`/home/myapp/data`.
+
+`list_paths()` and `list_keys()` are aliases for the older `list_worlds()` name.
+All three read `/proc/worlds`.
+
+## Metadata
+
+Standard representation metadata has named arguments:
+
+```python
+e.put(
+    "report.pdf",
+    pdf_bytes,
+    content_type="application/pdf",
+    content_disposition='attachment; filename="report.pdf"',
+    cache_control="max-age=60",
+)
+```
+
+Extra keyword arguments become plain `X-Meta-*` headers:
+
+```python
+e.put("note", "hello", project="demo")
+assert e.head("note")["x-meta-project"] == "demo"
+```
+
+Those `X-Meta-*` fields are just metadata. They do not affect auth, auditing,
+or routing unless your own SDK/userland code gives them meaning.
+
+## Bytes, Text, JSON
+
+`get()` is byte-exact:
+
+```python
+e.put("x", "hello")
+assert e.get("x") == b"hello"
+```
+
+Use helpers when you want decoding:
+
+```python
+e.get_text("x")          # str
+e.get_json("config")     # parsed JSON
+```
+
+## Conditional And Partial Reads
+
+The SDK exposes common HTTP controls directly:
+
+```python
+etag = e.head("config")["etag"]
+e.put("config", b"new", if_match=etag)       # optimistic update
+e.put("lock", b"mine", if_none_match=True)   # create-only
+chunk = e.get("big.bin", range=(0, 1023))    # Range: bytes=0-1023
+```
+
+For anything not sugared, use the raw HTTP escape hatch:
+
+```python
+r = e.request("OPTIONS", "note")
+print(r.status, r.headers, r.body)
+```
+
+## Listening For Changes
+
+`@listen` is optional. Do not call `elastik.run()` unless you registered at
+least one handler.
+
+```python
+import elastik
+
+e = elastik.start(key="dev-key", token="write-token")
+
+@elastik.listen("/home/inbox/*")
+def on_inbox(body, world, meta, e):
+    if b"urgent" in body:
+        e.put("/home/alerts/latest", body)
+
+elastik.run(e)
+```
+
+Handler rules:
+
+- The first positional argument is always `body`.
+- Extra context is injected by name: `world`, `etag`, `pattern`, `meta`, `e`,
+  `method`, and `event`.
+- You can do normal Python side effects inside the handler.
+- Advanced users may return `Reply`, `Archive`, `MoveTo`, or `Drop` action
+  objects, but they are not required.
+
+Use `clear_routes()` or `unlisten(pattern)` in tests/notebooks to reset handler
+state. Registering the same pattern twice raises unless you use
+`listen(pattern, replace=True)`.
+
+## Advanced Helpers
+
+These are exported but not part of the beginner path:
+
+- `request()`: raw HTTP escape hatch.
+- `binary_info()`, `is_running()`, `default_url()`: launcher diagnostics.
+- `TrustedShellPool`: warm local shell process pool for trusted `@listen`
+  handlers. It can execute arbitrary commands; do not feed it untrusted input.
+- `MoveTo`, `Reply`, `Archive`, `Drop`, `Action`, `Ctx`: optional reactor
+  action vocabulary.
 
 ## Stateless By Default
 
@@ -79,5 +212,9 @@ transport when they have measured a real bottleneck.
 git clone https://github.com/rangersui/Elastik
 cd Elastik
 python -m pip install -e .\sdk
-python -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
+python -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token admin-token
 ```
+
+For the full project README, see:
+
+<https://github.com/rangersui/Elastik>
