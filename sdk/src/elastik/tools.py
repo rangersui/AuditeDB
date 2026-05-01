@@ -5,11 +5,11 @@ The core is a dumb HTTP disk. Tools live here, beside the reactor:
     pool = TrustedShellPool(size=4)
 
     @elastik.listen("/home/task/*")
-    def handle(body, world, e):
+    def handle(body, path, e):
         result = pool.run(body.decode("utf-8"))
-        e.put("/home/result/" + world.rsplit("/", 1)[-1], result.stdout)
+        e.put("/home/result/" + path.rsplit("/", 1)[-1], result.stdout)
 
-This is intentionally named "Trusted". Feeding arbitrary worlds into a
+This is intentionally named "Trusted". Feeding arbitrary paths into a
 shell is remote code execution. That is useful for local agent pipelines
 and dangerous for public queues.
 """

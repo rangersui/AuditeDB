@@ -11,7 +11,6 @@ Quickstart (module-level calls, no instantiation):
     e = elastik.start(
         key=secrets.token_hex(32),        # HMAC audit-chain key, required
         token="write-token",              # T2: normal PUT/POST writes
-        approve_token="admin-token",      # T3: DELETE + system namespaces
     )
     e.put("note", "hello")                # PUT /home/note, replace body
     print(e.get_text("note"))             # "hello"
@@ -25,9 +24,9 @@ Or skip the explicit start() and point at an already-running elastik
     elastik.put("/home/note", "hello")
     print(elastik.get_text("/home/note"))
 
-Path rule: "foo" and "/foo" both mean "/home/foo". Explicit namespaces
-like /tmp, /dev, and /sys are allowed for their own storage policy, but
-namespace roots and /proc internals are reserved by the core.
+Path rule: "foo" and "/foo" both mean "/home/foo". "tmp/foo" means
+"/tmp/foo" because tmp is an explicit namespace. Namespace roots and
+/proc internals are reserved by the core.
 
 put(..., project="demo") stores `X-Meta-Project: demo`. These kwargs
 are plain metadata, not auth or audit fields. Standard HTTP
@@ -37,22 +36,25 @@ content_encoding, content_language, and content_disposition.
 Reactor (declarative event handlers):
 
     @elastik.listen("/home/inbox/*")
-    def triage(body, world, meta):
+    def triage(body, path, meta):
         if b"urgent" in body:             # body is always first
-            elastik.put(f"/home/alerts/{world.split('/')[-1]}", body)
+            elastik.put(f"/home/alerts/{path.split('/')[-1]}", body)
 
     elastik.run()                         # blocks forever; only call after
                                           # registering at least one handler
 
 Handlers may either do side effects directly (normal Python) or return
 Action objects like Reply/Archive/MoveTo/Drop for declarative routing.
+`world` is accepted as an older name for the same value as `path`.
 
 Bundled binary lives at `elastik/_bin/elastik-core[.exe]` and is invoked
 as a child process. No FFI, no compile-on-install. Same shape as
 NumPy shipping precompiled C kernels.
 
 Import note: `import elastik` loads a local `.env` once, filling only
-missing environment variables. Existing process env always wins.
+missing environment variables. Existing process env always wins. Set
+ELASTIK_NO_DOTENV=1 before import to disable this and call
+elastik.load_dotenv(path) yourself.
 """
 from __future__ import annotations
 
@@ -79,7 +81,7 @@ from elastik._spawn import (
     is_running,
     default_url,
     binary_info,
-    _load_dotenv,
+    _load_dotenv as load_dotenv,
 )
 from elastik.tools import (
     TrustedShellPool,
@@ -88,11 +90,12 @@ from elastik.tools import (
     ShellPoolError,
 )
 
-# Pull values from .env in CWD into os.environ once, on import. Existing
-# env vars win — .env only fills holes. Module-level elastik.put/get
-# read os.environ for ELASTIK_URL/TOKEN/etc., and start() reads
-# ELASTIK_KEY, so the load has to happen before either path uses them.
-_load_dotenv()
+# Pull values from .env in CWD into os.environ once, on import unless
+# ELASTIK_NO_DOTENV=1 is set. Existing env vars win — .env only fills holes.
+# Users who want explicit control can set ELASTIK_NO_DOTENV=1 and call
+# elastik.load_dotenv(path) themselves.
+if os.getenv("ELASTIK_NO_DOTENV") != "1":
+    load_dotenv()
 
 __all__ = [
     # Class — for users who want explicit instances
@@ -103,7 +106,7 @@ __all__ = [
     "listen", "run", "clear_routes", "unlisten", "has_routes",
     "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
     # Lifecycle
-    "start", "stop", "is_running", "default_url", "binary_info",
+    "start", "stop", "is_running", "default_url", "binary_info", "load_dotenv",
     # Trusted local execution helpers for @listen handlers
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     # Module-level convenience (NumPy-shaped)
@@ -191,7 +194,8 @@ def put(
     content_disposition: str | None = None,
     cache_control: str | None = None,
     if_match: str | None = None,
-    if_none_match: bool | str = False,
+    if_none_match: str | None = None,
+    create_only: bool = False,
     headers: dict[str, str] | None = None,
     **meta: Any,
 ) -> dict:
@@ -206,6 +210,7 @@ def put(
         cache_control=cache_control,
         if_match=if_match,
         if_none_match=if_none_match,
+        create_only=create_only,
         headers=headers,
         **meta,
     )

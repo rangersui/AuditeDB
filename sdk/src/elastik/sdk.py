@@ -96,7 +96,8 @@ class Elastik:
         content_disposition: str | None = None,
         cache_control: str | None = None,
         if_match: str | None = None,
-        if_none_match: bool | str = False,
+        if_none_match: str | None = None,
+        create_only: bool = False,
         headers: dict[str, str] | None = None,
         **meta: Any,
     ) -> dict:
@@ -107,9 +108,16 @@ class Elastik:
         and HEAD. Extra kwargs become X-Meta-* headers; they are plain
         metadata, not auth or audit fields.
 
-        `if_none_match=True` sends `If-None-Match: *`.
+        `create_only=True` sends `If-None-Match: *`.
         `if_none_match="etag"` sends a quoted ETag validator.
         """
+        # Compatibility with the early 6.0 SDK spelling:
+        # put(..., if_none_match=True) meant create-only.
+        if isinstance(if_none_match, bool):
+            create_only = if_none_match
+            if_none_match = None
+        if create_only and if_none_match is not None:
+            raise ValueError("use either create_only=True or if_none_match=etag, not both")
         body = data.encode("utf-8") if isinstance(data, str) else data
         request_headers = dict(headers or {})
         request_headers.update(
@@ -127,9 +135,11 @@ class Elastik:
         _set_if(request_headers, "Content-Disposition", content_disposition)
         _set_if(request_headers, "Cache-Control", cache_control)
         _set_if(request_headers, "If-Match", _etag_value(if_match))
-        if if_none_match:
+        if create_only:
+            request_headers["If-None-Match"] = "*"
+        elif if_none_match:
             request_headers["If-None-Match"] = (
-                "*" if if_none_match is True else _etag_value(str(if_none_match))
+                "*" if if_none_match == "*" else _etag_value(str(if_none_match))
             )
         resp = self.request("PUT", path, body, request_headers)
         if resp.status >= 400:
@@ -242,7 +252,12 @@ class Elastik:
         return resp.headers
 
     def delete(self, path: str, *, if_match: str | None = None) -> bool:
-        """DELETE path. Returns True on 204, False on 404."""
+        """DELETE path.
+
+        Returns True when the core deleted an existing path, False when
+        the path was already missing, and raises ElastikError for 401,
+        412, 5xx, and other real failures.
+        """
         h = {}
         _set_if(h, "If-Match", _etag_value(if_match))
         resp = self.request("DELETE", path, headers=h)

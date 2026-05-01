@@ -20,6 +20,14 @@ elastik.stop()
 No hidden object model: `put()` replaces bytes, `post()` appends bytes,
 `get()` returns bytes, and `head()` returns headers.
 
+Runnable examples live in `sdk/examples/`:
+
+```powershell
+python sdk/examples/01_basic.py
+python sdk/examples/02_listener.py
+python sdk/examples/03_metadata_and_etag.py
+```
+
 ## Install
 
 ```powershell
@@ -94,6 +102,17 @@ Namespace roots like `/home`, `/tmp`, `/lib`, `/etc`, `/var/log`, and `/proc/*`
 internals are reserved. Store application data under a child path such as
 `/home/myapp/data`.
 
+Concrete mapping:
+
+| Input path | Stored/read path |
+|---|---|
+| `"note"` | `/home/note` |
+| `"/note"` | `/home/note` |
+| `"tmp/scratch"` | `/tmp/scratch` |
+| `"/tmp/scratch"` | `/tmp/scratch` |
+| `"proc/worlds"` | `/proc/worlds` |
+| `"/proc/anything-else"` | rejected |
+
 `list_paths()` and `list_keys()` are aliases for the older `list_worlds()` name.
 All three read `/proc/worlds`.
 
@@ -143,9 +162,9 @@ The SDK exposes common HTTP controls directly:
 
 ```python
 etag = e.head("config")["etag"]
-e.put("config", b"new", if_match=etag)       # optimistic update
-e.put("lock", b"mine", if_none_match=True)   # create-only
-chunk = e.get("big.bin", range=(0, 1023))    # Range: bytes=0-1023
+e.put("config", b"new", if_match=etag)     # optimistic update
+e.put("lock", b"mine", create_only=True)   # If-None-Match: *
+chunk = e.get("big.bin", range=(0, 1023))  # Range: bytes=0-1023
 ```
 
 For anything not sugared, use the raw HTTP escape hatch:
@@ -166,7 +185,7 @@ import elastik
 e = elastik.start(key="dev-key", token="write-token")
 
 @elastik.listen("/home/inbox/*")
-def on_inbox(body, world, meta, e):
+def on_inbox(body, path, meta, e):
     if b"urgent" in body:
         e.put("/home/alerts/latest", body)
 
@@ -176,8 +195,9 @@ elastik.run(e)
 Handler rules:
 
 - The first positional argument is always `body`.
-- Extra context is injected by name: `world`, `etag`, `pattern`, `meta`, `e`,
+- Extra context is injected by name: `path`, `etag`, `pattern`, `meta`, `e`,
   `method`, and `event`.
+- `world` is still accepted as a compatibility alias for `path`.
 - You can do normal Python side effects inside the handler.
 - Advanced users may return `Reply`, `Archive`, `MoveTo`, or `Drop` action
   objects, but they are not required.
@@ -185,6 +205,18 @@ Handler rules:
 Use `clear_routes()` or `unlisten(pattern)` in tests/notebooks to reset handler
 state. Registering the same pattern twice raises unless you use
 `listen(pattern, replace=True)`.
+
+`run()` retries forever by default and logs failures to stderr. For supervised
+processes, prefer `elastik.run(e, reconnect=False)` and let your supervisor
+restart the process. For demos/tests, `max_events=1` runs until one matching
+event is handled.
+
+## Environment Loading
+
+`import elastik` loads a local `.env` once and fills only missing environment
+variables. Existing process env wins. Set `ELASTIK_NO_DOTENV=1` before import
+to disable this, or call `elastik.load_dotenv(path)` explicitly when you want
+manual control.
 
 ## Advanced Helpers
 

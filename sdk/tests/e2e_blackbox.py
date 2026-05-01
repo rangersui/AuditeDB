@@ -388,14 +388,25 @@ def main() -> int:
             check(reader.get("/home/sdk/text") == b"HELLO", "successful If-Match mutates body")
 
             expect_error(
-                lambda: writer.put("/home/sdk/text", b"exists", if_none_match=True),
+                lambda: writer.put("/home/sdk/text", b"exists", create_only=True),
                 412,
                 check,
-                "SDK put if_none_match=True blocks existing world",
+                "SDK put create_only=True blocks existing world",
             )
 
-            result = writer.put("/home/sdk/new-if-none", b"new", if_none_match=True)
-            check(result["status"] == 201, "SDK put if_none_match=True allows missing world")
+            result = writer.put("/home/sdk/new-if-none", b"new", create_only=True)
+            check(result["status"] == 201, "SDK put create_only=True allows missing world")
+            try:
+                writer.put(
+                    "/home/sdk/bad-precondition",
+                    b"x",
+                    create_only=True,
+                    if_none_match="etag",
+                )
+            except ValueError:
+                check(True, "SDK put rejects ambiguous create_only and if_none_match")
+            else:
+                raise AssertionError("FAIL: ambiguous create_only + if_none_match accepted")
 
             # POST append keeps existing representation metadata.
             writer.put("/home/sdk/append", b"abc", content_type="text/custom")
@@ -480,6 +491,25 @@ def main() -> int:
             replay = replay_events[0]
             check(replay.get("path") == "/home/sdk/listen/b", "replayed SSE event path")
             check(int(replay.get("id", "0")) > int(ev.get("id", "0")), "replayed SSE id advances")
+
+            elastik.clear_routes()
+            handled: list[tuple[str, bytes]] = []
+
+            @elastik.listen("/home/sdk/reactor-run/*")
+            def _on_reactor_event(body, path):
+                handled.append((path, body))
+
+            threading.Timer(
+                0.2,
+                lambda: writer.put("/home/sdk/reactor-run/a", b"reactor"),
+            ).start()
+            elastik.run(reader, reconnect=False, max_events=1)
+            check(
+                handled == [("/home/sdk/reactor-run/a", b"reactor")],
+                "reactor run dispatches path kwarg and exits with max_events",
+                repr(handled),
+            )
+            elastik.clear_routes()
 
             print(f"\nPASS sdk e2e blackbox: {check.n} checks")
             return 0

@@ -4,7 +4,7 @@ The Rust core does not know about plugins or callbacks. This
 module is SDK-side vocabulary only: register handlers, describe actions,
 and let `run(...)` feed core SSE events into `_dispatch(...)`. Other
 adapters can still feed polling, filesystem notifications, queues, or
-anything else that can provide `world`, `body`, `etag`, and `meta`.
+anything else that can provide `path`, `body`, `etag`, and `meta`.
 """
 from __future__ import annotations
 
@@ -27,8 +27,9 @@ def listen(pattern: str, *, replace: bool = False):
       "/home/foo"      matches exactly "/home/foo"
       "*"              matches everything
 
-    The handler receives `body` plus any named kwargs it asks for:
-    `world`, `etag`, `pattern`, `meta`, `e`.
+    The handler receives `body` as the first positional argument plus
+    any named kwargs it asks for: `path`, `world` (compat alias),
+    `etag`, `pattern`, `meta`, `e`.
 
     Registering the same pattern twice is usually a bug, so it raises
     ValueError unless `replace=True` is explicit.
@@ -91,7 +92,7 @@ class MoveTo(Action):
 
     def execute(self, ctx: Ctx) -> None:
         ctx.e.put(self.dest, ctx.body, **self.meta)
-        ctx.e.delete(ctx.world)
+        ctx.e.delete(ctx.path)
 
 
 class Reply(Action):
@@ -113,25 +114,35 @@ class Archive(Action):
         self.prefix = prefix
 
     def execute(self, ctx: Ctx) -> None:
-        name = ctx.world.rstrip("/").rsplit("/", 1)[-1] or "anon"
+        name = ctx.path.rstrip("/").rsplit("/", 1)[-1] or "anon"
         ctx.e.put(self.prefix.rstrip("/") + "/" + name, ctx.body)
-        ctx.e.delete(ctx.world)
+        ctx.e.delete(ctx.path)
 
 
 class Drop(Action):
     """Delete the source. No reply."""
 
     def execute(self, ctx: Ctx) -> None:
-        ctx.e.delete(ctx.world)
+        ctx.e.delete(ctx.path)
 
 
 class Ctx:
-    __slots__ = ("body", "world", "etag", "pattern", "meta", "e", "method", "event")
+    __slots__ = (
+        "body",
+        "path",
+        "world",
+        "etag",
+        "pattern",
+        "meta",
+        "e",
+        "method",
+        "event",
+    )
 
     def __init__(
         self,
         body: bytes,
-        world: str,
+        path: str,
         etag: str,
         pattern: str,
         meta: dict[str, str],
@@ -140,7 +151,8 @@ class Ctx:
         event: dict[str, str] | None = None,
     ):
         self.body = body
-        self.world = world
+        self.path = path
+        self.world = path  # compatibility alias for early 6.0 handlers
         self.etag = etag
         self.pattern = pattern
         self.meta = meta
@@ -153,6 +165,7 @@ def _call_handler(handler: Callable[..., Any], ctx: Ctx) -> Any:
     sig = inspect.signature(handler)
     accepts = sig.parameters.keys()
     candidates = {
+        "path": ctx.path,
         "world": ctx.world,
         "etag": ctx.etag,
         "pattern": ctx.pattern,
@@ -197,7 +210,7 @@ def _dispatch(
     for pattern, handler in selected:
         ctx = Ctx(
             body=body,
-            world=world,
+            path=world,
             etag=etag,
             pattern=pattern,
             meta=meta,
@@ -209,7 +222,12 @@ def _dispatch(
         _run_action(result, ctx)
 
 
-def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) -> None:
+def run(
+    e: Elastik | None = None,
+    reconnect: bool = True,
+    retry_s: float = 1.0,
+    max_events: int | None = None,
+) -> None:
     """Consume core SSE and dispatch registered @listen handlers.
 
     One connection listens to `*`; local `_dispatch` does pattern
@@ -217,6 +235,13 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
     stream:
 
         curl -N http://127.0.0.1:3105/listen/*
+
+    By default `reconnect=True` retries forever and logs failures to
+    stderr. Use `reconnect=False` under an external supervisor when you
+    prefer fail-fast process restarts.
+
+    `max_events` is mainly for examples and tests: run returns after
+    dispatching that many matching events.
     """
     if not _routes:
         raise RuntimeError(
@@ -225,6 +250,7 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
         )
     e = e or Elastik()
     last_event_id = ""
+    dispatched = 0
     while True:
         try:
             for event in e.listen("*", last_event_id=last_event_id or None):
@@ -254,6 +280,9 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
                         event,
                         routes=routes,
                     )
+                    dispatched += 1
+                    if max_events is not None and dispatched >= max_events:
+                        return
                     continue
                 try:
                     body = e.get(world)
@@ -280,6 +309,9 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
                     event,
                     routes=routes,
                 )
+                dispatched += 1
+                if max_events is not None and dispatched >= max_events:
+                    return
         except KeyboardInterrupt:
             raise
         except Exception as exc:
