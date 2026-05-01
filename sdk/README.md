@@ -49,6 +49,47 @@ python sdk/examples/02_listener.py
 python sdk/examples/03_metadata_and_etag.py
 ```
 
+## Path Contracts
+
+Elastik apps can be coordinated by path names instead of API schemas.
+
+```js
+// Frontend writes input and listens for output.
+await fetch("/home/order/123", {
+  method: "PUT",
+  body: JSON.stringify({ sku: "tea", qty: 2 }),
+  headers: { "Content-Type": "application/json" },
+});
+
+new EventSource("/listen/home/receipt/*");
+```
+
+```python
+# Business worker owns the workflow.
+import elastik
+
+@elastik.listen("/home/order/*")
+def on_order(body, path, e):
+    order_id = path.rsplit("/", 1)[-1]
+    e.put_json(f"/home/receipt/{order_id}", {"status": "accepted"})
+
+elastik.run()
+```
+
+The shared contract is only:
+
+```text
+/home/order/{id}
+/home/receipt/{id}
+```
+
+Use curl to inspect either side of the handoff:
+
+```powershell
+curl.exe http://127.0.0.1:3105/home/order/123
+curl.exe http://127.0.0.1:3105/home/receipt/123
+```
+
 ## Install
 
 ```powershell
