@@ -328,7 +328,7 @@ most policy.
 Browser-facing surfaces should enforce browser policy outside the core:
 
 - Serve untrusted HTML through a sandboxed renderer or a separate origin.
-- Add `Content-Security-Policy` at the browser UI, JS SDK, reverse proxy, or
+- Add `Content-Security-Policy` at the browser UI, reverse proxy, or
   static shell layer.
 - Use escaping or text rendering when displaying untrusted worlds in
   `index.html`.
@@ -507,7 +507,51 @@ Other SDKs are roadmap until the HTTP surface settles:
 | Python | primary | Best glue language for local agents, CLI wrappers, tests, and `@listen`. |
 | Go | roadmap | Good for single-binary sidecars and distribution. |
 | Rust | roadmap | Good for embedding close to the core once the ABI stops moving. |
-| JavaScript / browser | lowest priority | Browsers need CSP, sandboxing, origin policy, and UI decisions. That policy belongs outside the core. |
+| JavaScript package | mostly unnecessary | Browsers already speak HTTP. Use HTML tags, `fetch`, and `EventSource`; add a tiny app-local helper only when it buys clarity. |
+
+### Browser Is Already The SDK
+
+Elastik does not need a browser SDK before browsers can use it. The browser is
+already the most complete HTTP client SDK on the planet.
+
+```html
+<img src="/home/logo.png">
+<link rel="stylesheet" href="/home/style.css">
+<script src="/lib/app.js"></script>
+<embed src="/home/report.pdf">
+<a href="/home/file.zip" download>download</a>
+```
+
+Every tag above is a `GET`. The core returns bytes plus `Content-Type`, and the
+browser does the rest: image decoding, CSS parsing, JavaScript execution, PDF
+rendering, or download handling.
+
+The same applies to browser-native HTTP features:
+
+```html
+<img src="/home/logo.png" loading="lazy">
+<video src="/home/demo.mp4" controls preload="none"></video>
+<img srcset="/home/logo-1x.png 1x, /home/logo-2x.png 2x">
+```
+
+Lazy loading is browser scheduling. Video seeking is browser-issued `Range`
+requests against the core's `206 Partial Content`. Responsive images are the
+browser choosing which path to `GET`. ETag caching, `If-None-Match`, `304`,
+gzip decoding, MIME handling, and rendering are all already in the browser.
+
+When code is useful, the JavaScript surface is intentionally tiny:
+
+```js
+const e = {
+  put: (path, body, headers = {}) => fetch(path, { method: "PUT", body, headers }),
+  get: (path) => fetch(path).then((r) => r.arrayBuffer()),
+  del: (path) => fetch(path, { method: "DELETE" }),
+  listen: (pattern) => new EventSource(`/listen/${pattern}`),
+};
+```
+
+That is not a new protocol. It is just HTTP from JavaScript. Python needs a
+larger SDK because Python does not include a browser. Browsers do.
 
 Install from PyPI:
 
@@ -661,11 +705,16 @@ make build
 
 ## Design Rules
 
-### Curl first, browser second
+### Curl first, browser native
 
 If an operation is not pleasant from curl, the core is wrong. Browser UI lives
 outside the core because browsers bring CSP, CORS, HTML, iframes, service
 workers, and policy. Those are real concerns, but they are not the disk.
+
+That does not make the browser second-class. It makes the browser an HTTP
+peer. HTML tags, `fetch`, and `EventSource` already know how to talk to the
+core. A browser SDK should be an optional convenience snippet, not a second
+object model.
 
 ### Bytes first
 
