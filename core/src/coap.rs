@@ -5,6 +5,18 @@
 //! payload and content type, then calls the same Core storage operations as
 //! HTTP. TCP and UDP become two doors into the same world store.
 //!
+//! CoAP is allowed inside core because it has semantic zero distance from HTTP:
+//! method code is method, Uri-Path is path, Content-Format is Content-Type,
+//! response code is status, payload is body. That is why this file can stay
+//! small. It is not translating a foreign object model; it is putting HTTP
+//! semantics in a UDP envelope.
+//!
+//! Other protocols must stop at the edge unless they first collapse into that
+//! tuple. MQTT topics, AMQP exchanges, Modbus registers, SMTP transactions,
+//! FTP sessions, gRPC method calls and WebDAV file-system politics are useful
+//! adapter material, not core material. They can knock after an SDK/sidecar has
+//! turned them into method + path + representation bytes + content type.
+//!
 //! In elastik terms, core owns protocol truth, not protocol politics:
 //!
 //! - Truth we keep here: v1 header, method code, Uri-Path, Content-Format,
