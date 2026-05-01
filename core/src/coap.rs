@@ -95,7 +95,11 @@ impl Packet<'_> {
     }
 }
 
-pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receiver<bool>) {
+pub(crate) async fn serve(
+    core: std::sync::Arc<Core>,
+    bind: String,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let socket = match UdpSocket::bind(&bind).await {
         Ok(socket) => socket,
         Err(e) => {
@@ -124,7 +128,7 @@ pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receive
                 };
                 if n > MAX_DATAGRAM {
                     eprintln!("scoap: oversized datagram from {peer}: {n} bytes");
-                    let reset = [0x70, 0x80, buf[2], buf[3]];
+                    let reset = [0x70, 0x00, buf[2], buf[3]];
                     if let Err(e) = socket.send_to(&reset, peer).await {
                         eprintln!("scoap: send_to {peer}: {e}");
                     }
@@ -434,7 +438,8 @@ fn cf_to_media_type(cf: Option<u16>) -> &'static str {
         Some(42) => "application/octet-stream",
         Some(50) => "application/json",
         Some(60) => "application/cbor",
-        None | _ => "application/octet-stream",
+        None => "application/octet-stream",
+        _ => "application/octet-stream",
     }
 }
 

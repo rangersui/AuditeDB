@@ -245,7 +245,7 @@ async fn main() {
 
     let (events, _) = broadcast::channel(1024);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let state = Core {
+    let state = Arc::new(Core {
         data,
         tokens: auth::Tokens::from_env(),
         hmac_key,
@@ -257,7 +257,7 @@ async fn main() {
         shutdown: shutdown_rx.clone(),
         next_event: Arc::new(AtomicU64::new(0)),
         write_lock: Arc::new(Mutex::new(())),
-    };
+    });
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
@@ -277,7 +277,7 @@ async fn main() {
         .route("/proc", any(proc_reserved))
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
-        .with_state(Arc::new(state))
+        .with_state(state)
         .layer(DefaultBodyLimit::max(max_world_bytes));
 
     axum::serve(listener, app)
