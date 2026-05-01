@@ -217,6 +217,28 @@ Iteration returns that canonical core form from `/proc/worlds`, such as
 `copy()` buffers the source body in Python memory. That is fine for ordinary
 objects; for huge blobs, use a streaming tool or curl pipeline.
 
+More stdlib-shaped helpers are thin wrappers over HTTP:
+
+```python
+e.get_cached("note")                  # GET + If-None-Match cache
+e.checksum("note")                    # HEAD -> ETag
+e.diff("note", "new text")            # local unified diff
+e.preview("note", max_bytes=512)      # Range GET + text preview
+e.put_gzip("log.gz", "hello")         # Content-Encoding: gzip
+e.put_csv("table.csv", [["t", "v"]])  # text/csv
+e.put_struct("dev/s0", ">ff", 1.0, 2.0)
+e.get_many(["a", "b"])                # concurrent GETs, no batch endpoint
+```
+
+`open(path, "rb")` returns a read-only file-like object backed by Range GETs:
+
+```python
+with e.open("report.pdf") as f:
+    header = f.read(8)
+    f.seek(1024)
+    chunk = f.read(512)
+```
+
 Pathlib-shaped references are available when they make code clearer:
 
 ```python

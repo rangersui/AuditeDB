@@ -74,6 +74,7 @@ from elastik.sdk import (
     Unauthorized,
     WorldMeta,
     WorldRef,
+    WorldReader,
 )
 from elastik.testing import FakeElastik
 from elastik.reactor import (
@@ -120,7 +121,7 @@ __all__ = [
     "Unauthorized", "Forbidden", "NotFound", "PreconditionFailed",
     "PayloadTooLarge", "ServerError",
     "Response",
-    "WorldMeta", "WorldRef", "FakeElastik",
+    "WorldMeta", "WorldRef", "WorldReader", "FakeElastik",
     # Reactor sugar
     "listen", "run", "clear_routes", "unlisten", "has_routes",
     "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
@@ -130,8 +131,11 @@ __all__ = [
     # Trusted local execution helpers for @listen handlers
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     # Module-level convenience (NumPy-shaped)
-    "put", "put_text", "put_json", "post", "get", "get_text", "get_json",
-    "head", "delete", "exists", "sizeof", "copy", "tmp",
+    "put", "put_text", "put_json", "put_gzip", "put_csv", "put_struct",
+    "post", "get", "get_cached", "get_gzip", "get_text", "get_json",
+    "get_csv", "get_struct", "head", "delete", "exists", "sizeof",
+    "checksum", "is_audited", "verify", "diff", "preview", "copy",
+    "put_many", "get_many", "open", "tmp",
     "list_worlds", "list_paths", "list_keys", "request",
 ]
 
@@ -305,6 +309,21 @@ def put_json(
     return _client().put_json(path, value, ensure_ascii=ensure_ascii, **kwargs)
 
 
+def put_gzip(path: str, data: bytes | str, **kwargs: Any) -> dict:
+    """elastik.put_gzip('/home/log.gz', 'hello') -> {'status': 201, ...}"""
+    return _client().put_gzip(path, data, **kwargs)
+
+
+def put_csv(path: str, rows: Any, **kwargs: Any) -> dict:
+    """elastik.put_csv('/home/table.csv', rows) -> {'status': 201, ...}"""
+    return _client().put_csv(path, rows, **kwargs)
+
+
+def put_struct(path: str, fmt: str, *values: Any, **kwargs: Any) -> dict:
+    """elastik.put_struct('/dev/sensor/0', '>ffi', ...) -> {'status': 201, ...}"""
+    return _client().put_struct(path, fmt, *values, **kwargs)
+
+
 def post(
     path: str,
     data: bytes | str,
@@ -332,6 +351,11 @@ def get(
         if_range=if_range,
         headers=headers,
     )
+
+
+def get_cached(path: str) -> bytes:
+    """elastik.get_cached('/home/note') -> bytes using SDK ETag cache."""
+    return _client().get_cached(path)
 
 
 def get_text(
@@ -376,6 +400,21 @@ def get_json(
     )
 
 
+def get_gzip(path: str) -> bytes:
+    """elastik.get_gzip('/home/log.gz') -> decompressed bytes."""
+    return _client().get_gzip(path)
+
+
+def get_csv(path: str) -> list[list[str]]:
+    """elastik.get_csv('/home/table.csv') -> rows."""
+    return _client().get_csv(path)
+
+
+def get_struct(path: str, fmt: str) -> tuple[Any, ...]:
+    """elastik.get_struct('/dev/sensor/0', '>ffi') -> tuple."""
+    return _client().get_struct(path, fmt)
+
+
 def head(path: str) -> WorldMeta:
     """elastik.head('/home/note') -> {'x-meta-...': '...'}"""
     return _client().head(path)
@@ -396,9 +435,54 @@ def sizeof(path: str) -> int:
     return _client().sizeof(path)
 
 
+def checksum(path: str) -> str:
+    """elastik.checksum('/home/blob') -> ETag"""
+    return _client().checksum(path)
+
+
+def is_audited(path: str) -> bool:
+    """Return True when the current ETag is audit-chain backed."""
+    return _client().is_audited(path)
+
+
+def verify(path: str) -> bool:
+    """Alias for is_audited(); does not replay the full audit chain."""
+    return _client().verify(path)
+
+
+def diff(path: str, new_data: str) -> str:
+    """Return a unified text diff against new_data."""
+    return _client().diff(path, new_data)
+
+
+def preview(path: str, **kwargs: Any) -> str:
+    """Return a shortened text preview using a small Range GET."""
+    return _client().preview(path, **kwargs)
+
+
 def copy(src: str, dst: str, **meta: Any) -> dict:
     """elastik.copy('/home/a', '/home/b') -> {'status': 201, ...}"""
     return _client().copy(src, dst, **meta)
+
+
+def put_many(
+    items: dict[str, bytes | str],
+    *,
+    max_workers: int = 4,
+    **kwargs: Any,
+) -> dict[str, dict]:
+    """PUT many paths concurrently; each item is still one HTTP request."""
+    return _client().put_many(items, max_workers=max_workers, **kwargs)
+
+
+def get_many(paths: list[str], *, max_workers: int = 4) -> dict[str, bytes | None]:
+    """GET many paths concurrently; each path is still one HTTP request."""
+    return _client().get_many(paths, max_workers=max_workers)
+
+
+def open(path: str, mode: str = "rb") -> WorldReader:
+    """Open a read-only file-like object backed by Range GETs."""
+    return _client().open(path, mode)
 
 
 def tmp(name: str = ""):

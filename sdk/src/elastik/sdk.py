@@ -12,11 +12,19 @@ import logging
 import os
 import secrets
 import time
+import csv
+import difflib
+import gzip as gzip_mod
+import io
+import struct
+import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
+from collections.abc import MutableMapping
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Iterator, TypedDict
 
@@ -125,7 +133,7 @@ class Response:
         return self.status == 201
 
 
-class Elastik:
+class Elastik(MutableMapping[str, bytes]):
     """Pythonic bindings to elastik-core's HTTP surface.
 
     >>> e = Elastik("http://localhost:3105", token="t2")
@@ -144,6 +152,7 @@ class Elastik:
             token = _best_env_token()
         self.url = url.rstrip("/")
         self.token = token
+        self._etag_cache: dict[str, tuple[str, bytes]] = {}
 
     def __repr__(self) -> str:
         status = "external"
@@ -225,6 +234,8 @@ class Elastik:
         resp = self.request("PUT", path, body, request_headers)
         if resp.status >= 400:
             _raise_for_response(resp, "PUT", path)
+        if resp.etag:
+            self._etag_cache[_cache_key(path)] = (resp.etag, body)
         return {
             "status": resp.status,
             "etag": resp.etag,
@@ -258,6 +269,29 @@ class Elastik:
         body = json.dumps(value, ensure_ascii=ensure_ascii).encode("utf-8")
         return self.put(path, body, content_type="application/json", **kwargs)
 
+    def put_gzip(self, path: str, data: bytes | str, **kwargs: Any) -> dict:
+        """PUT gzip-compressed bytes with Content-Encoding: gzip."""
+        body = _body_bytes(data, "put_gzip")
+        kwargs.setdefault(
+            "content_type",
+            "text/plain; charset=utf-8"
+            if isinstance(data, str)
+            else "application/octet-stream",
+        )
+        return self.put(path, gzip_mod.compress(body), content_encoding="gzip", **kwargs)
+
+    def put_csv(self, path: str, rows: Any, **kwargs: Any) -> dict:
+        """PUT rows as text/csv using the stdlib csv writer."""
+        buf = io.StringIO(newline="")
+        csv.writer(buf).writerows(rows)
+        kwargs.setdefault("content_type", "text/csv")
+        return self.put(path, buf.getvalue(), **kwargs)
+
+    def put_struct(self, path: str, fmt: str, *values: Any, **kwargs: Any) -> dict:
+        """PUT struct.pack(fmt, *values) as octet-stream bytes."""
+        kwargs.setdefault("content_type", "application/octet-stream")
+        return self.put(path, struct.pack(fmt, *values), **kwargs)
+
     def post(
         self,
         path: str,
@@ -273,6 +307,7 @@ class Elastik:
         resp = self.request("POST", path, body, request_headers)
         if resp.status >= 400:
             _raise_for_response(resp, "POST", path)
+        self.clear_cache(path)
         return {"status": resp.status, "etag": resp.etag}
 
     def get(
@@ -302,7 +337,38 @@ class Elastik:
             _raise_for_response(resp, "GET", path)
         if resp.status >= 400:
             _raise_for_response(resp, "GET", path)
+        if range is None and if_range is None and resp.etag:
+            self._etag_cache[_cache_key(path)] = (resp.etag, resp.body)
         return resp.body
+
+    def get_cached(self, path: str) -> bytes:
+        """GET using a small client-side ETag cache.
+
+        First call downloads the body. Later calls send If-None-Match
+        and return the cached body on 304 Not Modified.
+        """
+        key = _cache_key(path)
+        cached = self._etag_cache.get(key)
+        if cached:
+            etag, old_body = cached
+            body = self.get(path, if_none_match=etag)
+            if body is None:
+                return old_body
+        else:
+            body = self.get(path)
+        if body is None:
+            raise KeyError(path)
+        etag = self.head(path).get("etag", "")
+        if etag:
+            self._etag_cache[key] = (etag, body)
+        return body
+
+    def clear_cache(self, path: str | None = None) -> None:
+        """Clear SDK-side ETag cache entries."""
+        if path is None:
+            self._etag_cache.clear()
+        else:
+            self._etag_cache.pop(_cache_key(path), None)
 
     def get_text(
         self,
@@ -350,6 +416,27 @@ class Elastik:
             return None
         return json.loads(text)
 
+    def get_gzip(self, path: str) -> bytes:
+        """GET and gzip-decompress the body."""
+        body = self.get(path)
+        if body is None:
+            raise KeyError(path)
+        return gzip_mod.decompress(body)
+
+    def get_csv(self, path: str) -> list[list[str]]:
+        """GET text/csv and parse rows with the stdlib csv reader."""
+        text = self.get_text(path)
+        if text is None:
+            raise KeyError(path)
+        return list(csv.reader(io.StringIO(text)))
+
+    def get_struct(self, path: str, fmt: str) -> tuple[Any, ...]:
+        """GET bytes and struct.unpack(fmt, body)."""
+        body = self.get(path)
+        if body is None:
+            raise KeyError(path)
+        return struct.unpack(fmt, body)
+
     def head(self, path: str) -> WorldMeta:
         """HEAD path. Returns lowercased HTTP headers.
 
@@ -375,6 +462,7 @@ class Elastik:
         _set_if(h, "If-Match", _etag_value(if_match))
         resp = self.request("DELETE", path, headers=h)
         if resp.status == 204:
+            self.clear_cache(path)
             return True
         if resp.status == 404:
             return False
@@ -405,6 +493,48 @@ class Elastik:
         """Return Content-Length without downloading the body."""
         return int(self.head(path).get("content-length", "0"))
 
+    def checksum(self, path: str) -> str:
+        """Return the current ETag via HEAD."""
+        return self.head(path).get("etag", "")
+
+    def is_audited(self, path: str) -> bool:
+        """Return True when the current ETag is audit-chain backed."""
+        return self.checksum(path).strip('"').startswith("hmac-")
+
+    def verify(self, path: str) -> bool:
+        """Alias for is_audited(); does not replay the full audit chain."""
+        return self.is_audited(path)
+
+    def diff(self, path: str, new_data: str) -> str:
+        """Return a unified text diff between current body and new_data."""
+        old = (self.get_text(path) or "").splitlines(keepends=True)
+        new = new_data.splitlines(keepends=True)
+        return "".join(
+            difflib.unified_diff(old, new, fromfile=f"{path}@old", tofile=f"{path}@new")
+        )
+
+    def preview(
+        self,
+        path: str,
+        *,
+        width: int = 80,
+        max_lines: int = 10,
+        max_bytes: int = 4096,
+        encoding: str = "utf-8",
+        errors: str = "replace",
+    ) -> str:
+        """Fetch a small byte range and return a shortened text preview."""
+        if max_bytes <= 0 or max_lines <= 0:
+            return ""
+        body = self.get(path, range=(0, max_bytes - 1))
+        if body is None:
+            return ""
+        text = body.decode(encoding, errors)
+        return "\n".join(
+            textwrap.shorten(line, width=width, placeholder="...")
+            for line in text.splitlines()[:max_lines]
+        )
+
     def copy(self, src: str, dst: str, **meta: Any) -> dict:
         """Copy a path using GET + HEAD + PUT.
 
@@ -425,6 +555,38 @@ class Elastik:
             cache_control=headers.get("cache-control"),
             **meta,
         )
+
+    def put_many(
+        self,
+        items: dict[str, bytes | str],
+        *,
+        max_workers: int = 4,
+        **kwargs: Any,
+    ) -> dict[str, dict]:
+        """PUT many paths concurrently; each item is still one HTTP request."""
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                path: pool.submit(self.put, path, data, **kwargs)
+                for path, data in items.items()
+            }
+            return {path: future.result() for path, future in futures.items()}
+
+    def get_many(
+        self,
+        paths: list[str],
+        *,
+        max_workers: int = 4,
+    ) -> dict[str, bytes | None]:
+        """GET many paths concurrently; each path is still one HTTP request."""
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {path: pool.submit(self.get, path) for path in paths}
+            return {path: future.result() for path, future in futures.items()}
+
+    def open(self, path: str, mode: str = "rb") -> "WorldReader":
+        """Open a read-only file-like object backed by Range GETs."""
+        if mode != "rb":
+            raise ValueError("only mode='rb' is supported")
+        return WorldReader(self, path)
 
     @contextmanager
     def tmp(self, name: str = "") -> Iterator[str]:
@@ -606,6 +768,9 @@ class WorldRef:
     def stat(self) -> WorldMeta:
         return self._e.head(self._path)
 
+    def open(self, mode: str = "rb") -> "WorldReader":
+        return self._e.open(self._path, mode)
+
     def __fspath__(self) -> str:
         return self._path
 
@@ -614,6 +779,53 @@ class WorldRef:
 
     def __repr__(self) -> str:
         return f"WorldRef({self._path!r})"
+
+
+class WorldReader(io.RawIOBase):
+    """Read-only file-like wrapper using HTTP Range requests."""
+
+    def __init__(self, e: Elastik, path: str):
+        super().__init__()
+        self._e = e
+        self._path = path
+        self._pos = 0
+        self._size = e.sizeof(path)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._pos
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        if whence == io.SEEK_SET:
+            new_pos = offset
+        elif whence == io.SEEK_CUR:
+            new_pos = self._pos + offset
+        elif whence == io.SEEK_END:
+            new_pos = self._size + offset
+        else:
+            raise ValueError(f"invalid whence: {whence}")
+        self._pos = max(0, new_pos)
+        return self._pos
+
+    def read(self, size: int = -1) -> bytes:
+        if self.closed:
+            raise ValueError("I/O operation on closed elastik world")
+        if self._pos >= self._size or size == 0:
+            return b""
+        if size is None or size < 0:
+            end = self._size - 1
+        else:
+            end = min(self._size, self._pos + size) - 1
+        body = self._e.get(self._path, range=(self._pos, end))
+        if body is None:
+            return b""
+        self._pos += len(body)
+        return body
 
 
 def _quote_listen_pattern(pattern: str) -> str:
@@ -649,6 +861,10 @@ def _canonical_world_name(path: str) -> str:
     if first in _NAMESPACES:
         return stripped
     return "home/" + stripped
+
+
+def _cache_key(path: str) -> str:
+    return _canonical_world_name(path)
 
 
 def _validate_world_name(world: str) -> None:

@@ -26,6 +26,7 @@ class FakeElastik(Elastik):
     def __init__(self):
         self.url = "fake://elastik"
         self.token = "fake"
+        self._etag_cache: dict[str, tuple[str, bytes]] = {}
         self._store: dict[str, tuple[bytes, WorldMeta]] = {}
 
     def __repr__(self) -> str:
@@ -41,6 +42,9 @@ class FakeElastik(Elastik):
         content_language: str | None = None,
         content_disposition: str | None = None,
         cache_control: str | None = None,
+        if_match: str | None = None,
+        if_none_match: str | bool | None = None,
+        create_only: bool = False,
         headers: dict[str, str] | None = None,
         **meta: Any,
     ) -> dict:
@@ -72,6 +76,7 @@ class FakeElastik(Elastik):
         for key, value in meta.items():
             headers[f"x-meta-{key.replace('_', '-').lower()}"] = str(value)  # type: ignore[literal-required]
         self._store[world] = (body, headers)
+        self._etag_cache[world] = (headers["etag"], body)
         return {"status": 201, "etag": headers["etag"]}
 
     def post(self, path: str, data: bytes | str, **_kwargs: Any) -> dict:
@@ -84,14 +89,22 @@ class FakeElastik(Elastik):
         headers["etag"] = _fake_etag(body)
         headers["content-length"] = str(len(body))
         self._store[world] = (body, headers)  # type: ignore[assignment]
+        self._etag_cache.pop(world, None)
         return {"status": 200, "etag": headers["etag"]}
 
     def get(self, path: str, **_kwargs: Any) -> bytes:
         world = self._world(path)
         try:
-            return self._store[world][0]
+            body, headers = self._store[world]
         except KeyError:
             raise NotFound(404, b"not found", method="GET", path=path) from None
+        if _kwargs.get("if_none_match") == headers.get("etag"):
+            return None  # type: ignore[return-value]
+        byte_range = _kwargs.get("range")
+        if byte_range is not None:
+            start, end = byte_range
+            return body[start : end + 1]
+        return body
 
     def head(self, path: str) -> WorldMeta:
         world = self._world(path)
@@ -102,6 +115,7 @@ class FakeElastik(Elastik):
 
     def delete(self, path: str, **_kwargs: Any) -> bool:
         world = self._world(path)
+        self._etag_cache.pop(world, None)
         return self._store.pop(world, None) is not None
 
     def list(self) -> list[str]:

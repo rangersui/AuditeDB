@@ -35,6 +35,7 @@ import urllib.parse
 import urllib.request
 import warnings
 from pathlib import Path
+from collections.abc import MutableMapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -328,6 +329,7 @@ def main() -> int:
             check("home/sdk/text" in reader.list_paths(), "sdk list_paths aliases list")
             check("home/sdk/text" in reader.list_keys(), "sdk list_keys aliases list")
             check("home/sdk/text" in elastik.list_paths(), "module list_paths aliases list")
+            check(isinstance(writer, MutableMapping), "Elastik implements MutableMapping")
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 check("home/sdk/text" in elastik.list_worlds(), "module list_worlds still works")
@@ -347,11 +349,32 @@ def main() -> int:
             check(len(reader) >= 1, "mapping __len__ delegates to list_paths")
             check(reader.exists("/home/sdk/mapping"), "exists() delegates to HEAD")
             check(reader.sizeof("/home/sdk/mapping") == 6, "sizeof() reads Content-Length")
+            check(reader.checksum("/home/sdk/mapping").strip('"').startswith("hmac-"), "checksum() returns ETag")
+            check(reader.is_audited("/home/sdk/mapping"), "is_audited() detects hmac ETag")
+            check(reader.verify("/home/sdk/mapping"), "verify() aliases is_audited")
+            check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached first read downloads")
+            check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached second read uses validator")
+            writer.put("/home/sdk/mapping", "remapped")
+            check(reader.get_cached("/home/sdk/mapping") == b"remapped", "get_cached refreshes after change")
+            diff = reader.diff("/home/sdk/mapping", "final")
+            check("-remapped" in diff and "+final" in diff, "diff() returns unified text diff")
+            check("remapped" in reader.preview("/home/sdk/mapping", width=20), "preview() returns shortened text")
             writer["src"] = "short"
             check("home/src" in list(writer), "iter() returns canonical home path")
             check(writer["home/src"] == b"short", "canonical iter path indexes back")
+            writer.put_gzip("/home/sdk/gzip", "compressed")
+            check(reader.head("/home/sdk/gzip")["content-encoding"] == "gzip", "put_gzip stores Content-Encoding")
+            check(reader.get_gzip("/home/sdk/gzip") == b"compressed", "get_gzip decompresses body")
+            writer.put_csv("/home/sdk/table.csv", [["t", "v"], ["1", "2"]])
+            check(reader.get_csv("/home/sdk/table.csv") == [["t", "v"], ["1", "2"]], "CSV helpers round-trip rows")
+            writer.put_struct("/dev/sdk/sensor0", ">ff", 23.5, 6.75)
+            a, b = reader.get_struct("/dev/sdk/sensor0", ">ff")
+            check(round(a, 1) == 23.5 and round(b, 2) == 6.75, "struct helpers round-trip binary values")
+            writer.put_many({"/home/sdk/many/a": "A", "/home/sdk/many/b": "B"})
+            many = reader.get_many(["/home/sdk/many/a", "/home/sdk/many/b"])
+            check(many["/home/sdk/many/a"] == b"A" and many["/home/sdk/many/b"] == b"B", "get_many/put_many use concurrent HTTP requests")
             writer.copy("/home/sdk/mapping", "/home/sdk/mapping-copy")
-            check(reader.get("/home/sdk/mapping-copy") == b"mapped", "copy() uses GET HEAD PUT")
+            check(reader.get("/home/sdk/mapping-copy") == b"remapped", "copy() uses GET HEAD PUT")
             ref = approver / "home" / "sdk" / "ref"
             ref.write("ref-body")
             check(ref.read_text() == "ref-body", "WorldRef write/read_text round-trips")
@@ -367,8 +390,10 @@ def main() -> int:
             check("/home/sdk/mapping" not in reader, "mapping __delitem__ deletes")
             fake = elastik.FakeElastik()
             fake.put("fake/note", "hello")
+            check(isinstance(fake, MutableMapping), "FakeElastik is also MutableMapping-shaped")
             check(fake.get_text("fake/note") == "hello", "FakeElastik get_text works")
             check(fake.head("fake/note")["etag"].startswith("fake-"), "FakeElastik returns fake ETags")
+            check(fake.get_cached("fake/note") == b"hello", "FakeElastik supports get_cached")
             fake_ref = fake / "home" / "fake" / "ref"
             fake_ref.write("fake-ref")
             check(fake_ref.read() == b"fake-ref", "FakeElastik supports WorldRef")
@@ -409,6 +434,11 @@ def main() -> int:
             writer.put("/home/sdk/blob", binary, content_type="application/pdf")
             check(reader.get("/home/sdk/blob") == binary, "binary body round-trips")
             check(reader.head("/home/sdk/blob")["content-type"] == "application/pdf", "binary content-type")
+            with reader.open("/home/sdk/blob") as f:
+                check(f.read(4) == bytes(range(4)), "open() reads initial Range chunk")
+                check(f.seek(10) == 10 and f.read(3) == bytes(range(10, 13)), "open() seek/read uses Range")
+            with (reader / "home" / "sdk" / "blob").open() as f:
+                check(f.seek(-2, io.SEEK_END) == 254 and f.read() == bytes([254, 255]), "WorldRef.open supports seek from end")
 
             # Bare paths are home paths, not magical namespace erasure.
             writer.put("sdk/bare", b"bare")
