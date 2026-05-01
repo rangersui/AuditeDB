@@ -1,7 +1,7 @@
 //! Bearer + Basic auth check. Three tokens, three tiers:
 //!   ELASTIK_READ_TOKEN     -> tier "read"    (T1: reads when enabled)
-//!   ELASTIK_TOKEN          → tier "auth"    (T2: writes /home/*)
-//!   ELASTIK_APPROVE_TOKEN  → tier "approve" (T3: writes /lib/, /etc/)
+//!   ELASTIK_WRITE_TOKEN    -> tier "write"   (T2: writes /home/*)
+//!   ELASTIK_APPROVE_TOKEN  -> tier "approve" (T3: writes /lib/, /etc/)
 //!
 //! Token comparison uses a small local byte loop that avoids early exit
 //! once lengths match. UTF-8 bytes on both sides — non-ASCII passwords
@@ -14,26 +14,26 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 pub enum Tier {
     Anon,
     Read,
-    Auth,
+    Write,
     Approve,
 }
 
 #[derive(Clone)]
 pub struct Tokens {
     pub read: Option<Vec<u8>>,
-    pub auth: Option<Vec<u8>>,
+    pub write: Option<Vec<u8>>,
     pub approve: Option<Vec<u8>>,
 }
 
 impl Tokens {
     /// Read tokens from env. Empty / whitespace-only values are
     /// treated as **unset** — never as "the empty token is valid."
-    /// A `.env` with `ELASTIK_TOKEN=` (placeholder unfilled) must not
+    /// A `.env` with `ELASTIK_WRITE_TOKEN=` (placeholder unfilled) must not
     /// silently grant T2 to anyone sending `Authorization: Bearer `.
     pub fn from_env() -> Self {
         Self {
             read: nonempty_env("ELASTIK_READ_TOKEN"),
-            auth: nonempty_env("ELASTIK_TOKEN"),
+            write: nonempty_env("ELASTIK_WRITE_TOKEN"),
             approve: nonempty_env("ELASTIK_APPROVE_TOKEN"),
         }
     }
@@ -80,9 +80,9 @@ impl Tokens {
                 return Tier::Approve;
             }
         }
-        if let Some(t) = &self.auth {
+        if let Some(t) = &self.write {
             if ct_eq(candidate, t) {
-                return Tier::Auth;
+                return Tier::Write;
             }
         }
         if let Some(t) = &self.read {
@@ -138,7 +138,7 @@ mod tests {
 
     struct EnvGuard {
         read: Option<String>,
-        token: Option<String>,
+        write: Option<String>,
         approve: Option<String>,
     }
 
@@ -146,7 +146,7 @@ mod tests {
         fn capture() -> Self {
             Self {
                 read: std::env::var("ELASTIK_READ_TOKEN").ok(),
-                token: std::env::var("ELASTIK_TOKEN").ok(),
+                write: std::env::var("ELASTIK_WRITE_TOKEN").ok(),
                 approve: std::env::var("ELASTIK_APPROVE_TOKEN").ok(),
             }
         }
@@ -158,9 +158,9 @@ mod tests {
                 Some(v) => std::env::set_var("ELASTIK_READ_TOKEN", v),
                 None => std::env::remove_var("ELASTIK_READ_TOKEN"),
             }
-            match &self.token {
-                Some(v) => std::env::set_var("ELASTIK_TOKEN", v),
-                None => std::env::remove_var("ELASTIK_TOKEN"),
+            match &self.write {
+                Some(v) => std::env::set_var("ELASTIK_WRITE_TOKEN", v),
+                None => std::env::remove_var("ELASTIK_WRITE_TOKEN"),
             }
             match &self.approve {
                 Some(v) => std::env::set_var("ELASTIK_APPROVE_TOKEN", v),
@@ -174,18 +174,18 @@ mod tests {
         let _lock = env_lock().lock().unwrap();
         let _env = EnvGuard::capture();
         std::env::set_var("ELASTIK_READ_TOKEN", " ");
-        std::env::set_var("ELASTIK_TOKEN", "");
+        std::env::set_var("ELASTIK_WRITE_TOKEN", "");
         std::env::set_var("ELASTIK_APPROVE_TOKEN", "   ");
 
         let tokens = Tokens::from_env();
 
         assert_eq!(tokens.read, None);
-        assert_eq!(tokens.auth, None);
+        assert_eq!(tokens.write, None);
         assert_eq!(tokens.approve, None);
         assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
         assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
         assert!(env_set_but_empty("ELASTIK_READ_TOKEN"));
-        assert!(env_set_but_empty("ELASTIK_TOKEN"));
+        assert!(env_set_but_empty("ELASTIK_WRITE_TOKEN"));
         assert!(env_set_but_empty("ELASTIK_APPROVE_TOKEN"));
     }
 
@@ -193,7 +193,7 @@ mod tests {
     fn empty_authorization_candidate_never_matches() {
         let tokens = Tokens {
             read: Some(Vec::new()),
-            auth: Some(Vec::new()),
+            write: Some(Vec::new()),
             approve: Some(Vec::new()),
         };
 
@@ -205,21 +205,21 @@ mod tests {
     fn nonempty_tokens_still_authenticate() {
         let tokens = Tokens {
             read: Some(b"reader".to_vec()),
-            auth: Some(b"writer".to_vec()),
+            write: Some(b"writer".to_vec()),
             approve: Some(b"approve".to_vec()),
         };
         let basic_writer = B64.encode("user:writer");
 
         assert_eq!(tokens.check(Some("Bearer reader")), Tier::Read);
         assert_eq!(tokens.check(Some("bearer reader")), Tier::Read);
-        assert_eq!(tokens.check(Some("Bearer writer")), Tier::Auth);
+        assert_eq!(tokens.check(Some("Bearer writer")), Tier::Write);
         assert_eq!(
             tokens.check(Some(&format!("Basic {basic_writer}"))),
-            Tier::Auth
+            Tier::Write
         );
         assert_eq!(
             tokens.check(Some(&format!("basic {basic_writer}"))),
-            Tier::Auth
+            Tier::Write
         );
         assert_eq!(tokens.check(Some("Bearer approve")), Tier::Approve);
         assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);

@@ -34,7 +34,7 @@ def main() -> None:
         e = elastik.start(
             port=free_port(),
             key=secrets.token_hex(32),
-            token="write-token",
+        write_token="write-token",
             data_dir=data_dir,
             quiet=True,
         )

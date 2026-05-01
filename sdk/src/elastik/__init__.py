@@ -10,7 +10,7 @@ Quickstart (module-level calls, no instantiation):
 
     e = elastik.start(
         key=secrets.token_hex(32),        # HMAC audit-chain key, required
-        token="write-token",              # T2: normal PUT/POST writes
+        write_token="write-token",        # T2: normal PUT/POST writes
     )
     e.put("note", "hello")                # PUT /home/note, replace body
     print(e.get_text("note"))             # "hello"
@@ -18,7 +18,7 @@ Quickstart (module-level calls, no instantiation):
     elastik.stop()                        # kills the child
 
 Or skip the explicit start() and point at an already-running elastik
-(env: `ELASTIK_URL=http://127.0.0.1:3105 ELASTIK_TOKEN=xxx`):
+(env: `ELASTIK_URL=http://127.0.0.1:3105 ELASTIK_WRITE_TOKEN=xxx`):
 
     import elastik
     elastik.put("/home/note", "hello")
@@ -156,9 +156,10 @@ def _client() -> Elastik:
     """Get-or-build the default singleton client.
 
     Pinned to ELASTIK_URL, or http://ELASTIK_HOST:ELASTIK_PORT
-    (default http://127.0.0.1:3105). Token from ELASTIK_TOKEN.
+    (default http://127.0.0.1:3105). Bearer token from the strongest
+    configured env token.
 
-    If you spawned a child via `elastik.start(port=N, token=T)`, that
+    If you spawned a child via `elastik.start(port=N, write_token=T)`, that
     call returns its own client and ALSO updates this singleton so
     module-level `elastik.put(...)` lands at your child.
     """
@@ -167,7 +168,7 @@ def _client() -> Elastik:
         if not _has_default_client_env():
             raise RuntimeError(
                 "no default elastik client is configured. Call "
-                "elastik.start(key=..., token=...), create Elastik(url, token), "
+                "elastik.start(key=..., write_token=...), create Elastik(url, bearer_token=...), "
                 "or set ELASTIK_URL/ELASTIK_HOST before using module-level "
                 "elastik.put/get."
             )
@@ -182,7 +183,7 @@ def _has_default_client_env() -> bool:
             "ELASTIK_URL",
             "ELASTIK_HOST",
             "ELASTIK_PORT",
-            "ELASTIK_TOKEN",
+            "ELASTIK_WRITE_TOKEN",
             "ELASTIK_READ_TOKEN",
             "ELASTIK_APPROVE_TOKEN",
         )
@@ -220,7 +221,7 @@ def show_config() -> None:
     print(f"  running: {is_running()}")
     print(f"  key:     {_mask(os.getenv('ELASTIK_KEY'))}")
     print(f"  read:    {_mask(os.getenv('ELASTIK_READ_TOKEN'))}")
-    print(f"  write:   {_mask(os.getenv('ELASTIK_TOKEN'))}")
+    print(f"  write:   {_mask(os.getenv('ELASTIK_WRITE_TOKEN'))}")
     print(f"  approve: {_mask(os.getenv('ELASTIK_APPROVE_TOKEN'))}")
 
 
@@ -232,7 +233,7 @@ def start(
     host: str | None = None,
     key: str | None = None,
     read_token: str | None = None,
-    token: str | None = None,
+    write_token: str | None = None,
     approve_token: str | None = None,
     data_dir: str | None = None,
     quiet: bool = True,
@@ -242,7 +243,7 @@ def start(
         host=host,
         key=key,
         read_token=read_token,
-        token=token,
+        write_token=write_token,
         approve_token=approve_token,
         data_dir=data_dir,
         quiet=quiet,
@@ -265,7 +266,7 @@ def put(
     content_disposition: str | None = None,
     cache_control: str | None = None,
     if_match: str | None = None,
-    if_none_match: str | bool | None = None,
+    if_none_match: str | None = None,
     create_only: bool = False,
     headers: dict[str, str] | None = None,
     **meta: Any,

@@ -136,7 +136,7 @@ class Response:
 class Elastik(MutableMapping[str, bytes]):
     """Pythonic bindings to elastik-core's HTTP surface.
 
-    >>> e = Elastik("http://localhost:3105", token="t2")
+    >>> e = Elastik("http://localhost:3105", bearer_token="write-token")
     >>> e.put("note", b"hello")          # PUT /home/note
     >>> e.get("note")                    # GET, returns bytes
     >>> e.get_text("note")               # GET, decode to str
@@ -144,14 +144,14 @@ class Elastik(MutableMapping[str, bytes]):
     >>> e.list_paths()                   # GET /proc/worlds
     """
 
-    def __init__(self, url: str | None = None, token: str | None = None):
+    def __init__(self, url: str | None = None, bearer_token: str | None = None):
         if url is None:
             from elastik._spawn import default_url
             url = default_url()
-        if token is None:
-            token = _best_env_token()
+        if bearer_token is None:
+            bearer_token = _best_env_token()
         self.url = url.rstrip("/")
-        self.token = token
+        self.bearer_token = bearer_token
         self._etag_cache: dict[str, tuple[str, bytes]] = {}
 
     def __repr__(self) -> str:
@@ -620,8 +620,8 @@ class Elastik(MutableMapping[str, bytes]):
         """
         url = self.url + "/listen/" + _quote_listen_pattern(pattern)
         h = {}
-        if self.token:
-            h["Authorization"] = f"Bearer {self.token}"
+        if self.bearer_token:
+            h["Authorization"] = f"Bearer {self.bearer_token}"
         if last_event_id is not None:
             h["Last-Event-ID"] = str(last_event_id)
         req = urllib.request.Request(url, method="GET", headers=h)
@@ -680,8 +680,8 @@ class Elastik(MutableMapping[str, bytes]):
         """Raw HTTP escape hatch for any header/method the SDK hasn't sugared."""
         url = self.url + _quote_path(path)
         h = dict(headers or {})
-        if self.token:
-            h.setdefault("Authorization", f"Bearer {self.token}")
+        if self.bearer_token:
+            h.setdefault("Authorization", f"Bearer {self.bearer_token}")
         req = urllib.request.Request(url, data=body, method=method, headers=h)
         start = time.perf_counter()
         try:
@@ -850,7 +850,7 @@ def _quote_listen_pattern(pattern: str) -> str:
 def _best_env_token() -> str:
     return (
         os.getenv("ELASTIK_APPROVE_TOKEN")
-        or os.getenv("ELASTIK_TOKEN")
+        or os.getenv("ELASTIK_WRITE_TOKEN")
         or os.getenv("ELASTIK_READ_TOKEN", "")
     )
 

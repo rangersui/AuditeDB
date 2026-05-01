@@ -9,7 +9,7 @@ The beginner surface in one breath:
 import secrets
 import elastik
 
-e = elastik.start(key=secrets.token_hex(32), token="write-token")
+e = elastik.start(key=secrets.token_hex(32), write_token="write-token")
 e.put("note", "hello")
 print(e.get("note"))       # b"hello"
 print(e.get_text("note"))  # hello
@@ -71,7 +71,7 @@ import elastik
 e = elastik.start(
     key=secrets.token_hex(32),   # required HMAC key for the audit chain
     read_token="read-token",     # optional: omit for public reads
-    token="write-token",         # optional: ordinary PUT/POST
+    write_token="write-token",   # optional: ordinary PUT/POST
     approve_token="admin-token", # optional: DELETE and system namespaces
 )
 ```
@@ -84,7 +84,7 @@ Python kwargs use underscores (`read_token`). CLI flags use hyphens
 Use this when you want a long-running local service:
 
 ```powershell
-py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token admin-token
+py -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token admin-token
 ```
 
 Then connect from another process:
@@ -92,23 +92,23 @@ Then connect from another process:
 ```python
 from elastik import Elastik
 
-e = Elastik("http://127.0.0.1:3105", token="write-token")
+e = Elastik("http://127.0.0.1:3105", bearer_token="write-token")
 ```
 
 Module-level `elastik.put/get/...` calls require either a prior
 `elastik.start(...)` or explicit environment like `ELASTIK_URL` and
-`ELASTIK_TOKEN`. They do not silently assume that an unknown process on
+`ELASTIK_WRITE_TOKEN`. They do not silently assume that an unknown process on
 `127.0.0.1:3105` is yours.
 
 ## Tokens
 
 - `read_token`: gates `GET`, `HEAD`, `OPTIONS`, `/listen/*`, and `/proc/worlds`.
-- `token`: ordinary write token for `PUT` and `POST`.
+- `write_token`: ordinary write token for `PUT` and `POST`.
 - `approve_token`: admin token for `DELETE` and system namespaces.
 
-If `read_token` is omitted, reads are public. If `token` is omitted, ordinary
-writes are disabled. If `approve_token` is omitted, destructive/admin operations
-are disabled.
+If `read_token` is omitted, reads are public. If `write_token` is omitted,
+ordinary writes are disabled. If `approve_token` is omitted, destructive/admin
+operations are disabled.
 
 ## Paths
 
@@ -315,7 +315,7 @@ least one handler.
 ```python
 import elastik
 
-e = elastik.start(key="dev-key", token="write-token")
+e = elastik.start(key="dev-key", write_token="write-token")
 
 @elastik.listen("/home/inbox/*")
 def on_inbox(body, path, meta, e):
@@ -392,7 +392,7 @@ assert e.get_text("note") == "hello"
 git clone https://github.com/rangersui/Elastik
 cd Elastik
 python -m pip install -e .\sdk
-python -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token admin-token
+python -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token admin-token
 ```
 
 For the full project README, see:

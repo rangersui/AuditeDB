@@ -200,7 +200,7 @@ def main() -> int:
         "ELASTIK_URL",
         "ELASTIK_HOST",
         "ELASTIK_PORT",
-        "ELASTIK_TOKEN",
+        "ELASTIK_WRITE_TOKEN",
         "ELASTIK_READ_TOKEN",
         "ELASTIK_APPROVE_TOKEN",
     )
@@ -275,15 +275,15 @@ def main() -> int:
             port=port,
             key=key,
             read_token=read_token,
-            token=write_token,
+            write_token=write_token,
             approve_token=approve_token,
             data_dir=data_dir,
             quiet=True,
         )
-        reader = Elastik(base, token=read_token)
-        writer = Elastik(base, token=write_token)
-        approver = Elastik(base, token=approve_token)
-        anon = Elastik(base, token="")
+        reader = Elastik(base, bearer_token=read_token)
+        writer = Elastik(base, bearer_token=write_token)
+        approver = Elastik(base, bearer_token=approve_token)
+        anon = Elastik(base, bearer_token="")
 
         try:
             # Read gate is real: no token cannot read once ELASTIK_READ_TOKEN is set.
@@ -417,14 +417,14 @@ def main() -> int:
                 port=port,
                 key=key,
                 read_token=read_token,
-                token=write_token,
+                write_token=write_token,
                 approve_token=approve_token,
                 data_dir=data_dir,
                 quiet=True,
             )
-            writer = Elastik(base, token=write_token)
-            reader = Elastik(base, token=read_token)
-            approver = Elastik(base, token=approve_token)
+            writer = Elastik(base, bearer_token=write_token)
+            reader = Elastik(base, bearer_token=read_token)
+            approver = Elastik(base, bearer_token=approve_token)
             resp = reader.request("OPTIONS", "/home/sdk/text")
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")

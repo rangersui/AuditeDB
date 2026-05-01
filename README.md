@@ -44,7 +44,7 @@ Start the Rust core:
 cd C:\Users\chenh\Elastik-franchise\Elastik-playground\core
 $env:ELASTIK_KEY = "dev-hmac-key"
 $env:ELASTIK_READ_TOKEN = "read-token"
-$env:ELASTIK_TOKEN = "write-token"
+$env:ELASTIK_WRITE_TOKEN = "write-token"
 cargo run
 ```
 
@@ -88,7 +88,7 @@ ELASTIK_DATA=./data
 
 ELASTIK_KEY=change-me
 ELASTIK_READ_TOKEN=
-ELASTIK_TOKEN=
+ELASTIK_WRITE_TOKEN=
 ELASTIK_APPROVE_TOKEN=
 ```
 
@@ -99,7 +99,7 @@ Tokens are optional capability gates. Missing tokens do not stop the core from
 starting; they disable the corresponding protected operations:
 
 - no `ELASTIK_READ_TOKEN`: reads are public.
-- no `ELASTIK_TOKEN`: ordinary `PUT` and `POST` are disabled.
+- no `ELASTIK_WRITE_TOKEN`: ordinary `PUT` and `POST` are disabled.
 - no `ELASTIK_APPROVE_TOKEN`: `DELETE` and system writes are disabled.
 
 `ELASTIK_DATA` is the universe selector. Point the same binary at another data
@@ -131,14 +131,14 @@ There are three token levels:
 | Tier | Variable | Meaning |
 |---|---|---|
 | Read | `ELASTIK_READ_TOKEN` | Optional read gate. If empty, reads are public. |
-| Write | `ELASTIK_TOKEN` | Write ordinary worlds. Includes read. |
+| Write | `ELASTIK_WRITE_TOKEN` | Write ordinary worlds. Includes read. |
 | Approve | `ELASTIK_APPROVE_TOKEN` | Write system worlds and delete. Includes read. |
 
 Policy is small:
 
 - `GET`, `HEAD`, `OPTIONS`, `/listen/*`, and `/proc/worlds` require read only
   when `ELASTIK_READ_TOKEN` is configured.
-- `PUT` and `POST` require `ELASTIK_TOKEN` for ordinary worlds.
+- `PUT` and `POST` require `ELASTIK_WRITE_TOKEN` for ordinary worlds.
 - `/etc/*`, `/lib/*`, `/boot/*`, `/usr/*`, and `/var/log/*` writes require
   `ELASTIK_APPROVE_TOKEN`.
 - `DELETE` requires `ELASTIK_APPROVE_TOKEN`.
@@ -158,7 +158,7 @@ local development, pass all three tokens:
 python -m elastik run `
   --key dev-hmac-key `
   --read-token read-token `
-  --token write-token `
+  --write-token write-token `
   --approve-token approve-token
 ```
 
@@ -518,7 +518,7 @@ py -m pip install elastik
 Run the bundled core:
 
 ```powershell
-py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
+py -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token approve-token
 ```
 
 Install from source for local development:
@@ -530,7 +530,7 @@ python -m pip install -e .\sdk
 The same command works either way:
 
 ```powershell
-python -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
+python -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token approve-token
 ```
 
 Use the atoms:
@@ -538,7 +538,7 @@ Use the atoms:
 ```python
 from elastik import Elastik
 
-e = Elastik("http://127.0.0.1:3105", token="write-token")
+e = Elastik("http://127.0.0.1:3105", bearer_token="write-token")
 
 e.put("/home/note", "hello", content_type="text/plain; charset=utf-8")
 body = e.get("/home/note")          # bytes
@@ -599,7 +599,7 @@ def on_task(body, world, e):
     name = world.rsplit("/", 1)[-1]
     e.put(f"/home/result/{name}", result)
 
-e = elastik.Elastik("http://127.0.0.1:3105", token="write-token")
+e = elastik.Elastik("http://127.0.0.1:3105", bearer_token="write-token")
 elastik.run(e)
 ```
 

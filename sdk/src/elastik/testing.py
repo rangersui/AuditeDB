@@ -25,7 +25,7 @@ class FakeElastik(Elastik):
 
     def __init__(self):
         self.url = "fake://elastik"
-        self.token = "fake"
+        self.bearer_token = "fake"
         self._etag_cache: dict[str, tuple[str, bytes]] = {}
         self._store: dict[str, tuple[bytes, WorldMeta]] = {}
 

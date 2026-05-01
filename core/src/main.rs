@@ -31,7 +31,7 @@
 //!   ELASTIK_PORT           default 3105
 //!   ELASTIK_DATA           default ./data
 //!   ELASTIK_READ_TOKEN     T1 token  (optional read gate)
-//!   ELASTIK_TOKEN          T2 token  (writes to /home/*, includes read)
+//!   ELASTIK_WRITE_TOKEN    T2 token  (writes to /home/*, includes read)
 //!   ELASTIK_APPROVE_TOKEN  T3 token  (system writes/deletes, includes read)
 //!   ELASTIK_KEY            HMAC key for the audit chain (required)
 mod audit;
@@ -225,10 +225,10 @@ fn print_auth_summary(tokens: &auth::Tokens) {
     );
     eprintln!(
         "  write:   {}",
-        if tokens.auth.is_some() {
+        if tokens.write.is_some() {
             "token required"
         } else {
-            "disabled (ELASTIK_TOKEN not set)"
+            "disabled (ELASTIK_WRITE_TOKEN not set)"
         }
     );
     eprintln!(
@@ -245,16 +245,16 @@ fn print_auth_summary(tokens: &auth::Tokens) {
     if auth::env_set_but_empty("ELASTIK_READ_TOKEN") {
         eprintln!("  warning: empty ELASTIK_READ_TOKEN treated as unset (reads public)");
     }
-    if auth::env_set_but_empty("ELASTIK_TOKEN") {
-        eprintln!("  warning: empty ELASTIK_TOKEN treated as unset (PUT/POST disabled)");
+    if auth::env_set_but_empty("ELASTIK_WRITE_TOKEN") {
+        eprintln!("  warning: empty ELASTIK_WRITE_TOKEN treated as unset (PUT/POST disabled)");
     }
     if auth::env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
         eprintln!(
             "  warning: empty ELASTIK_APPROVE_TOKEN treated as unset (DELETE/system writes disabled)"
         );
     }
-    if tokens.auth.is_none() {
-        eprintln!("  warning: ELASTIK_TOKEN not set; ordinary PUT/POST are disabled.");
+    if tokens.write.is_none() {
+        eprintln!("  warning: ELASTIK_WRITE_TOKEN not set; ordinary PUT/POST are disabled.");
     }
     if tokens.approve.is_none() {
         eprintln!(
@@ -768,7 +768,7 @@ fn can_write(world_name: &str, tier: auth::Tier) -> bool {
     match tier {
         auth::Tier::Anon => false,
         auth::Tier::Read => false,
-        auth::Tier::Auth => !needs_approve,
+        auth::Tier::Write => !needs_approve,
         auth::Tier::Approve => true,
     }
 }
@@ -804,7 +804,7 @@ fn can_read(core: &Core, tier: auth::Tier) -> bool {
     !core.tokens.read_required()
         || matches!(
             tier,
-            auth::Tier::Read | auth::Tier::Auth | auth::Tier::Approve
+            auth::Tier::Read | auth::Tier::Write | auth::Tier::Approve
         )
 }
 
@@ -922,11 +922,11 @@ mod tests {
     fn var_log_requires_approve_token() {
         assert!(!can_write("var/log", auth::Tier::Anon));
         assert!(!can_write("var/log", auth::Tier::Read));
-        assert!(!can_write("var/log", auth::Tier::Auth));
+        assert!(!can_write("var/log", auth::Tier::Write));
         assert!(can_write("var/log", auth::Tier::Approve));
         assert!(!can_write("var/log/deletes", auth::Tier::Anon));
         assert!(!can_write("var/log/deletes", auth::Tier::Read));
-        assert!(!can_write("var/log/deletes", auth::Tier::Auth));
+        assert!(!can_write("var/log/deletes", auth::Tier::Write));
         assert!(can_write("var/log/deletes", auth::Tier::Approve));
     }
 
@@ -934,7 +934,7 @@ mod tests {
     fn delete_requires_approve_token() {
         assert!(!can_delete(auth::Tier::Anon));
         assert!(!can_delete(auth::Tier::Read));
-        assert!(!can_delete(auth::Tier::Auth));
+        assert!(!can_delete(auth::Tier::Write));
         assert!(can_delete(auth::Tier::Approve));
     }
 
@@ -957,7 +957,7 @@ mod tests {
             "home/too-big",
             &headers,
             Bytes::from_static(b"12345"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(too_big.status(), StatusCode::PAYLOAD_TOO_LARGE);
@@ -967,7 +967,7 @@ mod tests {
             "home/four",
             &headers,
             Bytes::from_static(b"1234"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(ok.status(), StatusCode::CREATED);
@@ -977,7 +977,7 @@ mod tests {
             "home/four",
             &headers,
             Bytes::from_static(b"5"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(append.status(), StatusCode::PAYLOAD_TOO_LARGE);
@@ -996,7 +996,7 @@ mod tests {
             "tmp/a",
             &headers,
             Bytes::from_static(b"12"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(first.status(), StatusCode::CREATED);
@@ -1005,7 +1005,7 @@ mod tests {
             "tmp/b",
             &headers,
             Bytes::from_static(b"34"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(second.status(), StatusCode::CREATED);
@@ -1014,7 +1014,7 @@ mod tests {
             "tmp/c",
             &headers,
             Bytes::from_static(b"5"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(third.status(), StatusCode::PAYLOAD_TOO_LARGE);
@@ -1027,7 +1027,7 @@ mod tests {
         for name in ["lib", "etc", "boot", "usr"] {
             assert!(!can_write(name, auth::Tier::Anon), "{name}");
             assert!(!can_write(name, auth::Tier::Read), "{name}");
-            assert!(!can_write(name, auth::Tier::Auth), "{name}");
+            assert!(!can_write(name, auth::Tier::Write), "{name}");
             assert!(can_write(name, auth::Tier::Approve), "{name}");
         }
     }
@@ -1036,7 +1036,7 @@ mod tests {
     fn non_log_var_still_accepts_auth_token() {
         assert!(!can_write("var/cache/rag", auth::Tier::Anon));
         assert!(!can_write("var/cache/rag", auth::Tier::Read));
-        assert!(can_write("var/cache/rag", auth::Tier::Auth));
+        assert!(can_write("var/cache/rag", auth::Tier::Write));
         assert!(can_write("var/cache/rag", auth::Tier::Approve));
     }
 
@@ -1048,7 +1048,7 @@ mod tests {
         core.tokens.read = Some(b"reader".to_vec());
         assert!(!can_read(&core, auth::Tier::Anon));
         assert!(can_read(&core, auth::Tier::Read));
-        assert!(can_read(&core, auth::Tier::Auth));
+        assert!(can_read(&core, auth::Tier::Write));
         assert!(can_read(&core, auth::Tier::Approve));
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1451,7 +1451,7 @@ mod tests {
             "home/created",
             &headers,
             Bytes::from_static(b"new"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
 
@@ -1466,7 +1466,7 @@ mod tests {
             "home/created",
             &headers,
             Bytes::from_static(b"again"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1484,7 +1484,7 @@ mod tests {
             "home/café report",
             &headers,
             Bytes::from_static(b"new"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(resp.status(), StatusCode::CREATED);
@@ -1591,7 +1591,7 @@ mod tests {
             "home/cas",
             &stale,
             Bytes::from_static(b"two"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(put.status(), StatusCode::PRECONDITION_FAILED);
@@ -1601,7 +1601,7 @@ mod tests {
             "home/cas",
             &stale,
             Bytes::from_static(b" plus"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(post.status(), StatusCode::PRECONDITION_FAILED);
@@ -1616,7 +1616,7 @@ mod tests {
             "home/cas",
             &good,
             Bytes::from_static(b" plus"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(post.status(), StatusCode::OK);
@@ -1897,7 +1897,7 @@ mod tests {
             "home/post-audit-meta",
             &req_headers,
             Bytes::from_static(b" world"),
-            auth::Tier::Auth,
+            auth::Tier::Write,
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1981,7 +1981,7 @@ mod tests {
         let headers = HeaderMap::new();
 
         let auth_delete =
-            handle_delete(&core, "home/delete-policy", &headers, auth::Tier::Auth).await;
+            handle_delete(&core, "home/delete-policy", &headers, auth::Tier::Write).await;
         assert_eq!(auth_delete.status(), StatusCode::UNAUTHORIZED);
         assert!(core.read_world("home/delete-policy").is_some());
 
@@ -2031,7 +2031,7 @@ mod tests {
                     data: dir.clone(),
                     tokens: auth::Tokens {
                         read: None,
-                        auth: None,
+                        write: None,
                         approve: None,
                     },
                     hmac_key: b"test-key".to_vec(),
