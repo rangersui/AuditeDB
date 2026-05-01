@@ -33,8 +33,7 @@ impl Tokens {
     pub fn from_env() -> Self {
         Self {
             read: nonempty_env("ELASTIK_READ_TOKEN"),
-            write: nonempty_env("ELASTIK_WRITE_TOKEN")
-                .or_else(|| nonempty_env("ELASTIK_TOKEN")),
+            write: nonempty_env("ELASTIK_WRITE_TOKEN").or_else(|| nonempty_env("ELASTIK_TOKEN")),
             approve: nonempty_env("ELASTIK_APPROVE_TOKEN"),
         }
     }
