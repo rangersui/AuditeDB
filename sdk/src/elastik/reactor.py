@@ -250,7 +250,8 @@ def run(
             "elastik.run() has no @elastik.listen handlers registered. "
             "Register a handler first, or remove run() if you only need put/get."
         )
-    e = e or Elastik()
+    if e is None:
+        e = Elastik()
     last_event_id = ""
     dispatched = 0
     while True:

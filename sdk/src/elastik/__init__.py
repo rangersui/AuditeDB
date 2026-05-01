@@ -59,9 +59,21 @@ elastik.load_dotenv(path) yourself.
 from __future__ import annotations
 
 import os
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from elastik.sdk import Elastik, ElastikError, Response
+from elastik.sdk import (
+    Elastik,
+    ElastikError,
+    Forbidden,
+    NotFound,
+    PayloadTooLarge,
+    PreconditionFailed,
+    Response,
+    ServerError,
+    Unauthorized,
+    WorldMeta,
+)
 from elastik.reactor import (
     listen,
     run,
@@ -98,23 +110,31 @@ if os.getenv("ELASTIK_NO_DOTENV") != "1":
     load_dotenv()
 
 __all__ = [
+    "__version__",
     # Class — for users who want explicit instances
     "Elastik",
     "ElastikError",
+    "Unauthorized", "Forbidden", "NotFound", "PreconditionFailed",
+    "PayloadTooLarge", "ServerError",
     "Response",
+    "WorldMeta",
     # Reactor sugar
     "listen", "run", "clear_routes", "unlisten", "has_routes",
     "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
     # Lifecycle
-    "start", "stop", "is_running", "default_url", "binary_info", "load_dotenv",
+    "start", "stop", "is_running", "default_url", "binary_info",
+    "load_dotenv", "show_config",
     # Trusted local execution helpers for @listen handlers
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     # Module-level convenience (NumPy-shaped)
-    "put", "post", "get", "get_text", "get_json",
+    "put", "put_text", "put_json", "post", "get", "get_text", "get_json",
     "head", "delete", "list_worlds", "list_paths", "list_keys", "request",
 ]
 
-__version__ = "6.0.1"
+try:
+    __version__ = version("elastik")
+except PackageNotFoundError:
+    __version__ = "6.0.1"
 
 
 # ── module-level singleton client ──────────────────────────────────
@@ -166,6 +186,29 @@ def _set_default(client: Elastik) -> None:
     Public API is just: call start(), use module-level functions."""
     global _default_client
     _default_client = client
+
+
+def _mask(value: str | None) -> str:
+    if not value:
+        return "<unset>"
+    if len(value) <= 8:
+        return "<set>"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def show_config() -> None:
+    """Print the SDK/core configuration useful for bug reports."""
+    info = binary_info()
+    print(f"elastik {__version__}")
+    print(f"  core:    {info.get('path', '<unknown>')}")
+    print(f"  exists:  {info.get('exists', '<unknown>')}")
+    print(f"  url:     {default_url()}")
+    print(f"  data:    {os.getenv('ELASTIK_DATA', '<default ./data>')}")
+    print(f"  running: {is_running()}")
+    print(f"  key:     {_mask(os.getenv('ELASTIK_KEY'))}")
+    print(f"  read:    {_mask(os.getenv('ELASTIK_READ_TOKEN'))}")
+    print(f"  write:   {_mask(os.getenv('ELASTIK_TOKEN'))}")
+    print(f"  approve: {_mask(os.getenv('ELASTIK_APPROVE_TOKEN'))}")
 
 
 # Re-export start() to also bind the singleton, so the next 模式 works:
@@ -229,6 +272,28 @@ def put(
         headers=headers,
         **meta,
     )
+
+
+def put_text(
+    path: str,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    **kwargs: Any,
+) -> dict:
+    """elastik.put_text('/home/note', 'hello') -> {'status': 201, ...}"""
+    return _client().put_text(path, text, encoding=encoding, **kwargs)
+
+
+def put_json(
+    path: str,
+    value: Any,
+    *,
+    ensure_ascii: bool = False,
+    **kwargs: Any,
+) -> dict:
+    """elastik.put_json('/home/config', {'ok': True}) -> {'status': 201, ...}"""
+    return _client().put_json(path, value, ensure_ascii=ensure_ascii, **kwargs)
 
 
 def post(
@@ -302,7 +367,7 @@ def get_json(
     )
 
 
-def head(path: str) -> dict[str, str]:
+def head(path: str) -> WorldMeta:
     """elastik.head('/home/note') -> {'x-meta-...': '...'}"""
     return _client().head(path)
 
@@ -314,6 +379,13 @@ def delete(path: str, *, if_match: str | None = None) -> bool:
 
 def list_worlds() -> list[str]:
     """Older name for list_paths()."""
+    import warnings
+
+    warnings.warn(
+        "list_worlds() is renamed list_paths(); list_worlds remains as a compatibility alias",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _client().list()
 
 

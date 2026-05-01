@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 import warnings
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Iterator, TypedDict
 
 
 _NAMESPACES = {"home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"}
@@ -41,11 +41,58 @@ _REPRESENTATION_KWARGS = {
 }
 
 
+WorldMeta = TypedDict(
+    "WorldMeta",
+    {
+        "etag": str,
+        "content-type": str,
+        "content-length": str,
+        "content-encoding": str,
+        "content-language": str,
+        "content-disposition": str,
+        "cache-control": str,
+        "accept-ranges": str,
+        "link": str,
+    },
+    total=False,
+)
+
+
 class ElastikError(Exception):
-    def __init__(self, status: int, body: bytes):
+    def __init__(self, status: int, body: bytes, *, method: str = "", path: str = ""):
         self.status = status
         self.body = body
-        super().__init__(f"elastik {status}: {body[:200]!r}")
+        self.method = method
+        self.path = path
+        super().__init__(str(self))
+
+    def __str__(self) -> str:
+        route = f" {self.method} {self.path}" if self.method or self.path else ""
+        return f"elastik {self.status}{route}: {self.body[:200]!r}"
+
+
+class Unauthorized(ElastikError):
+    """401 Unauthorized."""
+
+
+class Forbidden(ElastikError):
+    """403 Forbidden."""
+
+
+class NotFound(ElastikError):
+    """404 Not Found."""
+
+
+class PreconditionFailed(ElastikError):
+    """412 Precondition Failed."""
+
+
+class PayloadTooLarge(ElastikError):
+    """413 Payload Too Large."""
+
+
+class ServerError(ElastikError):
+    """5xx server-side failure."""
 
 
 @dataclass(frozen=True)
@@ -128,7 +175,7 @@ class Elastik:
             if_none_match = None
         if create_only and if_none_match is not None:
             raise ValueError("use either create_only=True or if_none_match=etag, not both")
-        body = data.encode("utf-8") if isinstance(data, str) else data
+        body = _body_bytes(data, "put")
         request_headers = dict(headers or {})
         _warn_near_representation_kwargs(meta)
         request_headers.update(
@@ -154,11 +201,39 @@ class Elastik:
             )
         resp = self.request("PUT", path, body, request_headers)
         if resp.status >= 400:
-            raise ElastikError(resp.status, resp.body)
+            _raise_for_response(resp, "PUT", path)
         return {
             "status": resp.status,
             "etag": resp.etag,
         }
+
+    def put_text(
+        self,
+        path: str,
+        text: str,
+        *,
+        encoding: str = "utf-8",
+        **kwargs: Any,
+    ) -> dict:
+        """PUT text with a text/plain Content-Type."""
+        return self.put(
+            path,
+            text.encode(encoding),
+            content_type=f"text/plain; charset={encoding}",
+            **kwargs,
+        )
+
+    def put_json(
+        self,
+        path: str,
+        value: Any,
+        *,
+        ensure_ascii: bool = False,
+        **kwargs: Any,
+    ) -> dict:
+        """PUT JSON with application/json Content-Type."""
+        body = json.dumps(value, ensure_ascii=ensure_ascii).encode("utf-8")
+        return self.put(path, body, content_type="application/json", **kwargs)
 
     def post(
         self,
@@ -169,12 +244,12 @@ class Elastik:
         headers: dict[str, str] | None = None,
     ) -> dict:
         """POST byte-append to an existing path without changing metadata."""
-        body = data.encode("utf-8") if isinstance(data, str) else data
+        body = _body_bytes(data, "post")
         request_headers = dict(headers or {})
         _set_if(request_headers, "If-Match", _etag_value(if_match))
         resp = self.request("POST", path, body, request_headers)
         if resp.status >= 400:
-            raise ElastikError(resp.status, resp.body)
+            _raise_for_response(resp, "POST", path)
         return {"status": resp.status, "etag": resp.etag}
 
     def get(
@@ -201,9 +276,9 @@ class Elastik:
         if resp.status == 304:
             return None
         if resp.status == 404:
-            raise ElastikError(404, resp.body)
+            _raise_for_response(resp, "GET", path)
         if resp.status >= 400:
-            raise ElastikError(resp.status, resp.body)
+            _raise_for_response(resp, "GET", path)
         return resp.body
 
     def get_text(
@@ -252,7 +327,7 @@ class Elastik:
             return None
         return json.loads(text)
 
-    def head(self, path: str) -> dict[str, str]:
+    def head(self, path: str) -> WorldMeta:
         """HEAD path. Returns lowercased HTTP headers.
 
         Stable application headers include: etag, content-type,
@@ -261,10 +336,10 @@ class Elastik:
         """
         resp = self.request("HEAD", path)
         if resp.status == 404:
-            raise ElastikError(404, resp.body)
+            _raise_for_response(resp, "HEAD", path)
         if resp.status >= 400:
-            raise ElastikError(resp.status, resp.body)
-        return resp.headers
+            _raise_for_response(resp, "HEAD", path)
+        return resp.headers  # type: ignore[return-value]
 
     def delete(self, path: str, *, if_match: str | None = None) -> bool:
         """DELETE path.
@@ -280,13 +355,14 @@ class Elastik:
             return True
         if resp.status == 404:
             return False
-        raise ElastikError(resp.status, resp.body)
+        _raise_for_response(resp, "DELETE", path)
+        return False
 
     def list(self) -> list[str]:
         """GET /proc/worlds. Returns one world name per line."""
         resp = self.request("GET", "/proc/worlds")
         if resp.status >= 400:
-            raise ElastikError(resp.status, resp.body)
+            _raise_for_response(resp, "GET", "/proc/worlds")
         text = resp.body.decode("utf-8")
         return [line for line in text.splitlines() if line]
 
@@ -326,7 +402,40 @@ class Elastik:
             with urllib.request.urlopen(req, timeout=None) as r:
                 yield from _iter_sse(r)
         except urllib.error.HTTPError as e:
-            raise ElastikError(e.code, e.read() if e.fp else b"") from e
+            _raise_error(
+                e.code,
+                e.read() if e.fp else b"",
+                method="GET",
+                path=f"/listen/{pattern}",
+            )
+
+    def __getitem__(self, path: str) -> bytes:
+        body = self.get(path)
+        if body is None:
+            raise KeyError(path)
+        return body
+
+    def __setitem__(self, path: str, data: bytes | str) -> None:
+        self.put(path, data)
+
+    def __delitem__(self, path: str) -> None:
+        if not self.delete(path):
+            raise KeyError(path)
+
+    def __contains__(self, path: object) -> bool:
+        if not isinstance(path, str):
+            return False
+        try:
+            self.head(path)
+            return True
+        except ElastikError:
+            return False
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.list_paths())
+
+    def __len__(self) -> int:
+        return len(self.list_paths())
 
     def request(
         self,
@@ -421,6 +530,14 @@ def _set_if(headers: dict[str, str], name: str, value: str | None) -> None:
         headers[name] = str(value)
 
 
+def _body_bytes(data: bytes | str, method: str) -> bytes:
+    if isinstance(data, bytes):
+        return data
+    if isinstance(data, str):
+        return data.encode("utf-8")
+    raise TypeError(f"{method}() data must be str or bytes, got {type(data).__name__}")
+
+
 def _etag_value(value: str | None) -> str | None:
     if value is None:
         return None
@@ -432,6 +549,29 @@ def _etag_value(value: str | None) -> str | None:
     if v.startswith('"') and v.endswith('"'):
         return v
     return f'"{v}"'
+
+
+def _raise_for_response(resp: Response, method: str, path: str) -> None:
+    _raise_error(resp.status, resp.body, method=method, path=path)
+
+
+def _raise_error(status: int, body: bytes, *, method: str = "", path: str = "") -> None:
+    cls: type[ElastikError]
+    if status == 401:
+        cls = Unauthorized
+    elif status == 403:
+        cls = Forbidden
+    elif status == 404:
+        cls = NotFound
+    elif status == 412:
+        cls = PreconditionFailed
+    elif status == 413:
+        cls = PayloadTooLarge
+    elif status >= 500:
+        cls = ServerError
+    else:
+        cls = ElastikError
+    raise cls(status, body, method=method, path=path)
 
 
 def _warn_near_representation_kwargs(meta: dict[str, Any]) -> None:

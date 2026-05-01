@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import compileall
+import contextlib
+import io
 import os
 import shutil
 import socket
@@ -103,6 +105,15 @@ def expect_error(fn, status: int, check: Check, name: str) -> None:
     raise AssertionError(f"FAIL: {name}\n  expected ElastikError({status})")
 
 
+def expect_error_type(fn, exc_type, check: Check, name: str) -> None:
+    try:
+        fn()
+    except exc_type:
+        check(True, name)
+        return
+    raise AssertionError(f"FAIL: {name}\n  expected {exc_type.__name__}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-build", action="store_true", help="reuse bundled binary")
@@ -125,6 +136,11 @@ def main() -> int:
     check(_spawn._connect_host("0.0.0.0") == "127.0.0.1", "wildcard IPv4 maps to loopback")
     check(_spawn._client_url("0.0.0.0", 1234) == "http://127.0.0.1:1234", "wildcard IPv4 returns usable URL")
     check(_spawn._client_url("::", 1234) == "http://[::1]:1234", "wildcard IPv6 URL is bracketed")
+    check("__version__" in elastik.__all__, "__version__ is public")
+    show_buf = io.StringIO()
+    with contextlib.redirect_stdout(show_buf):
+        elastik.show_config()
+    check("elastik " in show_buf.getvalue(), "show_config prints package version")
     prior_host = os.environ.get("ELASTIK_HOST")
     prior_port = os.environ.get("ELASTIK_PORT")
     prior_url = os.environ.get("ELASTIK_URL")
@@ -297,6 +313,10 @@ def main() -> int:
                 content_type="application/json",
             )
             check(reader.get_json("/home/sdk/json") == {"ok": True}, "sdk get_json decodes JSON")
+            writer.put_text("/home/sdk/put-text", "plain")
+            check(reader.get_text("/home/sdk/put-text") == "plain", "sdk put_text writes text")
+            writer.put_json("/home/sdk/put-json", {"ok": True})
+            check(reader.get_json("/home/sdk/put-json") == {"ok": True}, "sdk put_json writes JSON")
             head = reader.head("/home/sdk/text")
             check(head["content-type"] == "text/plain; charset=utf-8", "head content-type")
             check(head["content-language"] == "zh-CN", "head content-language")
@@ -308,6 +328,19 @@ def main() -> int:
             check("home/sdk/text" in reader.list_paths(), "sdk list_paths aliases list")
             check("home/sdk/text" in reader.list_keys(), "sdk list_keys aliases list")
             check("home/sdk/text" in elastik.list_paths(), "module list_paths aliases list")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                check("home/sdk/text" in elastik.list_worlds(), "module list_worlds still works")
+                check(
+                    any(issubclass(w.category, DeprecationWarning) for w in caught),
+                    "module list_worlds emits deprecation warning",
+                )
+            writer["/home/sdk/mapping"] = "mapped"
+            check(reader["/home/sdk/mapping"] == b"mapped", "mapping __getitem__/__setitem__ work")
+            check("/home/sdk/mapping" in reader, "mapping __contains__ sees path")
+            check(len(reader) >= 1, "mapping __len__ delegates to list_paths")
+            del approver["/home/sdk/mapping"]
+            check("/home/sdk/mapping" not in reader, "mapping __delitem__ deletes")
             resp = reader.request("OPTIONS", "/home/sdk/text")
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")
@@ -332,6 +365,12 @@ def main() -> int:
 
             # Tier checks.
             expect_error(lambda: reader.put("/home/sdk/nope", b"x"), 401, check, "read token cannot write")
+            expect_error_type(
+                lambda: reader.put("/home/sdk/type", {"bad": "dict"}),
+                TypeError,
+                check,
+                "SDK put rejects non-bytes non-str data",
+            )
             expect_error(lambda: writer.put("/etc/sdk/system", b"x"), 401, check, "write token cannot write system")
             check(approver.put("/etc/sdk/system", b"ok")["status"] == 201, "approve token writes system")
 
@@ -442,6 +481,22 @@ def main() -> int:
             )
             check(approver.delete("/home/sdk/append", if_match=del_etag), "SDK delete current if_match succeeds")
             expect_error(lambda: reader.get("/home/sdk/append"), 404, check, "deleted world is gone")
+            expect_error_type(
+                lambda: reader.get("/home/sdk/append"),
+                elastik.NotFound,
+                check,
+                "404 raises NotFound subclass",
+            )
+            try:
+                writer.put("/home/sdk/text", b"bad", if_match=stale)
+            except elastik.PreconditionFailed as e:
+                check(
+                    e.method == "PUT" and e.path == "/home/sdk/text",
+                    "ElastikError carries method and path",
+                    str(e),
+                )
+            else:
+                raise AssertionError("FAIL: stale If-Match did not raise PreconditionFailed")
             expect_error(
                 lambda: approver.delete("/var/log/deletes"),
                 401,

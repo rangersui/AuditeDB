@@ -159,8 +159,18 @@ means `304 Not Modified` from an `if_none_match` cache check; it never means
 Use helpers when you want decoding:
 
 ```python
+e.put_text("note", "hello")
+e.put_json("config", {"debug": True})
 e.get_text("x")          # str
 e.get_json("config")     # parsed JSON
+```
+
+`head()` returns a typed header dict (`WorldMeta`) for editor help:
+
+```python
+meta = e.head("x")
+print(meta["etag"])
+print(meta["content-type"])
 ```
 
 ## Conditional And Partial Reads
@@ -182,6 +192,37 @@ For anything not sugared, use the raw HTTP escape hatch:
 ```python
 r = e.request("OPTIONS", "note")
 print(r.status, r.headers, r.body)
+```
+
+## Python Ergonomics
+
+The core is HTTP; the SDK adds small Python-shaped conveniences without hiding
+the wire.
+
+```python
+e["note"] = "hello"             # PUT /home/note
+assert e["note"] == b"hello"    # GET /home/note
+assert "note" in e              # HEAD /home/note
+del e["note"]                   # DELETE /home/note
+```
+
+Errors have subclasses when you want precise handling:
+
+```python
+try:
+    e.get("missing")
+except elastik.NotFound:
+    print("not there")
+except elastik.PreconditionFailed:
+    print("etag changed")
+```
+
+For bug reports and shell sanity checks:
+
+```python
+import elastik
+print(elastik.__version__)
+elastik.show_config()
 ```
 
 ## Listening For Changes
