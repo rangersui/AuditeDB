@@ -37,6 +37,7 @@ use tokio::sync::watch;
 use crate::{auth, can_read, canonicalize_path, valid_world_name, Core};
 
 const MAX_DATAGRAM: usize = 1152;
+const RECV_BUF: usize = MAX_DATAGRAM + 1;
 /// Experimental critical CoAP option carrying the raw elastik token bytes.
 ///
 /// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
@@ -104,7 +105,7 @@ pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receive
     let socket = std::sync::Arc::new(socket);
     eprintln!("scoap: listening on coap://{bind}/");
     eprintln!("scoap: UDP curl surface; auth option {ELASTIK_AUTH_OPTION} maps to token tier");
-    let mut buf = [0_u8; MAX_DATAGRAM];
+    let mut buf = [0_u8; RECV_BUF];
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
@@ -119,6 +120,14 @@ pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receive
                         continue;
                     }
                 };
+                if n > MAX_DATAGRAM {
+                    eprintln!("scoap: oversized datagram from {peer}: {n} bytes");
+                    let reset = [0x70, 0x80, buf[2], buf[3]];
+                    if let Err(e) = socket.send_to(&reset, peer).await {
+                        eprintln!("scoap: send_to {peer}: {e}");
+                    }
+                    continue;
+                }
                 let data = Vec::from(&buf[..n]);
                 let socket = socket.clone();
                 let core = core.clone();
@@ -296,7 +305,11 @@ fn read_ext(nibble: u8, rest: &[u8]) -> Result<(u16, usize), String> {
             if rest.len() < 2 {
                 return Err("truncated extended option".to_owned());
             }
-            Ok((u16::from_be_bytes([rest[0], rest[1]]) + 269, 2))
+            let value = u16::from_be_bytes([rest[0], rest[1]]);
+            value
+                .checked_add(269)
+                .map(|v| (v, 2))
+                .ok_or_else(|| "extended option overflow".to_owned())
         }
         _ => Err("reserved option nibble".to_owned()),
     }
@@ -477,6 +490,17 @@ mod tests {
         assert_eq!(out[5], 0xc0); // delta 12, len 0 -> Content-Format: text/plain
         assert_eq!(out[6], 0xff);
         assert_eq!(&out[7..], b"ok");
+    }
+
+    #[test]
+    fn receive_buffer_can_detect_one_byte_oversize_datagrams() {
+        assert_eq!(RECV_BUF, MAX_DATAGRAM + 1);
+    }
+
+    #[test]
+    fn extended_option_overflow_is_rejected() {
+        let err = read_ext(14, &[0xff, 0xff]).unwrap_err();
+        assert_eq!(err, "extended option overflow");
     }
 
     fn coap_put_packet(path: &[&[u8]], payload: &[u8], token: Option<&[u8]>) -> Vec<u8> {
