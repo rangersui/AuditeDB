@@ -1,9 +1,9 @@
 //! elastik-core — bedrock HTTP+SQLite+HMAC.
 //!
-//! The core has exactly one interface: HTTP requests in, HTTP responses
-//! out. It does not know or care whether a request came from curl, a
-//! browser, WebDAV, SMTP, an AI agent, or an SDK bridge. Translation is
-//! external; the core only sees HTTP.
+//! The core has one semantic interface: method + path + representation bytes.
+//! HTTP is the first-class surface. SCoAP is a small UDP-curl surface because
+//! CoAP has semantic zero distance from HTTP. Everything else must arrive
+//! through SDK/client adapters that collapse it into the same tuple.
 //!
 //! v5.0 grammar:
 //!
@@ -29,6 +29,8 @@
 //! Env:
 //!   ELASTIK_HOST           default 127.0.0.1
 //!   ELASTIK_PORT           default 3105
+//!   ELASTIK_COAP_HOST      default 127.0.0.1
+//!   ELASTIK_COAP_PORT      default 5683
 //!   ELASTIK_DATA           default ./data
 //!   ELASTIK_READ_TOKEN     T1 token  (optional read gate)
 //!   ELASTIK_TOKEN          T2 token  (writes to /home/*, includes read)
@@ -36,6 +38,7 @@
 //!   ELASTIK_KEY            HMAC key for the audit chain (required)
 mod audit;
 mod auth;
+mod coap;
 mod http_semantics;
 mod listen;
 mod store;
@@ -61,6 +64,11 @@ use tokio::sync::{broadcast, watch, Mutex};
 
 use crate::http_semantics as hs;
 use crate::world::{AppendResult, Stage};
+
+pub(crate) struct WriteOutcome {
+    pub status: StatusCode,
+    pub etag: String,
+}
 
 #[derive(Clone)]
 struct Core {
@@ -151,6 +159,60 @@ impl Core {
         }
         let _ = self.events.send(change);
     }
+
+    async fn put_bytes(
+        &self,
+        world_name: &str,
+        body: &[u8],
+        content_type: &str,
+        headers: &[(String, String)],
+        tier: auth::Tier,
+        preconditions: Option<&HeaderMap>,
+    ) -> Result<WriteOutcome, Response> {
+        if !can_write(world_name, tier) {
+            return Err(unauthorized(
+                "write requires token; system worlds need approve token",
+            ));
+        }
+        if body.len() > self.max_world_bytes {
+            return Err(payload_too_large(self.max_world_bytes));
+        }
+        let _write_guard = self.write_lock.lock().await;
+        if let Some(req_headers) = preconditions {
+            hs::check_write_preconditions(self, world_name, req_headers)?;
+        }
+        let existed = self.read_world(world_name).is_some();
+        let new_etag = if store::is_persistent(world_name) {
+            match world::write_with_audit(
+                &self.data,
+                world_name,
+                body,
+                content_type,
+                headers,
+                &self.hmac_key,
+            ) {
+                Ok(h) => hs::hmac_etag(&h),
+                Err(e) => return Err(server_error(format!("storage/audit: {e}"))),
+            }
+        } else {
+            if memory_write_projected_bytes(self, world_name, body.len()) > self.max_memory_bytes {
+                return Err(payload_too_large(self.max_memory_bytes));
+            }
+            match self.write_world(world_name, body, content_type, headers) {
+                Ok(()) => hs::body_etag(body),
+                Err(e) => return Err(server_error(format!("storage: {e}"))),
+            }
+        };
+        self.notify("PUT", world_name, &new_etag);
+        Ok(WriteOutcome {
+            status: if existed {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            },
+            etag: new_etag,
+        })
+    }
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -168,6 +230,11 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3105);
+    let coap_host = std::env::var("ELASTIK_COAP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let coap_port: u16 = std::env::var("ELASTIK_COAP_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5683);
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
@@ -178,7 +245,7 @@ async fn main() {
 
     let (events, _) = broadcast::channel(1024);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let state = Core {
+    let state = Arc::new(Core {
         data,
         tokens: auth::Tokens::from_env(),
         hmac_key,
@@ -187,15 +254,21 @@ async fn main() {
         max_memory_bytes,
         events,
         event_log: Arc::new(StdMutex::new(VecDeque::new())),
-        shutdown: shutdown_rx,
+        shutdown: shutdown_rx.clone(),
         next_event: Arc::new(AtomicU64::new(0)),
         write_lock: Arc::new(Mutex::new(())),
-    };
+    });
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
     print_auth_summary(&state.tokens);
+    let coap_addr = listen_addr(&coap_host, coap_port);
+    let coap_state = state.clone();
+    let coap_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        coap::serve(coap_state, coap_addr, coap_shutdown).await;
+    });
     let app = Router::new()
         .route("/", any(root_hint))
         .route("/listen/*pattern", any(listen::handler))
@@ -204,7 +277,7 @@ async fn main() {
         .route("/proc", any(proc_reserved))
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
-        .with_state(Arc::new(state))
+        .with_state(state)
         .layer(DefaultBodyLimit::max(max_world_bytes));
 
     axum::serve(listener, app)
@@ -594,56 +667,34 @@ async fn handle_put(
     body: Bytes,
     tier: auth::Tier,
 ) -> Response {
-    if !can_write(world_name, tier) {
-        return unauthorized("write requires token; system worlds need approve token");
-    }
-    if body.len() > core.max_world_bytes {
-        return payload_too_large(core.max_world_bytes);
-    }
-    let _write_guard = core.write_lock.lock().await;
-    if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
-        return resp;
-    }
-    let existed = core.read_world(world_name).is_some();
     let content_type = hs::request_content_type(req_headers);
 
     let meta = hs::request_meta_headers(req_headers);
 
-    let new_etag = if store::is_persistent(world_name) {
-        match world::write_with_audit(
-            &core.data,
+    let outcome = match core
+        .put_bytes(
             world_name,
             &body,
             &content_type,
             &meta,
-            &core.hmac_key,
-        ) {
-            Ok(h) => hs::hmac_etag(&h),
-            Err(e) => return server_error(format!("storage/audit: {e}")),
-        }
-    } else {
-        if memory_write_projected_bytes(core, world_name, body.len()) > core.max_memory_bytes {
-            return payload_too_large(core.max_memory_bytes);
-        }
-        match core.write_world(world_name, &body, &content_type, &meta) {
-            Ok(()) => hs::body_etag(&body),
-            Err(e) => return server_error(format!("storage: {e}")),
-        }
+            tier,
+            Some(req_headers),
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(resp) => return resp,
     };
 
-    let mut resp_headers = vec![(header::ETAG, hs::etag_header(&new_etag))];
-    let status = if existed {
-        StatusCode::OK
-    } else {
+    let mut resp_headers = vec![(header::ETAG, hs::etag_header(&outcome.etag))];
+    if outcome.status == StatusCode::CREATED {
         resp_headers.push((
             header::LOCATION,
             HeaderValue::from_str(&hs::world_url(world_name))
                 .unwrap_or_else(|_| HeaderValue::from_static("/")),
         ));
-        StatusCode::CREATED
-    };
-    core.notify("PUT", world_name, &new_etag);
-    (status, to_header_map(resp_headers), "").into_response()
+    }
+    (outcome.status, to_header_map(resp_headers), "").into_response()
 }
 
 /// POST — append body bytes to existing world. 404 if world absent
