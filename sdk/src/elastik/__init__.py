@@ -93,6 +93,7 @@ from elastik._spawn import (
     is_running,
     default_url,
     binary_info,
+    live_info,
     _load_dotenv as load_dotenv,
 )
 from elastik.tools import (
@@ -122,7 +123,7 @@ __all__ = [
     "listen", "run", "clear_routes", "unlisten", "has_routes",
     "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
     # Lifecycle
-    "start", "stop", "is_running", "default_url", "binary_info",
+    "start", "stop", "is_running", "default_url", "binary_info", "live_info",
     "load_dotenv", "show_config",
     # Trusted local execution helpers for @listen handlers
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
@@ -199,11 +200,16 @@ def _mask(value: str | None) -> str:
 def show_config() -> None:
     """Print the SDK/core configuration useful for bug reports."""
     info = binary_info()
+    live = live_info()
+    url = live.get("url", default_url())
+    url_label = " (live)" if "url" in live else " (default)"
+    data = live.get("data_dir") or os.getenv("ELASTIK_DATA", "<default ./data>")
+    data_label = " (live)" if "data_dir" in live else " (default)"
     print(f"elastik {__version__}")
     print(f"  core:    {info.get('path', '<unknown>')}")
     print(f"  exists:  {info.get('exists', '<unknown>')}")
-    print(f"  url:     {default_url()}")
-    print(f"  data:    {os.getenv('ELASTIK_DATA', '<default ./data>')}")
+    print(f"  url:     {url}{url_label}")
+    print(f"  data:    {data}{data_label}")
     print(f"  running: {is_running()}")
     print(f"  key:     {_mask(os.getenv('ELASTIK_KEY'))}")
     print(f"  read:    {_mask(os.getenv('ELASTIK_READ_TOKEN'))}")

@@ -410,7 +410,10 @@ class Elastik:
             )
 
     def __getitem__(self, path: str) -> bytes:
-        body = self.get(path)
+        try:
+            body = self.get(path)
+        except NotFound:
+            raise KeyError(path) from None
         if body is None:
             raise KeyError(path)
         return body

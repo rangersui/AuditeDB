@@ -206,6 +206,10 @@ assert "note" in e              # HEAD /home/note
 del e["note"]                   # DELETE /home/note
 ```
 
+Iteration returns canonical core paths from `/proc/worlds`, such as
+`home/note` or `tmp/scratch`. You can index back with either the canonical form
+or a slash-prefixed form.
+
 Errors have subclasses when you want precise handling:
 
 ```python

@@ -337,10 +337,21 @@ def main() -> int:
                 )
             writer["/home/sdk/mapping"] = "mapped"
             check(reader["/home/sdk/mapping"] == b"mapped", "mapping __getitem__/__setitem__ work")
+            try:
+                reader["/home/sdk/mapping-missing"]
+            except KeyError:
+                check(True, "mapping missing key raises KeyError")
+            else:
+                raise AssertionError("FAIL: missing mapping key did not raise KeyError")
             check("/home/sdk/mapping" in reader, "mapping __contains__ sees path")
             check(len(reader) >= 1, "mapping __len__ delegates to list_paths")
             del approver["/home/sdk/mapping"]
             check("/home/sdk/mapping" not in reader, "mapping __delitem__ deletes")
+            config_buf = io.StringIO()
+            with contextlib.redirect_stdout(config_buf):
+                elastik.show_config()
+            check(base in config_buf.getvalue(), "show_config reports live started URL")
+            check(data_dir in config_buf.getvalue(), "show_config reports live data dir")
             resp = reader.request("OPTIONS", "/home/sdk/text")
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")
