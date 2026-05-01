@@ -291,7 +291,7 @@ def start(
     if not _probe_core(host, port, probe_token):
         stop()
         raise RuntimeError(f"port {host}:{port} did not answer as elastik-core")
-    if quiet:
+    if not quiet:
         _warn_token_state(read_token, token, approve_token)
 
     # Re-import here to dodge a circular import at module load

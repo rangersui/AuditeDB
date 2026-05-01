@@ -31,6 +31,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from pathlib import Path
 
 
@@ -396,6 +397,8 @@ def main() -> int:
 
             result = writer.put("/home/sdk/new-if-none", b"new", create_only=True)
             check(result["status"] == 201, "SDK put create_only=True allows missing world")
+            compat = writer.put("/home/sdk/compat-if-none", b"new", if_none_match=True)
+            check(compat["status"] == 201, "SDK still accepts if_none_match=True compat")
             try:
                 writer.put(
                     "/home/sdk/bad-precondition",
@@ -407,6 +410,14 @@ def main() -> int:
                 check(True, "SDK put rejects ambiguous create_only and if_none_match")
             else:
                 raise AssertionError("FAIL: ambiguous create_only + if_none_match accepted")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                writer.put("/home/sdk/meta-typo", b"x", cache_contol="no-store")
+                check(
+                    any("cache_control" in str(w.message) for w in caught),
+                    "SDK warns on near-miss metadata keyword",
+                    repr([str(w.message) for w in caught]),
+                )
 
             # POST append keeps existing representation metadata.
             writer.put("/home/sdk/append", b"abc", content_type="text/custom")

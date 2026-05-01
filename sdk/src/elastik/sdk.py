@@ -12,6 +12,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from dataclasses import dataclass
 from typing import Any, Iterator
 
@@ -30,6 +31,13 @@ _RESERVED_WORLD_NAMES = {
     "usr",
     "var",
     "var/log",
+}
+_REPRESENTATION_KWARGS = {
+    "content_type",
+    "content_encoding",
+    "content_language",
+    "content_disposition",
+    "cache_control",
 }
 
 
@@ -96,7 +104,7 @@ class Elastik:
         content_disposition: str | None = None,
         cache_control: str | None = None,
         if_match: str | None = None,
-        if_none_match: str | None = None,
+        if_none_match: str | bool | None = None,
         create_only: bool = False,
         headers: dict[str, str] | None = None,
         **meta: Any,
@@ -110,6 +118,8 @@ class Elastik:
 
         `create_only=True` sends `If-None-Match: *`.
         `if_none_match="etag"` sends a quoted ETag validator.
+        `if_none_match=True` is accepted for 6.0 compatibility but
+        prefer `create_only=True` in new code.
         """
         # Compatibility with the early 6.0 SDK spelling:
         # put(..., if_none_match=True) meant create-only.
@@ -120,6 +130,7 @@ class Elastik:
             raise ValueError("use either create_only=True or if_none_match=etag, not both")
         body = data.encode("utf-8") if isinstance(data, str) else data
         request_headers = dict(headers or {})
+        _warn_near_representation_kwargs(meta)
         request_headers.update(
             {f"X-Meta-{k.replace('_', '-')}": str(v) for k, v in meta.items()}
         )
@@ -175,7 +186,11 @@ class Elastik:
         if_range: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> bytes | None:
-        """GET path. Returns bytes exactly as stored, or None on 304."""
+        """GET path. Returns bytes exactly as stored, or None on 304.
+
+        404 is an ElastikError. None never means "missing"; it only
+        means the server returned 304 Not Modified for if_none_match.
+        """
         request_headers = dict(headers or {})
         if range is not None:
             start, end = range
@@ -417,6 +432,38 @@ def _etag_value(value: str | None) -> str | None:
     if v.startswith('"') and v.endswith('"'):
         return v
     return f'"{v}"'
+
+
+def _warn_near_representation_kwargs(meta: dict[str, Any]) -> None:
+    for key in meta:
+        normalized = str(key).replace("-", "_").lower()
+        if normalized in _REPRESENTATION_KWARGS:
+            continue
+        for expected in _REPRESENTATION_KWARGS:
+            if _edit_distance_leq(normalized, expected, 2):
+                warnings.warn(
+                    f"metadata key {key!r} looks like {expected!r}; "
+                    f"use {expected}=... if you meant the HTTP header",
+                    stacklevel=3,
+                )
+                break
+
+
+def _edit_distance_leq(a: str, b: str, limit: int) -> bool:
+    if abs(len(a) - len(b)) > limit:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        row_min = cur[0]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost))
+            row_min = min(row_min, cur[-1])
+        if row_min > limit:
+            return False
+        prev = cur
+    return prev[-1] <= limit
 
 
 def _iter_sse(resp) -> Iterator[dict[str, str]]:

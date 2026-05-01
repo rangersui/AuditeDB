@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import secrets
 import socket
-import sys
 import tempfile
 import threading
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import sys
+
+_src = Path(__file__).resolve().parents[1] / "src"
+if _src.exists():
+    # Source checkout convenience. Copied examples use the installed package.
+    sys.path.insert(0, str(_src))
 import elastik
 
 

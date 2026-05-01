@@ -57,6 +57,9 @@ e = elastik.start(
 )
 ```
 
+Python kwargs use underscores (`read_token`). CLI flags use hyphens
+(`--read-token`).
+
 ### 2. Start from a terminal
 
 Use this when you want a long-running local service:
@@ -149,6 +152,10 @@ e.put("x", "hello")
 assert e.get("x") == b"hello"
 ```
 
+`get()` raises `ElastikError(404, ...)` when a path is missing. `None` only
+means `304 Not Modified` from an `if_none_match` cache check; it never means
+"missing".
+
 Use helpers when you want decoding:
 
 ```python
@@ -166,6 +173,9 @@ e.put("config", b"new", if_match=etag)     # optimistic update
 e.put("lock", b"mine", create_only=True)   # If-None-Match: *
 chunk = e.get("big.bin", range=(0, 1023))  # Range: bytes=0-1023
 ```
+
+The older `if_none_match=True` spelling is accepted for 6.0 compatibility, but
+new code should use `create_only=True`.
 
 For anything not sugared, use the raw HTTP escape hatch:
 
