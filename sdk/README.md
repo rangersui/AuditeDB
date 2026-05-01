@@ -3,7 +3,7 @@
 Tiny Python client and launcher for `elastik-core`: an HTTP byte store with
 metadata and change events.
 
-The beginner surface is five ideas:
+The beginner surface in one breath:
 
 ```python
 import secrets
@@ -19,6 +19,25 @@ elastik.stop()
 
 No hidden object model: `put()` replaces bytes, `post()` appends bytes,
 `get()` returns bytes, and `head()` returns headers.
+
+## API At A Glance
+
+| Want to... | Use |
+|---|---|
+| Store/load bytes | `e.put(path, data)`, `e.get(path)` |
+| Store/load text or JSON | `e.put_text` / `e.get_text`, `e.put_json` / `e.get_json` |
+| Use dict style | `e["note"] = b"hello"`, `del e["note"]`, `"note" in e` |
+| Stream a big read | `e.open(path)` (read-only file-like, Range-backed) |
+| Use pathlib style | `e / "home" / "note"` (`WorldRef`) |
+| Read several paths | `e.get_many([...])` (concurrent HTTP requests) |
+| Watch changes | `@elastik.listen(pattern)` + `elastik.run(e)` |
+| Inspect metadata | `e.head`, `e.checksum`, `e.preview`, `e.diff` |
+| Use scratch space | `with e.tmp() as path:` |
+| Drop to raw HTTP | `e.request(method, path, headers=...)` |
+
+Prefer `e.put(...)` instance methods in libraries, tests, and long-running
+tools where client lifecycle should be explicit. Use module-level
+`elastik.put(...)` in scripts and notebooks with exactly one core per process.
 
 Runnable examples live in `sdk/examples/`:
 
@@ -116,8 +135,13 @@ Concrete mapping:
 | `"proc/worlds"` | `/proc/worlds` |
 | `"/proc/anything-else"` | rejected |
 
-`list_paths()` and `list_keys()` are aliases for the older `list_worlds()` name.
-All three read `/proc/worlds`.
+`list_paths()` is the preferred name. `list_keys()` and the older
+`list_worlds()` name remain as aliases; all three read `/proc/worlds`.
+
+```python
+print(e.get_text("/proc/version"))  # core version string
+print(e.list_paths())               # /proc/worlds, one path per line
+```
 
 ## Metadata
 
@@ -173,6 +197,10 @@ print(meta["etag"])
 print(meta["content-type"])
 ```
 
+Common `WorldMeta` keys are optional HTTP headers: `etag`, `content-type`,
+`content-length`, `content-encoding`, `content-language`,
+`content-disposition`, `cache-control`, `accept-ranges`, and `link`.
+
 ## Conditional And Partial Reads
 
 The SDK exposes common HTTP controls directly:
@@ -184,8 +212,8 @@ e.put("lock", b"mine", create_only=True)   # If-None-Match: *
 chunk = e.get("big.bin", range=(0, 1023))  # Range: bytes=0-1023
 ```
 
-The older `if_none_match=True` spelling is accepted for 6.0 compatibility, but
-new code should use `create_only=True`.
+`if_none_match` is for ETag strings only. Use `create_only=True` for
+`If-None-Match: *`.
 
 For anything not sugared, use the raw HTTP escape hatch:
 
@@ -216,6 +244,11 @@ Iteration returns that canonical core form from `/proc/worlds`, such as
 
 `copy()` buffers the source body in Python memory. That is fine for ordinary
 objects; for huge blobs, use a streaming tool or curl pipeline.
+
+`Elastik` implements `collections.abc.MutableMapping[str, bytes]`, so
+`update()`, `pop(k, default)`, `setdefault()`, `keys()`, `values()`, and
+`items()` work too. Each mapping operation is still one HTTP request; there is
+no hidden transaction or batch endpoint.
 
 More stdlib-shaped helpers are thin wrappers over HTTP:
 

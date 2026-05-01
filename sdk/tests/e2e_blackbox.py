@@ -532,8 +532,12 @@ def main() -> int:
 
             result = writer.put("/home/sdk/new-if-none", b"new", create_only=True)
             check(result["status"] == 201, "SDK put create_only=True allows missing world")
-            compat = writer.put("/home/sdk/compat-if-none", b"new", if_none_match=True)
-            check(compat["status"] == 201, "SDK still accepts if_none_match=True compat")
+            try:
+                writer.put("/home/sdk/compat-if-none", b"new", if_none_match=True)  # type: ignore[arg-type]
+            except TypeError:
+                check(True, "SDK rejects bool if_none_match; use create_only=True")
+            else:
+                raise AssertionError("FAIL: bool if_none_match accepted")
             try:
                 writer.put(
                     "/home/sdk/bad-precondition",

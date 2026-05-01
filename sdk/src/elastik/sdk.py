@@ -183,7 +183,7 @@ class Elastik(MutableMapping[str, bytes]):
         content_disposition: str | None = None,
         cache_control: str | None = None,
         if_match: str | None = None,
-        if_none_match: str | bool | None = None,
+        if_none_match: str | None = None,
         create_only: bool = False,
         headers: dict[str, str] | None = None,
         **meta: Any,
@@ -197,14 +197,9 @@ class Elastik(MutableMapping[str, bytes]):
 
         `create_only=True` sends `If-None-Match: *`.
         `if_none_match="etag"` sends a quoted ETag validator.
-        `if_none_match=True` is accepted for 6.0 compatibility but
-        prefer `create_only=True` in new code.
         """
-        # Compatibility with the early 6.0 SDK spelling:
-        # put(..., if_none_match=True) meant create-only.
         if isinstance(if_none_match, bool):
-            create_only = if_none_match
-            if_none_match = None
+            raise TypeError("if_none_match must be an ETag string; use create_only=True for If-None-Match: *")
         if create_only and if_none_match is not None:
             raise ValueError("use either create_only=True or if_none_match=etag, not both")
         body = _body_bytes(data, "put")

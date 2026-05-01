@@ -43,7 +43,7 @@ class FakeElastik(Elastik):
         content_disposition: str | None = None,
         cache_control: str | None = None,
         if_match: str | None = None,
-        if_none_match: str | bool | None = None,
+        if_none_match: str | None = None,
         create_only: bool = False,
         headers: dict[str, str] | None = None,
         **meta: Any,
