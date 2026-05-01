@@ -153,7 +153,7 @@ class Elastik:
 
             live = live_info()
             if live.get("url") == self.url:
-                status = "running" if is_running() else "stopped"
+                status = live.get("state") or ("running" if is_running() else "stopped")
                 if status == "running":
                     try:
                         count = len(self.list_paths())
@@ -406,7 +406,11 @@ class Elastik:
         return int(self.head(path).get("content-length", "0"))
 
     def copy(self, src: str, dst: str, **meta: Any) -> dict:
-        """Copy a path using GET + HEAD + PUT."""
+        """Copy a path using GET + HEAD + PUT.
+
+        The body is buffered in Python memory. For huge blobs, prefer a
+        streaming tool or curl pipeline that fits your memory budget.
+        """
         body = self.get(src)
         if body is None:
             raise KeyError(src)

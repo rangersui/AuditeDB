@@ -347,6 +347,9 @@ def main() -> int:
             check(len(reader) >= 1, "mapping __len__ delegates to list_paths")
             check(reader.exists("/home/sdk/mapping"), "exists() delegates to HEAD")
             check(reader.sizeof("/home/sdk/mapping") == 6, "sizeof() reads Content-Length")
+            writer["src"] = "short"
+            check("home/src" in list(writer), "iter() returns canonical home path")
+            check(writer["home/src"] == b"short", "canonical iter path indexes back")
             writer.copy("/home/sdk/mapping", "/home/sdk/mapping-copy")
             check(reader.get("/home/sdk/mapping-copy") == b"mapped", "copy() uses GET HEAD PUT")
             ref = approver / "home" / "sdk" / "ref"
@@ -382,6 +385,20 @@ def main() -> int:
                 elastik.show_config()
             check(base in config_buf.getvalue(), "show_config reports live started URL")
             check(data_dir in config_buf.getvalue(), "show_config reports live data dir")
+            elastik.stop()
+            check("stopped" in repr(e), "__repr__ reports stopped child after stop()")
+            e = elastik.start(
+                port=port,
+                key=key,
+                read_token=read_token,
+                token=write_token,
+                approve_token=approve_token,
+                data_dir=data_dir,
+                quiet=True,
+            )
+            writer = Elastik(base, token=write_token)
+            reader = Elastik(base, token=read_token)
+            approver = Elastik(base, token=approve_token)
             resp = reader.request("OPTIONS", "/home/sdk/text")
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")

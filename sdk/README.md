@@ -209,9 +209,13 @@ e.copy("note", "note-copy")      # GET + HEAD + PUT
 del e["note"]                   # DELETE /home/note
 ```
 
-Iteration returns canonical core paths from `/proc/worlds`, such as
-`home/note` or `tmp/scratch`. You can index back with either the canonical form
-or a slash-prefixed form.
+Stored paths are canonicalized to `<namespace>/<rest>` with no leading slash:
+`e["src"]`, `e["/src"]`, and `e["home/src"]` all index the same path.
+Iteration returns that canonical core form from `/proc/worlds`, such as
+`home/src` or `tmp/scratch`.
+
+`copy()` buffers the source body in Python memory. That is fine for ordinary
+objects; for huge blobs, use a streaming tool or curl pipeline.
 
 Pathlib-shaped references are available when they make code clearer:
 

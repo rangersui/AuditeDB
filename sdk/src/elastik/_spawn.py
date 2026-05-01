@@ -32,6 +32,8 @@ from typing import Optional
 _proc: Optional[subprocess.Popen] = None
 _live_url: str | None = None
 _live_data_dir: str | None = None
+_last_live_url: str | None = None
+_last_live_data_dir: str | None = None
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -209,7 +211,7 @@ def start(
     no token means ordinary writes are disabled, and no approve_token means
     delete/system writes are disabled.
     """
-    global _proc, _live_url, _live_data_dir
+    global _proc, _live_url, _live_data_dir, _last_live_url, _last_live_data_dir
     if _proc is not None and _proc.poll() is None:
         raise RuntimeError(
             "elastik already running in this process; call elastik.stop() first"
@@ -301,6 +303,8 @@ def start(
 
     _live_url = _client_url(host, port)
     _live_data_dir = str(data_dir) if data_dir else None
+    _last_live_url = _live_url
+    _last_live_data_dir = _live_data_dir
     return Elastik(_live_url, token=approve_token or token or read_token)
 
 
@@ -329,13 +333,18 @@ def is_running() -> bool:
 
 def live_info() -> dict[str, str]:
     """Runtime details for the child started by this Python process."""
-    if not is_running():
-        return {}
     out = {}
-    if _live_url:
-        out["url"] = _live_url
-    if _live_data_dir:
-        out["data_dir"] = _live_data_dir
+    if is_running():
+        if _live_url:
+            out["url"] = _live_url
+        if _live_data_dir:
+            out["data_dir"] = _live_data_dir
+        out["state"] = "running"
+    elif _last_live_url:
+        out["url"] = _last_live_url
+        if _last_live_data_dir:
+            out["data_dir"] = _last_live_data_dir
+        out["state"] = "stopped"
     return out
 
 
