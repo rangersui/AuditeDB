@@ -1,16 +1,20 @@
-# Elastik
+# Elastik V6 Engine
 
-curl is the first-class client.
+Six verbs, one HTTP disk.
 
-Elastik is a small HTTP disk:
+curl is still the first-class client.
+
+Elastik V6 is a small HTTP byte engine:
 
 - `PUT` writes bytes.
 - `GET` reads bytes.
 - `HEAD` inspects metadata.
 - `POST` appends bytes.
 - `DELETE` removes bytes.
-- `OPTIONS` tells you what the path can do.
-- `/listen/*` streams control-plane change events.
+- `LISTEN` reacts to bytes through `/listen/*`.
+
+`OPTIONS` is supported for HTTP introspection, but it is not a cylinder in the
+engine. The core loop is the six-verb shape above.
 
 No JSON envelope. No `?raw`. No private extension field. No plugin runtime in
 the core. The core accepts HTTP requests and returns HTTP responses. Everything

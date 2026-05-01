@@ -1,6 +1,9 @@
-"""elastik — tiny HTTP byte store + event stream.
+"""elastik: Python client for the Elastik V6 Engine.
 
-The first-class surface is intentionally small:
+Six verbs, one HTTP disk:
+  PUT, GET, HEAD, POST, DELETE, LISTEN.
+
+The beginner Python surface is intentionally small:
   start, put, get, get_text, head, delete, list_paths, stop.
 
 Quickstart (module-level calls, no instantiation):
@@ -146,7 +149,7 @@ __all__ = [
 try:
     __version__ = version("elastik")
 except PackageNotFoundError:
-    __version__ = "6.2.0"
+    __version__ = "6.2.1"
 
 
 # ── module-level singleton client ──────────────────────────────────

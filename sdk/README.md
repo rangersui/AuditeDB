@@ -1,7 +1,10 @@
 # elastik Python SDK
 
-Tiny Python client and launcher for `elastik-core`: an HTTP byte store with
-metadata and change events.
+Python client and launcher for the Elastik V6 Engine: six verbs, one HTTP disk.
+
+The engine is small on purpose: `PUT`, `GET`, `HEAD`, `POST`, `DELETE`, and
+`LISTEN`. The SDK gives those verbs a Python shape without turning the core into
+a framework.
 
 The beginner surface in one breath:
 
