@@ -203,12 +203,31 @@ the wire.
 e["note"] = "hello"             # PUT /home/note
 assert e["note"] == b"hello"    # GET /home/note
 assert "note" in e              # HEAD /home/note
+assert e.exists("note")
+assert e.sizeof("note") == 5
+e.copy("note", "note-copy")      # GET + HEAD + PUT
 del e["note"]                   # DELETE /home/note
 ```
 
 Iteration returns canonical core paths from `/proc/worlds`, such as
 `home/note` or `tmp/scratch`. You can index back with either the canonical form
 or a slash-prefixed form.
+
+Pathlib-shaped references are available when they make code clearer:
+
+```python
+report = e / "home" / "reports" / "q1"
+report.write("revenue up")
+print(report.read_text())
+print(report.stat()["etag"])
+```
+
+Temporary paths are just `/tmp/*` paths with best-effort cleanup:
+
+```python
+with e.tmp("scratch") as path:
+    e.put(path, "working...")
+```
 
 Errors have subclasses when you want precise handling:
 
@@ -292,6 +311,21 @@ The SDK intentionally uses one-shot stdlib HTTP requests by default: no
 That is slower than a tuned keep-alive client, but it is boring and hard to
 leak. High-frequency callers can use `curl`, `ab -k`, `http.client`, or a custom
 transport when they have measured a real bottleneck.
+
+## Testing Without A Core
+
+For unit tests that only need SDK behavior, use the in-memory fake:
+
+```python
+from elastik import FakeElastik
+
+e = FakeElastik()
+e.put("note", "hello")
+assert e.get_text("note") == "hello"
+```
+
+`FakeElastik` is not a protocol test. Use the black-box tests or a real
+`elastik.start(...)` when you need wire-level HTTP behavior.
 
 ## Source Checkout
 

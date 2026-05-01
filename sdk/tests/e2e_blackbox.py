@@ -345,8 +345,38 @@ def main() -> int:
                 raise AssertionError("FAIL: missing mapping key did not raise KeyError")
             check("/home/sdk/mapping" in reader, "mapping __contains__ sees path")
             check(len(reader) >= 1, "mapping __len__ delegates to list_paths")
+            check(reader.exists("/home/sdk/mapping"), "exists() delegates to HEAD")
+            check(reader.sizeof("/home/sdk/mapping") == 6, "sizeof() reads Content-Length")
+            writer.copy("/home/sdk/mapping", "/home/sdk/mapping-copy")
+            check(reader.get("/home/sdk/mapping-copy") == b"mapped", "copy() uses GET HEAD PUT")
+            ref = approver / "home" / "sdk" / "ref"
+            ref.write("ref-body")
+            check(ref.read_text() == "ref-body", "WorldRef write/read_text round-trips")
+            check(ref.exists(), "WorldRef exists works")
+            check(ref.stat()["content-length"] == "8", "WorldRef stat returns headers")
+            check(ref.unlink(), "WorldRef unlink deletes")
+            with approver.tmp("sdk-temp") as tmp_path:
+                approver.put(tmp_path, "temp")
+                check(reader.get(tmp_path) == b"temp", "tmp() yields writable /tmp path")
+            check(not reader.exists("tmp/sdk-temp"), "tmp() cleanup removes path when allowed")
+            check("running" in repr(e) and base in repr(e), "__repr__ shows live core URL")
             del approver["/home/sdk/mapping"]
             check("/home/sdk/mapping" not in reader, "mapping __delitem__ deletes")
+            fake = elastik.FakeElastik()
+            fake.put("fake/note", "hello")
+            check(fake.get_text("fake/note") == "hello", "FakeElastik get_text works")
+            check(fake.head("fake/note")["etag"].startswith("fake-"), "FakeElastik returns fake ETags")
+            fake_ref = fake / "home" / "fake" / "ref"
+            fake_ref.write("fake-ref")
+            check(fake_ref.read() == b"fake-ref", "FakeElastik supports WorldRef")
+            fake.request(
+                "PUT",
+                "fake/raw",
+                b"raw",
+                headers={"Content-Type": "text/custom", "X-Meta-Test": "ok"},
+            )
+            check(fake.head("fake/raw")["content-type"] == "text/custom", "FakeElastik request preserves Content-Type")
+            check(fake.head("fake/raw")["x-meta-test"] == "ok", "FakeElastik request preserves X-Meta headers")
             config_buf = io.StringIO()
             with contextlib.redirect_stdout(config_buf):
                 elastik.show_config()

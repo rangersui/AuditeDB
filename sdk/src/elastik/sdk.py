@@ -8,11 +8,15 @@ stdlib only: no httpx, no requests. urllib.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import secrets
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator, TypedDict
 
@@ -39,6 +43,7 @@ _REPRESENTATION_KWARGS = {
     "content_disposition",
     "cache_control",
 }
+_log = logging.getLogger("elastik")
 
 
 WorldMeta = TypedDict(
@@ -139,6 +144,24 @@ class Elastik:
             token = _best_env_token()
         self.url = url.rstrip("/")
         self.token = token
+
+    def __repr__(self) -> str:
+        status = "external"
+        count: str | int = "?"
+        try:
+            from elastik._spawn import is_running, live_info
+
+            live = live_info()
+            if live.get("url") == self.url:
+                status = "running" if is_running() else "stopped"
+                if status == "running":
+                    try:
+                        count = len(self.list_paths())
+                    except Exception:
+                        count = "?"
+        except Exception:
+            pass
+        return f"<Elastik {self.url} [{status}] {count} paths>"
 
     def put(
         self,
@@ -374,6 +397,49 @@ class Elastik:
         """Alias for list_paths(), for KV-store-shaped code."""
         return self.list()
 
+    def exists(self, path: str) -> bool:
+        """Return True when HEAD succeeds for path."""
+        return path in self
+
+    def sizeof(self, path: str) -> int:
+        """Return Content-Length without downloading the body."""
+        return int(self.head(path).get("content-length", "0"))
+
+    def copy(self, src: str, dst: str, **meta: Any) -> dict:
+        """Copy a path using GET + HEAD + PUT."""
+        body = self.get(src)
+        if body is None:
+            raise KeyError(src)
+        headers = self.head(src)
+        return self.put(
+            dst,
+            body,
+            content_type=headers.get("content-type", "application/octet-stream"),
+            content_encoding=headers.get("content-encoding"),
+            content_language=headers.get("content-language"),
+            content_disposition=headers.get("content-disposition"),
+            cache_control=headers.get("cache-control"),
+            **meta,
+        )
+
+    @contextmanager
+    def tmp(self, name: str = "") -> Iterator[str]:
+        """Yield a /tmp path and best-effort delete it on exit.
+
+        Cleanup requires whatever delete authority your core enforces.
+        If cleanup is forbidden or the path is already gone, tmp()
+        silently leaves the core's normal policy in charge.
+        """
+        safe = name.strip("/") if name else secrets.token_hex(8)
+        path = f"tmp/{safe}"
+        try:
+            yield path
+        finally:
+            try:
+                self.delete(path)
+            except ElastikError:
+                pass
+
     def listen(
         self,
         pattern: str = "*",
@@ -440,6 +506,9 @@ class Elastik:
     def __len__(self) -> int:
         return len(self.list_paths())
 
+    def __truediv__(self, path: str) -> "WorldRef":
+        return WorldRef(self, path.strip("/"))
+
     def request(
         self,
         method: str,
@@ -453,19 +522,38 @@ class Elastik:
         if self.token:
             h.setdefault("Authorization", f"Bearer {self.token}")
         req = urllib.request.Request(url, data=body, method=method, headers=h)
+        start = time.perf_counter()
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
-                return Response(
+                response = Response(
                     r.status,
                     {k.lower(): v for k, v in r.headers.items()},
                     r.read(),
                 )
+                _log.debug(
+                    "%s %s -> %d %dB %.1fms",
+                    method,
+                    path,
+                    response.status,
+                    len(response.body),
+                    (time.perf_counter() - start) * 1000,
+                )
+                return response
         except urllib.error.HTTPError as e:
-            return Response(
+            response = Response(
                 e.code,
                 {k.lower(): v for k, v in (e.headers or {}).items()},
                 e.read() if e.fp else b"",
             )
+            _log.debug(
+                "%s %s -> %d %dB %.1fms",
+                method,
+                path,
+                response.status,
+                len(response.body),
+                (time.perf_counter() - start) * 1000,
+            )
+            return response
 
     def _raw(
         self,
@@ -477,6 +565,51 @@ class Elastik:
         """Backward-compatible tuple escape hatch. Prefer request()."""
         resp = self.request(method, path, body, headers)
         return resp.status, resp.headers, resp.body
+
+
+class WorldRef:
+    """Pathlib-shaped reference to one elastik path."""
+
+    def __init__(self, e: Elastik, path: str):
+        self._e = e
+        self._path = path.strip("/")
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def __truediv__(self, child: str) -> "WorldRef":
+        return WorldRef(self._e, f"{self._path.rstrip('/')}/{child.strip('/')}")
+
+    def read(self) -> bytes:
+        body = self._e.get(self._path)
+        if body is None:
+            raise KeyError(self._path)
+        return body
+
+    def read_text(self, *, encoding: str = "utf-8", errors: str = "strict") -> str:
+        return self.read().decode(encoding, errors)
+
+    def write(self, data: bytes | str, **kwargs: Any) -> dict:
+        return self._e.put(self._path, data, **kwargs)
+
+    def exists(self) -> bool:
+        return self._path in self._e
+
+    def unlink(self) -> bool:
+        return self._e.delete(self._path)
+
+    def stat(self) -> WorldMeta:
+        return self._e.head(self._path)
+
+    def __fspath__(self) -> str:
+        return self._path
+
+    def __str__(self) -> str:
+        return self._path
+
+    def __repr__(self) -> str:
+        return f"WorldRef({self._path!r})"
 
 
 def _quote_listen_pattern(pattern: str) -> str:

@@ -73,7 +73,9 @@ from elastik.sdk import (
     ServerError,
     Unauthorized,
     WorldMeta,
+    WorldRef,
 )
+from elastik.testing import FakeElastik
 from elastik.reactor import (
     listen,
     run,
@@ -118,7 +120,7 @@ __all__ = [
     "Unauthorized", "Forbidden", "NotFound", "PreconditionFailed",
     "PayloadTooLarge", "ServerError",
     "Response",
-    "WorldMeta",
+    "WorldMeta", "WorldRef", "FakeElastik",
     # Reactor sugar
     "listen", "run", "clear_routes", "unlisten", "has_routes",
     "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
@@ -129,7 +131,8 @@ __all__ = [
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     # Module-level convenience (NumPy-shaped)
     "put", "put_text", "put_json", "post", "get", "get_text", "get_json",
-    "head", "delete", "list_worlds", "list_paths", "list_keys", "request",
+    "head", "delete", "exists", "sizeof", "copy", "tmp",
+    "list_worlds", "list_paths", "list_keys", "request",
 ]
 
 try:
@@ -381,6 +384,26 @@ def head(path: str) -> WorldMeta:
 def delete(path: str, *, if_match: str | None = None) -> bool:
     """elastik.delete('/home/note') -> True/False"""
     return _client().delete(path, if_match=if_match)
+
+
+def exists(path: str) -> bool:
+    """elastik.exists('/home/note') -> bool"""
+    return _client().exists(path)
+
+
+def sizeof(path: str) -> int:
+    """elastik.sizeof('/home/blob') -> Content-Length as int"""
+    return _client().sizeof(path)
+
+
+def copy(src: str, dst: str, **meta: Any) -> dict:
+    """elastik.copy('/home/a', '/home/b') -> {'status': 201, ...}"""
+    return _client().copy(src, dst, **meta)
+
+
+def tmp(name: str = ""):
+    """elastik.tmp('scratch') -> context manager yielding a /tmp path."""
+    return _client().tmp(name)
 
 
 def list_worlds() -> list[str]:
