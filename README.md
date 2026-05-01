@@ -23,6 +23,55 @@ HTTP request in  ->  path policy  ->  storage backend  ->  HTTP response out
 If WebDAV, SMTP, MQTT, a browser, an AI agent, or a Python decorator can turn
 its work into HTTP, Elastik does not need to know where it came from.
 
+## The API Document Is The Path Convention
+
+Elastik integration is usually a naming agreement, not a generated API schema.
+
+```text
+/home/order/{id}    input written by UI
+/home/receipt/{id}  output written by worker
+```
+
+UI code and business logic do not need to call each other. They can meet at
+named paths.
+
+```js
+// Browser/UI: submit an order.
+await fetch("/home/order/123", {
+  method: "PUT",
+  body: JSON.stringify({ sku: "tea", qty: 2 }),
+  headers: { "Content-Type": "application/json" },
+});
+
+// Browser/UI: wait for the result.
+const receipts = new EventSource("/listen/home/receipt/*");
+receipts.onmessage = (event) => console.log(event.data);
+```
+
+```python
+# Business worker: process orders.
+import elastik
+
+@elastik.listen("/home/order/*")
+def on_order(body, path, e):
+    order_id = path.rsplit("/", 1)[-1]
+    e.put_json(f"/home/receipt/{order_id}", {"status": "accepted"})
+
+elastik.run()
+```
+
+Debugging is just HTTP:
+
+```powershell
+curl.exe http://127.0.0.1:3105/home/order/123
+curl.exe http://127.0.0.1:3105/home/receipt/123
+curl.exe -N http://127.0.0.1:3105/listen/*
+```
+
+There is no Swagger, GraphQL schema, protobuf file, controller method, or
+shared server object in the middle. If the UI can `PUT` bytes and the worker
+can `GET` or `@listen` the same path, they are integrated.
+
 ## Status
 
 This repository is the Phoenix core rewrite. It intentionally breaks from the
@@ -76,55 +125,6 @@ hello elastik
 ```
 
 That is the whole primitive.
-
-## Path Contracts Replace API Documents
-
-UI code and business logic do not need to call each other. They can meet at
-named paths.
-
-```js
-// Browser/UI: submit an order.
-await fetch("/home/order/123", {
-  method: "PUT",
-  body: JSON.stringify({ sku: "tea", qty: 2 }),
-  headers: { "Content-Type": "application/json" },
-});
-
-// Browser/UI: wait for the result.
-const receipts = new EventSource("/listen/home/receipt/*");
-receipts.onmessage = (event) => console.log(event.data);
-```
-
-```python
-# Business worker: process orders.
-import elastik
-
-@elastik.listen("/home/order/*")
-def on_order(body, path, e):
-    order_id = path.rsplit("/", 1)[-1]
-    e.put_json(f"/home/receipt/{order_id}", {"status": "accepted"})
-
-elastik.run()
-```
-
-The contract is the path convention:
-
-```text
-/home/order/{id}    input written by UI
-/home/receipt/{id}  output written by worker
-```
-
-Debugging is just HTTP:
-
-```powershell
-curl.exe http://127.0.0.1:3105/home/order/123
-curl.exe http://127.0.0.1:3105/home/receipt/123
-curl.exe -N http://127.0.0.1:3105/listen/*
-```
-
-There is no Swagger, GraphQL schema, protobuf file, controller method, or
-shared server object in the middle. If the UI can `PUT` bytes and the worker
-can `GET` or `@listen` the same path, they are integrated.
 
 ## Environment
 
