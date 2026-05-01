@@ -10,6 +10,7 @@ stdlib only: no httpx, no requests. urllib.
 """
 from __future__ import annotations
 
+import json
 import os
 import urllib.error
 import urllib.parse
@@ -178,6 +179,52 @@ class Elastik:
         if resp.status >= 400:
             raise ElastikError(resp.status, resp.body)
         return resp.body
+
+    def get_text(
+        self,
+        path: str,
+        *,
+        encoding: str = "utf-8",
+        errors: str = "strict",
+        range: tuple[int, int] | None = None,
+        if_none_match: str | None = None,
+        if_range: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> str | None:
+        """GET path and decode bytes to text, or return None on 304."""
+        body = self.get(
+            path,
+            range=range,
+            if_none_match=if_none_match,
+            if_range=if_range,
+            headers=headers,
+        )
+        if body is None:
+            return None
+        return body.decode(encoding, errors)
+
+    def get_json(
+        self,
+        path: str,
+        *,
+        encoding: str = "utf-8",
+        range: tuple[int, int] | None = None,
+        if_none_match: str | None = None,
+        if_range: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any | None:
+        """GET path, decode as UTF-8 JSON, or return None on 304."""
+        text = self.get_text(
+            path,
+            encoding=encoding,
+            range=range,
+            if_none_match=if_none_match,
+            if_range=if_range,
+            headers=headers,
+        )
+        if text is None:
+            return None
+        return json.loads(text)
 
     def head(self, path: str) -> dict[str, str]:
         """HEAD path. Returns headers as a lowercased dict."""

@@ -19,7 +19,7 @@ from elastik.sdk import Elastik
 _routes: dict[str, Callable[..., Any]] = {}
 
 
-def listen(pattern: str):
+def listen(pattern: str, *, replace: bool = False):
     """Register a handler for a path pattern.
 
     Pattern is prefix-with-trailing-`*`:
@@ -29,11 +29,34 @@ def listen(pattern: str):
 
     The handler receives `body` plus any named kwargs it asks for:
     `world`, `etag`, `pattern`, `meta`, `e`.
+
+    Registering the same pattern twice is usually a bug, so it raises
+    ValueError unless `replace=True` is explicit.
     """
     def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        if pattern in _routes and not replace:
+            raise ValueError(
+                f"handler already registered for {pattern!r}; "
+                "call unlisten(), clear_routes(), or listen(..., replace=True)"
+            )
         _routes[pattern] = func
         return func
     return deco
+
+
+def unlisten(pattern: str) -> None:
+    """Remove one registered handler pattern if present."""
+    _routes.pop(pattern, None)
+
+
+def clear_routes() -> None:
+    """Remove all registered handlers. Useful for tests and notebooks."""
+    _routes.clear()
+
+
+def has_routes() -> bool:
+    """Return True when at least one @listen handler is registered."""
+    return bool(_routes)
 
 
 def _matches(pattern: str, path: str) -> bool:
@@ -42,6 +65,14 @@ def _matches(pattern: str, path: str) -> bool:
     if pattern.endswith("*"):
         return path.startswith(pattern[:-1])
     return path == pattern
+
+
+def _matching_routes(path: str) -> list[tuple[str, Callable[..., Any]]]:
+    return [
+        (pattern, handler)
+        for pattern, handler in _routes.items()
+        if _matches(pattern, path)
+    ]
 
 
 class Action:
@@ -159,11 +190,11 @@ def _dispatch(
     e: Elastik,
     method: str = "",
     event: dict[str, str] | None = None,
+    routes: list[tuple[str, Callable[..., Any]]] | None = None,
 ) -> None:
     """Run registered handlers. Transport adapters call this."""
-    for pattern, handler in _routes.items():
-        if not _matches(pattern, world):
-            continue
+    selected = routes if routes is not None else _matching_routes(world)
+    for pattern, handler in selected:
         ctx = Ctx(
             body=body,
             world=world,
@@ -187,6 +218,11 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
 
         curl -N http://127.0.0.1:3105/listen/*
     """
+    if not _routes:
+        raise RuntimeError(
+            "elastik.run() has no @elastik.listen handlers registered. "
+            "Register a handler first, or remove run() if you only need put/get."
+        )
     e = e or Elastik()
     last_event_id = ""
     while True:
@@ -204,23 +240,54 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
                 method = event.get("method", event.get("event", "")).upper()
                 if not world:
                     continue
+                routes = _matching_routes(world)
+                if not routes:
+                    continue
                 if method == "DELETE":
-                    _dispatch(world, b"", event.get("etag", ""), {}, e, method, event)
+                    _dispatch(
+                        world,
+                        b"",
+                        event.get("etag", ""),
+                        {},
+                        e,
+                        method,
+                        event,
+                        routes=routes,
+                    )
                     continue
                 try:
                     body = e.get(world)
                     head = e.head(world)
-                except Exception:
+                except Exception as exc:
+                    print(
+                        f"elastik reactor: failed to fetch {world}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
                     continue
                 meta = {
                     k: v
                     for k, v in head.items()
                     if k.lower().startswith("x-meta-")
                 }
-                _dispatch(world, body, head.get("etag", event.get("etag", "")), meta, e, method, event)
+                _dispatch(
+                    world,
+                    body,
+                    head.get("etag", event.get("etag", "")),
+                    meta,
+                    e,
+                    method,
+                    event,
+                    routes=routes,
+                )
         except KeyboardInterrupt:
             raise
-        except Exception:
+        except Exception as exc:
             if not reconnect:
                 raise
+            print(
+                f"elastik reactor: {type(exc).__name__}: {exc}; "
+                f"retrying in {retry_s}s",
+                file=sys.stderr,
+            )
             time.sleep(retry_s)

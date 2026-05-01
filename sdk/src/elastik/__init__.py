@@ -3,10 +3,15 @@
 Quickstart (NumPy-style — module-level calls, no instantiation):
 
     import elastik
+    import secrets
 
-    e = elastik.start(token="x")          # spawns the bundled rust core
-    e.put("/home/note", "hello")          # PUT
-    print(e.get("/home/note"))            # bytes back
+    e = elastik.start(
+        key=secrets.token_hex(32),        # HMAC audit-chain key, required
+        token="write-token",              # T2: normal PUT/POST writes
+        approve_token="admin-token",      # T3: DELETE + system namespaces
+    )
+    e.put("note", "hello", actor="me")    # bare paths map to /home/*
+    print(e.get_text("note"))             # "hello"
     elastik.stop()                        # kills the child
 
 Or skip the explicit start() and point at an already-running elastik
@@ -14,9 +19,17 @@ Or skip the explicit start() and point at an already-running elastik
 
     import elastik
     elastik.put("/home/note", "hello")
-    print(elastik.get("/home/note"))
+    print(elastik.get_text("/home/note"))
 
-Reactor (declarative event handlers — see Elastik-core/README.md §L2):
+Path rule: "foo" means "/home/foo". Explicit namespaces like /tmp,
+/dev, and /sys are allowed for their own storage policy, but namespace
+roots and /proc internals are reserved by the core.
+
+put(..., actor="me") stores `X-Meta-Actor: me`. Standard HTTP
+representation headers use named kwargs: content_type, cache_control,
+content_encoding, content_language, and content_disposition.
+
+Reactor (declarative event handlers):
 
     @elastik.listen("/home/inbox/*")
     def triage(body, world, meta):
@@ -24,18 +37,28 @@ Reactor (declarative event handlers — see Elastik-core/README.md §L2):
             return elastik.Reply(f"/home/alerts/{world.split('/')[-1]}", body)
         return elastik.Archive()
 
+    elastik.run()                         # blocks forever; only call after
+                                          # registering at least one handler
+
 Bundled binary lives at `elastik/_bin/elastik-core[.exe]` and is invoked
 as a child process. No FFI, no compile-on-install. Same shape as
 NumPy shipping precompiled C kernels.
+
+Import note: `import elastik` loads a local `.env` once, filling only
+missing environment variables. Existing process env always wins.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from elastik.sdk import Elastik, ElastikError, Response
 from elastik.reactor import (
     listen,
     run,
+    clear_routes,
+    unlisten,
+    has_routes,
     MoveTo,
     Reply,
     Archive,
@@ -70,13 +93,15 @@ __all__ = [
     "ElastikError",
     "Response",
     # Reactor sugar
-    "listen", "run", "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
+    "listen", "run", "clear_routes", "unlisten", "has_routes",
+    "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
     # Lifecycle
     "start", "stop", "is_running", "default_url", "binary_info",
     # Trusted local execution helpers for @listen handlers
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     # Module-level convenience (NumPy-shaped)
-    "put", "post", "get", "head", "delete", "list_worlds", "request",
+    "put", "post", "get", "get_text", "get_json",
+    "head", "delete", "list_worlds", "request",
 ]
 
 __version__ = "6.0.1"
@@ -101,8 +126,29 @@ def _client() -> Elastik:
     """
     global _default_client
     if _default_client is None:
+        if not _has_default_client_env():
+            raise RuntimeError(
+                "no default elastik client is configured. Call "
+                "elastik.start(key=..., token=...), create Elastik(url, token), "
+                "or set ELASTIK_URL/ELASTIK_HOST before using module-level "
+                "elastik.put/get."
+            )
         _default_client = Elastik(default_url())
     return _default_client
+
+
+def _has_default_client_env() -> bool:
+    return any(
+        os.getenv(name)
+        for name in (
+            "ELASTIK_URL",
+            "ELASTIK_HOST",
+            "ELASTIK_PORT",
+            "ELASTIK_TOKEN",
+            "ELASTIK_READ_TOKEN",
+            "ELASTIK_APPROVE_TOKEN",
+        )
+    )
 
 
 def _set_default(client: Elastik) -> None:
@@ -180,6 +226,48 @@ def get(
     """elastik.get('/home/note') -> bytes"""
     return _client().get(
         path,
+        range=range,
+        if_none_match=if_none_match,
+        if_range=if_range,
+        headers=headers,
+    )
+
+
+def get_text(
+    path: str,
+    *,
+    encoding: str = "utf-8",
+    errors: str = "strict",
+    range: tuple[int, int] | None = None,
+    if_none_match: str | None = None,
+    if_range: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> str | None:
+    """elastik.get_text('/home/note') -> str, or None on 304"""
+    return _client().get_text(
+        path,
+        encoding=encoding,
+        errors=errors,
+        range=range,
+        if_none_match=if_none_match,
+        if_range=if_range,
+        headers=headers,
+    )
+
+
+def get_json(
+    path: str,
+    *,
+    encoding: str = "utf-8",
+    range: tuple[int, int] | None = None,
+    if_none_match: str | None = None,
+    if_range: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> Any | None:
+    """elastik.get_json('/home/config') -> decoded JSON, or None on 304"""
+    return _client().get_json(
+        path,
+        encoding=encoding,
         range=range,
         if_none_match=if_none_match,
         if_range=if_range,

@@ -149,6 +149,62 @@ def main() -> int:
         shell = pool.run("echo sdk-shell", check=True)
         check("sdk-shell" in shell.stdout, "TrustedShellPool is exported and runs")
 
+    elastik.clear_routes()
+    try:
+        elastik.run(reconnect=False)
+    except RuntimeError as e:
+        check(
+            "no @elastik.listen handlers" in str(e),
+            "reactor run fails fast with no handlers",
+            str(e),
+        )
+    else:
+        raise AssertionError("FAIL: reactor run without handlers did not fail")
+
+    @elastik.listen("/home/sdk/unit/*")
+    def _unit_handler(body):
+        return None
+
+    check(elastik.has_routes(), "reactor reports registered handlers")
+    try:
+        @elastik.listen("/home/sdk/unit/*")
+        def _duplicate_handler(body):
+            return None
+    except ValueError:
+        check(True, "reactor rejects duplicate handler patterns")
+    else:
+        raise AssertionError("FAIL: duplicate reactor handler was accepted")
+    elastik.unlisten("/home/sdk/unit/*")
+    check(not elastik.has_routes(), "reactor unlisten removes handler")
+
+    client_env = (
+        "ELASTIK_URL",
+        "ELASTIK_HOST",
+        "ELASTIK_PORT",
+        "ELASTIK_TOKEN",
+        "ELASTIK_READ_TOKEN",
+        "ELASTIK_APPROVE_TOKEN",
+    )
+    saved_client_env = {name: os.environ.get(name) for name in client_env}
+    saved_default_client = getattr(elastik, "_default_client", None)
+    try:
+        for name in client_env:
+            os.environ.pop(name, None)
+        elastik._default_client = None
+        try:
+            elastik.get("/home/no-default-client")
+        except RuntimeError as e:
+            check("no default elastik client" in str(e), "module-level client needs start or env")
+        else:
+            raise AssertionError("FAIL: module-level get without start/env did not fail")
+    finally:
+        elastik._default_client = saved_default_client
+        for name, value in saved_client_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     read_token = "read-e2e"
@@ -233,6 +289,13 @@ def main() -> int:
             check(res["status"] == 201, "sdk put returns 201 on create", str(res))
             check(res["etag"].startswith('"hmac-'), "sdk put exposes hmac ETag", str(res))
             check(reader.get("/home/sdk/text") == b"hello", "sdk get returns bytes")
+            check(reader.get_text("/home/sdk/text") == "hello", "sdk get_text returns str")
+            writer.put(
+                "/home/sdk/json",
+                '{"ok": true}',
+                content_type="application/json",
+            )
+            check(reader.get_json("/home/sdk/json") == {"ok": True}, "sdk get_json decodes JSON")
             head = reader.head("/home/sdk/text")
             check(head["content-type"] == "text/plain; charset=utf-8", "head content-type")
             check(head["content-language"] == "zh-CN", "head content-language")
