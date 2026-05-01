@@ -178,12 +178,27 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                 return encode_response(request, 129, Some(0), b"unauthorized\n");
             }
             match core.read_world(&world_name) {
-                Some(stage) => encode_response(
-                    request,
-                    69,
-                    media_type_to_cf(&stage.content_type),
-                    &stage.body,
-                ),
+                Some(stage) => {
+                    if encoded_len(
+                        request,
+                        media_type_to_cf(&stage.content_type),
+                        stage.body.len(),
+                    ) > MAX_DATAGRAM
+                    {
+                        return encode_response(
+                            request,
+                            141,
+                            Some(0),
+                            b"world too large for coap\n",
+                        );
+                    }
+                    encode_response(
+                        request,
+                        69,
+                        media_type_to_cf(&stage.content_type),
+                        &stage.body,
+                    )
+                }
                 None => encode_response(request, 132, Some(0), b"not found\n"),
             }
         }
@@ -358,6 +373,17 @@ fn encode_response(
     out
 }
 
+fn encoded_len(request: &Packet<'_>, content_format: Option<u16>, payload_len: usize) -> usize {
+    let mut len = 4 + request.token.len();
+    if let Some(cf) = content_format {
+        len += option_len(12, &uint_bytes(cf));
+    }
+    if payload_len > 0 {
+        len += 1 + payload_len;
+    }
+    len
+}
+
 fn write_option(out: &mut Vec<u8>, prev: &mut u16, number: u16, value: &[u8]) {
     let delta = number - *prev;
     let (delta_nibble, mut delta_ext) = option_ext(delta);
@@ -367,6 +393,18 @@ fn write_option(out: &mut Vec<u8>, prev: &mut u16, number: u16, value: &[u8]) {
     out.append(&mut len_ext);
     out.extend_from_slice(value);
     *prev = number;
+}
+
+fn option_len(delta: u16, value: &[u8]) -> usize {
+    1 + option_ext_len(delta) + option_ext_len(value.len() as u16) + value.len()
+}
+
+fn option_ext_len(value: u16) -> usize {
+    match value {
+        0..=12 => 0,
+        13..=268 => 1,
+        _ => 2,
+    }
 }
 
 fn option_ext(value: u16) -> (u8, Vec<u8>) {
@@ -392,11 +430,11 @@ fn uint_bytes(value: u16) -> Vec<u8> {
 
 fn cf_to_media_type(cf: Option<u16>) -> &'static str {
     match cf {
-        Some(0) | None => "text/plain; charset=utf-8",
+        Some(0) => "text/plain; charset=utf-8",
         Some(42) => "application/octet-stream",
         Some(50) => "application/json",
         Some(60) => "application/cbor",
-        _ => "application/octet-stream",
+        None | _ => "application/octet-stream",
     }
 }
 
@@ -531,6 +569,12 @@ mod tests {
     }
 
     #[test]
+    fn missing_content_format_defaults_to_octet_stream() {
+        assert_eq!(cf_to_media_type(None), "application/octet-stream");
+        assert_eq!(cf_to_media_type(Some(0)), "text/plain; charset=utf-8");
+    }
+
+    #[test]
     fn invalid_utf8_uri_path_is_rejected() {
         let err = parse_packet(&[0x40, 0x01, 0x12, 0x34, 0xb1, 0xff]).unwrap_err();
         assert_eq!(err, "invalid utf-8 in Uri-Path option");
@@ -597,6 +641,28 @@ mod tests {
         .await;
         assert_eq!(allowed[1], 69); // 2.05 Content
         assert_eq!(&allowed[7..], b"ok");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn coap_get_rejects_worlds_too_large_for_one_datagram() {
+        let (core, dir) = test_core("large-get");
+        core.write_world(
+            "home/large",
+            &vec![b'x'; MAX_DATAGRAM],
+            "application/octet-stream",
+            &[],
+        )
+        .unwrap();
+
+        let get_bytes = coap_get_packet(&[b"home", b"large"], Some(b"reader"));
+        let response = handle(&core, &packet(&get_bytes)).await;
+
+        assert_eq!(response[1], 141); // 4.13 Request Entity Too Large
+        assert_eq!(response[5], 0xc0); // Content-Format: text/plain
+        assert_eq!(response[6], 0xff);
+        assert_eq!(&response[7..], b"world too large for coap\n");
 
         let _ = std::fs::remove_dir_all(dir);
     }
