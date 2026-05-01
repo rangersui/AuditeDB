@@ -557,6 +557,35 @@ print(r.status, r.headers.get("allow"))
 `Elastik.request()` is the escape hatch. Any HTTP header the SDK has not sugared
 can still be sent directly.
 
+## Performance: Stateless First
+
+The Python SDK intentionally uses one-shot stdlib HTTP requests by default.
+It does not keep a connection pool and it does not maintain hidden HTTP session
+state.
+
+That is slower than an HTTP keep-alive client, and that is fine. The default
+SDK path optimizes for the boring properties first:
+
+- zero dependencies: no `requests`, no `urllib3`, no version conflicts.
+- no client connection state to leak.
+- no stale pooled socket to recover.
+- no half-dead keep-alive connection to debug.
+- no SSE `/listen/*` stream accidentally occupying the only CRUD connection.
+
+HTTP keep-alive is still available. It is already part of HTTP/1.1 and the
+Rust core supports it through axum/hyper. High-frequency callers can use
+`curl`, `ab -k`, `http.client.HTTPConnection`, or their own transport if they
+measure a real bottleneck.
+
+The default SDK stays deliberately dumb:
+
+```text
+request in -> response out -> connection gone
+```
+
+On small cloud containers, even this dumb path handles thousands of reads per
+second. The fast path is there when needed, but stateless is the baseline.
+
 ## Python @listen
 
 The decorator is SDK-side. The core only emits SSE events.
