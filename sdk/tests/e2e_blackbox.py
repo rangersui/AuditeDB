@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import compileall
 import contextlib
+import csv
 import io
 import os
 import shutil
@@ -439,6 +440,13 @@ def main() -> int:
                 check(f.seek(10) == 10 and f.read(3) == bytes(range(10, 13)), "open() seek/read uses Range")
             with (reader / "home" / "sdk" / "blob").open() as f:
                 check(f.seek(-2, io.SEEK_END) == 254 and f.read() == bytes([254, 255]), "WorldRef.open supports seek from end")
+            with reader.open("/home/sdk/table.csv") as raw:
+                buffered = io.BufferedReader(raw)
+                text = io.TextIOWrapper(buffered, encoding="utf-8", newline="")
+                check(
+                    list(csv.reader(text)) == [["t", "v"], ["1", "2"]],
+                    "open() supports BufferedReader/TextIOWrapper/csv.reader",
+                )
 
             # Bare paths are home paths, not magical namespace erasure.
             writer.put("sdk/bare", b"bare")

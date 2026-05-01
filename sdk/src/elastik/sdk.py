@@ -827,6 +827,21 @@ class WorldReader(io.RawIOBase):
         self._pos += len(body)
         return body
 
+    def readinto(self, buf: Any) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed elastik world")
+        view = memoryview(buf).cast("B")
+        if self._pos >= self._size or len(view) == 0:
+            return 0
+        end = min(self._size, self._pos + len(view)) - 1
+        body = self._e.get(self._path, range=(self._pos, end))
+        if body is None:
+            return 0
+        n = len(body)
+        view[:n] = body
+        self._pos += n
+        return n
+
 
 def _quote_listen_pattern(pattern: str) -> str:
     p = pattern.strip() or "*"
