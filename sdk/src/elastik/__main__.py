@@ -24,7 +24,7 @@ def main() -> int:
         description=(
             "Launch bundled elastik-core. --key is required unless ELASTIK_KEY "
             "or .env supplies it. Token flags are optional gates: missing "
-            "--read-token leaves reads public, missing --token disables ordinary "
+            "--read-token leaves reads public, missing --write-token disables ordinary "
             "PUT/POST, and missing --approve-token disables DELETE/system writes."
         ),
     )
@@ -32,7 +32,7 @@ def main() -> int:
     p_run.add_argument("--port", type=int, default=None, help="bind port (default: ELASTIK_PORT or 3105)")
     p_run.add_argument("--key", default=None, help="audit-chain HMAC key; required unless ELASTIK_KEY/.env is set")
     p_run.add_argument("--read-token", dest="read_token", default=None, help="optional read gate; omit to keep reads public")
-    p_run.add_argument("--token", default=None, help="optional write token for ordinary PUT/POST; omit to disable writes")
+    p_run.add_argument("--write-token", default=None, help="optional write token for ordinary PUT/POST; omit to disable writes")
     p_run.add_argument("--approve-token", dest="approve_token", default=None, help="optional approve token for DELETE and system writes")
     p_run.add_argument("--data-dir", dest="data_dir", default=None, help="storage root (default: ELASTIK_DATA or ./data)")
 
@@ -51,7 +51,7 @@ def main() -> int:
                 port=args.port,
                 key=args.key,
                 read_token=args.read_token,
-                token=args.token,
+                write_token=args.write_token,
                 approve_token=args.approve_token,
                 data_dir=args.data_dir,
                 quiet=False,

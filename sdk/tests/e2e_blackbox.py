@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import argparse
 import compileall
+import contextlib
+import csv
+import io
 import os
 import shutil
 import socket
@@ -31,7 +34,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from pathlib import Path
+from collections.abc import MutableMapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -102,6 +107,15 @@ def expect_error(fn, status: int, check: Check, name: str) -> None:
     raise AssertionError(f"FAIL: {name}\n  expected ElastikError({status})")
 
 
+def expect_error_type(fn, exc_type, check: Check, name: str) -> None:
+    try:
+        fn()
+    except exc_type:
+        check(True, name)
+        return
+    raise AssertionError(f"FAIL: {name}\n  expected {exc_type.__name__}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-build", action="store_true", help="reuse bundled binary")
@@ -121,9 +135,41 @@ def main() -> int:
     from elastik.sdk import Elastik
 
     check = Check()
+    saved_tokens = {
+        name: os.environ.get(name)
+        for name in (
+            "ELASTIK_APPROVE_TOKEN",
+            "ELASTIK_WRITE_TOKEN",
+            "ELASTIK_TOKEN",
+            "ELASTIK_READ_TOKEN",
+        )
+    }
+    try:
+        for name in saved_tokens:
+            os.environ.pop(name, None)
+        os.environ["ELASTIK_TOKEN"] = "legacy-write"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            legacy_client = Elastik("http://127.0.0.1:1")
+        check(legacy_client.bearer_token == "legacy-write", "legacy ELASTIK_TOKEN still supplies bearer token")
+        check(
+            any("ELASTIK_TOKEN is deprecated" in str(w.message) for w in caught),
+            "legacy ELASTIK_TOKEN emits migration warning",
+        )
+    finally:
+        for name, value in saved_tokens.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     check(_spawn._connect_host("0.0.0.0") == "127.0.0.1", "wildcard IPv4 maps to loopback")
     check(_spawn._client_url("0.0.0.0", 1234) == "http://127.0.0.1:1234", "wildcard IPv4 returns usable URL")
     check(_spawn._client_url("::", 1234) == "http://[::1]:1234", "wildcard IPv6 URL is bracketed")
+    check("__version__" in elastik.__all__, "__version__ is public")
+    show_buf = io.StringIO()
+    with contextlib.redirect_stdout(show_buf):
+        elastik.show_config()
+    check("elastik " in show_buf.getvalue(), "show_config prints package version")
     prior_host = os.environ.get("ELASTIK_HOST")
     prior_port = os.environ.get("ELASTIK_PORT")
     prior_url = os.environ.get("ELASTIK_URL")
@@ -148,6 +194,62 @@ def main() -> int:
     with elastik.TrustedShellPool(size=1, timeout=2) as pool:
         shell = pool.run("echo sdk-shell", check=True)
         check("sdk-shell" in shell.stdout, "TrustedShellPool is exported and runs")
+
+    elastik.clear_routes()
+    try:
+        elastik.run(reconnect=False)
+    except RuntimeError as e:
+        check(
+            "no @elastik.listen handlers" in str(e),
+            "reactor run fails fast with no handlers",
+            str(e),
+        )
+    else:
+        raise AssertionError("FAIL: reactor run without handlers did not fail")
+
+    @elastik.listen("/home/sdk/unit/*")
+    def _unit_handler(body):
+        return None
+
+    check(elastik.has_routes(), "reactor reports registered handlers")
+    try:
+        @elastik.listen("/home/sdk/unit/*")
+        def _duplicate_handler(body):
+            return None
+    except ValueError:
+        check(True, "reactor rejects duplicate handler patterns")
+    else:
+        raise AssertionError("FAIL: duplicate reactor handler was accepted")
+    elastik.unlisten("/home/sdk/unit/*")
+    check(not elastik.has_routes(), "reactor unlisten removes handler")
+
+    client_env = (
+        "ELASTIK_URL",
+        "ELASTIK_HOST",
+        "ELASTIK_PORT",
+        "ELASTIK_WRITE_TOKEN",
+        "ELASTIK_READ_TOKEN",
+        "ELASTIK_APPROVE_TOKEN",
+    )
+    saved_client_env = {name: os.environ.get(name) for name in client_env}
+    saved_default_client = getattr(elastik, "_default_client", None)
+    try:
+        for name in client_env:
+            os.environ.pop(name, None)
+        elastik._default_client = None
+        try:
+            elastik.get("/home/no-default-client")
+        except RuntimeError as e:
+            check("no default elastik client" in str(e), "module-level client needs start or env")
+        else:
+            raise AssertionError("FAIL: module-level get without start/env did not fail")
+    finally:
+        elastik._default_client = saved_default_client
+        for name, value in saved_client_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
     port = free_port()
     base = f"http://127.0.0.1:{port}"
@@ -200,15 +302,15 @@ def main() -> int:
             port=port,
             key=key,
             read_token=read_token,
-            token=write_token,
+            write_token=write_token,
             approve_token=approve_token,
             data_dir=data_dir,
             quiet=True,
         )
-        reader = Elastik(base, token=read_token)
-        writer = Elastik(base, token=write_token)
-        approver = Elastik(base, token=approve_token)
-        anon = Elastik(base, token="")
+        reader = Elastik(base, bearer_token=read_token)
+        writer = Elastik(base, bearer_token=write_token)
+        approver = Elastik(base, bearer_token=approve_token)
+        anon = Elastik(base, bearer_token="")
 
         try:
             # Read gate is real: no token cannot read once ELASTIK_READ_TOKEN is set.
@@ -233,6 +335,17 @@ def main() -> int:
             check(res["status"] == 201, "sdk put returns 201 on create", str(res))
             check(res["etag"].startswith('"hmac-'), "sdk put exposes hmac ETag", str(res))
             check(reader.get("/home/sdk/text") == b"hello", "sdk get returns bytes")
+            check(reader.get_text("/home/sdk/text") == "hello", "sdk get_text returns str")
+            writer.put(
+                "/home/sdk/json",
+                '{"ok": true}',
+                content_type="application/json",
+            )
+            check(reader.get_json("/home/sdk/json") == {"ok": True}, "sdk get_json decodes JSON")
+            writer.put_text("/home/sdk/put-text", "plain")
+            check(reader.get_text("/home/sdk/put-text") == "plain", "sdk put_text writes text")
+            writer.put_json("/home/sdk/put-json", {"ok": True})
+            check(reader.get_json("/home/sdk/put-json") == {"ok": True}, "sdk put_json writes JSON")
             head = reader.head("/home/sdk/text")
             check(head["content-type"] == "text/plain; charset=utf-8", "head content-type")
             check(head["content-language"] == "zh-CN", "head content-language")
@@ -241,6 +354,104 @@ def main() -> int:
             check(head["x-meta-author"] == "ranger", "head x-meta")
             check(head["accept-ranges"] == "bytes", "head accept-ranges")
             check("home/sdk/text" in reader.list(), "sdk list sees world")
+            check("home/sdk/text" in reader.list_paths(), "sdk list_paths aliases list")
+            check("home/sdk/text" in reader.list_keys(), "sdk list_keys aliases list")
+            check("home/sdk/text" in elastik.list_paths(), "module list_paths aliases list")
+            check(isinstance(writer, MutableMapping), "Elastik implements MutableMapping")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                check("home/sdk/text" in elastik.list_worlds(), "module list_worlds still works")
+                check(
+                    any(issubclass(w.category, DeprecationWarning) for w in caught),
+                    "module list_worlds emits deprecation warning",
+                )
+            writer["/home/sdk/mapping"] = "mapped"
+            check(reader["/home/sdk/mapping"] == b"mapped", "mapping __getitem__/__setitem__ work")
+            try:
+                reader["/home/sdk/mapping-missing"]
+            except KeyError:
+                check(True, "mapping missing key raises KeyError")
+            else:
+                raise AssertionError("FAIL: missing mapping key did not raise KeyError")
+            check("/home/sdk/mapping" in reader, "mapping __contains__ sees path")
+            check(len(reader) >= 1, "mapping __len__ delegates to list_paths")
+            check(reader.exists("/home/sdk/mapping"), "exists() delegates to HEAD")
+            check(reader.sizeof("/home/sdk/mapping") == 6, "sizeof() reads Content-Length")
+            check(reader.checksum("/home/sdk/mapping").strip('"').startswith("hmac-"), "checksum() returns ETag")
+            check(reader.is_audited("/home/sdk/mapping"), "is_audited() detects hmac ETag")
+            check(reader.verify("/home/sdk/mapping"), "verify() aliases is_audited")
+            check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached first read downloads")
+            check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached second read uses validator")
+            writer.put("/home/sdk/mapping", "remapped")
+            check(reader.get_cached("/home/sdk/mapping") == b"remapped", "get_cached refreshes after change")
+            diff = reader.diff("/home/sdk/mapping", "final")
+            check("-remapped" in diff and "+final" in diff, "diff() returns unified text diff")
+            check("remapped" in reader.preview("/home/sdk/mapping", width=20), "preview() returns shortened text")
+            writer["src"] = "short"
+            check("home/src" in list(writer), "iter() returns canonical home path")
+            check(writer["home/src"] == b"short", "canonical iter path indexes back")
+            writer.put_gzip("/home/sdk/gzip", "compressed")
+            check(reader.head("/home/sdk/gzip")["content-encoding"] == "gzip", "put_gzip stores Content-Encoding")
+            check(reader.get_gzip("/home/sdk/gzip") == b"compressed", "get_gzip decompresses body")
+            writer.put_csv("/home/sdk/table.csv", [["t", "v"], ["1", "2"]])
+            check(reader.get_csv("/home/sdk/table.csv") == [["t", "v"], ["1", "2"]], "CSV helpers round-trip rows")
+            writer.put_struct("/dev/sdk/sensor0", ">ff", 23.5, 6.75)
+            a, b = reader.get_struct("/dev/sdk/sensor0", ">ff")
+            check(round(a, 1) == 23.5 and round(b, 2) == 6.75, "struct helpers round-trip binary values")
+            writer.put_many({"/home/sdk/many/a": "A", "/home/sdk/many/b": "B"})
+            many = reader.get_many(["/home/sdk/many/a", "/home/sdk/many/b"])
+            check(many["/home/sdk/many/a"] == b"A" and many["/home/sdk/many/b"] == b"B", "get_many/put_many use concurrent HTTP requests")
+            writer.copy("/home/sdk/mapping", "/home/sdk/mapping-copy")
+            check(reader.get("/home/sdk/mapping-copy") == b"remapped", "copy() uses GET HEAD PUT")
+            ref = approver / "home" / "sdk" / "ref"
+            ref.write("ref-body")
+            check(ref.read_text() == "ref-body", "WorldRef write/read_text round-trips")
+            check(ref.exists(), "WorldRef exists works")
+            check(ref.stat()["content-length"] == "8", "WorldRef stat returns headers")
+            check(ref.unlink(), "WorldRef unlink deletes")
+            with approver.tmp("sdk-temp") as tmp_path:
+                approver.put(tmp_path, "temp")
+                check(reader.get(tmp_path) == b"temp", "tmp() yields writable /tmp path")
+            check(not reader.exists("tmp/sdk-temp"), "tmp() cleanup removes path when allowed")
+            check("running" in repr(e) and base in repr(e), "__repr__ shows live core URL")
+            del approver["/home/sdk/mapping"]
+            check("/home/sdk/mapping" not in reader, "mapping __delitem__ deletes")
+            fake = elastik.FakeElastik()
+            fake.put("fake/note", "hello")
+            check(isinstance(fake, MutableMapping), "FakeElastik is also MutableMapping-shaped")
+            check(fake.get_text("fake/note") == "hello", "FakeElastik get_text works")
+            check(fake.head("fake/note")["etag"].startswith("fake-"), "FakeElastik returns fake ETags")
+            check(fake.get_cached("fake/note") == b"hello", "FakeElastik supports get_cached")
+            fake_ref = fake / "home" / "fake" / "ref"
+            fake_ref.write("fake-ref")
+            check(fake_ref.read() == b"fake-ref", "FakeElastik supports WorldRef")
+            fake.request(
+                "PUT",
+                "fake/raw",
+                b"raw",
+                headers={"Content-Type": "text/custom", "X-Meta-Test": "ok"},
+            )
+            check(fake.head("fake/raw")["content-type"] == "text/custom", "FakeElastik request preserves Content-Type")
+            check(fake.head("fake/raw")["x-meta-test"] == "ok", "FakeElastik request preserves X-Meta headers")
+            config_buf = io.StringIO()
+            with contextlib.redirect_stdout(config_buf):
+                elastik.show_config()
+            check(base in config_buf.getvalue(), "show_config reports live started URL")
+            check(data_dir in config_buf.getvalue(), "show_config reports live data dir")
+            elastik.stop()
+            check("stopped" in repr(e), "__repr__ reports stopped child after stop()")
+            e = elastik.start(
+                port=port,
+                key=key,
+                read_token=read_token,
+                write_token=write_token,
+                approve_token=approve_token,
+                data_dir=data_dir,
+                quiet=True,
+            )
+            writer = Elastik(base, bearer_token=write_token)
+            reader = Elastik(base, bearer_token=read_token)
+            approver = Elastik(base, bearer_token=approve_token)
             resp = reader.request("OPTIONS", "/home/sdk/text")
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")
@@ -251,6 +462,18 @@ def main() -> int:
             writer.put("/home/sdk/blob", binary, content_type="application/pdf")
             check(reader.get("/home/sdk/blob") == binary, "binary body round-trips")
             check(reader.head("/home/sdk/blob")["content-type"] == "application/pdf", "binary content-type")
+            with reader.open("/home/sdk/blob") as f:
+                check(f.read(4) == bytes(range(4)), "open() reads initial Range chunk")
+                check(f.seek(10) == 10 and f.read(3) == bytes(range(10, 13)), "open() seek/read uses Range")
+            with (reader / "home" / "sdk" / "blob").open() as f:
+                check(f.seek(-2, io.SEEK_END) == 254 and f.read() == bytes([254, 255]), "WorldRef.open supports seek from end")
+            with reader.open("/home/sdk/table.csv") as raw:
+                buffered = io.BufferedReader(raw)
+                text = io.TextIOWrapper(buffered, encoding="utf-8", newline="")
+                check(
+                    list(csv.reader(text)) == [["t", "v"], ["1", "2"]],
+                    "open() supports BufferedReader/TextIOWrapper/csv.reader",
+                )
 
             # Bare paths are home paths, not magical namespace erasure.
             writer.put("sdk/bare", b"bare")
@@ -265,6 +488,12 @@ def main() -> int:
 
             # Tier checks.
             expect_error(lambda: reader.put("/home/sdk/nope", b"x"), 401, check, "read token cannot write")
+            expect_error_type(
+                lambda: reader.put("/home/sdk/type", {"bad": "dict"}),
+                TypeError,
+                check,
+                "SDK put rejects non-bytes non-str data",
+            )
             expect_error(lambda: writer.put("/etc/sdk/system", b"x"), 401, check, "write token cannot write system")
             check(approver.put("/etc/sdk/system", b"ok")["status"] == 201, "approve token writes system")
 
@@ -322,14 +551,39 @@ def main() -> int:
             check(reader.get("/home/sdk/text") == b"HELLO", "successful If-Match mutates body")
 
             expect_error(
-                lambda: writer.put("/home/sdk/text", b"exists", if_none_match=True),
+                lambda: writer.put("/home/sdk/text", b"exists", create_only=True),
                 412,
                 check,
-                "SDK put if_none_match=True blocks existing world",
+                "SDK put create_only=True blocks existing world",
             )
 
-            result = writer.put("/home/sdk/new-if-none", b"new", if_none_match=True)
-            check(result["status"] == 201, "SDK put if_none_match=True allows missing world")
+            result = writer.put("/home/sdk/new-if-none", b"new", create_only=True)
+            check(result["status"] == 201, "SDK put create_only=True allows missing world")
+            try:
+                writer.put("/home/sdk/compat-if-none", b"new", if_none_match=True)  # type: ignore[arg-type]
+            except TypeError:
+                check(True, "SDK rejects bool if_none_match; use create_only=True")
+            else:
+                raise AssertionError("FAIL: bool if_none_match accepted")
+            try:
+                writer.put(
+                    "/home/sdk/bad-precondition",
+                    b"x",
+                    create_only=True,
+                    if_none_match="etag",
+                )
+            except ValueError:
+                check(True, "SDK put rejects ambiguous create_only and if_none_match")
+            else:
+                raise AssertionError("FAIL: ambiguous create_only + if_none_match accepted")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                writer.put("/home/sdk/meta-typo", b"x", cache_contol="no-store")
+                check(
+                    any("cache_control" in str(w.message) for w in caught),
+                    "SDK warns on near-miss metadata keyword",
+                    repr([str(w.message) for w in caught]),
+                )
 
             # POST append keeps existing representation metadata.
             writer.put("/home/sdk/append", b"abc", content_type="text/custom")
@@ -354,6 +608,22 @@ def main() -> int:
             )
             check(approver.delete("/home/sdk/append", if_match=del_etag), "SDK delete current if_match succeeds")
             expect_error(lambda: reader.get("/home/sdk/append"), 404, check, "deleted world is gone")
+            expect_error_type(
+                lambda: reader.get("/home/sdk/append"),
+                elastik.NotFound,
+                check,
+                "404 raises NotFound subclass",
+            )
+            try:
+                writer.put("/home/sdk/text", b"bad", if_match=stale)
+            except elastik.PreconditionFailed as e:
+                check(
+                    e.method == "PUT" and e.path == "/home/sdk/text",
+                    "ElastikError carries method and path",
+                    str(e),
+                )
+            else:
+                raise AssertionError("FAIL: stale If-Match did not raise PreconditionFailed")
             expect_error(
                 lambda: approver.delete("/var/log/deletes"),
                 401,
@@ -414,6 +684,25 @@ def main() -> int:
             replay = replay_events[0]
             check(replay.get("path") == "/home/sdk/listen/b", "replayed SSE event path")
             check(int(replay.get("id", "0")) > int(ev.get("id", "0")), "replayed SSE id advances")
+
+            elastik.clear_routes()
+            handled: list[tuple[str, bytes]] = []
+
+            @elastik.listen("/home/sdk/reactor-run/*")
+            def _on_reactor_event(body, path):
+                handled.append((path, body))
+
+            threading.Timer(
+                0.2,
+                lambda: writer.put("/home/sdk/reactor-run/a", b"reactor"),
+            ).start()
+            elastik.run(reader, reconnect=False, max_events=1)
+            check(
+                handled == [("/home/sdk/reactor-run/a", b"reactor")],
+                "reactor run dispatches path kwarg and exits with max_events",
+                repr(handled),
+            )
+            elastik.clear_routes()
 
             print(f"\nPASS sdk e2e blackbox: {check.n} checks")
             return 0

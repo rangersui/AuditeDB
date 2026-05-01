@@ -208,7 +208,7 @@ mod tests {
             data: PathBuf::new(),
             tokens: auth::Tokens {
                 read: None,
-                auth: None,
+                write: None,
                 approve: None,
             },
             hmac_key: b"test-key".to_vec(),
@@ -248,7 +248,7 @@ mod tests {
             data: PathBuf::new(),
             tokens: auth::Tokens {
                 read: None,
-                auth: None,
+                write: None,
                 approve: None,
             },
             hmac_key: b"test-key".to_vec(),

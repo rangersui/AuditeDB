@@ -8,7 +8,7 @@ launches it in a subprocess and returns a pre-bound `Elastik` client.
 The user does:
 
     import elastik
-    e = elastik.start(token="x")
+    e = elastik.start(write_token="x")
     e.put("/home/note", "hi")
     print(e.get("/home/note"))
     elastik.stop()
@@ -25,11 +25,16 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import warnings
 from pathlib import Path
 from typing import Optional
 
 
 _proc: Optional[subprocess.Popen] = None
+_live_url: str | None = None
+_live_data_dir: str | None = None
+_last_live_url: str | None = None
+_last_live_data_dir: str | None = None
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -57,6 +62,26 @@ def _load_dotenv(path: str = ".env") -> None:
         if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
             v = v[1:-1]
         os.environ.setdefault(k, v)
+    _warn_deprecated_elastik_token()
+
+
+def _warn_deprecated_elastik_token() -> None:
+    if os.getenv("ELASTIK_TOKEN") and not os.getenv("ELASTIK_WRITE_TOKEN"):
+        warnings.warn(
+            "ELASTIK_TOKEN is deprecated; rename it to ELASTIK_WRITE_TOKEN.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def _env_write_token() -> str:
+    token = os.getenv("ELASTIK_WRITE_TOKEN", "")
+    if token:
+        return token
+    legacy = os.getenv("ELASTIK_TOKEN", "")
+    if legacy:
+        _warn_deprecated_elastik_token()
+    return legacy
 
 
 def _binary_path() -> Path:
@@ -103,33 +128,18 @@ def _client_url(host: str, port: int) -> str:
 
 
 def _port_is_free(host: str, port: int) -> bool:
-    """Best-effort preflight so start() does not attach to a stranger server."""
+    """Best-effort preflight so start() does not attach to a stranger server.
+
+    Use a client-style connect probe instead of a bind probe. On POSIX, a
+    just-stopped local server can leave enough TCP state behind for a bind()
+    preflight to report "busy" even though no process is listening. What we
+    need to reject is simpler: an already-accepting server on the target URL.
+    """
     try:
-        infos = socket.getaddrinfo(
-            host,
-            port,
-            type=socket.SOCK_STREAM,
-            flags=socket.AI_PASSIVE,
-        )
-    except OSError:
-        return False
-    checked = False
-    # Be conservative: if any address family the host may bind is occupied,
-    # refuse to start. This avoids returning a client pointed at a stranger
-    # server when localhost resolves to multiple loopback families.
-    seen: set[tuple[int, tuple]] = set()
-    for family, socktype, proto, _canon, sockaddr in infos:
-        key = (family, sockaddr)
-        if key in seen:
-            continue
-        seen.add(key)
-        checked = True
-        try:
-            with socket.socket(family, socktype, proto) as s:
-                s.bind(sockaddr)
-        except OSError:
+        with socket.create_connection((_connect_host(host), port), timeout=0.2):
             return False
-    return checked
+    except OSError:
+        return True
 
 
 def _probe_core(host: str, port: int, token: str = "") -> bool:
@@ -145,7 +155,7 @@ def _probe_core(host: str, port: int, token: str = "") -> bool:
         return False
 
 
-def _token_state(read_token: str, token: str, approve_token: str) -> str:
+def _token_state(read_token: str, write_token: str, approve_token: str) -> str:
     return "\n".join(
         [
             "auth:",
@@ -158,8 +168,8 @@ def _token_state(read_token: str, token: str, approve_token: str) -> str:
             "  write:   "
             + (
                 "token required"
-                if token
-                else "disabled (ELASTIK_TOKEN not set)"
+                if write_token
+                else "disabled (ELASTIK_WRITE_TOKEN not set)"
             ),
             "  approve: "
             + (
@@ -171,13 +181,13 @@ def _token_state(read_token: str, token: str, approve_token: str) -> str:
     )
 
 
-def _warn_token_state(read_token: str, token: str, approve_token: str) -> None:
-    if read_token and token and approve_token:
+def _warn_token_state(read_token: str, write_token: str, approve_token: str) -> None:
+    if read_token and write_token and approve_token:
         return
-    print(_token_state(read_token, token, approve_token), file=sys.stderr, flush=True)
-    if not token:
+    print(_token_state(read_token, write_token, approve_token), file=sys.stderr, flush=True)
+    if not write_token:
         print(
-            "warning: ELASTIK_TOKEN not set; ordinary PUT/POST are disabled.",
+            "warning: ELASTIK_WRITE_TOKEN not set; ordinary PUT/POST are disabled.",
             file=sys.stderr,
             flush=True,
         )
@@ -194,7 +204,7 @@ def start(
     host: str | None = None,
     key: str | None = None,
     read_token: str | None = None,
-    token: str | None = None,
+    write_token: str | None = None,
     approve_token: str | None = None,
     data_dir: Optional[str] = None,
     quiet: bool = True,
@@ -204,10 +214,10 @@ def start(
     All process state is the user's: port, key, tokens, data dir. `key` is
     required, either as an argument, in ELASTIK_KEY, or in .env. Token
     arguments are optional capability gates: no read_token means public reads,
-    no token means ordinary writes are disabled, and no approve_token means
+    no write_token means ordinary writes are disabled, and no approve_token means
     delete/system writes are disabled.
     """
-    global _proc
+    global _proc, _live_url, _live_data_dir, _last_live_url, _last_live_data_dir
     if _proc is not None and _proc.poll() is None:
         raise RuntimeError(
             "elastik already running in this process; call elastik.stop() first"
@@ -246,7 +256,7 @@ def start(
     read_token = (
         os.getenv("ELASTIK_READ_TOKEN", "") if read_token is None else read_token
     )
-    token = os.getenv("ELASTIK_TOKEN", "") if token is None else token
+    write_token = _env_write_token() if write_token is None else write_token
     approve_token = (
         os.getenv("ELASTIK_APPROVE_TOKEN", "")
         if approve_token is None else approve_token
@@ -261,10 +271,10 @@ def start(
         env["ELASTIK_READ_TOKEN"] = read_token
     else:
         env.pop("ELASTIK_READ_TOKEN", None)
-    if token:
-        env["ELASTIK_TOKEN"] = token
+    if write_token:
+        env["ELASTIK_WRITE_TOKEN"] = write_token
     else:
-        env.pop("ELASTIK_TOKEN", None)
+        env.pop("ELASTIK_WRITE_TOKEN", None)
     if approve_token:
         env["ELASTIK_APPROVE_TOKEN"] = approve_token
     else:
@@ -287,22 +297,26 @@ def start(
         code = None if _proc is None else _proc.returncode
         stop()
         raise RuntimeError(f"elastik-core exited during startup (code={code})")
-    probe_token = approve_token or token or read_token
+    probe_token = approve_token or write_token or read_token
     if not _probe_core(host, port, probe_token):
         stop()
         raise RuntimeError(f"port {host}:{port} did not answer as elastik-core")
-    if quiet:
-        _warn_token_state(read_token, token, approve_token)
+    if not quiet:
+        _warn_token_state(read_token, write_token, approve_token)
 
     # Re-import here to dodge a circular import at module load
     from elastik.sdk import Elastik
 
-    return Elastik(_client_url(host, port), token=approve_token or token or read_token)
+    _live_url = _client_url(host, port)
+    _live_data_dir = str(data_dir) if data_dir else None
+    _last_live_url = _live_url
+    _last_live_data_dir = _live_data_dir
+    return Elastik(_live_url, bearer_token=approve_token or write_token or read_token)
 
 
 def stop() -> None:
     """Kill the launched binary, if any. Safe to call multiple times."""
-    global _proc
+    global _proc, _live_url, _live_data_dir
     if _proc is None:
         return
     try:
@@ -315,10 +329,29 @@ def stop() -> None:
     except OSError:
         pass
     _proc = None
+    _live_url = None
+    _live_data_dir = None
 
 
 def is_running() -> bool:
     return _proc is not None and _proc.poll() is None
+
+
+def live_info() -> dict[str, str]:
+    """Runtime details for the child started by this Python process."""
+    out = {}
+    if is_running():
+        if _live_url:
+            out["url"] = _live_url
+        if _live_data_dir:
+            out["data_dir"] = _live_data_dir
+        out["state"] = "running"
+    elif _last_live_url:
+        out["url"] = _last_live_url
+        if _last_live_data_dir:
+            out["data_dir"] = _last_live_data_dir
+        out["state"] = "stopped"
+    return out
 
 
 def default_url() -> str:

@@ -4,22 +4,24 @@ The Rust core does not know about plugins or callbacks. This
 module is SDK-side vocabulary only: register handlers, describe actions,
 and let `run(...)` feed core SSE events into `_dispatch(...)`. Other
 adapters can still feed polling, filesystem notifications, queues, or
-anything else that can provide `world`, `body`, `etag`, and `meta`.
+anything else that can provide `path`, `body`, `etag`, and `meta`.
 """
 from __future__ import annotations
 
 import inspect
 import sys
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from elastik.sdk import Elastik
 
 
+F = TypeVar("F", bound=Callable[..., Any])
+
 _routes: dict[str, Callable[..., Any]] = {}
 
 
-def listen(pattern: str):
+def listen(pattern: str, *, replace: bool = False) -> Callable[[F], F]:
     """Register a handler for a path pattern.
 
     Pattern is prefix-with-trailing-`*`:
@@ -27,13 +29,37 @@ def listen(pattern: str):
       "/home/foo"      matches exactly "/home/foo"
       "*"              matches everything
 
-    The handler receives `body` plus any named kwargs it asks for:
-    `world`, `etag`, `pattern`, `meta`, `e`.
+    The handler receives `body` as the first positional argument plus
+    any named kwargs it asks for: `path`, `world` (compat alias),
+    `etag`, `pattern`, `meta`, `e`.
+
+    Registering the same pattern twice is usually a bug, so it raises
+    ValueError unless `replace=True` is explicit.
     """
-    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+    def deco(func: F) -> F:
+        if pattern in _routes and not replace:
+            raise ValueError(
+                f"handler already registered for {pattern!r}; "
+                "call unlisten(), clear_routes(), or listen(..., replace=True)"
+            )
         _routes[pattern] = func
         return func
     return deco
+
+
+def unlisten(pattern: str) -> None:
+    """Remove one registered handler pattern if present."""
+    _routes.pop(pattern, None)
+
+
+def clear_routes() -> None:
+    """Remove all registered handlers. Useful for tests and notebooks."""
+    _routes.clear()
+
+
+def has_routes() -> bool:
+    """Return True when at least one @listen handler is registered."""
+    return bool(_routes)
 
 
 def _matches(pattern: str, path: str) -> bool:
@@ -42,6 +68,14 @@ def _matches(pattern: str, path: str) -> bool:
     if pattern.endswith("*"):
         return path.startswith(pattern[:-1])
     return path == pattern
+
+
+def _matching_routes(path: str) -> list[tuple[str, Callable[..., Any]]]:
+    return [
+        (pattern, handler)
+        for pattern, handler in _routes.items()
+        if _matches(pattern, path)
+    ]
 
 
 class Action:
@@ -60,7 +94,7 @@ class MoveTo(Action):
 
     def execute(self, ctx: Ctx) -> None:
         ctx.e.put(self.dest, ctx.body, **self.meta)
-        ctx.e.delete(ctx.world)
+        ctx.e.delete(ctx.path)
 
 
 class Reply(Action):
@@ -82,25 +116,35 @@ class Archive(Action):
         self.prefix = prefix
 
     def execute(self, ctx: Ctx) -> None:
-        name = ctx.world.rstrip("/").rsplit("/", 1)[-1] or "anon"
+        name = ctx.path.rstrip("/").rsplit("/", 1)[-1] or "anon"
         ctx.e.put(self.prefix.rstrip("/") + "/" + name, ctx.body)
-        ctx.e.delete(ctx.world)
+        ctx.e.delete(ctx.path)
 
 
 class Drop(Action):
     """Delete the source. No reply."""
 
     def execute(self, ctx: Ctx) -> None:
-        ctx.e.delete(ctx.world)
+        ctx.e.delete(ctx.path)
 
 
 class Ctx:
-    __slots__ = ("body", "world", "etag", "pattern", "meta", "e", "method", "event")
+    __slots__ = (
+        "body",
+        "path",
+        "world",
+        "etag",
+        "pattern",
+        "meta",
+        "e",
+        "method",
+        "event",
+    )
 
     def __init__(
         self,
         body: bytes,
-        world: str,
+        path: str,
         etag: str,
         pattern: str,
         meta: dict[str, str],
@@ -109,7 +153,8 @@ class Ctx:
         event: dict[str, str] | None = None,
     ):
         self.body = body
-        self.world = world
+        self.path = path
+        self.world = path  # compatibility alias for early 6.0 handlers
         self.etag = etag
         self.pattern = pattern
         self.meta = meta
@@ -122,6 +167,7 @@ def _call_handler(handler: Callable[..., Any], ctx: Ctx) -> Any:
     sig = inspect.signature(handler)
     accepts = sig.parameters.keys()
     candidates = {
+        "path": ctx.path,
         "world": ctx.world,
         "etag": ctx.etag,
         "pattern": ctx.pattern,
@@ -159,14 +205,14 @@ def _dispatch(
     e: Elastik,
     method: str = "",
     event: dict[str, str] | None = None,
+    routes: list[tuple[str, Callable[..., Any]]] | None = None,
 ) -> None:
     """Run registered handlers. Transport adapters call this."""
-    for pattern, handler in _routes.items():
-        if not _matches(pattern, world):
-            continue
+    selected = routes if routes is not None else _matching_routes(world)
+    for pattern, handler in selected:
         ctx = Ctx(
             body=body,
-            world=world,
+            path=world,
             etag=etag,
             pattern=pattern,
             meta=meta,
@@ -178,7 +224,12 @@ def _dispatch(
         _run_action(result, ctx)
 
 
-def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) -> None:
+def run(
+    e: Elastik | None = None,
+    reconnect: bool = True,
+    retry_s: float = 1.0,
+    max_events: int | None = None,
+) -> None:
     """Consume core SSE and dispatch registered @listen handlers.
 
     One connection listens to `*`; local `_dispatch` does pattern
@@ -186,9 +237,23 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
     stream:
 
         curl -N http://127.0.0.1:3105/listen/*
+
+    By default `reconnect=True` retries forever and logs failures to
+    stderr. Use `reconnect=False` under an external supervisor when you
+    prefer fail-fast process restarts.
+
+    `max_events` is mainly for examples and tests: run returns after
+    dispatching that many matching events.
     """
-    e = e or Elastik()
+    if not _routes:
+        raise RuntimeError(
+            "elastik.run() has no @elastik.listen handlers registered. "
+            "Register a handler first, or remove run() if you only need put/get."
+        )
+    if e is None:
+        e = Elastik()
     last_event_id = ""
+    dispatched = 0
     while True:
         try:
             for event in e.listen("*", last_event_id=last_event_id or None):
@@ -204,23 +269,60 @@ def run(e: Elastik | None = None, reconnect: bool = True, retry_s: float = 1.0) 
                 method = event.get("method", event.get("event", "")).upper()
                 if not world:
                     continue
+                routes = _matching_routes(world)
+                if not routes:
+                    continue
                 if method == "DELETE":
-                    _dispatch(world, b"", event.get("etag", ""), {}, e, method, event)
+                    _dispatch(
+                        world,
+                        b"",
+                        event.get("etag", ""),
+                        {},
+                        e,
+                        method,
+                        event,
+                        routes=routes,
+                    )
+                    dispatched += 1
+                    if max_events is not None and dispatched >= max_events:
+                        return
                     continue
                 try:
                     body = e.get(world)
                     head = e.head(world)
-                except Exception:
+                except Exception as exc:
+                    print(
+                        f"elastik reactor: failed to fetch {world}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
                     continue
                 meta = {
                     k: v
                     for k, v in head.items()
                     if k.lower().startswith("x-meta-")
                 }
-                _dispatch(world, body, head.get("etag", event.get("etag", "")), meta, e, method, event)
+                _dispatch(
+                    world,
+                    body,
+                    head.get("etag", event.get("etag", "")),
+                    meta,
+                    e,
+                    method,
+                    event,
+                    routes=routes,
+                )
+                dispatched += 1
+                if max_events is not None and dispatched >= max_events:
+                    return
         except KeyboardInterrupt:
             raise
-        except Exception:
+        except Exception as exc:
             if not reconnect:
                 raise
+            print(
+                f"elastik reactor: {type(exc).__name__}: {exc}; "
+                f"retrying in {retry_s}s",
+                file=sys.stderr,
+            )
             time.sleep(retry_s)

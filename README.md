@@ -44,7 +44,7 @@ Start the Rust core:
 cd C:\Users\chenh\Elastik-franchise\Elastik-playground\core
 $env:ELASTIK_KEY = "dev-hmac-key"
 $env:ELASTIK_READ_TOKEN = "read-token"
-$env:ELASTIK_TOKEN = "write-token"
+$env:ELASTIK_WRITE_TOKEN = "write-token"
 cargo run
 ```
 
@@ -88,7 +88,7 @@ ELASTIK_DATA=./data
 
 ELASTIK_KEY=change-me
 ELASTIK_READ_TOKEN=
-ELASTIK_TOKEN=
+ELASTIK_WRITE_TOKEN=
 ELASTIK_APPROVE_TOKEN=
 ```
 
@@ -99,7 +99,7 @@ Tokens are optional capability gates. Missing tokens do not stop the core from
 starting; they disable the corresponding protected operations:
 
 - no `ELASTIK_READ_TOKEN`: reads are public.
-- no `ELASTIK_TOKEN`: ordinary `PUT` and `POST` are disabled.
+- no `ELASTIK_WRITE_TOKEN`: ordinary `PUT` and `POST` are disabled.
 - no `ELASTIK_APPROVE_TOKEN`: `DELETE` and system writes are disabled.
 
 `ELASTIK_DATA` is the universe selector. Point the same binary at another data
@@ -131,14 +131,18 @@ There are three token levels:
 | Tier | Variable | Meaning |
 |---|---|---|
 | Read | `ELASTIK_READ_TOKEN` | Optional read gate. If empty, reads are public. |
-| Write | `ELASTIK_TOKEN` | Write ordinary worlds. Includes read. |
+| Write | `ELASTIK_WRITE_TOKEN` | Write ordinary worlds. Includes read. |
 | Approve | `ELASTIK_APPROVE_TOKEN` | Write system worlds and delete. Includes read. |
+
+Migration note: `ELASTIK_TOKEN` was the old write-token name. It still works
+as a temporary fallback when `ELASTIK_WRITE_TOKEN` is unset, but startup and
+the Python SDK warn so you can rename it.
 
 Policy is small:
 
 - `GET`, `HEAD`, `OPTIONS`, `/listen/*`, and `/proc/worlds` require read only
   when `ELASTIK_READ_TOKEN` is configured.
-- `PUT` and `POST` require `ELASTIK_TOKEN` for ordinary worlds.
+- `PUT` and `POST` require `ELASTIK_WRITE_TOKEN` for ordinary worlds.
 - `/etc/*`, `/lib/*`, `/boot/*`, `/usr/*`, and `/var/log/*` writes require
   `ELASTIK_APPROVE_TOKEN`.
 - `DELETE` requires `ELASTIK_APPROVE_TOKEN`.
@@ -158,7 +162,7 @@ local development, pass all three tokens:
 python -m elastik run `
   --key dev-hmac-key `
   --read-token read-token `
-  --token write-token `
+  --write-token write-token `
   --approve-token approve-token
 ```
 
@@ -328,7 +332,7 @@ most policy.
 Browser-facing surfaces should enforce browser policy outside the core:
 
 - Serve untrusted HTML through a sandboxed renderer or a separate origin.
-- Add `Content-Security-Policy` at the browser UI, JS SDK, reverse proxy, or
+- Add `Content-Security-Policy` at the browser UI, reverse proxy, or
   static shell layer.
 - Use escaping or text rendering when displaying untrusted worlds in
   `index.html`.
@@ -507,7 +511,51 @@ Other SDKs are roadmap until the HTTP surface settles:
 | Python | primary | Best glue language for local agents, CLI wrappers, tests, and `@listen`. |
 | Go | roadmap | Good for single-binary sidecars and distribution. |
 | Rust | roadmap | Good for embedding close to the core once the ABI stops moving. |
-| JavaScript / browser | lowest priority | Browsers need CSP, sandboxing, origin policy, and UI decisions. That policy belongs outside the core. |
+| JavaScript package | mostly unnecessary | Browsers already speak HTTP. Use HTML tags, `fetch`, and `EventSource`; add a tiny app-local helper only when it buys clarity. |
+
+### Browser Is Already The SDK
+
+Elastik does not need a browser SDK before browsers can use it. The browser is
+already the most complete HTTP client SDK on the planet.
+
+```html
+<img src="/home/logo.png">
+<link rel="stylesheet" href="/home/style.css">
+<script src="/lib/app.js"></script>
+<embed src="/home/report.pdf">
+<a href="/home/file.zip" download>download</a>
+```
+
+Every tag above is a `GET`. The core returns bytes plus `Content-Type`, and the
+browser does the rest: image decoding, CSS parsing, JavaScript execution, PDF
+rendering, or download handling.
+
+The same applies to browser-native HTTP features:
+
+```html
+<img src="/home/logo.png" loading="lazy">
+<video src="/home/demo.mp4" controls preload="none"></video>
+<img srcset="/home/logo-1x.png 1x, /home/logo-2x.png 2x">
+```
+
+Lazy loading is browser scheduling. Video seeking is browser-issued `Range`
+requests against the core's `206 Partial Content`. Responsive images are the
+browser choosing which path to `GET`. ETag caching, `If-None-Match`, `304`,
+gzip decoding, MIME handling, and rendering are all already in the browser.
+
+When code is useful, the JavaScript surface is intentionally tiny:
+
+```js
+const e = {
+  put: (path, body, headers = {}) => fetch(path, { method: "PUT", body, headers }),
+  get: (path) => fetch(path).then((r) => r.arrayBuffer()),
+  del: (path) => fetch(path, { method: "DELETE" }),
+  listen: (pattern) => new EventSource(`/listen/${pattern}`),
+};
+```
+
+That is not a new protocol. It is just HTTP from JavaScript. Python needs a
+larger SDK because Python does not include a browser. Browsers do.
 
 Install from PyPI:
 
@@ -518,7 +566,7 @@ py -m pip install elastik
 Run the bundled core:
 
 ```powershell
-py -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
+py -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token approve-token
 ```
 
 Install from source for local development:
@@ -530,7 +578,7 @@ python -m pip install -e .\sdk
 The same command works either way:
 
 ```powershell
-python -m elastik run --key dev-hmac-key --read-token read-token --token write-token --approve-token approve-token
+python -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token approve-token
 ```
 
 Use the atoms:
@@ -538,7 +586,7 @@ Use the atoms:
 ```python
 from elastik import Elastik
 
-e = Elastik("http://127.0.0.1:3105", token="write-token")
+e = Elastik("http://127.0.0.1:3105", bearer_token="write-token")
 
 e.put("/home/note", "hello", content_type="text/plain; charset=utf-8")
 body = e.get("/home/note")          # bytes
@@ -599,7 +647,7 @@ def on_task(body, world, e):
     name = world.rsplit("/", 1)[-1]
     e.put(f"/home/result/{name}", result)
 
-e = elastik.Elastik("http://127.0.0.1:3105", token="write-token")
+e = elastik.Elastik("http://127.0.0.1:3105", bearer_token="write-token")
 elastik.run(e)
 ```
 
@@ -661,11 +709,16 @@ make build
 
 ## Design Rules
 
-### Curl first, browser second
+### Curl first, browser native
 
 If an operation is not pleasant from curl, the core is wrong. Browser UI lives
 outside the core because browsers bring CSP, CORS, HTML, iframes, service
 workers, and policy. Those are real concerns, but they are not the disk.
+
+That does not make the browser second-class. It makes the browser an HTTP
+peer. HTML tags, `fetch`, and `EventSource` already know how to talk to the
+core. A browser SDK should be an optional convenience snippet, not a second
+object model.
 
 ### Bytes first
 
