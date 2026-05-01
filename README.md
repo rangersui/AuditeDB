@@ -334,6 +334,9 @@ Browser-facing surfaces should enforce browser policy outside the core:
 - Serve untrusted HTML through a sandboxed renderer or a separate origin.
 - Add `Content-Security-Policy` at the browser UI, reverse proxy, or
   static shell layer.
+- Or make the HTML world carry its own browser policy with `<meta
+  http-equiv="Content-Security-Policy" ...>`. HTML is already a web app; the
+  policy can travel with the bytes that define the app.
 - Use escaping or text rendering when displaying untrusted worlds in
   `index.html`.
 - Use read-only tokens for public browsing surfaces.
@@ -342,7 +345,8 @@ Browser-facing surfaces should enforce browser policy outside the core:
   them to control those HTTP semantics.
 
 Core rule: store what was written, return what was stored. Browser safety is a
-client or edge concern.
+content, client, or edge concern. Whoever writes the HTML should decide whether
+that HTML allows scripts, frames, network fetches, forms, or nothing at all.
 
 ## ETag and Conditional Requests
 
@@ -529,6 +533,25 @@ already the most complete HTTP client SDK on the planet.
 Every tag above is a `GET`. The core returns bytes plus `Content-Type`, and the
 browser does the rest: image decoding, CSS parsing, JavaScript execution, PDF
 rendering, or download handling.
+
+An HTML world can also carry its own browser policy:
+
+```html
+<!-- PUT /home/app.html with Content-Type: text/html -->
+<html>
+<head>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'none'; frame-ancestors 'none'">
+</head>
+<body>
+  I carry my own policy. The core stores bytes and returns bytes.
+</body>
+</html>
+```
+
+The browser reads the meta policy and enforces it. Elastik does not need to
+understand CSP to preserve it. For HTML, the document is already an app, and the
+app can ship its own rules with its own bytes.
 
 The same applies to browser-native HTTP features:
 
