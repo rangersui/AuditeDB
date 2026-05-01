@@ -8,7 +8,8 @@
 //! In elastik terms, core owns protocol truth, not protocol politics:
 //!
 //! - Truth we keep here: v1 header, method code, Uri-Path, Content-Format,
-//!   payload marker, token echo, response code, CON->ACK / NON->NON.
+//!   payload marker, token echo, response code, CON->ACK / NON->NON, and the
+//!   minimal identity signal needed to map a packet to an elastik auth tier.
 //! - Politics we intentionally do not keep here: retransmission, dedup cache,
 //!   block-wise transfer, DTLS/OSCORE, Observe, .well-known/core, Max-Age,
 //!   multicast discovery, congestion knobs, and strict critical-option lawyering.
@@ -21,9 +22,16 @@ use axum::http::StatusCode;
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
-use crate::{auth, canonicalize_path, valid_world_name, Core};
+use crate::{auth, can_read, canonicalize_path, valid_world_name, Core};
 
 const MAX_DATAGRAM: usize = 1152;
+/// Experimental critical CoAP option carrying the raw elastik token bytes.
+///
+/// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
+/// of "Authorization: Bearer ..." for the playground adapter: absent means Anon,
+/// matching a configured token yields Read/Auth/Approve. Use CoAPS/DTLS-PSK at
+/// the edge if the token should not be visible on the wire.
+const ELASTIK_AUTH_OPTION: u16 = 65001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MsgType {
@@ -49,6 +57,7 @@ struct Packet<'a> {
     token: &'a [u8],
     path: Vec<String>,
     content_format: Option<u16>,
+    auth_token: Option<&'a [u8]>,
     payload: &'a [u8],
 }
 
@@ -82,7 +91,7 @@ pub(crate) async fn serve(core: Core, bind: String, mut shutdown: watch::Receive
     };
     let socket = std::sync::Arc::new(socket);
     eprintln!("scoap: listening on coap://{bind}/");
-    eprintln!("scoap: UDP curl surface; CoAP PUT maps to local write tier");
+    eprintln!("scoap: UDP curl surface; auth option {ELASTIK_AUTH_OPTION} maps to token tier");
     let mut buf = [0_u8; MAX_DATAGRAM];
     loop {
         tokio::select! {
@@ -128,27 +137,29 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
     if !valid_world_name(&world_name) {
         return encode_response(request, 128, None, b"bad world name\n");
     }
+    let tier = request
+        .auth_token
+        .map(|token| core.tokens.check_token_bytes(token))
+        .unwrap_or(auth::Tier::Anon);
     match method {
-        Method::Get => match core.read_world(&world_name) {
-            Some(stage) => encode_response(
-                request,
-                69,
-                media_type_to_cf(&stage.content_type),
-                &stage.body,
-            ),
-            None => encode_response(request, 132, Some(0), b"not found\n"),
-        },
+        Method::Get => {
+            if !can_read(core, tier) {
+                return encode_response(request, 129, Some(0), b"unauthorized\n");
+            }
+            match core.read_world(&world_name) {
+                Some(stage) => encode_response(
+                    request,
+                    69,
+                    media_type_to_cf(&stage.content_type),
+                    &stage.body,
+                ),
+                None => encode_response(request, 132, Some(0), b"not found\n"),
+            }
+        }
         Method::Put => {
             let content_type = cf_to_media_type(request.content_format);
             match core
-                .put_bytes(
-                    &world_name,
-                    request.payload,
-                    content_type,
-                    &[],
-                    auth::Tier::Auth,
-                    None,
-                )
+                .put_bytes(&world_name, request.payload, content_type, &[], tier, None)
                 .await
             {
                 Ok(outcome) => {
@@ -213,6 +224,7 @@ fn parse_packet(data: &[u8]) -> Result<Packet<'_>, String> {
     let mut option_number = 0_u16;
     let mut path = Vec::new();
     let mut content_format = None;
+    let mut auth_token = None;
     while i < data.len() {
         if data[i] == 0xff {
             i += 1;
@@ -223,6 +235,7 @@ fn parse_packet(data: &[u8]) -> Result<Packet<'_>, String> {
                 token,
                 path,
                 content_format,
+                auth_token,
                 payload: &data[i..],
             });
         }
@@ -244,6 +257,7 @@ fn parse_packet(data: &[u8]) -> Result<Packet<'_>, String> {
         match option_number {
             11 => path.push(String::from_utf8_lossy(value).to_string()),
             12 => content_format = Some(parse_uint(value)?),
+            ELASTIK_AUTH_OPTION => auth_token = Some(value),
             _ => {}
         }
     }
@@ -254,6 +268,7 @@ fn parse_packet(data: &[u8]) -> Result<Packet<'_>, String> {
         token,
         path,
         content_format,
+        auth_token,
         payload: b"",
     })
 }
@@ -410,9 +425,9 @@ mod tests {
             Core {
                 data: dir.clone(),
                 tokens: auth::Tokens {
-                    read: None,
-                    auth: None,
-                    approve: None,
+                    read: Some(b"reader".to_vec()),
+                    auth: Some(b"writer".to_vec()),
+                    approve: Some(b"approve".to_vec()),
                 },
                 hmac_key: b"test-key".to_vec(),
                 mem: Arc::new(store::MemoryStore::new()),
@@ -452,18 +467,80 @@ mod tests {
         assert_eq!(&out[7..], b"ok");
     }
 
+    fn coap_put_packet(path: &[&[u8]], payload: &[u8], token: Option<&[u8]>) -> Vec<u8> {
+        let mut out = vec![0x41, 0x03, 0x12, 0x34, 0xaa];
+        let mut prev = 0_u16;
+        for segment in path {
+            write_option(&mut out, &mut prev, 11, segment);
+        }
+        write_option(&mut out, &mut prev, 12, &[]);
+        if let Some(token) = token {
+            write_option(&mut out, &mut prev, ELASTIK_AUTH_OPTION, token);
+        }
+        out.push(0xff);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn coap_get_packet(path: &[&[u8]], token: Option<&[u8]>) -> Vec<u8> {
+        let mut out = vec![0x41, 0x01, 0x12, 0x35, 0xbb];
+        let mut prev = 0_u16;
+        for segment in path {
+            write_option(&mut out, &mut prev, 11, segment);
+        }
+        if let Some(token) = token {
+            write_option(&mut out, &mut prev, ELASTIK_AUTH_OPTION, token);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn coap_put_without_auth_token_is_rejected() {
+        let (core, dir) = test_core("auth-reject");
+        let put_bytes = coap_put_packet(&[b"home", b"sensor", b"kitchen", b"temp"], b"23.5", None);
+        let put = packet(&put_bytes);
+
+        let response = handle(&core, &put).await;
+
+        assert_eq!(response[1], 129); // 4.01 Unauthorized
+        assert!(core.read_world("home/sensor/kitchen/temp").is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn coap_get_honors_read_token_when_enabled() {
+        let (core, dir) = test_core("read-auth");
+        core.write_world("home/secret", b"ok", "text/plain; charset=utf-8", &[])
+            .unwrap();
+
+        let denied = handle(
+            &core,
+            &packet(&coap_get_packet(&[b"home", b"secret"], None)),
+        )
+        .await;
+        assert_eq!(denied[1], 129); // 4.01 Unauthorized
+
+        let allowed = handle(
+            &core,
+            &packet(&coap_get_packet(&[b"home", b"secret"], Some(b"reader"))),
+        )
+        .await;
+        assert_eq!(allowed[1], 69); // 2.05 Content
+        assert_eq!(&allowed[7..], b"ok");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn coap_put_and_get_share_the_core_world_store() {
         let (core, dir) = test_core("dual-transport");
-        let put = packet(&[
-            0x41, 0x03, 0x12, 0x34, 0xaa, // CON PUT, mid, token
-            0xb4, b'h', b'o', b'm', b'e', // Uri-Path: home
-            0x06, b's', b'e', b'n', b's', b'o', b'r', // Uri-Path: sensor
-            0x07, b'k', b'i', b't', b'c', b'h', b'e', b'n', // Uri-Path: kitchen
-            0x04, b't', b'e', b'm', b'p', // Uri-Path: temp
-            0x10, // Content-Format: text/plain
-            0xff, b'2', b'3', b'.', b'5',
-        ]);
+        let put_bytes = coap_put_packet(
+            &[b"home", b"sensor", b"kitchen", b"temp"],
+            b"23.5",
+            Some(b"writer"),
+        );
+        let put = packet(&put_bytes);
         let put_response = handle(&core, &put).await;
         assert_eq!(put_response[1], 65); // 2.01 Created
 
@@ -471,11 +548,9 @@ mod tests {
         assert_eq!(stage.body, b"23.5");
         assert_eq!(stage.content_type, "text/plain; charset=utf-8");
 
-        let get = packet(&[
-            0x41, 0x01, 0x12, 0x35, 0xbb, // CON GET, mid, token
-            0xb4, b'h', b'o', b'm', b'e', 0x06, b's', b'e', b'n', b's', b'o', b'r', 0x07, b'k',
-            b'i', b't', b'c', b'h', b'e', b'n', 0x04, b't', b'e', b'm', b'p',
-        ]);
+        let get_bytes =
+            coap_get_packet(&[b"home", b"sensor", b"kitchen", b"temp"], Some(b"reader"));
+        let get = packet(&get_bytes);
         let get_response = handle(&core, &get).await;
         assert_eq!(get_response[1], 69); // 2.05 Content
         assert_eq!(get_response[6], 0xff);
