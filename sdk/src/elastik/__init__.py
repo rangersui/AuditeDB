@@ -76,7 +76,7 @@ from elastik.reactor import (
     Ctx,
 )
 from elastik._spawn import (
-    start,
+    start as _spawn_start,
     stop,
     is_running,
     default_url,
@@ -171,11 +171,26 @@ def _set_default(client: Elastik) -> None:
 # Re-export start() to also bind the singleton, so the next 模式 works:
 #   e = elastik.start()      # works (returns client)
 #   elastik.put("/x", "y")   # also works (uses the same client)
-_orig_start = start
-
-
-def start(*args: Any, **kwargs: Any):  # type: ignore[no-redef]
-    client = _orig_start(*args, **kwargs)
+def start(
+    port: int | None = None,
+    host: str | None = None,
+    key: str | None = None,
+    read_token: str | None = None,
+    token: str | None = None,
+    approve_token: str | None = None,
+    data_dir: str | None = None,
+    quiet: bool = True,
+) -> Elastik:
+    client = _spawn_start(
+        port=port,
+        host=host,
+        key=key,
+        read_token=read_token,
+        token=token,
+        approve_token=approve_token,
+        data_dir=data_dir,
+        quiet=quiet,
+    )
     _set_default(client)
     return client
 
@@ -186,7 +201,7 @@ def start(*args: Any, **kwargs: Any):  # type: ignore[no-redef]
 
 def put(
     path: str,
-    data,
+    data: bytes | str,
     *,
     content_type: str | None = None,
     content_encoding: str | None = None,
@@ -218,7 +233,7 @@ def put(
 
 def post(
     path: str,
-    data,
+    data: bytes | str,
     *,
     if_match: str | None = None,
     headers: dict[str, str] | None = None,

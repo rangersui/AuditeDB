@@ -11,15 +11,17 @@ from __future__ import annotations
 import inspect
 import sys
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from elastik.sdk import Elastik
 
 
+F = TypeVar("F", bound=Callable[..., Any])
+
 _routes: dict[str, Callable[..., Any]] = {}
 
 
-def listen(pattern: str, *, replace: bool = False):
+def listen(pattern: str, *, replace: bool = False) -> Callable[[F], F]:
     """Register a handler for a path pattern.
 
     Pattern is prefix-with-trailing-`*`:
@@ -34,7 +36,7 @@ def listen(pattern: str, *, replace: bool = False):
     Registering the same pattern twice is usually a bug, so it raises
     ValueError unless `replace=True` is explicit.
     """
-    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+    def deco(func: F) -> F:
         if pattern in _routes and not replace:
             raise ValueError(
                 f"handler already registered for {pattern!r}; "
