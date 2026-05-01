@@ -110,6 +110,10 @@ If `read_token` is omitted, reads are public. If `write_token` is omitted,
 ordinary writes are disabled. If `approve_token` is omitted, destructive/admin
 operations are disabled.
 
+Migration note: `ELASTIK_TOKEN` was the old write-token name. It still works as
+a temporary fallback when `ELASTIK_WRITE_TOKEN` is unset, but the SDK warns so
+you can rename it.
+
 ## Paths
 
 `"foo"` and `"/foo"` both mean `/home/foo`.

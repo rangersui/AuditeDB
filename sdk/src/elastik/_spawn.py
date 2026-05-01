@@ -25,6 +25,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -61,6 +62,26 @@ def _load_dotenv(path: str = ".env") -> None:
         if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
             v = v[1:-1]
         os.environ.setdefault(k, v)
+    _warn_deprecated_elastik_token()
+
+
+def _warn_deprecated_elastik_token() -> None:
+    if os.getenv("ELASTIK_TOKEN") and not os.getenv("ELASTIK_WRITE_TOKEN"):
+        warnings.warn(
+            "ELASTIK_TOKEN is deprecated; rename it to ELASTIK_WRITE_TOKEN.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def _env_write_token() -> str:
+    token = os.getenv("ELASTIK_WRITE_TOKEN", "")
+    if token:
+        return token
+    legacy = os.getenv("ELASTIK_TOKEN", "")
+    if legacy:
+        _warn_deprecated_elastik_token()
+    return legacy
 
 
 def _binary_path() -> Path:
@@ -235,9 +256,7 @@ def start(
     read_token = (
         os.getenv("ELASTIK_READ_TOKEN", "") if read_token is None else read_token
     )
-    write_token = (
-        os.getenv("ELASTIK_WRITE_TOKEN", "") if write_token is None else write_token
-    )
+    write_token = _env_write_token() if write_token is None else write_token
     approve_token = (
         os.getenv("ELASTIK_APPROVE_TOKEN", "")
         if approve_token is None else approve_token

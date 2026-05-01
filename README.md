@@ -134,6 +134,10 @@ There are three token levels:
 | Write | `ELASTIK_WRITE_TOKEN` | Write ordinary worlds. Includes read. |
 | Approve | `ELASTIK_APPROVE_TOKEN` | Write system worlds and delete. Includes read. |
 
+Migration note: `ELASTIK_TOKEN` was the old write-token name. It still works
+as a temporary fallback when `ELASTIK_WRITE_TOKEN` is unset, but startup and
+the Python SDK warn so you can rename it.
+
 Policy is small:
 
 - `GET`, `HEAD`, `OPTIONS`, `/listen/*`, and `/proc/worlds` require read only

@@ -33,7 +33,8 @@ impl Tokens {
     pub fn from_env() -> Self {
         Self {
             read: nonempty_env("ELASTIK_READ_TOKEN"),
-            write: nonempty_env("ELASTIK_WRITE_TOKEN"),
+            write: nonempty_env("ELASTIK_WRITE_TOKEN")
+                .or_else(|| nonempty_env("ELASTIK_TOKEN")),
             approve: nonempty_env("ELASTIK_APPROVE_TOKEN"),
         }
     }
@@ -139,6 +140,7 @@ mod tests {
     struct EnvGuard {
         read: Option<String>,
         write: Option<String>,
+        legacy_write: Option<String>,
         approve: Option<String>,
     }
 
@@ -147,6 +149,7 @@ mod tests {
             Self {
                 read: std::env::var("ELASTIK_READ_TOKEN").ok(),
                 write: std::env::var("ELASTIK_WRITE_TOKEN").ok(),
+                legacy_write: std::env::var("ELASTIK_TOKEN").ok(),
                 approve: std::env::var("ELASTIK_APPROVE_TOKEN").ok(),
             }
         }
@@ -162,6 +165,10 @@ mod tests {
                 Some(v) => std::env::set_var("ELASTIK_WRITE_TOKEN", v),
                 None => std::env::remove_var("ELASTIK_WRITE_TOKEN"),
             }
+            match &self.legacy_write {
+                Some(v) => std::env::set_var("ELASTIK_TOKEN", v),
+                None => std::env::remove_var("ELASTIK_TOKEN"),
+            }
             match &self.approve {
                 Some(v) => std::env::set_var("ELASTIK_APPROVE_TOKEN", v),
                 None => std::env::remove_var("ELASTIK_APPROVE_TOKEN"),
@@ -175,6 +182,7 @@ mod tests {
         let _env = EnvGuard::capture();
         std::env::set_var("ELASTIK_READ_TOKEN", " ");
         std::env::set_var("ELASTIK_WRITE_TOKEN", "");
+        std::env::remove_var("ELASTIK_TOKEN");
         std::env::set_var("ELASTIK_APPROVE_TOKEN", "   ");
 
         let tokens = Tokens::from_env();
@@ -187,6 +195,18 @@ mod tests {
         assert!(env_set_but_empty("ELASTIK_READ_TOKEN"));
         assert!(env_set_but_empty("ELASTIK_WRITE_TOKEN"));
         assert!(env_set_but_empty("ELASTIK_APPROVE_TOKEN"));
+    }
+
+    #[test]
+    fn legacy_elastik_token_is_a_write_token_fallback() {
+        let _lock = env_lock().lock().unwrap();
+        let _env = EnvGuard::capture();
+        std::env::remove_var("ELASTIK_WRITE_TOKEN");
+        std::env::set_var("ELASTIK_TOKEN", "legacy-writer");
+
+        let tokens = Tokens::from_env();
+
+        assert_eq!(tokens.check(Some("Bearer legacy-writer")), Tier::Write);
     }
 
     #[test]

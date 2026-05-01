@@ -135,6 +135,33 @@ def main() -> int:
     from elastik.sdk import Elastik
 
     check = Check()
+    saved_tokens = {
+        name: os.environ.get(name)
+        for name in (
+            "ELASTIK_APPROVE_TOKEN",
+            "ELASTIK_WRITE_TOKEN",
+            "ELASTIK_TOKEN",
+            "ELASTIK_READ_TOKEN",
+        )
+    }
+    try:
+        for name in saved_tokens:
+            os.environ.pop(name, None)
+        os.environ["ELASTIK_TOKEN"] = "legacy-write"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            legacy_client = Elastik("http://127.0.0.1:1")
+        check(legacy_client.bearer_token == "legacy-write", "legacy ELASTIK_TOKEN still supplies bearer token")
+        check(
+            any("ELASTIK_TOKEN is deprecated" in str(w.message) for w in caught),
+            "legacy ELASTIK_TOKEN emits migration warning",
+        )
+    finally:
+        for name, value in saved_tokens.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     check(_spawn._connect_host("0.0.0.0") == "127.0.0.1", "wildcard IPv4 maps to loopback")
     check(_spawn._client_url("0.0.0.0", 1234) == "http://127.0.0.1:1234", "wildcard IPv4 returns usable URL")
     check(_spawn._client_url("::", 1234) == "http://[::1]:1234", "wildcard IPv6 URL is bracketed")

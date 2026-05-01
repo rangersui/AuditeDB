@@ -248,6 +248,11 @@ fn print_auth_summary(tokens: &auth::Tokens) {
     if auth::env_set_but_empty("ELASTIK_WRITE_TOKEN") {
         eprintln!("  warning: empty ELASTIK_WRITE_TOKEN treated as unset (PUT/POST disabled)");
     }
+    if std::env::var("ELASTIK_TOKEN").is_ok() {
+        eprintln!(
+            "  warning: ELASTIK_TOKEN is deprecated; rename it to ELASTIK_WRITE_TOKEN."
+        );
+    }
     if auth::env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
         eprintln!(
             "  warning: empty ELASTIK_APPROVE_TOKEN treated as unset (DELETE/system writes disabled)"

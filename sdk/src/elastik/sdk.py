@@ -848,9 +848,18 @@ def _quote_listen_pattern(pattern: str) -> str:
 
 
 def _best_env_token() -> str:
+    write_token = os.getenv("ELASTIK_WRITE_TOKEN")
+    legacy_write_token = os.getenv("ELASTIK_TOKEN")
+    if not write_token and legacy_write_token:
+        warnings.warn(
+            "ELASTIK_TOKEN is deprecated; rename it to ELASTIK_WRITE_TOKEN.",
+            UserWarning,
+            stacklevel=3,
+        )
+        write_token = legacy_write_token
     return (
         os.getenv("ELASTIK_APPROVE_TOKEN")
-        or os.getenv("ELASTIK_WRITE_TOKEN")
+        or write_token
         or os.getenv("ELASTIK_READ_TOKEN", "")
     )
 
