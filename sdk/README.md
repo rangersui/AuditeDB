@@ -39,7 +39,7 @@ Prefer `e.put(...)` instance methods in libraries, tests, and long-running
 tools where client lifecycle should be explicit. Use module-level
 `elastik.put(...)` in scripts and notebooks with exactly one core per process.
 
-Runnable examples live in `sdk/examples/`:
+In a source checkout, runnable examples live in `sdk/examples/`:
 
 ```powershell
 python sdk/examples/01_basic.py
@@ -55,6 +55,9 @@ py -m pip install elastik
 
 The package ships a platform-specific `elastik-core` binary in
 `elastik/_bin/`. No compile-on-install.
+
+PyPI wheels are the normal install path. If your platform does not have a
+wheel yet, build the Rust core from source and use an editable checkout.
 
 ## Starting A Core
 
