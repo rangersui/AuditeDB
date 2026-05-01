@@ -41,14 +41,6 @@ Prefer `e.put(...)` instance methods in libraries, tests, and long-running
 tools where client lifecycle should be explicit. Use module-level
 `elastik.put(...)` in scripts and notebooks with exactly one core per process.
 
-In a source checkout, runnable examples live in `sdk/examples/`:
-
-```powershell
-python sdk/examples/01_basic.py
-python sdk/examples/02_listener.py
-python sdk/examples/03_metadata_and_etag.py
-```
-
 ## Path Contracts
 
 Elastik apps can be coordinated by path names instead of API schemas.
@@ -88,6 +80,14 @@ Use curl to inspect either side of the handoff:
 ```powershell
 curl.exe http://127.0.0.1:3105/home/order/123
 curl.exe http://127.0.0.1:3105/home/receipt/123
+```
+
+In a source checkout, runnable examples live in `sdk/examples/`:
+
+```powershell
+python sdk/examples/01_basic.py
+python sdk/examples/02_listener.py
+python sdk/examples/03_metadata_and_etag.py
 ```
 
 ## Install

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import sys
 import time
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SDK_SRC = ROOT / "sdk" / "src"
 sys.path.insert(0, str(SDK_SRC))
 
+from elastik.sdk import _NON_PERSISTED_RESPONSE_HEADERS  # noqa: E402
 from elastik.tools import ShellPoolError, TrustedShellPool  # noqa: E402
 
 
@@ -39,7 +41,22 @@ def python_cmd(code: str) -> str:
     return f"& {py} -c {body}" if ps() else f"{py} -c {body}"
 
 
+def check_header_blacklist_parity() -> None:
+    """FakeElastik must reject the same persisted headers as the Rust core."""
+    rs = (ROOT / "core" / "src" / "http_semantics.rs").read_text(encoding="utf-8")
+    arm = re.search(r"matches!\(\s*name,\s*(.*?)\s*\)", rs, re.DOTALL)
+    assert arm, "could not find Rust header blacklist"
+    rust_set = set(re.findall(r'"([a-z0-9-]+)"', arm.group(1)))
+    assert _NON_PERSISTED_RESPONSE_HEADERS == rust_set, (
+        "fake/real header policy diverged. "
+        f"Only in Python: {sorted(_NON_PERSISTED_RESPONSE_HEADERS - rust_set)}; "
+        f"only in Rust: {sorted(rust_set - _NON_PERSISTED_RESPONSE_HEADERS)}"
+    )
+
+
 def main() -> int:
+    check_header_blacklist_parity()
+
     with TrustedShellPool(size=1, timeout=2) as pool:
         r = pool.run("echo elastik-ready", check=True)
         assert r.ok, r
