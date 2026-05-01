@@ -353,6 +353,31 @@ def main() -> int:
             check(head["cache-control"] == "max-age=60", "head cache-control")
             check(head["x-meta-author"] == "ranger", "head x-meta")
             check(head["accept-ranges"] == "bytes", "head accept-ranges")
+            writer.put(
+                "/home/sdk/logo.png",
+                b"\x89PNG\r\n",
+                content_type="image/png",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Content-Security-Policy": "default-src 'self'",
+                    "X-Frame-Options": "DENY",
+                    "X-Future-HTTP-Thing": "ok",
+                },
+            )
+            policy_head = reader.head("/home/sdk/logo.png")
+            check(
+                policy_head["access-control-allow-origin"] == "*",
+                "safe response policy header is stored",
+            )
+            check(
+                policy_head["content-security-policy"] == "default-src 'self'",
+                "content-security-policy is stored",
+            )
+            check(policy_head["x-frame-options"] == "DENY", "x-frame-options is stored")
+            check(
+                policy_head["x-future-http-thing"] == "ok",
+                "future safe response header is stored",
+            )
             check("home/sdk/text" in reader.list(), "sdk list sees world")
             check("home/sdk/text" in reader.list_paths(), "sdk list_paths aliases list")
             check("home/sdk/text" in reader.list_keys(), "sdk list_keys aliases list")

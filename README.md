@@ -290,22 +290,40 @@ Accept-Ranges: bytes
 
 ## Representation Headers
 
-Elastik stores these request headers on `PUT` and replays them on read:
+Elastik stores safe representation/response headers from `PUT` and replays
+them on read. This is blacklist-based: core refuses credentials,
+hop-by-hop transport state, request controls, and headers it computes itself.
+Everything else travels with the bytes.
 
 - `Content-Type`
 - `Content-Encoding`
 - `Content-Language`
 - `Content-Disposition`
 - `Cache-Control`
+- `Access-Control-Allow-Origin`
+- `Content-Security-Policy`
+- `X-Frame-Options`
+- `Permissions-Policy`
+- future response headers the core does not understand
 - `X-Meta-*`
 
-Request-control headers are not stored:
+Headers that describe this request, this connection, or core-generated state
+are not stored:
 
 - `Authorization`
+- `Cookie`
+- `Connection`
+- `Transfer-Encoding`
+- `Host`
 - `Range`
 - `If-Match`
 - `If-None-Match`
 - `If-Range`
+- `ETag`
+- `Content-Length`
+- `Location`
+- `Link`
+- `Allow`
 - `Accept-*`
 
 That split is the core contract:
@@ -315,6 +333,21 @@ stored representation headers -> travel with the bytes
 request control headers       -> used once, then discarded
 core generated headers        -> ETag, Content-Length, Link, Location, Allow
 ```
+
+Static resources can carry their own browser policy as HTTP headers:
+
+```powershell
+curl.exe -X PUT http://127.0.0.1:3105/home/logo.png `
+  -H "Authorization: Bearer write-token" `
+  -H "Content-Type: image/png" `
+  -H "Access-Control-Allow-Origin: *" `
+  -H "X-Frame-Options: DENY" `
+  --data-binary "@logo.png"
+```
+
+`GET /home/logo.png` returns those policy headers with the image bytes. The
+core does not know what CORS or frame policy means; it just preserves safe
+response metadata for the client that does know.
 
 ## Trust Model
 
@@ -329,11 +362,15 @@ That is intentional. Curl, SDK workers, protocol bridges, and agents need exact
 bytes back. The browser is only one consumer, and it is the consumer with the
 most policy.
 
-Browser-facing surfaces should enforce browser policy outside the core:
+Browser-facing surfaces should enforce browser policy outside the core or make
+the resource carry its own policy:
 
 - Serve untrusted HTML through a sandboxed renderer or a separate origin.
 - Add `Content-Security-Policy` at the browser UI, reverse proxy, or
   static shell layer.
+- Or store response-policy headers such as `Content-Security-Policy`,
+  `Access-Control-Allow-Origin`, `X-Frame-Options`, and
+  `Permissions-Policy` with the resource on `PUT`.
 - Or make the HTML world carry its own browser policy with `<meta
   http-equiv="Content-Security-Policy" ...>`. HTML is already a web app; the
   policy can travel with the bytes that define the app.
@@ -341,8 +378,8 @@ Browser-facing surfaces should enforce browser policy outside the core:
   `index.html`.
 - Use read-only tokens for public browsing surfaces.
 - Do not give untrusted writers access to representation headers such as
-  `Cache-Control`, `Content-Disposition`, or `Content-Encoding` unless you want
-  them to control those HTTP semantics.
+  `Cache-Control`, `Content-Disposition`, `Content-Encoding`, CORS, or CSP
+  unless you want them to control those HTTP semantics.
 
 Core rule: store what was written, return what was stored. Browser safety is a
 content, client, or edge concern. Whoever writes the HTML should decide whether
@@ -552,6 +589,19 @@ An HTML world can also carry its own browser policy:
 The browser reads the meta policy and enforces it. Elastik does not need to
 understand CSP to preserve it. For HTML, the document is already an app, and the
 app can ship its own rules with its own bytes.
+
+Non-HTML static resources can carry policy in their stored response headers:
+
+```powershell
+curl.exe -X PUT http://127.0.0.1:3105/home/logo.png `
+  -H "Authorization: Bearer write-token" `
+  -H "Content-Type: image/png" `
+  -H "Access-Control-Allow-Origin: *" `
+  --data-binary "@logo.png"
+```
+
+The later `GET /home/logo.png` returns `Access-Control-Allow-Origin: *`. The
+browser enforces it; Elastik only preserves it.
 
 The same applies to browser-native HTTP features:
 

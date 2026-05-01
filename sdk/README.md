@@ -176,6 +176,23 @@ assert e.head("note")["x-meta-project"] == "demo"
 Those `X-Meta-*` fields are just metadata. They do not affect auth, auditing,
 or routing unless your own SDK/userland code gives them meaning.
 
+Any safe response header that does not have a named argument can be sent through
+`headers=`:
+
+```python
+e.put(
+    "logo.png",
+    png_bytes,
+    content_type="image/png",
+    headers={"Access-Control-Allow-Origin": "*"},
+)
+assert e.head("logo.png")["access-control-allow-origin"] == "*"
+```
+
+The core blacklists credentials, hop-by-hop transport state, request controls,
+and core-generated headers such as `ETag` and `Content-Length`. Everything else
+is stored and replayed without the SDK needing to understand it.
+
 ## Bytes, Text, JSON
 
 `get()` is byte-exact:
