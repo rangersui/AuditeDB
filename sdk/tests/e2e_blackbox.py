@@ -529,10 +529,24 @@ def main() -> int:
                 "PUT",
                 "fake/raw",
                 b"raw",
-                headers={"Content-Type": "text/custom", "X-Meta-Test": "ok"},
+                headers={
+                    "Content-Type": "text/custom",
+                    "X-Meta-Test": "ok",
+                    "Access-Control-Allow-Origin": "*",
+                    "Content-Security-Policy": "default-src 'self'",
+                    "Authorization": "Bearer should-not-persist",
+                },
             )
             check(fake.head("fake/raw")["content-type"] == "text/custom", "FakeElastik request preserves Content-Type")
             check(fake.head("fake/raw")["x-meta-test"] == "ok", "FakeElastik request preserves X-Meta headers")
+            check(
+                fake.head("fake/raw")["access-control-allow-origin"] == "*",
+                "FakeElastik preserves safe response headers",
+            )
+            check(
+                "authorization" not in fake.head("fake/raw"),
+                "FakeElastik does not persist Authorization",
+            )
             config_buf = io.StringIO()
             with contextlib.redirect_stdout(config_buf):
                 elastik.show_config()

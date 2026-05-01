@@ -17,6 +17,7 @@ from elastik.sdk import (
     _body_bytes,
     _canonical_world_name,
     _reject_wire_headers,
+    _should_persist_response_header,
     _validate_world_name,
 )
 
@@ -73,7 +74,7 @@ class FakeElastik(Elastik):
         _set_if(headers, "content-disposition", content_disposition)
         _set_if(headers, "cache-control", cache_control)
         for key, value in wire_headers.items():
-            if key.startswith("x-meta-"):
+            if _should_persist_response_header(key):
                 headers[key] = value  # type: ignore[literal-required]
         for key, value in meta.items():
             headers[f"x-meta-{key.replace('_', '-').lower()}"] = str(value)  # type: ignore[literal-required]

@@ -63,6 +63,59 @@ _FORBIDDEN_USER_HEADERS = {
     "upgrade",
     "http2-settings",
 }
+_NON_PERSISTED_RESPONSE_HEADERS = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "host",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "http2-settings",
+    "accept",
+    "accept-charset",
+    "accept-encoding",
+    "accept-language",
+    "expect",
+    "from",
+    "max-forwards",
+    "origin",
+    "prefer",
+    "range",
+    "referer",
+    "referrer",
+    "dnt",
+    "user-agent",
+    "if-match",
+    "if-none-match",
+    "if-range",
+    "if-modified-since",
+    "if-unmodified-since",
+    "content-type",
+    "content-length",
+    "etag",
+    "accept-ranges",
+    "content-range",
+    "link",
+    "location",
+    "allow",
+    "date",
+    "server",
+    "www-authenticate",
+    "age",
+    "vary",
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+}
 _log = logging.getLogger("elastik")
 
 
@@ -834,7 +887,7 @@ class Elastik(MutableMapping[str, bytes]):
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> Response:
-        """Raw HTTP escape hatch for any safe header/method the SDK hasn't sugared."""
+        """Raw HTTP escape hatch for methods plus headers that pass wire checks."""
         url = self.url + _quote_path(path)
         h = dict(headers or {})
         _reject_wire_headers(h)
@@ -1147,6 +1200,16 @@ def _reject_wire_headers(headers: dict[str, str]) -> None:
             "these headers are managed by the HTTP client and cannot be set "
             f"via headers=: {names}"
         )
+
+
+def _should_persist_response_header(name: str) -> bool:
+    n = name.strip().lower()
+    return (
+        bool(n)
+        and not n.startswith("sec-")
+        and not n.startswith("access-control-request-")
+        and n not in _NON_PERSISTED_RESPONSE_HEADERS
+    )
 
 
 def _body_bytes(data: bytes | str, method: str) -> bytes:
