@@ -729,6 +729,8 @@ class Elastik(MutableMapping[str, bytes]):
         """
         src_root = _canonical_prefix(src)
         dst_root = _canonical_prefix(dst)
+        if src_root == dst_root:
+            raise ValueError("mv() source and destination must be different")
         if not recursive:
             if not overwrite and self.exists(dst_root):
                 raise FileExistsError(dst_root)
@@ -737,6 +739,8 @@ class Elastik(MutableMapping[str, bytes]):
             return 1
         if not src_root:
             raise ValueError("mv(recursive=True) requires a non-empty source prefix")
+        if not dst_root:
+            raise ValueError("mv(recursive=True) requires a non-empty destination prefix")
         targets = [p for p in self.ls(src_root, depth=-1) if not p.endswith("/")]
         if not overwrite:
             for target in targets:

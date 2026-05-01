@@ -201,7 +201,7 @@ pub(crate) fn request_meta_headers(headers: &HeaderMap) -> Vec<(String, String)>
     let mut out = BTreeMap::new();
     for (k, v) in headers {
         let name = k.as_str().to_ascii_lowercase();
-        if is_persisted_representation_header(&name) {
+        if is_persisted_representation_header_lowercase(&name) {
             if let Ok(val) = v.to_str() {
                 out.insert(name, val.to_string());
             }
@@ -210,9 +210,8 @@ pub(crate) fn request_meta_headers(headers: &HeaderMap) -> Vec<(String, String)>
     out.into_iter().collect()
 }
 
-pub(crate) fn is_persisted_representation_header(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    !is_never_persisted_header(&n)
+fn is_persisted_representation_header_lowercase(name: &str) -> bool {
+    !is_never_persisted_header(name)
 }
 
 fn is_never_persisted_header(name: &str) -> bool {

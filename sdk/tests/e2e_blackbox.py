@@ -476,6 +476,18 @@ def main() -> int:
                 "mv('', recursive=True) requires non-empty source",
             )
             expect_error_type(
+                lambda: approver.mv("home/sdk/tree", "", recursive=True),
+                ValueError,
+                check,
+                "mv(recursive=True) requires non-empty destination",
+            )
+            expect_error_type(
+                lambda: approver.mv("home/sdk/tree", "home/sdk/tree", recursive=True),
+                ValueError,
+                check,
+                "mv(recursive=True) rejects identical source and destination",
+            )
+            expect_error_type(
                 lambda: reader.du("home/sdk/tree", max_workers=0),
                 ValueError,
                 check,
@@ -483,6 +495,12 @@ def main() -> int:
             )
             approver.mv("home/sdk/tree/a.txt", "home/sdk/tree/a2.txt")
             check(reader.get("home/sdk/tree/a2.txt") == b"A", "mv() moves one path")
+            expect_error_type(
+                lambda: approver.mv("home/sdk/tree/a2.txt", "home/sdk/tree/a2.txt", overwrite=True),
+                ValueError,
+                check,
+                "mv() rejects identical source and destination",
+            )
             approver.put("home/sdk/tree/existing.txt", "old")
             approver.put("home/sdk/tree/new.txt", "new")
             expect_error_type(
