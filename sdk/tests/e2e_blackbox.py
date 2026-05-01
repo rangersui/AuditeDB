@@ -426,6 +426,7 @@ def main() -> int:
             check(any(ref.name == "b.txt" for ref in tree_ref.walk()), "WorldRef.walk() returns descendants")
             check(any(ref.name == "a.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() filters immediate leaf names")
             check(not any(ref.name == "b.txt" for ref in tree_ref.glob("*.txt")), "WorldRef.glob() does not recurse")
+            check(any(ref.name == "sub" for ref in tree_ref.glob("sub*")), "WorldRef.glob() includes virtual directories")
             check(any(ref.name == "b.txt" for ref in tree_ref.rglob("*.txt")), "WorldRef.rglob() recurses")
             file_ref = reader / "home" / "sdk" / "tree" / "a.txt"
             check(file_ref.name == "a.txt" and file_ref.stem == "a" and file_ref.suffix == ".txt", "WorldRef path properties match pathlib")
@@ -442,6 +443,18 @@ def main() -> int:
                 ValueError,
                 check,
                 "rm(namespace, recursive=True) requires force",
+            )
+            expect_error_type(
+                lambda: approver.mv("", "home/sdk/all", recursive=True),
+                ValueError,
+                check,
+                "mv('', recursive=True) requires non-empty source",
+            )
+            expect_error_type(
+                lambda: reader.du("home/sdk/tree", max_workers=0),
+                ValueError,
+                check,
+                "du(max_workers=0) is rejected",
             )
             approver.mv("home/sdk/tree/a.txt", "home/sdk/tree/a2.txt")
             check(reader.get("home/sdk/tree/a2.txt") == b"A", "mv() moves one path")

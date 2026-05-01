@@ -260,7 +260,7 @@ e.ls("home/sensor")              # immediate children; virtual dirs end in /
 e.ls("home/sensor", depth=-1)    # all descendants
 print(e.tree("home"))
 e.du("home/sensor")              # {path: content_length}
-e.mv("home/draft", "home/final") # GET + HEAD + PUT + DELETE; refuses overwrite
+e.mv("home/draft", "home/final") # copy+delete; refuses overwrite by default
 e.rm("home/old", recursive=True) # refuses "" or namespace roots without force=True
 ```
 

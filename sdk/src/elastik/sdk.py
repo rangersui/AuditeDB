@@ -658,6 +658,8 @@ class Elastik(MutableMapping[str, bytes]):
             self.copy(src_root, dst_root)
             self.delete(src_root)
             return 1
+        if not src_root:
+            raise ValueError("mv(recursive=True) requires a non-empty source prefix")
         targets = [p for p in self.ls(src_root, depth=-1) if not p.endswith("/")]
         if not overwrite:
             for target in targets:
@@ -675,6 +677,8 @@ class Elastik(MutableMapping[str, bytes]):
 
     def du(self, prefix: str = "", *, max_workers: int = 4) -> dict[str, int]:
         """Return Content-Length for each stored path under prefix."""
+        if max_workers < 1:
+            raise ValueError("max_workers must be greater than 0")
         paths = [path for path in self.ls(prefix, depth=-1) if not path.endswith("/")]
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {path: pool.submit(self.sizeof, path) for path in paths}
@@ -906,7 +910,7 @@ class WorldRef:
         return [
             ref
             for ref in self.iterdir()
-            if not ref.path.endswith("/") and fnmatch.fnmatch(ref.name, pattern)
+            if fnmatch.fnmatch(ref.name, pattern)
         ]
 
     def rglob(self, pattern: str) -> list["WorldRef"]:

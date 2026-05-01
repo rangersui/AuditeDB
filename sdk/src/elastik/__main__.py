@@ -15,6 +15,13 @@ from elastik.sdk import Elastik
 from elastik.tools import decode_disk_name
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="elastik")
     sub = parser.add_subparsers(dest="cmd")
@@ -46,7 +53,7 @@ def main() -> int:
 
     p_du = sub.add_parser("du", help="show Content-Length usage from a running core")
     p_du.add_argument("prefix", nargs="?", default="")
-    p_du.add_argument("--max-workers", type=int, default=4)
+    p_du.add_argument("--max-workers", type=_positive_int, default=4, help="parallel HEAD requests to use (default: 4)")
 
     p_run = sub.add_parser(
         "run",
