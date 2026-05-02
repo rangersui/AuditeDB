@@ -189,6 +189,35 @@ SCoAP is intentionally small: `GET` and `PUT`, one UDP datagram, content formats
 the core can map (`text/plain`, `application/octet-stream`, `application/json`,
 `application/cbor`). Larger bodies and arbitrary media types should use HTTP.
 
+This is not a full RFC 7252 CoAP stack. It is a CoAP-shaped UDP surface:
+CoAP wire format, HTTP-shaped storage semantics, and elastik auth.
+
+It keeps the parts with semantic zero distance from HTTP:
+
+- CoAP v1 header
+- method codes for `GET` and `PUT`
+- `Uri-Path` as the path
+- `Content-Format` as `Content-Type`
+- payload marker
+- token echo
+- response codes
+
+It intentionally does not implement CoAP politics:
+
+- retransmission or dedup cache
+- Observe
+- Block-Wise transfer
+- DTLS / OSCORE
+- `.well-known/core`
+- multicast discovery
+- `Max-Age`
+- strict critical-option handling
+
+Elastik uses private option `65001` to carry the raw elastik auth token. That
+is not encryption and not CoAPS; it is the UDP equivalent of
+`Authorization: Bearer ...`. Need full CoAP behavior? Put a compliant CoAP
+gateway at the edge. Need reliability or large bodies? Use HTTP.
+
 `ELASTIK_DATA` is the universe selector. Point the same binary at another data
 directory and it serves another Elastik universe. Local SSD/tempdir is best for
 writes. Synced folders and network shares can be useful for distribution, but
