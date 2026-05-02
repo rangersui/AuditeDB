@@ -110,6 +110,7 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
     "www-authenticate",
     "age",
     "vary",
+    "x-content-type-options",
     "forwarded",
     "via",
     "x-forwarded-for",

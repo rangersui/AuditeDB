@@ -271,6 +271,7 @@ fn is_never_persisted_header(name: &str) -> bool {
                 | "www-authenticate"
                 | "age"
                 | "vary"
+                | "x-content-type-options"
                 // Proxy trail is about how the request arrived, not what was written.
                 | "forwarded"
                 | "via"
