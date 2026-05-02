@@ -217,8 +217,9 @@ e.put("note", "hello", project="demo")
 assert e.head("note")["x-meta-project"] == "demo"
 ```
 
-Those `X-Meta-*` fields are just metadata. They do not affect auth, auditing,
-or routing unless your own SDK/userland code gives them meaning.
+Those `X-Meta-*` fields are user metadata. They do not drive auth or routing by
+themselves, but durable worlds include persisted metadata in audit metadata
+(`meta_sha256`) and `event_headers`.
 
 Any safe response header that does not have a named argument can be sent through
 `headers=`:
@@ -234,8 +235,14 @@ assert e.head("logo.png")["access-control-allow-origin"] == "*"
 ```
 
 The core blacklists credentials, hop-by-hop transport state, request controls,
-and core-generated headers such as `ETag` and `Content-Length`. Everything else
-is stored and replayed without the SDK needing to understand it.
+and core-generated headers such as `ETag`, `Content-Length`, `Link`, `Allow`,
+`X-Request-Id`, and `X-Elapsed-Us`. Everything else is stored and replayed
+without the SDK needing to understand it.
+
+`Content-Type` is special: it is stored as the representation media type, not as
+a generic persisted metadata header. `X-Meta-*` is user metadata with no
+built-in auth or routing behavior, but durable worlds audit it as persisted
+representation metadata.
 
 The SDK also refuses wire-level headers that `urllib` must compute itself:
 `Content-Length`, `Transfer-Encoding`, `Host`, `Connection`, `Keep-Alive`,

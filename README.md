@@ -377,12 +377,21 @@ Accept-Ranges: bytes
 
 ## Representation Headers
 
-Elastik stores safe representation/response headers from `PUT` and replays
-them on read. This is blacklist-based: core refuses credentials,
-hop-by-hop transport state, request controls, and headers it computes itself.
-Everything else travels with the bytes.
+Elastik separates media type, persisted response metadata, request controls,
+and core-owned response state.
 
-- `Content-Type`
+`Content-Type` is first-class. It is stored as the representation media type
+and returned on `GET` and `HEAD`.
+
+It is also rejected from the generic persisted-header path: `Content-Type` has
+a dedicated media-type slot rather than ordinary persisted response-header
+storage.
+
+Other safe response headers from `PUT` are persisted and replayed on read. This
+is blacklist-based: core refuses credentials, hop-by-hop transport state,
+request controls, and headers it computes itself. Everything else travels with
+the bytes.
+
 - `Content-Encoding`
 - `Content-Language`
 - `Content-Disposition`
@@ -394,31 +403,48 @@ Everything else travels with the bytes.
 - future response headers the core does not understand
 - `X-Meta-*`
 
-Headers that describe this request, this connection, or core-generated state
-are not stored:
+`X-Meta-*` is an SDK/user metadata convention. It has no built-in auth or
+routing behavior, but it is still persisted as representation metadata. On
+durable worlds, that metadata is included in the audit metadata hash
+(`meta_sha256`) and recorded in `event_headers`, so changing `X-Meta-*` changes
+the audited representation state.
 
-- `Authorization`
-- `Cookie`
-- `Connection`
-- `Transfer-Encoding`
-- `Host`
-- `Range`
-- `If-Match`
-- `If-None-Match`
-- `If-Range`
-- `ETag`
-- `Content-Length`
-- `Location`
-- `Link`
-- `Allow`
-- `Accept-*`
+Each successful durable write advances the audit chain, so two `PUT`s with the
+same body and metadata still produce different ETags. ETags identify a specific
+write in the chain, not only a content hash.
+
+Headers that describe this request, this connection, browser probing, proxy
+trail, or core-generated state are not stored. The blacklist is category-based:
+
+- credentials and ambient identity: `Authorization`, `Proxy-Authorization`,
+  `Cookie`, `Set-Cookie`
+- hop-by-hop and transport state: `Host`, `Connection`, `Keep-Alive`,
+  `Proxy-Authenticate`, `Proxy-Connection`, `TE`, `Trailer`,
+  `Transfer-Encoding`, `Upgrade`, `HTTP2-Settings`
+- request controls and preferences: `Accept*`, `Expect`, `From`,
+  `Max-Forwards`, `Origin`, `Prefer`, `Range`, `Referer`, `Referrer`, `DNT`,
+  `User-Agent`, `If-*`
+- core-owned response state: `Content-Type` generic persistence,
+  `Content-Length`, `ETag`, `Accept-Ranges`, `Content-Range`, `Link`,
+  `Location`, `Allow`, `Date`, `Server`, `WWW-Authenticate`, `Age`, `Vary`,
+  `X-Request-Id`, `X-Elapsed-Us`, `X-Elapsed-Ms`,
+  `X-Content-Type-Options`
+- proxy trail: `Forwarded`, `Via`, `X-Forwarded-For`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto`
+- browser probes and CORS preflight request headers: `Sec-*`,
+  `Access-Control-Request-*`
 
 That split is the core contract:
 
 ```text
-stored representation headers -> travel with the bytes
-request control headers       -> used once, then discarded
-core generated headers        -> ETag, Content-Length, Link, Location, Allow
+Content-Type                  -> first-class media type; travels with bytes
+stored response headers        -> safe metadata; travels with bytes; audited
+request control headers        -> used once, then discarded
+core generated headers         -> ETag, Content-Length, Accept-Ranges,
+                                  Content-Range, Link, Location, Allow, Date,
+                                  Server, WWW-Authenticate, Age, Vary,
+                                  X-Request-Id, X-Elapsed-Us, X-Elapsed-Ms,
+                                  X-Content-Type-Options
 ```
 
 Static resources can carry their own browser policy as HTTP headers:
