@@ -34,7 +34,7 @@
 //
 // The spawned core's data lives in `dataDir` (default: a fresh temp dir,
 // wiped on stop). Two first-class lifetimes:
-//   - one-shot:   start({}) → use → stop() → temp dir gone
+//   - one-shot:   start({ writeToken: "w" }) → use → stop() → temp dir gone
 //                 (great for tests, CI, transient mocks)
 //   - long-lived: pass an explicit `dataDir` (and optionally cleanup:false)
 //                 to keep state across runs.
@@ -127,17 +127,93 @@ function urlHost(host) {
     return host;
 }
 
-async function waitForUrl(url, deadlineMs = 10000) {
+function spawnCore(binary, env, quiet) {
+    let output = "";
+    const child = spawn(binary, [], {
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+    });
+
+    const capture = (chunk, stream) => {
+        const text = chunk.toString("utf8");
+        output = (output + text).slice(-8192);
+        if (!quiet) {
+            (stream === "stderr" ? process.stderr : process.stdout).write(chunk);
+        }
+    };
+    child.stdout?.on("data", (chunk) => capture(chunk, "stdout"));
+    child.stderr?.on("data", (chunk) => capture(chunk, "stderr"));
+
+    let exited = false;
+    let exitCode = null;
+    let exitSignal = null;
+    let spawnError = null;
+    const exitPromise = new Promise((resolve) => {
+        child.on("error", (err) => {
+            exited = true;
+            spawnError = err;
+            resolve({ error: err });
+        });
+        child.on("exit", (code, signal) => {
+            exited = true;
+            exitCode = code;
+            exitSignal = signal;
+            resolve({ code, signal });
+        });
+    });
+
+    return {
+        child,
+        exitPromise,
+        output: () => output.trim(),
+        get exited() { return exited; },
+        get exitCode() { return exitCode; },
+        get exitSignal() { return exitSignal; },
+        get spawnError() { return spawnError; },
+    };
+}
+
+async function waitForStartup(url, core, deadlineMs = 10000) {
     const end = Date.now() + deadlineMs;
     while (Date.now() < end) {
+        if (core.exited) return "exit";
         try {
             const res = await fetch(url, { signal: AbortSignal.timeout?.(500) ?? undefined });
-            if (res.status > 0) return true;
+            if (res.status > 0) return "ready";
         } catch { /* keep polling */ }
+        if (core.exited) return "exit";
         await new Promise((r) => setTimeout(r, 50));
     }
-    return false;
+    return core.exited ? "exit" : "timeout";
 }
+
+function startupError(core, host, port, reason) {
+    const status = core.exited
+        ? (core.spawnError
+            ? `failed to spawn (${core.spawnError.message})`
+            : `exited during startup (code=${core.exitCode}, signal=${core.exitSignal ?? "none"})`)
+        : `failed to listen on ${host}:${port} within 10s`;
+    const out = core.output();
+    return new Error(
+        `elastik-core ${status}${reason ? ` after ${reason}` : ""}` +
+        (out ? `\n\ncore output:\n${out}` : "")
+    );
+}
+
+function killCore(core) {
+    try { core.child.kill("SIGKILL"); } catch { /* ignore */ }
+}
+
+/**
+ * @typedef {Elastik & {
+ *   url: string,
+ *   dataDir: string,
+ *   binary: string,
+ *   process: import("node:child_process").ChildProcess,
+ *   stop: () => Promise<void>
+ * }} StartedElastik
+ */
 
 /**
  * Spawn a local elastik core, wait for it to listen, return an Elastik
@@ -149,63 +225,62 @@ async function waitForUrl(url, deadlineMs = 10000) {
  * @param {string} [options.host]         "127.0.0.1"
  * @param {number} [options.port]         OS-assigned if omitted
  * @param {string} [options.dataDir]      defaults to a fresh temp dir
- * @param {string} [options.readToken]    sets ELASTIK_READ_TOKEN if non-empty
- * @param {string} [options.writeToken]   sets ELASTIK_WRITE_TOKEN if non-empty
- * @param {string} [options.approveToken] sets ELASTIK_APPROVE_TOKEN if non-empty
- * @param {boolean}[options.quiet]        suppress core stdout/stderr (default: true)
+ * @param {string} [options.readToken]    sets ELASTIK_READ_TOKEN if non-empty; omit for public reads
+ * @param {string} [options.writeToken]   sets ELASTIK_WRITE_TOKEN if non-empty; omit to disable writes
+ * @param {string} [options.approveToken] sets ELASTIK_APPROVE_TOKEN if non-empty; needed for delete/admin writes
+ * @param {boolean}[options.quiet]        suppress core stdout/stderr while capturing it for startup errors (default: true)
  * @param {boolean}[options.cleanup]      wipe dataDir on stop() (default: true if dataDir was auto-created)
- * @returns {Promise<Elastik>}
+ * @returns {Promise<StartedElastik>}
  */
 export async function start(options = {}) {
     const binary = resolveBinary();
     if (!binary) throw new NoBinaryError(process.platform, process.arch);
 
     const host = options.host ?? "127.0.0.1";
-    const port = options.port ?? await freePort(host);
     // ELASTIK_KEY is mandatory for the core; pick something unique if not given.
     const key = options.key ?? randomKey();
     const dataDirAutoCreated = options.dataDir == null;
     const dataDir = options.dataDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "elastikjs-core-"));
     const cleanup = options.cleanup ?? dataDirAutoCreated;
     const quiet = options.quiet ?? true;
+    const explicitPort = options.port != null;
+    let lastError = null;
 
-    const env = {
-        ...process.env,
-        ELASTIK_KEY: key,
-        ELASTIK_HOST: host,
-        ELASTIK_PORT: String(port),
-        ELASTIK_DATA: dataDir,
-    };
-    for (const [k, v] of [
-        ["ELASTIK_READ_TOKEN", options.readToken],
-        ["ELASTIK_WRITE_TOKEN", options.writeToken],
-        ["ELASTIK_APPROVE_TOKEN", options.approveToken],
-    ]) {
-        if (v) env[k] = v;
-        else delete env[k];
+    for (let attempt = 1; attempt <= (explicitPort ? 1 : 5); attempt++) {
+        const port = explicitPort ? options.port : await freePort(host);
+        const env = {
+            ...process.env,
+            ELASTIK_KEY: key,
+            ELASTIK_HOST: host,
+            ELASTIK_PORT: String(port),
+            ELASTIK_DATA: dataDir,
+        };
+        for (const [k, v] of [
+            ["ELASTIK_READ_TOKEN", options.readToken],
+            ["ELASTIK_WRITE_TOKEN", options.writeToken],
+            ["ELASTIK_APPROVE_TOKEN", options.approveToken],
+        ]) {
+            if (v) env[k] = v;
+            else delete env[k];
+        }
+
+        const core = spawnCore(binary, env, quiet);
+        const baseUrl = `http://${urlHost(host)}:${port}`;
+        const status = await waitForStartup(`${baseUrl}/proc/version`, core, 10000);
+        if (status === "ready") {
+            return attachClient(core, baseUrl, dataDir, binary, cleanup, options);
+        }
+
+        killCore(core);
+        lastError = startupError(core, host, port, `attempt ${attempt}`);
+        if (explicitPort || status !== "exit" || core.spawnError) break;
     }
 
-    const child = spawn(binary, [], {
-        env, stdio: quiet ? "ignore" : "inherit",
-        windowsHide: true,
-    });
+    if (cleanup) safeRm(dataDir);
+    throw lastError;
+}
 
-    let exited = false;
-    let exitCode = null;
-    child.on("exit", (code) => { exited = true; exitCode = code; });
-
-    const baseUrl = `http://${urlHost(host)}:${port}`;
-    const ok = await waitForUrl(`${baseUrl}/proc/version`, 10000);
-    if (!ok) {
-        try { child.kill("SIGKILL"); } catch { /* ignore */ }
-        if (cleanup) safeRm(dataDir);
-        throw new Error(
-            exited
-                ? `elastik-core exited during startup (code=${exitCode})`
-                : `elastik-core failed to listen on ${host}:${port} within 10s`
-        );
-    }
-
+function attachClient(core, baseUrl, dataDir, binary, cleanup, options) {
     const client = new Elastik(baseUrl, {
         token: options.writeToken,
         readToken: options.readToken ?? options.writeToken,
@@ -216,18 +291,18 @@ export async function start(options = {}) {
     client.url = baseUrl;
     client.dataDir = dataDir;
     client.binary = binary;
-    client.process = child;
+    client.process = core.child;
     client.stop = async function stop() {
-        if (!child || child.killed || exited) {
+        if (!core.child || core.child.killed || core.exited) {
             if (cleanup) safeRm(dataDir);
             return;
         }
         await new Promise((resolve) => {
-            child.once("exit", () => resolve());
-            try { child.kill("SIGTERM"); } catch { resolve(); }
+            core.child.once("exit", () => resolve());
+            try { core.child.kill("SIGTERM"); } catch { resolve(); }
             // Force-kill if it doesn't go in 3 seconds.
             setTimeout(() => {
-                if (!child.killed) try { child.kill("SIGKILL"); } catch { /* ignore */ }
+                if (!core.child.killed) try { core.child.kill("SIGKILL"); } catch { /* ignore */ }
                 resolve();
             }, 3000).unref?.();
         });

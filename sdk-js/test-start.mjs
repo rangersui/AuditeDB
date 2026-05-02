@@ -4,7 +4,7 @@
 //   3. SDK can put/get/listen against the spawned core
 //   4. stop() kills the process and cleans up the data dir
 
-import { Elastik, start, resolveBinary, NoBinaryError } from "./start.mjs";
+import { start, resolveBinary } from "./start.mjs";
 import * as fs from "node:fs";
 
 let pass = 0, fail = 0;
