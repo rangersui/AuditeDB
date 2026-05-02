@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import socket
 import sys
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ SDK_SRC = ROOT / "sdk" / "src"
 sys.path.insert(0, str(SDK_SRC))
 
 from elastik.sdk import _NON_PERSISTED_RESPONSE_HEADERS  # noqa: E402
+from elastik._coap_client import get as coap_get  # noqa: E402
 from elastik.tools import ShellPoolError, TrustedShellPool  # noqa: E402
 
 
@@ -54,8 +56,21 @@ def check_header_blacklist_parity() -> None:
     )
 
 
+def check_coap_unreachable_is_timeout() -> None:
+    """UDP no-listener behavior differs by OS; expose one SDK exception."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = int(s.getsockname()[1])
+    try:
+        coap_get("127.0.0.1", port, "/home/no-listener", timeout=0.05)
+    except TimeoutError:
+        return
+    raise AssertionError("CoAP no-listener path did not raise TimeoutError")
+
+
 def main() -> int:
     check_header_blacklist_parity()
+    check_coap_unreachable_is_timeout()
 
     with TrustedShellPool(size=1, timeout=2) as pool:
         r = pool.run("echo elastik-ready", check=True)

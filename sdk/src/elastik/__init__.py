@@ -76,6 +76,7 @@ from typing import Any
 from elastik.sdk import (
     Elastik,
     ElastikError,
+    DebugHook,
     Forbidden,
     NotFound,
     PayloadTooLarge,
@@ -121,6 +122,7 @@ from elastik.tools import (
     decode_disk_name,
     encode_disk_name,
 )
+from elastik._coap_client import CoapClient, CoapResponse, get as coap_get, put as coap_put
 
 # Pull values from .env in CWD into os.environ once, on import unless
 # ELASTIK_NO_DOTENV=1 is set. Existing env vars win — .env only fills holes.
@@ -134,6 +136,7 @@ __all__ = [
     # Class — for users who want explicit instances
     "Elastik",
     "ElastikError",
+    "DebugHook",
     "Unauthorized", "Forbidden", "NotFound", "PreconditionFailed",
     "PayloadTooLarge", "ServerError",
     "Response",
@@ -148,6 +151,7 @@ __all__ = [
     # Trusted local execution helpers for @listen handlers
     "TrustedShellPool", "ShellPool", "ShellResult", "ShellPoolError",
     "decode_disk_name", "encode_disk_name",
+    "CoapClient", "CoapResponse", "coap_get", "coap_put",
     # Module-level convenience (NumPy-shaped)
     "put", "put_text", "put_json", "put_gzip", "put_csv", "put_struct",
     "post", "get", "get_cached", "get_gzip", "get_text", "get_json",

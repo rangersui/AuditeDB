@@ -66,6 +66,12 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def free_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
 def build_and_bundle() -> None:
     subprocess.run(["cargo", "build", "--release"], cwd=CORE_DIR, check=True)
     SDK_BIN.parent.mkdir(parents=True, exist_ok=True)
@@ -359,6 +365,7 @@ def main() -> int:
                 os.environ[name] = value
 
     port = free_port()
+    coap_port = free_udp_port()
     base = f"http://127.0.0.1:{port}"
     read_token = "read-e2e"
     write_token = "write-e2e"
@@ -403,8 +410,14 @@ def main() -> int:
         finally:
             elastik.stop()
 
+    saved_coap_env = {
+        "ELASTIK_COAP_HOST": os.environ.get("ELASTIK_COAP_HOST"),
+        "ELASTIK_COAP_PORT": os.environ.get("ELASTIK_COAP_PORT"),
+    }
     with tempfile.TemporaryDirectory(prefix="elastik-sdk-e2e-") as data_dir:
         os.environ["ELASTIK_URL"] = base
+        os.environ["ELASTIK_COAP_HOST"] = "127.0.0.1"
+        os.environ["ELASTIK_COAP_PORT"] = str(coap_port)
         e = elastik.start(
             port=port,
             key=key,
@@ -460,12 +473,45 @@ def main() -> int:
             check(head["cache-control"] == "max-age=60", "head cache-control")
             check(head["x-meta-author"] == "ranger", "head x-meta")
             check(head["accept-ranges"] == "bytes", "head accept-ranges")
+            quiet_debug = Elastik(base, bearer_token=write_token)
+            quiet_debug.enable_debug(level="errors", panel_path="/tmp/debug-default-off.html")
+            check(quiet_debug.debug_enabled, "debug_enabled property reports enabled")
+            check(
+                not reader.exists("/tmp/debug-default-off.html"),
+                "enable_debug does not install panel by default",
+            )
+            quiet_debug.disable_debug()
+            check(not quiet_debug.debug_enabled, "debug_enabled property reports disabled")
+            expect_error_type(
+                lambda: quiet_debug.enable_debug(level="all", verbose=0),
+                ValueError,
+                check,
+                "enable_debug rejects level and verbose together",
+            )
+            expect_error_type(
+                lambda: quiet_debug.enable_debug(level="off"),
+                ValueError,
+                check,
+                "enable_debug rejects level='off'; use disable_debug()",
+            )
+            break_probe = Elastik(base, bearer_token=write_token)
+            break_probe.enable_debug(level="errors", break_on=range(400, 500))
+            check(
+                break_probe._debug_break_on == set(range(400, 500)),
+                "enable_debug accepts range break_on",
+            )
+            break_probe.enable_debug(level="errors", break_on=frozenset({404}))
+            check(
+                break_probe._debug_break_on == {404},
+                "enable_debug accepts frozenset break_on",
+            )
             debug_hooks: list[tuple[str, str, int, str]] = []
             writer.enable_debug(
-                level="all",
                 record=True,
                 verbose=3,
                 slow_ms=0,
+                sink="/tmp/debug/requests",
+                panel=True,
                 hook=lambda method, path, status, _ms, rid: debug_hooks.append(
                     (method, path, status, rid)
                 ),
@@ -526,7 +572,7 @@ def main() -> int:
                 "debug recursion guard is thread-local",
             )
             sinkless = Elastik(base, bearer_token=write_token)
-            sinkless.enable_debug(level="all", sink=None, record=True, slow_ms=0, panel=False)
+            sinkless.enable_debug(level="all", record=True, slow_ms=0, panel=False)
             sinkless_writes: list[str | None] = []
             sinkless._debug_append = lambda path, line: sinkless_writes.append(path)  # type: ignore[method-assign]
             sinkless._debug_after_response(
@@ -536,8 +582,8 @@ def main() -> int:
                 elastik.Response(500, {"x-request-id": "sinkless", "x-elapsed-us": "1"}, b"boom"),
                 101.0,
             )
-            check(sinkless.debug_history[-1]["status"] == 500, "debug sink=None still records in memory")
-            check(sinkless_writes == [], "debug sink=None disables request/error/slow sink writes")
+            check(sinkless.debug_history[-1]["status"] == 500, "debug record=True records in memory")
+            check(sinkless_writes == [], "debug record=True defaults to in-memory only")
             writer.disable_debug()
             writer.put(
                 "/home/sdk/logo.png",
@@ -774,6 +820,164 @@ def main() -> int:
             check(resp.status == 204 and resp.ok, "request() exposes raw HTTP response")
             check(resp.headers.get("allow") == "GET, HEAD, PUT, POST, DELETE, OPTIONS", "request() exposes headers")
             check(resp.etag == "", "Response.etag defaults empty when absent")
+            from elastik import CoapClient, coap_get, coap_put
+
+            coap_created = None
+            for _ in range(20):
+                try:
+                    coap_created = coap_put(
+                        "127.0.0.1",
+                        coap_port,
+                        "/home/sdk/coap-temp",
+                        "23.5",
+                        token=write_token,
+                        timeout=0.3,
+                    )
+                    break
+                except TimeoutError:
+                    time.sleep(0.05)
+            check(coap_created is not None and coap_created.ok, "coap_put reaches UDP surface")
+            check(
+                reader.get_text("/home/sdk/coap-temp") == "23.5",
+                "CoAP PUT writes the shared world store",
+            )
+            coap_read = coap_get(
+                "127.0.0.1",
+                coap_port,
+                "/home/sdk/coap-temp",
+                token=read_token,
+                timeout=0.5,
+            )
+            check(coap_read.payload == b"23.5", "coap_get reads the shared world store")
+            coap_denied = coap_get(
+                "127.0.0.1",
+                coap_port,
+                "/home/sdk/coap-temp",
+                timeout=0.5,
+            )
+            check(coap_denied.code == 129, "CoAP GET honors read token gate")
+            expect_error_type(
+                lambda: coap_denied.raise_for_status(
+                    method="COAP GET",
+                    path="/home/sdk/coap-temp",
+                ),
+                elastik.Unauthorized,
+                check,
+                "CoAP response can raise typed Unauthorized",
+            )
+            coap_client = CoapClient("127.0.0.1", coap_port, token=read_token, timeout=0.5)
+            check(
+                coap_client.get("/home/sdk/coap-temp").payload == b"23.5",
+                "CoapClient reuses host port token",
+            )
+            expect_error_type(
+                lambda: coap_put(
+                    "127.0.0.1",
+                    coap_port,
+                    "/home/sdk/coap-png",
+                    b"png",
+                    token=write_token,
+                    content_type="image/png",
+                    timeout=0.5,
+                ),
+                ValueError,
+                check,
+                "CoAP PUT rejects unsupported content types",
+            )
+            expect_error_type(
+                lambda: coap_put(
+                    "127.0.0.1",
+                    coap_port,
+                    "/home/sdk/coap-too-big",
+                    b"y" * 4096,
+                    token=write_token,
+                    timeout=0.5,
+                ),
+                ValueError,
+                check,
+                "CoAP PUT rejects packets larger than one datagram",
+            )
+
+            cli_env = os.environ.copy()
+            cli_env["PYTHONPATH"] = str(SDK_SRC)
+            cli_env["ELASTIK_NO_DOTENV"] = "1"
+            cli_put = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "elastik",
+                    "coap",
+                    "put",
+                    "127.0.0.1",
+                    str(coap_port),
+                    "/home/sdk/coap-cli",
+                    "99",
+                    "--token",
+                    write_token,
+                    "--timeout",
+                    "0.5",
+                ],
+                env=cli_env,
+                capture_output=True,
+                check=False,
+            )
+            check(
+                cli_put.returncode == 0 and cli_put.stdout == b"",
+                "CLI CoAP PUT succeeds without stdout noise",
+                cli_put.stderr.decode("utf-8", "replace"),
+            )
+            cli_get = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "elastik",
+                    "coap",
+                    "get",
+                    "127.0.0.1",
+                    str(coap_port),
+                    "/home/sdk/coap-cli",
+                    "--token",
+                    read_token,
+                    "--timeout",
+                    "0.5",
+                ],
+                env=cli_env,
+                capture_output=True,
+                check=False,
+            )
+            check(
+                cli_get.returncode == 0 and cli_get.stdout == b"99",
+                "CLI CoAP GET prints payload exactly",
+                repr(cli_get.stdout),
+            )
+            cli_bad_type = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "elastik",
+                    "coap",
+                    "put",
+                    "127.0.0.1",
+                    str(coap_port),
+                    "/home/sdk/coap-bad-type",
+                    "x",
+                    "--token",
+                    write_token,
+                    "--content-type",
+                    "image/png",
+                    "--timeout",
+                    "0.5",
+                ],
+                env=cli_env,
+                capture_output=True,
+                check=False,
+            )
+            check(
+                cli_bad_type.returncode == 1
+                and b"unsupported CoAP content_type" in cli_bad_type.stderr,
+                "CLI CoAP PUT rejects unsupported content types cleanly",
+                cli_bad_type.stderr.decode("utf-8", "replace"),
+            )
             expect_error_type(
                 lambda: writer.put(
                     "/home/sdk/bad-content-length",
@@ -1062,6 +1266,11 @@ def main() -> int:
             return 0
         finally:
             elastik.stop()
+            for name, value in saved_coap_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
 
 if __name__ == "__main__":
