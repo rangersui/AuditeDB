@@ -221,6 +221,7 @@ impl Core {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_ALLOW: &str = "GET, HEAD, OPTIONS";
 const PROC_ALLOW: &str = "GET, HEAD, OPTIONS";
+const AUDIT_VERIFY_ALLOW: &str = "GET, HEAD, OPTIONS";
 const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 const LISTEN_REPLAY_MAX: usize = 1024;
 const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
@@ -280,6 +281,7 @@ async fn main() {
         .route("/listen/*pattern", any(listen::handler))
         .route("/proc/version", any(proc_version))
         .route("/proc/worlds", any(proc_worlds))
+        .route("/proc/audit/*audit_path", any(proc_audit_verify))
         .route("/proc", any(proc_reserved))
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
@@ -536,6 +538,54 @@ async fn proc_worlds(
 }
 
 // ─── /<world> all five methods ──────────────────────────────────────
+async fn proc_audit_verify(
+    State(core): State<Arc<Core>>,
+    method: Method,
+    AxPath(audit_path): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if method == Method::OPTIONS {
+        return options_response(AUDIT_VERIFY_ALLOW);
+    }
+    if method != Method::GET && method != Method::HEAD {
+        return method_not_allowed(AUDIT_VERIFY_ALLOW);
+    }
+
+    let Some(raw_world) = audit_path.strip_suffix("/verify") else {
+        return not_found();
+    };
+    let raw_world = raw_world.trim_end_matches('/');
+    if raw_world.is_empty() {
+        return bad_request("audit verify requires a world path");
+    }
+    let world_name = canonicalize_path(raw_world);
+    if !valid_world_name(&world_name) {
+        return bad_request("world path contains control bytes");
+    }
+
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let tier = core.tokens.check(auth_header);
+    if !can_read(&core, tier) {
+        return unauthorized("read requires read token");
+    }
+
+    if store::is_memory_world(&world_name) {
+        if core.read_world(&world_name).is_none() {
+            return not_found();
+        }
+        return audit_not_applicable();
+    }
+
+    match audit::verify_chain(&core.data, &world_name, &core.hmac_key) {
+        Ok(Some(audit::VerifyReport::Valid(report))) => audit_valid(report),
+        Ok(Some(audit::VerifyReport::Broken(report))) => audit_broken(report),
+        Ok(None) => not_found(),
+        Err(e) => server_error(format!("audit verify: {e}")),
+    }
+}
+
 async fn proc_reserved(method: Method) -> Response {
     match method {
         Method::OPTIONS => options_response(PROC_ALLOW),
@@ -958,6 +1008,75 @@ fn apply_meta_headers(headers: &[(String, String)], out: &mut Vec<(HeaderName, H
         };
         out.push((name, val));
     }
+}
+
+fn audit_valid(report: audit::VerifyOk) -> Response {
+    (
+        StatusCode::OK,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-valid"),
+                HeaderValue::from_static("true"),
+            ),
+            (
+                HeaderName::from_static("x-audit-events"),
+                HeaderValue::from_str(&report.events.to_string()).unwrap(),
+            ),
+            (
+                HeaderName::from_static("x-audit-genesis"),
+                HeaderValue::from_str(&report.genesis).unwrap(),
+            ),
+            (
+                HeaderName::from_static("x-audit-latest"),
+                HeaderValue::from_str(&report.latest).unwrap(),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+fn audit_broken(report: audit::VerifyBreak) -> Response {
+    (
+        StatusCode::CONFLICT,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-valid"),
+                HeaderValue::from_static("false"),
+            ),
+            (
+                HeaderName::from_static("x-audit-break-at"),
+                HeaderValue::from_str(&report.break_at.to_string()).unwrap(),
+            ),
+            (
+                HeaderName::from_static("x-audit-expected"),
+                HeaderValue::from_str(&report.expected).unwrap(),
+            ),
+            (
+                HeaderName::from_static("x-audit-actual"),
+                HeaderValue::from_str(&report.actual).unwrap(),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+fn audit_not_applicable() -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-valid"),
+                HeaderValue::from_static("n/a"),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
 }
 
 fn not_found() -> Response {
@@ -1659,6 +1778,93 @@ mod tests {
         let put = proc_reserved(Method::PUT).await;
         assert_eq!(put.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(put.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_reports_valid_chain_in_headers() {
+        let (core, dir) = test_core("proc-audit-valid");
+        let h = world::write_with_audit(
+            &core.data,
+            "home/audit-ok",
+            b"hello",
+            "text/plain",
+            &[("x-meta-author".to_owned(), "ranger".to_owned())],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(state),
+            Method::HEAD,
+            AxPath("home/audit-ok/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "true");
+        assert_eq!(resp.headers().get("x-audit-events").unwrap(), "1");
+        assert_eq!(
+            resp.headers().get("x-audit-latest").unwrap(),
+            &format!("hmac-{h}")
+        );
+        assert_eq!(resp.headers().get(header::CONTENT_LENGTH).unwrap(), "0");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_reports_broken_chain_in_headers() {
+        let (core, dir) = test_core("proc-audit-broken");
+        world::write_with_audit(
+            &core.data,
+            "home/audit-broken",
+            b"hello",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let db = world::world_db(&core.data, "home/audit-broken");
+        let c = rusqlite::Connection::open(db).unwrap();
+        c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
+            .unwrap();
+
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(state),
+            Method::HEAD,
+            AxPath("home/audit-broken/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "false");
+        assert_eq!(resp.headers().get("x-audit-break-at").unwrap(), "0");
+        assert_eq!(resp.headers().get("x-audit-actual").unwrap(), "hmac-bad");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_reports_memory_world_not_applicable() {
+        let (core, dir) = test_core("proc-audit-memory");
+        core.write_world("tmp/scratch", b"draft", "text/plain", &[])
+            .unwrap();
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(state),
+            Method::HEAD,
+            AxPath("tmp/scratch/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "n/a");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
