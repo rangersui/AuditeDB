@@ -15,6 +15,7 @@ SDK_SRC = ROOT / "sdk" / "src"
 sys.path.insert(0, str(SDK_SRC))
 
 from elastik.sdk import _NON_PERSISTED_RESPONSE_HEADERS  # noqa: E402
+from elastik._coap_client import _path_segments  # noqa: E402
 from elastik._coap_client import get as coap_get  # noqa: E402
 from elastik.tools import ShellPoolError, TrustedShellPool  # noqa: E402
 
@@ -68,9 +69,21 @@ def check_coap_unreachable_is_timeout() -> None:
     raise AssertionError("CoAP no-listener path did not raise TimeoutError")
 
 
+def check_coap_paths_share_http_validation() -> None:
+    assert list(_path_segments("note")) == ["home", "note"]
+    assert list(_path_segments("/home/note")) == ["home", "note"]
+    for bad in ("/home//x", "home/x/", "/tmp//", "/proc/version"):
+        try:
+            list(_path_segments(bad))
+        except ValueError:
+            continue
+        raise AssertionError(f"CoAP SDK accepted invalid path {bad!r}")
+
+
 def main() -> int:
     check_header_blacklist_parity()
     check_coap_unreachable_is_timeout()
+    check_coap_paths_share_http_validation()
 
     with TrustedShellPool(size=1, timeout=2) as pool:
         r = pool.run("echo elastik-ready", check=True)

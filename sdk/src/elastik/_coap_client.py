@@ -22,6 +22,8 @@ from elastik.sdk import (
     PreconditionFailed,
     ServerError,
     Unauthorized,
+    _canonical_world_name,
+    _validate_world_name,
 )
 
 
@@ -288,7 +290,9 @@ def _parse_response(data: bytes) -> CoapResponse:
 
 
 def _path_segments(path: str) -> Iterable[str]:
-    return (segment for segment in path.strip("/").split("/") if segment)
+    world = _canonical_world_name(path)
+    _validate_world_name(world)
+    return world.split("/")
 
 
 def _write_option(out: bytearray, prev: int, number: int, value: bytes) -> int:
