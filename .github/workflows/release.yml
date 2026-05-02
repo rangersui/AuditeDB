@@ -7,9 +7,87 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  build-core-assets:
+    name: build core asset (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-musl
+            asset-name: elastik-core-linux-x64.zip
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-musl
+            asset-name: elastik-core-linux-arm64.zip
+          - name: macos-arm64
+            os: macos-14
+            rust-target: ""
+            asset-name: elastik-core-darwin-arm64.zip
+          - name: windows-x64
+            os: windows-latest
+            rust-target: ""
+            asset-name: elastik-core-win32-x64.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: add rust target
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+      - name: install musl toolchain
+        if: startsWith(matrix.rust-target, 'x86_64-unknown-linux-musl') || startsWith(matrix.rust-target, 'aarch64-unknown-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: build core (musl)
+        if: matrix.rust-target != ''
+        shell: bash
+        run: |
+          case "${{ matrix.rust-target }}" in
+            x86_64-unknown-linux-musl)
+              export CC_x86_64_unknown_linux_musl=musl-gcc
+              ;;
+            aarch64-unknown-linux-musl)
+              export CC_aarch64_unknown_linux_musl=musl-gcc
+              ;;
+          esac
+          cargo build --release --manifest-path core/Cargo.toml --target ${{ matrix.rust-target }}
+
+      - name: build core (native)
+        if: matrix.rust-target == ''
+        run: cargo build --release --manifest-path core/Cargo.toml
+
+      - name: package core asset (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force asset | Out-Null
+          Copy-Item core/target/release/elastik-core.exe asset/elastik-core.exe
+          Compress-Archive -Path asset/* -DestinationPath ${{ matrix.asset-name }}
+
+      - name: package core asset (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p asset
+          if [ -n "${{ matrix.rust-target }}" ]; then
+            cp "core/target/${{ matrix.rust-target }}/release/elastik-core" asset/elastik-core
+          else
+            cp core/target/release/elastik-core asset/elastik-core
+          fi
+          chmod +x asset/elastik-core
+          (cd asset && zip -9 "../${{ matrix.asset-name }}" elastik-core)
+
+      - name: upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset-name }}
+
   build-wheels:
     name: build wheel (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
