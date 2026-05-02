@@ -219,6 +219,7 @@ mod tests {
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: Arc::new(AtomicU64::new(0)),
+            next_request: Arc::new(AtomicU64::new(0)),
             write_lock: Arc::new(Mutex::new(())),
         };
         {
@@ -259,6 +260,7 @@ mod tests {
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: Arc::new(AtomicU64::new(0)),
+            next_request: Arc::new(AtomicU64::new(0)),
             write_lock: Arc::new(Mutex::new(())),
         };
         {

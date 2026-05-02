@@ -519,6 +519,7 @@ mod tests {
                 event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(LISTEN_REPLAY_MAX))),
                 shutdown: watch::channel(false).1,
                 next_event: Arc::new(AtomicU64::new(0)),
+                next_request: Arc::new(AtomicU64::new(0)),
                 write_lock: Arc::new(Mutex::new(())),
             },
             dir,

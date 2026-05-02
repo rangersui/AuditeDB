@@ -45,10 +45,11 @@ mod store;
 mod world;
 
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::DefaultBodyLimit,
     extract::{Path as AxPath, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::any,
     Router,
@@ -60,6 +61,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex as StdMutex,
 };
+use std::time::Instant;
 use tokio::sync::{broadcast, watch, Mutex};
 
 use crate::http_semantics as hs;
@@ -82,6 +84,7 @@ struct Core {
     event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
     shutdown: watch::Receiver<bool>,
     next_event: Arc<AtomicU64>,
+    next_request: Arc<AtomicU64>,
     // One writer at a time keeps If-Match/If-None-Match + write atomic.
     // tokio::Mutex avoids blocking a runtime worker while queued writers wait.
     write_lock: Arc<Mutex<()>>,
@@ -256,6 +259,7 @@ async fn main() {
         event_log: Arc::new(StdMutex::new(VecDeque::new())),
         shutdown: shutdown_rx.clone(),
         next_event: Arc::new(AtomicU64::new(0)),
+        next_request: Arc::new(AtomicU64::new(0)),
         write_lock: Arc::new(Mutex::new(())),
     });
 
@@ -277,8 +281,12 @@ async fn main() {
         .route("/proc", any(proc_reserved))
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
-        .with_state(state)
-        .layer(DefaultBodyLimit::max(max_world_bytes));
+        .with_state(state.clone())
+        .layer(DefaultBodyLimit::max(max_world_bytes))
+        .layer(middleware::from_fn_with_state(
+            state,
+            add_core_response_headers,
+        ));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
@@ -337,6 +345,40 @@ fn print_auth_summary(tokens: &auth::Tokens) {
             "  warning: ELASTIK_APPROVE_TOKEN not set; DELETE and system writes are disabled."
         );
     }
+}
+
+async fn add_core_response_headers(
+    State(core): State<Arc<Core>>,
+    req: axum::http::Request<Body>,
+    next: Next,
+) -> Response {
+    let request_id = core.next_request.fetch_add(1, Ordering::Relaxed) + 1;
+    let start = Instant::now();
+    let mut response = next.run(req).await;
+    stamp_core_response_headers(
+        request_id,
+        start.elapsed().as_micros(),
+        response.headers_mut(),
+    );
+    response
+}
+
+fn stamp_core_response_headers(request_id: u64, elapsed_us: u128, headers: &mut HeaderMap) {
+    headers.insert(
+        HeaderName::from_static("x-request-id"),
+        HeaderValue::from_str(&request_id.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("0")),
+    );
+    headers.insert(
+        HeaderName::from_static("x-elapsed-us"),
+        HeaderValue::from_str(&elapsed_us.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("0")),
+    );
+    headers.insert(header::VARY, HeaderValue::from_static("Authorization"));
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -1139,6 +1181,22 @@ mod tests {
     }
 
     #[test]
+    fn core_response_headers_are_core_owned() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::VARY, HeaderValue::from_static("*"));
+        headers.insert("x-request-id", HeaderValue::from_static("stale"));
+        headers.insert("x-elapsed-us", HeaderValue::from_static("999"));
+        headers.insert("x-content-type-options", HeaderValue::from_static("sniff"));
+
+        stamp_core_response_headers(42, 7, &mut headers);
+
+        assert_eq!(headers.get("x-request-id").unwrap(), "42");
+        assert_eq!(headers.get("x-elapsed-us").unwrap(), "7");
+        assert_eq!(headers.get(header::VARY).unwrap(), "Authorization");
+        assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    }
+
+    #[test]
     fn canonicalize_preserves_explicit_namespaces() {
         assert_eq!(canonicalize_path("/home/tmp/foo"), "home/tmp/foo");
         assert_eq!(canonicalize_path("/home/etc/foo"), "home/etc/foo");
@@ -1906,6 +1964,10 @@ mod tests {
             "date",
             "age",
             "vary",
+            "x-request-id",
+            "x-elapsed-us",
+            "x-elapsed-ms",
+            "x-content-type-options",
             "via",
             "forwarded",
             "x-forwarded-for",
@@ -2263,6 +2325,7 @@ mod tests {
                     event_log: Arc::new(StdMutex::new(VecDeque::new())),
                     shutdown: watch::channel(false).1,
                     next_event: Arc::new(AtomicU64::new(0)),
+                    next_request: Arc::new(AtomicU64::new(0)),
                     write_lock: Arc::new(Mutex::new(())),
                 }
             },
