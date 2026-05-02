@@ -13,7 +13,7 @@
 //!   POST   /<world>                → append to body, no meta change, audit
 //!   DELETE /<world>                → drop world (sqlite) or evict (memory)
 //!   GET    /proc/worlds            → text/plain, one world per line
-//!   GET    /proc/version           → "elastik-core <ver>\n"
+//!   GET    /proc/version           → "elastik-core <ver> (rust)\n"
 //!
 //! Path prefix decides backend (one core, one port, no two daemons):
 //!
@@ -436,7 +436,7 @@ async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
 /// `/etc`, `/lib`, `/var`. Browser shells are SDK-app territory; core
 /// never serves HTML, never sets CSP, never thinks about iframes.
 async fn root_hint(method: Method) -> Response {
-    let body = format!("elastik-core {VERSION}\ntry: curl /proc/worlds\n");
+    let body = format!("elastik-core {VERSION} (rust)\ntry: curl /proc/worlds\n");
     match method {
         Method::GET => (
             StatusCode::OK,
@@ -466,7 +466,7 @@ async fn root_hint(method: Method) -> Response {
 
 // ─── /proc/version ──────────────────────────────────────────────────
 async fn proc_version(method: Method) -> Response {
-    let body = format!("elastik-core {VERSION}\n");
+    let body = format!("elastik-core {VERSION} (rust)\n");
     match method {
         Method::GET => (
             StatusCode::OK,
