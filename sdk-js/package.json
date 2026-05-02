@@ -1,0 +1,87 @@
+{
+  "name": "@elastikjs/client",
+  "version": "6.4.3",
+  "description": "JavaScript SDK for Elastik V6 Engine. Six verbs, one import, zero dependencies. Works in browser AND Node 18+. fetch is all you need.",
+  "type": "module",
+  "main": "./index.mjs",
+  "module": "./index.mjs",
+  "types": "./index.d.ts",
+  "browser": {
+    "./start": false,
+    "./start.mjs": false
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": "./index.mjs",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    },
+    "./start": {
+      "types": "./start.d.ts",
+      "browser": null,
+      "node": "./start.mjs",
+      "import": "./start.mjs",
+      "default": "./start.mjs"
+    },
+    "./index.mjs": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    },
+    "./start.mjs": {
+      "types": "./start.d.ts",
+      "browser": null,
+      "node": "./start.mjs",
+      "import": "./start.mjs",
+      "default": "./start.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "start.mjs",
+    "start.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test.mjs",
+    "test:rust": "ELASTIK_URL=http://127.0.0.1:3105 node test.mjs",
+    "test:node": "ELASTIK_URL=http://127.0.0.1:3106 node test.mjs",
+    "test:start": "node test-start.mjs"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "@elastikjs/core-linux-x64": "6.4.3",
+    "@elastikjs/core-linux-arm64": "6.4.3",
+    "@elastikjs/core-darwin-arm64": "6.4.3",
+    "@elastikjs/core-win32-x64": "6.4.3"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "keywords": [
+    "elastik",
+    "client",
+    "sdk",
+    "http",
+    "fetch",
+    "browser",
+    "isomorphic",
+    "zero-dependencies"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rangersui/Elastik.git",
+    "directory": "sdk-js"
+  },
+  "homepage": "https://github.com/rangersui/Elastik/tree/main/sdk-js#readme",
+  "bugs": {
+    "url": "https://github.com/rangersui/Elastik/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "@elastikjs/core-win32-x64",
+  "version": "6.4.3",
+  "description": "Elastik V6 Engine — bundled Rust core binary for Windows x64. Installed transitively by @elastikjs/client when start() runs a local core.",
+  "files": [
+    "elastik-core.exe"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "elastik",
+    "rust",
+    "binary",
+    "windows",
+    "x64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rangersui/Elastik.git",
+    "directory": "sdk-js/core-win32-x64"
+  },
+  "homepage": "https://github.com/rangersui/Elastik/tree/main/sdk-js#readme",
+  "bugs": {
+    "url": "https://github.com/rangersui/Elastik/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

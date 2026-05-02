@@ -1,0 +1,25 @@
+# JS / npm
+node_modules/
+package-lock.json
+*.tgz
+
+# Native binaries — built by CI from ../core/, not committed to source.
+# Each core-${plat}-${arch}/ dir is committed (so its package.json ships),
+# but the binary itself lives only in the published npm tarball.
+core-*/elastik-core
+core-*/elastik-core.exe
+
+# Test / preview artifacts
+.preview-data/
+*.log
+*.tmp
+*.swp
+
+# Python pollution from the repo's other halves
+__pycache__/
+*.py[cod]
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

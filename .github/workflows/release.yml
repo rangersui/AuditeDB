@@ -21,18 +21,26 @@ jobs:
             os: ubuntu-latest
             rust-target: x86_64-unknown-linux-musl
             asset-name: elastik-core-linux-x64.zip
+            npm-platform: linux
+            npm-arch: x64
           - name: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-musl
             asset-name: elastik-core-linux-arm64.zip
+            npm-platform: linux
+            npm-arch: arm64
           - name: macos-arm64
             os: macos-14
             rust-target: ""
             asset-name: elastik-core-darwin-arm64.zip
+            npm-platform: darwin
+            npm-arch: arm64
           - name: windows-x64
             os: windows-latest
             rust-target: ""
             asset-name: elastik-core-win32-x64.zip
+            npm-platform: win32
+            npm-arch: x64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -87,6 +95,28 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset-name }}
+
+      - uses: actions/setup-node@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: publish npm platform package
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            binary="core/target/release/elastik-core.exe"
+          elif [ -n "${{ matrix.rust-target }}" ]; then
+            binary="core/target/${{ matrix.rust-target }}/release/elastik-core"
+          else
+            binary="core/target/release/elastik-core"
+          fi
+          node sdk-js/scripts/pack-platform.mjs "${{ matrix.npm-platform }}" "${{ matrix.npm-arch }}" "$binary"
+          npm publish "sdk-js/core-${{ matrix.npm-platform }}-${{ matrix.npm-arch }}" --access public
 
   build-wheels:
     name: build wheel (${{ matrix.name }})
@@ -219,3 +249,77 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+
+  publish-npm-client:
+    name: publish npm client
+    needs: build-core-assets
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: smoke js package exports
+        run: |
+          node -e "import('./index.mjs').then((m) => { if (typeof m.Elastik !== 'function') throw new Error('missing Elastik export') })"
+          node -e "import('./start.mjs').then((m) => { if (typeof m.start !== 'function' || typeof m.resolveBinary !== 'function') throw new Error('missing start exports') })"
+        working-directory: sdk-js
+      - name: publish npm client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+        working-directory: sdk-js
+
+  verify-npm-publish:
+    name: verify npm publish
+    needs: publish-npm-client
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: install published package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir verify-npm && cd verify-npm
+          npm init -y
+          for attempt in 1 2 3 4 5; do
+            if npm install "@elastikjs/client@${version}"; then
+              exit 0
+            fi
+            echo "npm install did not see @elastikjs/client@${version} yet; retry ${attempt}/5"
+            sleep 10
+          done
+          exit 1
+      - name: start bundled core and round-trip
+        shell: bash
+        working-directory: verify-npm
+        run: |
+          node --input-type=module <<'JS'
+          import { Elastik } from "@elastikjs/client/start";
+
+          const e = await Elastik.start({
+            writeToken: "w",
+            readToken: "r",
+            approveToken: "a",
+          });
+          try {
+            await e.put("verify/note", "shipped");
+            const got = await e.get("verify/note");
+            if (got !== "shipped") {
+              throw new Error(`round-trip failed: ${got}`);
+            }
+            console.log(`verify-npm-publish: ${await e.version()}`.trim());
+          } finally {
+            await e.stop();
+          }
+          JS

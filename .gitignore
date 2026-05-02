@@ -61,9 +61,6 @@ pnpm-debug.log*
 .pytest_cache/
 *.egg-info/
 
-# Rust lockfiles for SDK/crate experiments until release policy is fixed
-Cargo.lock
-
 # Local generated package mirror and private research/plans
 package/
 research/
@@ -72,9 +69,8 @@ result.md
 PLAN*.md
 INSIGHTS.md
 
-# Keep this branch code-first; root README remains the upstream Elastik README.
+# Keep experimental branch docs out until their package is promoted.
 core/README.md
-sdk-js/README.md
 sdk-rs/README.md
 
 # Python SDK embedded binaries are local build artifacts for now.
