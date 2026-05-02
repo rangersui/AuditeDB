@@ -1,0 +1,35 @@
+{
+  "name": "@elastikjs/core-darwin-arm64",
+  "version": "6.4.2-edu.0",
+  "description": "Elastik V6 Engine — bundled Rust core binary for macOS Apple Silicon. Pulled in transitively by @elastikjs/client when start() runs a local core. NOT FOR PRODUCTION (use 'pip install elastik').",
+  "files": [
+    "elastik-core"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "elastik",
+    "rust",
+    "binary",
+    "darwin",
+    "macos",
+    "arm64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rangersui/Elastik.git",
+    "directory": "sdk-js/core-darwin-arm64"
+  },
+  "homepage": "https://github.com/rangersui/Elastik/tree/main/sdk-js#readme",
+  "bugs": {
+    "url": "https://github.com/rangersui/Elastik/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
