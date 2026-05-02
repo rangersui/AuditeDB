@@ -131,7 +131,9 @@ import { Elastik } from "@elastikjs/client";
 const e = new Elastik("https://your-elastik-core.example.com", { ... });
 ```
 
-The `start.mjs` machinery is silently absent from your bundle.
+The `start.mjs` machinery is silently absent from your bundle. If you
+accidentally call `Elastik.start()` from the bare browser-safe import, the SDK
+throws a clear message telling you to import from `@elastikjs/client/start`.
 
 ---
 
@@ -172,12 +174,13 @@ const e = new Elastik("http://127.0.0.1:3105", {
 Typed errors mirror the Python SDK:
 
 ```js
-import { NotFound, NotModified, PreconditionFailed } from "@elastikjs/client";
+import { NetworkError, NotFound, NotModified } from "@elastikjs/client";
 
 try {
     await e.get("home/missing");
 } catch (err) {
     if (err instanceof NotFound) return null;
+    if (err instanceof NetworkError) console.error("core is unreachable");
     throw err;
 }
 ```
@@ -570,6 +573,17 @@ await e.delete("home/note");
 await e.delete("home/note", { ifMatch: currentEtag });   // If-Match
 ```
 
+### `await e.request(method, path, options?)` → raw response
+
+Escape hatch for unusual HTTP calls. It adds Authorization like the high-level
+methods, then returns `{ status, statusText, headers, body }` without trying to
+interpret the response.
+
+```js
+const res = await e.request("OPTIONS", "home/note");
+console.log(res.status, res.headers.get("allow"));
+```
+
 ### `e.listen(pattern, callback, options?)` → unsubscribe function
 
 Subscribe to Server-Sent Events from `/listen/<pattern>`. The callback receives one event
@@ -665,7 +679,10 @@ controller.abort();   // → slow throws AbortError
 - No connection pool. (`fetch` handles that.)
 - No JSON envelope. (Status code = result. Body = bytes.)
 
-If you want any of the above, wrap the SDK. It's ~280 lines of straightforward fetch calls.
+If you want any of the above, wrap the SDK. It's a small set of straightforward fetch calls.
+
+See also: [No Backend](docs/NO-BACKEND.md), the shorter manifesto version of
+why browser + fetch + elastik core is already enough for a lot of apps.
 
 ## Browser caveats
 

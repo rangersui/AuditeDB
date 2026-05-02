@@ -9,6 +9,7 @@
 import {
     Elastik,
     ElastikError,
+    NetworkError,
     NotFound,
     NotModified,
     PreconditionFailed,
@@ -102,6 +103,13 @@ try {
     check(err.message.includes("putJson"), "TypeError suggests putJson");
 }
 try {
+    await e.put("sdk-test/oops.json", { nope: true });
+    bad("put object to .json should TypeError");
+} catch (err) {
+    check(err instanceof TypeError, "put object to .json throws before fetch");
+    check(err.message.includes("putJson"), "json object TypeError suggests putJson");
+}
+try {
     await e.getJson("sdk-test/text");
     bad("getJson on text should TypeError");
 } catch (err) {
@@ -115,8 +123,25 @@ const d4 = await eApprove.delete("sdk-test/note");
 check(d4.status === 204, "delete returns 204", String(d4.status));
 check(!(await e.exists("sdk-test/note")), "deleted world is gone");
 
+console.log("\n=== raw request escape hatch ===");
+const optionsResp = await e.request("OPTIONS", "sdk-test/request", { token: READ_TOKEN });
+check(optionsResp.status === 204, "request() can send OPTIONS", String(optionsResp.status));
+check(optionsResp.headers.get("allow")?.includes("PUT"), "request() exposes raw headers");
+try {
+    await e.request("PUT", "sdk-test/request-object", { body: { nope: true } });
+    bad("request object body should TypeError");
+} catch (err) {
+    check(err instanceof TypeError, "request() object body throws TypeError");
+}
+
 // ─── Test 5: ElastikError shape ──────────────────────────────
 console.log("\n=== ElastikError ===");
+try {
+    Elastik.start();
+    bad("bare Elastik.start should throw helpful subpath error");
+} catch (err) {
+    check(err.message.includes("@elastikjs/client/start"), "bare Elastik.start points to /start entrypoint");
+}
 try {
     await e.get("sdk-test/missing-yo");
     bad("get missing should throw");
@@ -127,6 +152,13 @@ try {
     check(typeof err.statusText === "string", "statusText present");
     check(err.path === "sdk-test/missing-yo", "error.path", err.path);
     check(typeof err.message === "string" && err.message.includes("404"), "error.message");
+}
+try {
+    await new Elastik("http://127.0.0.1:9", { writeToken: WRITE_TOKEN }).get("home/x");
+    bad("unreachable core should throw NetworkError");
+} catch (err) {
+    check(err instanceof NetworkError, "network failure throws NetworkError");
+    check(err.status === 0, "NetworkError status=0");
 }
 
 // ─── Test 6: Conditional PUT (If-Match) ──────────────────────

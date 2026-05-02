@@ -88,6 +88,12 @@ export interface GetMetaOptions extends CommonOptions {
 
 export interface HeadOptions extends CommonOptions {}
 
+export interface RequestOptions extends CommonOptions {
+    body?: RequestBody;
+    /** Explicit bearer token for this raw request. Defaults to writeToken. */
+    token?: string;
+}
+
 export interface ListenOptions extends CommonOptions {
     lastEventId?: string | number;
 }
@@ -99,6 +105,13 @@ export interface WriteResult {
 
 export interface DeleteResult {
     status: number;
+}
+
+export interface ResponseLike {
+    status: number;
+    statusText: string;
+    headers: Headers;
+    body: ArrayBuffer;
 }
 
 export interface HeadResult {
@@ -146,8 +159,10 @@ export class NotFound extends ElastikError {}
 export class PreconditionFailed extends ElastikError {}
 export class PayloadTooLarge extends ElastikError {}
 export class ServerError extends ElastikError {}
+export class NetworkError extends ElastikError {}
 
 export class Elastik {
+    static start(): unknown;
     constructor(url: string, options?: ElastikOptions);
 
     url: string;
@@ -168,6 +183,7 @@ export class Elastik {
     head(path: string, options?: HeadOptions): Promise<HeadResult>;
     post(path: string, body: RequestBody, options?: PostOptions): Promise<WriteResult>;
     delete(path: string, options?: DeleteOptions): Promise<DeleteResult>;
+    request(method: string, path: string, options?: RequestOptions): Promise<ResponseLike>;
 
     listen(path: string, callback: (event: ListenEvent) => void, options?: ListenOptions): Unsubscribe;
 

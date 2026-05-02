@@ -1,5 +1,15 @@
-import { Elastik as BaseElastik, ElastikError } from "@elastikjs/client";
-export { ElastikError };
+import { Elastik as BaseElastik } from "@elastikjs/client";
+export {
+    ElastikError,
+    Forbidden,
+    NetworkError,
+    NotFound,
+    NotModified,
+    PayloadTooLarge,
+    PreconditionFailed,
+    ServerError,
+    Unauthorized,
+} from "@elastikjs/client";
 
 export interface StartOptions {
     /** ELASTIK_KEY. Defaults to .env/env or a random hex key. */

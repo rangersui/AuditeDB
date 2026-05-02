@@ -62,6 +62,7 @@ export class NotFound extends ElastikError {}
 export class PreconditionFailed extends ElastikError {}
 export class PayloadTooLarge extends ElastikError {}
 export class ServerError extends ElastikError {}
+export class NetworkError extends ElastikError {}
 
 const ERROR_BY_STATUS = Object.freeze({
     304: NotModified,
@@ -90,6 +91,13 @@ export class Elastik {
         // bind() so user can do `const get = e.get`. Native fetch hates being
         // detached from globalThis on some runtimes; bind defensively.
         this.fetch = (options.fetch ?? globalThis.fetch).bind(globalThis);
+    }
+
+    static start() {
+        throw new Error(
+            'Elastik.start() is only available from the Node-only entrypoint. ' +
+            'Use: import { Elastik } from "@elastikjs/client/start"'
+        );
     }
 
     // ─── PUT ─────────────────────────────────────────────
@@ -137,7 +145,7 @@ export class Elastik {
         const ifMatch = options.ifMatch ?? options.etag;
         if (ifMatch) headers["If-Match"] = ifMatch;
         if (options.ifNoneMatch) headers["If-None-Match"] = options.ifNoneMatch;
-        const res = await this.fetch(this._url(path), {
+        const res = await this._fetch(this._url(path), {
             method: "PUT", body, headers, signal: options.signal,
         });
         await this._throwIfError(res, path);
@@ -168,7 +176,7 @@ export class Elastik {
         if (options.range) headers["Range"] = `bytes=${options.range}`;
         if (options.ifNoneMatch) headers["If-None-Match"] = options.ifNoneMatch;
         if (options.ifMatch) headers["If-Match"] = options.ifMatch;
-        const res = await this.fetch(this._url(path), {
+        const res = await this._fetch(this._url(path), {
             method: "GET", headers, signal: options.signal,
         });
         await this._throwIfError(res, path);
@@ -211,7 +219,7 @@ export class Elastik {
 
     async head(path, options = {}) {
         const headers = this._auth(this.readToken, options.headers);
-        const res = await this.fetch(this._url(path), {
+        const res = await this._fetch(this._url(path), {
             method: "HEAD", headers, signal: options.signal,
         });
         await this._throwIfError(res, path);
@@ -233,7 +241,7 @@ export class Elastik {
         const headers = this._auth(this.writeToken, options.headers);
         const ifMatch = options.ifMatch ?? options.etag;
         if (ifMatch) headers["If-Match"] = ifMatch;
-        const res = await this.fetch(this._url(path), {
+        const res = await this._fetch(this._url(path), {
             method: "POST", body, headers, signal: options.signal,
         });
         await this._throwIfError(res, path);
@@ -247,11 +255,25 @@ export class Elastik {
         const headers = this._auth(this.approveToken, options.headers);
         const ifMatch = options.ifMatch ?? options.etag;
         if (ifMatch) headers["If-Match"] = ifMatch;
-        const res = await this.fetch(this._url(path), {
+        const res = await this._fetch(this._url(path), {
             method: "DELETE", headers, signal: options.signal,
         });
         await this._throwIfError(res, path);
         return { status: res.status };
+    }
+
+    async request(method, path, options = {}) {
+        assertBodyType(options.body, "request");
+        const token = options.token ?? this.writeToken;
+        const headers = this._auth(token, options.headers);
+        const res = await this._fetch(this._url(path), {
+            method,
+            body: options.body,
+            headers,
+            signal: options.signal,
+        });
+        const body = await res.arrayBuffer();
+        return { status: res.status, statusText: res.statusText, headers: res.headers, body };
     }
 
     // ─── LISTEN ──────────────────────────────────────────
@@ -278,7 +300,7 @@ export class Elastik {
         // { type: "error", error }. The returned unsub aborts the fetch.
         (async () => {
             try {
-                const res = await this.fetch(url, { headers, signal: controller.signal });
+                const res = await this._fetch(url, { headers, signal: controller.signal }, cleanPattern);
                 if (!res.ok) {
                     const body = await res.text().catch(() => "");
                     safeCall(callback, { type: "error", error: makeError(res.status, res.statusText, cleanPattern, body) });
@@ -319,10 +341,10 @@ export class Elastik {
     }
     async verify(path) {
         const world = canonicalPath(path);
-        const res = await this.fetch(this._url(`/proc/audit/${world}/verify`), {
+        const res = await this._fetch(this._url(`/proc/audit/${world}/verify`), {
             method: "HEAD",
             headers: this._auth(this.readToken),
-        });
+        }, `/proc/audit/${world}/verify`);
         if (res.status === 204) return false;
         await this._throwIfError(res, `/proc/audit/${world}/verify`);
         return res.headers.get("x-audit-valid") === "true";
@@ -347,9 +369,20 @@ export class Elastik {
         throw makeError(res.status, res.statusText, path, body);
     }
     async _textGet(path) {
-        const res = await this.fetch(`${this.url}${path}`, { headers: this._auth(this.readToken) });
+        const res = await this._fetch(`${this.url}${path}`, { headers: this._auth(this.readToken) }, path);
         await this._throwIfError(res, path);
         return await res.text();
+    }
+    async _fetch(url, init, path = url) {
+        try {
+            return await this.fetch(url, init);
+        } catch (err) {
+            if (err?.name === "AbortError") throw err;
+            const detail = err?.cause?.code === "ECONNREFUSED"
+                ? `cannot reach elastik at ${this.url} — is it running?`
+                : `network error: ${err?.message ?? String(err)}`;
+            throw new NetworkError(0, "Network Error", path, detail);
+        }
     }
 }
 
@@ -531,9 +564,10 @@ function assertBodyType(body, method) {
     if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return;
     if (typeof Blob !== "undefined" && body instanceof Blob) return;
     if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return;
+    const hint = method === "put" ? "putJson()" : "JSON.stringify(...) or putJson()";
     throw new TypeError(
         `${method}() body must be string | ArrayBuffer | TypedArray | Blob | ReadableStream; ` +
-        `got ${Object.prototype.toString.call(body)}. Did you mean ${method}Json()?`
+        `got ${Object.prototype.toString.call(body)}. Did you mean ${hint}?`
     );
 }
 

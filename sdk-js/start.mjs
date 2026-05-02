@@ -46,7 +46,18 @@ import { createServer } from "node:net";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { Elastik, ElastikError } from "./index.mjs";
+import {
+    Elastik,
+    ElastikError,
+    Forbidden,
+    NetworkError,
+    NotFound,
+    NotModified,
+    PayloadTooLarge,
+    PreconditionFailed,
+    ServerError,
+    Unauthorized,
+} from "./index.mjs";
 
 const require = createRequire(import.meta.url);
 loadDotenv();
@@ -323,7 +334,18 @@ function attachClient(core, baseUrl, dataDir, binary, cleanup, options) {
 // Static-method form so users can `import { Elastik } from "@elastikjs/client/start"`
 // and call Elastik.start(...) — matches the Python SDK's import-and-go feel.
 Elastik.start = start;
-export { Elastik, ElastikError };
+export {
+    Elastik,
+    ElastikError,
+    Forbidden,
+    NetworkError,
+    NotFound,
+    NotModified,
+    PayloadTooLarge,
+    PreconditionFailed,
+    ServerError,
+    Unauthorized,
+};
 
 function loadDotenv() {
     if (process.env.ELASTIK_NO_DOTENV === "1") return;
