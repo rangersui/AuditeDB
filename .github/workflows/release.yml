@@ -273,3 +273,53 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
         working-directory: sdk-js
+
+  verify-npm-publish:
+    name: verify npm publish
+    needs: publish-npm-client
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: install published package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir verify-npm && cd verify-npm
+          npm init -y
+          for attempt in 1 2 3 4 5; do
+            if npm install "@elastikjs/client@${version}"; then
+              exit 0
+            fi
+            echo "npm install did not see @elastikjs/client@${version} yet; retry ${attempt}/5"
+            sleep 10
+          done
+          exit 1
+      - name: start bundled core and round-trip
+        shell: bash
+        working-directory: verify-npm
+        run: |
+          node --input-type=module <<'JS'
+          import { Elastik } from "@elastikjs/client/start";
+
+          const e = await Elastik.start({
+            writeToken: "w",
+            readToken: "r",
+            approveToken: "a",
+          });
+          try {
+            await e.put("verify/note", "shipped");
+            const got = await e.get("verify/note");
+            if (got !== "shipped") {
+              throw new Error(`round-trip failed: ${got}`);
+            }
+            console.log(`verify-npm-publish: ${await e.version()}`.trim());
+          } finally {
+            await e.stop();
+          }
+          JS
