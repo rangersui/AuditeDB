@@ -1,6 +1,6 @@
 {
   "name": "@elastikjs/core-linux-x64",
-  "version": "6.4.3",
+  "version": "6.4.4",
   "description": "Elastik V6 Engine — bundled Rust core binary for Linux x64. Installed transitively by @elastikjs/client when start() runs a local core.",
   "files": [
     "elastik-core"

@@ -1,6 +1,6 @@
 {
   "name": "@elastikjs/client",
-  "version": "6.4.3",
+  "version": "6.4.4",
   "description": "JavaScript SDK for Elastik V6 Engine. Six verbs, one import, zero dependencies. Works in browser AND Node 18+. fetch is all you need.",
   "type": "module",
   "main": "./index.mjs",
@@ -53,10 +53,10 @@
   },
   "dependencies": {},
   "optionalDependencies": {
-    "@elastikjs/core-linux-x64": "6.4.3",
-    "@elastikjs/core-linux-arm64": "6.4.3",
-    "@elastikjs/core-darwin-arm64": "6.4.3",
-    "@elastikjs/core-win32-x64": "6.4.3"
+    "@elastikjs/core-linux-x64": "6.4.4",
+    "@elastikjs/core-linux-arm64": "6.4.4",
+    "@elastikjs/core-darwin-arm64": "6.4.4",
+    "@elastikjs/core-win32-x64": "6.4.4"
   },
   "engines": {
     "node": ">=18"

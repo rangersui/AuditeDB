@@ -116,7 +116,7 @@ jobs:
             binary="core/target/release/elastik-core"
           fi
           node sdk-js/scripts/pack-platform.mjs "${{ matrix.npm-platform }}" "${{ matrix.npm-arch }}" "$binary"
-          npm publish "sdk-js/core-${{ matrix.npm-platform }}-${{ matrix.npm-arch }}" --access public
+          npm publish "./sdk-js/core-${{ matrix.npm-platform }}-${{ matrix.npm-arch }}" --access public
 
   build-wheels:
     name: build wheel (${{ matrix.name }})
