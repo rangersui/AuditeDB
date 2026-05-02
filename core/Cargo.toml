@@ -1,6 +1,6 @@
 [package]
 name = "elastik-core"
-version = "6.3.0"
+version = "6.4.0"
 edition = "2021"
 description = "Elastik V6 Engine: six verbs, one HTTP disk."
 
