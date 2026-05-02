@@ -4,7 +4,7 @@
 //! the HTTP write.
 
 use hmac::{Hmac, Mac};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, Statement, Transaction};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -159,6 +159,8 @@ fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyRepor
     let mut prev = String::new();
     let mut genesis = String::new();
     let mut events = 0usize;
+    let mut header_stmt =
+        c.prepare("SELECT name, value FROM event_headers WHERE event_id=? ORDER BY name, value")?;
     let rows = stmt.query_map([], |r| {
         Ok(EventRow {
             id: r.get(0)?,
@@ -183,7 +185,7 @@ fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyRepor
                 actual: hmac_label(&row.prev_hmac),
             }));
         }
-        let headers = event_headers(c, row.id)?;
+        let headers = event_headers(&mut header_stmt, row.id)?;
         let expected_meta = meta_sha256_canonical(&row.content_type, &headers);
         if expected_meta != row.meta_sha256 {
             return Ok(VerifyReport::Broken(VerifyBreak {
@@ -233,9 +235,10 @@ fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyRepor
     }))
 }
 
-fn event_headers(c: &Connection, event_id: i64) -> rusqlite::Result<Vec<(String, String)>> {
-    let mut stmt =
-        c.prepare("SELECT name, value FROM event_headers WHERE event_id=? ORDER BY name, value")?;
+fn event_headers(
+    stmt: &mut Statement<'_>,
+    event_id: i64,
+) -> rusqlite::Result<Vec<(String, String)>> {
     let rows = stmt
         .query_map([event_id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect();

@@ -560,7 +560,7 @@ async fn proc_audit_verify(
     }
     let world_name = canonicalize_path(raw_world);
     if !valid_world_name(&world_name) {
-        return bad_request("world path contains control bytes");
+        return bad_request("invalid world path");
     }
 
     let auth_header = headers
@@ -1025,11 +1025,11 @@ fn audit_valid(report: audit::VerifyOk) -> Response {
             ),
             (
                 HeaderName::from_static("x-audit-genesis"),
-                HeaderValue::from_str(&report.genesis).unwrap(),
+                audit_header_value(&report.genesis),
             ),
             (
                 HeaderName::from_static("x-audit-latest"),
-                HeaderValue::from_str(&report.latest).unwrap(),
+                audit_header_value(&report.latest),
             ),
             (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
         ]),
