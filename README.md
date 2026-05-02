@@ -702,23 +702,17 @@ No JSON. Pipe it.
 curl.exe -s http://127.0.0.1:3105/proc/worlds | Select-String '^home/'
 ```
 
-## Python SDK
+## SDKs
 
-The Python SDK is the primary SDK for this line.
-
-It is a nicer curl. It does not add a second protocol. Its job is glue:
-starting the local core, writing bytes, reading bytes, listening for changes,
-and connecting Elastik to CLI tools, AI workers, tests, and small local
-automation.
-
-Other SDKs are roadmap until the HTTP surface settles:
+The core is still just HTTP. SDKs are convenience layers around the same six
+verbs; they do not add a second protocol or object model.
 
 | SDK | Status | Why |
 |---|---|---|
-| Python | primary | Best glue language for local agents, CLI wrappers, tests, and `@listen`. |
+| Python | primary local glue | Best for local agents, CLI wrappers, tests, `@listen`, debug sinks, and small automation. |
+| JavaScript | shipped as `@elastikjs/client` | Browser and Node fetch client. In Node, `Elastik.start()` can spawn the bundled Rust core through platform npm packages. |
 | Go | roadmap | Good for single-binary sidecars and distribution. |
 | Rust | roadmap | Good for embedding close to the core once the ABI stops moving. |
-| JavaScript package | mostly unnecessary | Browsers already speak HTTP. Use HTML tags, `fetch`, and `EventSource`; add a tiny app-local helper only when it buys clarity. |
 
 ### Browser Is Already The SDK
 
@@ -782,19 +776,54 @@ requests against the core's `206 Partial Content`. Responsive images are the
 browser choosing which path to `GET`. ETag caching, `If-None-Match`, `304`,
 gzip decoding, MIME handling, and rendering are all already in the browser.
 
-When code is useful, the JavaScript surface is intentionally tiny:
+When code is useful, the JavaScript package keeps that same shape:
 
 ```js
-const e = {
-  put: (path, body, headers = {}) => fetch(path, { method: "PUT", body, headers }),
-  get: (path) => fetch(path).then((r) => r.arrayBuffer()),
-  del: (path) => fetch(path, { method: "DELETE" }),
-  listen: (pattern) => new EventSource(`/listen/${pattern}`),
-};
+import { Elastik } from "@elastikjs/client";
+
+const e = new Elastik("http://127.0.0.1:3105", {
+  writeToken: "write-token",
+  readToken: "read-token",
+});
+
+await e.putJson("home/order/123", { sku: "tea", qty: 2 });
+const order = await e.getJson("home/order/123");
+const stop = e.listen("home/receipt/*", (event) => console.log(event.path));
 ```
 
-That is not a new protocol. It is just HTTP from JavaScript. Python needs a
-larger SDK because Python does not include a browser. Browsers do.
+That is not a new protocol. It is just HTTP from JavaScript, with typed errors,
+JSON/text helpers, `AbortController`, auth headers, and an SSE parser that can
+send Bearer tokens where native `EventSource` cannot.
+
+Install the JavaScript SDK:
+
+```powershell
+npm install @elastikjs/client
+```
+
+In Node, the `/start` entrypoint can launch the bundled Rust core:
+
+```js
+import { Elastik } from "@elastikjs/client/start";
+
+const e = await Elastik.start();       // random key/token/port/temp data dir
+await e.putText("home/note", "hello from node");
+console.log(await e.getText("home/note"));
+await e.stop();
+```
+
+In the browser, import `@elastikjs/client` and point it at an already-running
+core. The Node-only `start()` machinery is deliberately absent from browser
+bundles.
+
+See `sdk-js/README.md` for the full JavaScript surface, including browser-policy
+shortcuts such as `csp`, `cors`, `frameOptions`, `cache`, and `robots`.
+
+### Python SDK
+
+The Python SDK is a nicer curl for local systems. Its job is glue: starting the
+local core, writing bytes, reading bytes, listening for changes, and connecting
+Elastik to CLI tools, AI workers, tests, and small local automation.
 
 Install from PyPI:
 
