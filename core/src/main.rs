@@ -1052,17 +1052,29 @@ fn audit_broken(report: audit::VerifyBreak) -> Response {
             ),
             (
                 HeaderName::from_static("x-audit-expected"),
-                HeaderValue::from_str(&report.expected).unwrap(),
+                audit_header_value(&report.expected),
             ),
             (
                 HeaderName::from_static("x-audit-actual"),
-                HeaderValue::from_str(&report.actual).unwrap(),
+                audit_header_value(&report.actual),
             ),
             (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
         ]),
         "",
     )
         .into_response()
+}
+
+fn audit_header_value(value: &str) -> HeaderValue {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if (0x20..=0x7e).contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("\\x{b:02x}"));
+        }
+    }
+    HeaderValue::from_str(&out).expect("escaped audit header is visible ASCII")
 }
 
 fn audit_not_applicable() -> Response {
@@ -1844,6 +1856,44 @@ mod tests {
         assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "false");
         assert_eq!(resp.headers().get("x-audit-break-at").unwrap(), "0");
         assert_eq!(resp.headers().get("x-audit-actual").unwrap(), "hmac-bad");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_escapes_tampered_header_values() {
+        let (core, dir) = test_core("proc-audit-header-escape");
+        world::write_with_audit(
+            &core.data,
+            "home/audit-escaped",
+            b"hello",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let db = world::world_db(&core.data, "home/audit-escaped");
+        let c = rusqlite::Connection::open(db).unwrap();
+        c.execute(
+            "UPDATE events SET hmac=? WHERE id=1",
+            ["bad\nInjected: yes"],
+        )
+        .unwrap();
+
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(state),
+            Method::HEAD,
+            AxPath("home/audit-escaped/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            resp.headers().get("x-audit-actual").unwrap(),
+            "hmac-bad\\x0aInjected: yes"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
