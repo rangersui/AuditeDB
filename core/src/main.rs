@@ -537,7 +537,7 @@ async fn proc_worlds(
         .into_response()
 }
 
-// ─── /<world> all five methods ──────────────────────────────────────
+// /proc/audit/{world}/verify
 async fn proc_audit_verify(
     State(core): State<Arc<Core>>,
     method: Method,
@@ -594,6 +594,7 @@ async fn proc_reserved(method: Method) -> Response {
     }
 }
 
+// ─── /<world> all five methods ──────────────────────────────────────
 async fn world_handler(
     State(core): State<Arc<Core>>,
     method: Method,
