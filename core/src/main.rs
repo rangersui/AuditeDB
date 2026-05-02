@@ -282,11 +282,11 @@ async fn main() {
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
         .with_state(state.clone())
+        .layer(DefaultBodyLimit::max(max_world_bytes))
         .layer(middleware::from_fn_with_state(
             state,
             add_core_response_headers,
-        ))
-        .layer(DefaultBodyLimit::max(max_world_bytes));
+        ));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
