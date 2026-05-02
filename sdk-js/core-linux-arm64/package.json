@@ -1,7 +1,7 @@
 {
   "name": "@elastikjs/core-linux-arm64",
-  "version": "6.4.2-edu.0",
-  "description": "Elastik V6 Engine — bundled Rust core binary for Linux ARM64. Pulled in transitively by @elastikjs/client when start() runs a local core. NOT FOR PRODUCTION (use 'pip install elastik').",
+  "version": "6.4.3",
+  "description": "Elastik V6 Engine — bundled Rust core binary for Linux ARM64. Installed transitively by @elastikjs/client when start() runs a local core.",
   "files": [
     "elastik-core"
   ],
