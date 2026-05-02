@@ -828,12 +828,18 @@ class Elastik(MutableMapping[str, bytes]):
         return self.head(path).get("etag", "")
 
     def is_audited(self, path: str) -> bool:
-        """Return True when the current ETag is audit-chain backed."""
+        """Return True when the current ETag is audit-chain backed.
+
+        This is a storage-mode check, not a full audit-chain replay.
+        """
         return self.checksum(path).strip('"').startswith("hmac-")
 
     def verify(self, path: str) -> bool:
-        """Alias for is_audited(); does not replay the full audit chain."""
-        return self.is_audited(path)
+        """Reserve the name for future full audit-chain replay verification."""
+        raise NotImplementedError(
+            "Full audit-chain verification requires a /proc/audit endpoint. "
+            "Use is_audited() to check whether this world is HMAC-backed."
+        )
 
     def diff(self, path: str, new_data: str) -> str:
         """Return a unified text diff between current body and new_data."""

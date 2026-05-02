@@ -392,6 +392,7 @@ More stdlib-shaped helpers are thin wrappers over HTTP:
 ```python
 e.get_cached("note")                  # GET + If-None-Match cache
 e.checksum("note")                    # HEAD -> ETag
+e.is_audited("note")                  # True if ETag is hmac-backed
 e.diff("note", "new text")            # local unified diff
 e.preview("note", max_bytes=512)      # Range GET + text preview
 e.put_gzip("log.gz", "hello")         # Content-Encoding: gzip
@@ -399,6 +400,11 @@ e.put_csv("table.csv", [["t", "v"]])  # text/csv
 e.put_struct("dev/s0", ">ff", 1.0, 2.0)
 e.get_many(["a", "b"])                # concurrent GETs, no batch endpoint
 ```
+
+`is_audited()` is only a storage-mode check. It tells you whether the current
+ETag is HMAC-backed, not whether the full audit chain has been replayed.
+`verify()` is reserved for that future full-chain check and currently raises
+`NotImplementedError`.
 
 `open(path, "rb")` returns a read-only file-like object backed by Range GETs:
 

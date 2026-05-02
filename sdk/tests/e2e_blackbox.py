@@ -636,7 +636,12 @@ def main() -> int:
             check(reader.sizeof("/home/sdk/mapping") == 6, "sizeof() reads Content-Length")
             check(reader.checksum("/home/sdk/mapping").strip('"').startswith("hmac-"), "checksum() returns ETag")
             check(reader.is_audited("/home/sdk/mapping"), "is_audited() detects hmac ETag")
-            check(reader.verify("/home/sdk/mapping"), "verify() aliases is_audited")
+            try:
+                reader.verify("/home/sdk/mapping")
+            except NotImplementedError:
+                check(True, "verify() is reserved for full audit-chain replay")
+            else:
+                raise AssertionError("FAIL: verify() should not pretend to replay the audit chain")
             check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached first read downloads")
             check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached second read uses validator")
             writer.put("/home/sdk/mapping", "remapped")
