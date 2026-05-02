@@ -19,6 +19,8 @@ from elastik.sdk import Elastik
 F = TypeVar("F", bound=Callable[..., Any])
 
 _routes: dict[str, Callable[..., Any]] = {}
+_startup_hooks: list[Callable[..., Any]] = []
+_shutdown_hooks: list[Callable[..., Any]] = []
 
 
 def listen(pattern: str, *, replace: bool = False) -> Callable[[F], F]:
@@ -57,9 +59,57 @@ def clear_routes() -> None:
     _routes.clear()
 
 
+def on_startup(func: F) -> F:
+    """Register a function called once before run() starts consuming events.
+
+    Hooks may accept no arguments or ask for `e`; both forms are supported:
+
+        @elastik.on_startup
+        def ready(e):
+            e.put("/sys/health/worker-1", "alive")
+    """
+    _startup_hooks.append(func)
+    return func
+
+
+def on_shutdown(func: F) -> F:
+    """Register a function called when run() exits.
+
+    Shutdown hooks run in reverse registration order. They may accept no
+    arguments or ask for `e`.
+    """
+    _shutdown_hooks.append(func)
+    return func
+
+
+def clear_lifecycle_hooks() -> None:
+    """Remove startup/shutdown hooks. Useful for tests and notebooks."""
+    _startup_hooks.clear()
+    _shutdown_hooks.clear()
+
+
 def has_routes() -> bool:
     """Return True when at least one @listen handler is registered."""
     return bool(_routes)
+
+
+def _call_lifecycle_hook(hook: Callable[..., Any], e: Elastik) -> Any:
+    sig = inspect.signature(hook)
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        return hook(e=e)
+    if "e" in sig.parameters:
+        return hook(e=e)
+    return hook()
+
+
+def _run_startup_hooks(e: Elastik) -> None:
+    for hook in list(_startup_hooks):
+        _call_lifecycle_hook(hook, e)
+
+
+def _run_shutdown_hooks(e: Elastik) -> None:
+    for hook in reversed(list(_shutdown_hooks)):
+        _call_lifecycle_hook(hook, e)
 
 
 def _matches(pattern: str, path: str) -> bool:
@@ -254,30 +304,62 @@ def run(
         e = Elastik()
     last_event_id = ""
     dispatched = 0
-    while True:
-        try:
-            for event in e.listen("*", last_event_id=last_event_id or None):
-                if event.get("id"):
-                    last_event_id = event["id"]
-                if event.get("event") == "lag":
-                    print(
-                        f"elastik reactor: missed SSE events: {event.get('data', '')}",
-                        file=sys.stderr,
-                    )
-                    continue
-                world = event.get("path", "")
-                method = event.get("method", event.get("event", "")).upper()
-                if not world:
-                    continue
-                routes = _matching_routes(world)
-                if not routes:
-                    continue
-                if method == "DELETE":
+    failure: BaseException | None = None
+    try:
+        _run_startup_hooks(e)
+        while True:
+            try:
+                for event in e.listen("*", last_event_id=last_event_id or None):
+                    if event.get("id"):
+                        last_event_id = event["id"]
+                    if event.get("event") == "lag":
+                        print(
+                            f"elastik reactor: missed SSE events: {event.get('data', '')}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    world = event.get("path", "")
+                    method = event.get("method", event.get("event", "")).upper()
+                    if not world:
+                        continue
+                    routes = _matching_routes(world)
+                    if not routes:
+                        continue
+                    if method == "DELETE":
+                        _dispatch(
+                            world,
+                            b"",
+                            event.get("etag", ""),
+                            {},
+                            e,
+                            method,
+                            event,
+                            routes=routes,
+                        )
+                        dispatched += 1
+                        if max_events is not None and dispatched >= max_events:
+                            return
+                        continue
+                    try:
+                        body = e.get(world)
+                        head = e.head(world)
+                    except Exception as exc:
+                        print(
+                            f"elastik reactor: failed to fetch {world}: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    meta = {
+                        k: v
+                        for k, v in head.items()
+                        if k.lower().startswith("x-meta-")
+                    }
                     _dispatch(
                         world,
-                        b"",
-                        event.get("etag", ""),
-                        {},
+                        body,
+                        head.get("etag", event.get("etag", "")),
+                        meta,
                         e,
                         method,
                         event,
@@ -286,43 +368,29 @@ def run(
                     dispatched += 1
                     if max_events is not None and dispatched >= max_events:
                         return
-                    continue
-                try:
-                    body = e.get(world)
-                    head = e.head(world)
-                except Exception as exc:
-                    print(
-                        f"elastik reactor: failed to fetch {world}: "
-                        f"{type(exc).__name__}: {exc}",
-                        file=sys.stderr,
-                    )
-                    continue
-                meta = {
-                    k: v
-                    for k, v in head.items()
-                    if k.lower().startswith("x-meta-")
-                }
-                _dispatch(
-                    world,
-                    body,
-                    head.get("etag", event.get("etag", "")),
-                    meta,
-                    e,
-                    method,
-                    event,
-                    routes=routes,
-                )
-                dispatched += 1
-                if max_events is not None and dispatched >= max_events:
-                    return
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:
-            if not reconnect:
+            except KeyboardInterrupt:
                 raise
-            print(
-                f"elastik reactor: {type(exc).__name__}: {exc}; "
-                f"retrying in {retry_s}s",
-                file=sys.stderr,
-            )
-            time.sleep(retry_s)
+            except Exception as exc:
+                if not reconnect:
+                    raise
+                print(
+                    f"elastik reactor: {type(exc).__name__}: {exc}; "
+                    f"retrying in {retry_s}s",
+                    file=sys.stderr,
+                )
+                time.sleep(retry_s)
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        if failure is None:
+            _run_shutdown_hooks(e)
+        else:
+            try:
+                _run_shutdown_hooks(e)
+            except BaseException as cleanup_exc:
+                print(
+                    "elastik reactor: shutdown hook failed during unwind: "
+                    f"{type(cleanup_exc).__name__}: {cleanup_exc}",
+                    file=sys.stderr,
+                )

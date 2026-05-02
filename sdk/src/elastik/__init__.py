@@ -46,6 +46,14 @@ Reactor (declarative event handlers):
     elastik.run()                         # blocks forever; only call after
                                           # registering at least one handler
 
+    @elastik.on_startup
+    def ready(e):
+        e.put("/sys/health/worker-1", "alive")
+
+    @elastik.on_shutdown
+    def gone(e):
+        e.delete("/sys/health/worker-1")
+
 Handlers may either do side effects directly (normal Python) or return
 Action objects like Reply/Archive/MoveTo/Drop for declarative routing.
 `world` is accepted as an older name for the same value as `path`.
@@ -84,8 +92,11 @@ from elastik.reactor import (
     listen,
     run,
     clear_routes,
+    clear_lifecycle_hooks,
     unlisten,
     has_routes,
+    on_startup,
+    on_shutdown,
     MoveTo,
     Reply,
     Archive,
@@ -128,7 +139,8 @@ __all__ = [
     "Response",
     "WorldMeta", "WorldRef", "WorldReader", "FakeElastik",
     # Reactor sugar
-    "listen", "run", "clear_routes", "unlisten", "has_routes",
+    "listen", "run", "clear_routes", "clear_lifecycle_hooks",
+    "unlisten", "has_routes", "on_startup", "on_shutdown",
     "MoveTo", "Reply", "Archive", "Drop", "Action", "Ctx",
     # Lifecycle
     "start", "stop", "is_running", "default_url", "binary_info", "live_info",
