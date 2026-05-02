@@ -208,6 +208,7 @@ def start(
     approve_token: str | None = None,
     data_dir: Optional[str] = None,
     quiet: bool = True,
+    debug: bool | str = False,
 ):
     """Launch the bundled elastik-core. Returns a pre-bound Elastik client.
 
@@ -215,7 +216,8 @@ def start(
     required, either as an argument, in ELASTIK_KEY, or in .env. Token
     arguments are optional capability gates: no read_token means public reads,
     no write_token means ordinary writes are disabled, and no approve_token means
-    delete/system writes are disabled.
+    delete/system writes are disabled. `debug=True` enables the returned
+    client's SDK-side /tmp/debug request sink; it does not change core behavior.
     """
     global _proc, _live_url, _live_data_dir, _last_live_url, _last_live_data_dir
     if _proc is not None and _proc.poll() is None:
@@ -311,7 +313,11 @@ def start(
     _live_data_dir = str(data_dir) if data_dir else None
     _last_live_url = _live_url
     _last_live_data_dir = _live_data_dir
-    return Elastik(_live_url, bearer_token=approve_token or write_token or read_token)
+    return Elastik(
+        _live_url,
+        bearer_token=approve_token or write_token or read_token,
+        debug=debug,
+    )
 
 
 def stop() -> None:

@@ -244,6 +244,7 @@ def start(
     approve_token: str | None = None,
     data_dir: str | None = None,
     quiet: bool = True,
+    debug: bool | str = False,
 ) -> Elastik:
     client = _spawn_start(
         port=port,
@@ -254,6 +255,7 @@ def start(
         approve_token=approve_token,
         data_dir=data_dir,
         quiet=quiet,
+        debug=debug,
     )
     _set_default(client)
     return client

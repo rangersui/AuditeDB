@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import secrets
+import sys
+import threading
 import time
 import csv
 import difflib
@@ -27,7 +29,7 @@ from collections.abc import MutableMapping
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Iterator, TypedDict
+from typing import Any, Callable, Iterator, TypedDict
 
 
 _NAMESPACES = {"home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"}
@@ -122,6 +124,97 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
 }
 _log = logging.getLogger("elastik")
 
+DebugHook = Callable[[str, str, int, float, str], None]
+_DEBUG_LEVELS = {"all", "slow", "errors", "off"}
+_DEBUG_SECRET_HEADERS = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+}
+_DEBUG_SECRET_SUFFIXES = ("-token", "-key", "-secret")
+_DEBUG_PANEL_PATH = "/tmp/debug-panel.html"
+_DEBUG_PANEL_HTML = """<!DOCTYPE html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<title>elastik debug</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background: #10130f; color: #7cff70; font: 14px ui-monospace, Consolas, monospace; margin: 20px; }
+  h1 { color: #d8ffd2; font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+  #stats, #hint { color: #7f987b; margin-bottom: 10px; }
+  #log { border-top: 1px solid #263322; padding-top: 12px; white-space: pre-wrap; }
+  .slow { color: #ffb347; }
+  .error { color: #ff5c5c; }
+  .muted { color: #7f987b; }
+</style>
+<h1>elastik debug</h1>
+<div id="stats">waiting...</div>
+<div id="hint">source: /tmp/debug/requests</div>
+<div id="log"></div>
+<script>
+const SINK = "/tmp/debug/requests";
+const LIMIT = 500;
+const stats = document.getElementById("stats");
+const log = document.getElementById("log");
+let seen = 0, total = 0, errors = 0, slow = 0;
+
+function lineFor(r) {
+  const ms = Number(r.client_ms || 0);
+  const core = r.core_us == null ? "?" : r.core_us + "us";
+  return `${r.rid || "?"} ${r.method || "?"} ${r.path || "?"} -> ${r.status || "?"} ${ms.toFixed(1)}ms core=${core}`;
+}
+
+function appendRecord(r) {
+  total++;
+  const ms = Number(r.client_ms || 0);
+  const status = Number(r.status || 0);
+  if (status >= 400) errors++;
+  if (ms >= 100) slow++;
+  stats.textContent = `total: ${total} | errors: ${errors} | slow: ${slow}`;
+  const row = document.createElement("div");
+  row.className = status >= 400 ? "error" : ms >= 100 ? "slow" : "";
+  row.textContent = lineFor(r);
+  log.appendChild(row);
+  while (log.children.length > LIMIT) log.removeChild(log.firstChild);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(SINK, { cache: "no-store" });
+    if (res.status === 404) {
+      stats.textContent = "waiting for first debug record...";
+      return;
+    }
+    if (res.status === 401 || res.status === 403) {
+      stats.textContent = `auth required (${res.status}); set an Authorization header for this browser`;
+      return;
+    }
+    if (!res.ok) {
+      stats.textContent = `debug sink read failed: HTTP ${res.status}`;
+      return;
+    }
+    const text = await res.text();
+    const lines = text.trimEnd() ? text.trimEnd().split("\\n") : [];
+    for (const line of lines.slice(seen)) {
+      try { appendRecord(JSON.parse(line)); } catch (_) {}
+    }
+    seen = lines.length;
+  } catch (err) {
+    stats.textContent = "debug panel disconnected; retrying...";
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+const es = new EventSource("/listen/tmp/debug/requests");
+es.onmessage = refresh;
+es.addEventListener("put", refresh);
+es.addEventListener("post", refresh);
+es.addEventListener("lag", refresh);
+</script>
+"""
+
 
 WorldMeta = TypedDict(
     "WorldMeta",
@@ -154,16 +247,33 @@ WorldMeta = TypedDict(
 
 
 class ElastikError(Exception):
-    def __init__(self, status: int, body: bytes, *, method: str = "", path: str = ""):
+    def __init__(
+        self,
+        status: int,
+        body: bytes,
+        *,
+        method: str = "",
+        path: str = "",
+        headers: dict[str, str] | None = None,
+    ):
         self.status = status
         self.body = body
         self.method = method
         self.path = path
+        self.headers = dict(headers or {})
+        self.request_id = self.headers.get("x-request-id", "")
+        self.core_elapsed_us = self.headers.get("x-elapsed-us", "")
         super().__init__(str(self))
 
     def __str__(self) -> str:
         route = f" {self.method} {self.path}" if self.method or self.path else ""
-        return f"elastik {self.status}{route}: {self.body[:200]!r}"
+        details = []
+        if self.request_id:
+            details.append(f"request-id={self.request_id}")
+        if self.core_elapsed_us:
+            details.append(f"core-elapsed={self.core_elapsed_us}us")
+        suffix = f" ({', '.join(details)})" if details else ""
+        return f"elastik {self.status}{route}: {self.body[:200]!r}{suffix}"
 
 
 class Unauthorized(ElastikError):
@@ -226,7 +336,13 @@ class Elastik(MutableMapping[str, bytes]):
     >>> e.list_paths()                   # GET /proc/worlds
     """
 
-    def __init__(self, url: str | None = None, bearer_token: str | None = None):
+    def __init__(
+        self,
+        url: str | None = None,
+        bearer_token: str | None = None,
+        *,
+        debug: bool | str = False,
+    ):
         if url is None:
             from elastik._spawn import default_url
             url = default_url()
@@ -235,6 +351,18 @@ class Elastik(MutableMapping[str, bytes]):
         self.url = url.rstrip("/")
         self.bearer_token = bearer_token
         self._etag_cache: dict[str, tuple[str, bytes]] = {}
+        self._debug_enabled = False
+        self._debug_level = "off"
+        self._debug_slow_ms = 100.0
+        self._debug_hook: DebugHook | None = None
+        self._debug_record = False
+        self._debug_verbose = 1
+        self._debug_break_on: int | set[int] | None = None
+        self._debug_sink: str | None = "/tmp/debug/requests"
+        self._debug_local = threading.local()
+        self.debug_history: list[dict[str, Any]] = []
+        if debug:
+            self.enable_debug(level="all" if debug is True else str(debug))
 
     def __repr__(self) -> str:
         status = "external"
@@ -253,6 +381,112 @@ class Elastik(MutableMapping[str, bytes]):
         except Exception:
             pass
         return f"<Elastik {self.url} [{status}] {count} paths>"
+
+    def enable_debug(
+        self,
+        *,
+        level: str | None = "all",
+        slow_ms: float = 100,
+        hook: DebugHook | None = None,
+        record: bool = False,
+        verbose: int | None = None,
+        break_on: int | set[int] | list[int] | tuple[int, ...] | None = None,
+        sink: str | None = "/tmp/debug/requests",
+        panel: bool = True,
+        panel_path: str = _DEBUG_PANEL_PATH,
+    ) -> "Elastik":
+        """Enable opt-in SDK request tracing.
+
+        Debug records are observations of this client, not core logs. When
+        `sink` is set, matching events are appended as JSON lines to `/tmp`
+        memory worlds, so a core restart clears them. The sink is best-effort:
+        debug write failures never break the original request.
+
+        Levels:
+          all    - record every request
+          slow   - record slow requests and errors
+          errors - record only 4xx/5xx responses
+          off    - disable debug
+
+        `verbose=0/1/2/3` maps to errors/slow/all/all+redacted headers.
+        `panel=True` writes a tiny browser panel to `/tmp/debug-panel.html`.
+        """
+        if verbose is not None:
+            if verbose <= 0:
+                level = "errors"
+            elif verbose == 1:
+                level = "slow"
+            else:
+                level = "all"
+            self._debug_verbose = int(verbose)
+        else:
+            self._debug_verbose = 1
+        level = (level or "all").lower()
+        if level not in _DEBUG_LEVELS:
+            raise ValueError(f"debug level must be one of {sorted(_DEBUG_LEVELS)}, got {level!r}")
+        self._debug_enabled = level != "off"
+        self._debug_level = level
+        self._debug_slow_ms = float(slow_ms)
+        self._debug_hook = hook
+        self._debug_record = bool(record)
+        self._debug_break_on = set(break_on) if isinstance(break_on, (list, tuple)) else break_on
+        self._debug_sink = sink
+        if record:
+            self.debug_history = []
+        if self._debug_enabled and panel:
+            self._debug_install_panel(panel_path)
+        return self
+
+    def disable_debug(self) -> "Elastik":
+        """Disable SDK request tracing."""
+        self._debug_enabled = False
+        self._debug_level = "off"
+        return self
+
+    def debug_stats(self) -> dict[str, Any]:
+        """Summarize `debug_history` collected with enable_debug(record=True)."""
+        history = list(self.debug_history)
+        if not history:
+            return {
+                "total_requests": 0,
+                "total_ms": 0,
+                "avg_ms": 0,
+                "p99_ms": 0,
+                "by_method": {},
+                "by_status": {},
+                "slowest": None,
+            }
+        durations = sorted(float(row.get("client_ms", 0)) for row in history)
+        total_ms = sum(durations)
+        p99_index = min(len(durations) - 1, int(len(durations) * 0.99))
+        by_method: dict[str, int] = {}
+        by_status: dict[int, int] = {}
+        for row in history:
+            method = str(row.get("method", ""))
+            status = int(row.get("status", 0))
+            by_method[method] = by_method.get(method, 0) + 1
+            by_status[status] = by_status.get(status, 0) + 1
+        slowest = max(history, key=lambda row: float(row.get("client_ms", 0)))
+        return {
+            "total_requests": len(history),
+            "total_ms": round(total_ms, 3),
+            "avg_ms": round(total_ms / len(history), 3),
+            "p99_ms": round(durations[p99_index], 3),
+            "by_method": by_method,
+            "by_status": by_status,
+            "slowest": slowest,
+        }
+
+    def _debug_install_panel(self, path: str) -> None:
+        prior = self._debug_is_in_progress()
+        self._debug_set_in_progress(True)
+        try:
+            self.put(path, _DEBUG_PANEL_HTML, content_type="text/html; charset=utf-8")
+            print(f"\n  debug panel: {self.url}{_quote_path(path)}\n", file=sys.stderr)
+        except Exception:
+            _log.debug("failed to install elastik debug panel", exc_info=True)
+        finally:
+            self._debug_set_in_progress(prior)
 
     def put(
         self,
@@ -888,6 +1122,88 @@ class Elastik(MutableMapping[str, bytes]):
     def __truediv__(self, path: str) -> "WorldRef":
         return WorldRef(self, path.strip("/"))
 
+    def _debug_after_response(
+        self,
+        method: str,
+        path: str,
+        request_headers: dict[str, str],
+        response: Response,
+        elapsed_ms: float,
+    ) -> None:
+        if not self._debug_enabled or self._debug_is_in_progress():
+            return
+        if _is_debug_path(path):
+            return
+        rid = response.headers.get("x-request-id", "?")
+        event: dict[str, Any] = {
+            "rid": rid,
+            "method": method.upper(),
+            "path": path,
+            "status": response.status,
+            "client_ms": round(elapsed_ms, 3),
+            "core_us": _int_header(response.headers, "x-elapsed-us"),
+            "bytes": len(response.body),
+            "ts": time.time(),
+        }
+        if self._debug_verbose >= 3:
+            event["request_headers"] = _redact_headers(request_headers)
+            event["response_headers"] = _redact_headers(response.headers)
+        if self._debug_hook is not None:
+            try:
+                self._debug_hook(method.upper(), path, response.status, elapsed_ms, rid)
+            except Exception:
+                _log.exception("elastik debug hook failed")
+        if not self._debug_should_log(response.status, elapsed_ms):
+            if _debug_break_matches(self._debug_break_on, response.status):
+                breakpoint()
+            return
+        if self._debug_record:
+            self.debug_history.append(dict(event))
+        line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+        if not self._debug_sink:
+            if _debug_break_matches(self._debug_break_on, response.status):
+                breakpoint()
+            return
+        self._debug_append(self._debug_sink, line)
+        if response.status >= 400:
+            self._debug_append("/tmp/debug/errors", line)
+        if elapsed_ms >= self._debug_slow_ms:
+            self._debug_append("/tmp/debug/slow", line)
+        if _debug_break_matches(self._debug_break_on, response.status):
+            breakpoint()
+
+    def _debug_should_log(self, status: int, elapsed_ms: float) -> bool:
+        if self._debug_level == "all":
+            return True
+        if self._debug_level == "errors":
+            return status >= 400
+        if self._debug_level == "slow":
+            return status >= 400 or elapsed_ms >= self._debug_slow_ms
+        return False
+
+    def _debug_append(self, path: str | None, line: str) -> None:
+        if not path:
+            return
+        prior = self._debug_is_in_progress()
+        self._debug_set_in_progress(True)
+        try:
+            body = line.encode("utf-8")
+            try:
+                self.post(path, body)
+            except NotFound:
+                self.put(path, b"", content_type="application/x-ndjson")
+                self.post(path, body)
+        except Exception:
+            _log.debug("failed to append elastik debug record", exc_info=True)
+        finally:
+            self._debug_set_in_progress(prior)
+
+    def _debug_is_in_progress(self) -> bool:
+        return bool(getattr(self._debug_local, "in_progress", False))
+
+    def _debug_set_in_progress(self, value: bool) -> None:
+        self._debug_local.in_progress = value
+
     def request(
         self,
         method: str,
@@ -910,14 +1226,16 @@ class Elastik(MutableMapping[str, bytes]):
                     {k.lower(): v for k, v in r.headers.items()},
                     r.read(),
                 )
+                elapsed_ms = (time.perf_counter() - start) * 1000
                 _log.debug(
                     "%s %s -> %d %dB %.1fms",
                     method,
                     path,
                     response.status,
                     len(response.body),
-                    (time.perf_counter() - start) * 1000,
+                    elapsed_ms,
                 )
+                self._debug_after_response(method, path, h, response, elapsed_ms)
                 return response
         except urllib.error.HTTPError as e:
             response = Response(
@@ -925,14 +1243,16 @@ class Elastik(MutableMapping[str, bytes]):
                 {k.lower(): v for k, v in (e.headers or {}).items()},
                 e.read() if e.fp else b"",
             )
+            elapsed_ms = (time.perf_counter() - start) * 1000
             _log.debug(
                 "%s %s -> %d %dB %.1fms",
                 method,
                 path,
                 response.status,
                 len(response.body),
-                (time.perf_counter() - start) * 1000,
+                elapsed_ms,
             )
+            self._debug_after_response(method, path, h, response, elapsed_ms)
             return response
 
     def _raw(
@@ -1241,11 +1561,52 @@ def _etag_value(value: str | None) -> str | None:
     return f'"{v}"'
 
 
+def _is_debug_path(path: str) -> bool:
+    return path.strip("/").startswith("tmp/debug/")
+
+
+def _int_header(headers: dict[str, str], name: str) -> int | None:
+    value = headers.get(name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
+    redacted: dict[str, str] = {}
+    for name, value in headers.items():
+        lower = str(name).lower()
+        redacted[lower] = "<redacted>" if _is_debug_secret_header(lower) else str(value)
+    return redacted
+
+
+def _is_debug_secret_header(name: str) -> bool:
+    return name in _DEBUG_SECRET_HEADERS or name.endswith(_DEBUG_SECRET_SUFFIXES)
+
+
+def _debug_break_matches(break_on: int | set[int] | None, status: int) -> bool:
+    if break_on is None:
+        return False
+    if isinstance(break_on, set):
+        return status in break_on
+    return status == int(break_on)
+
+
 def _raise_for_response(resp: Response, method: str, path: str) -> None:
-    _raise_error(resp.status, resp.body, method=method, path=path)
+    _raise_error(resp.status, resp.body, method=method, path=path, headers=resp.headers)
 
 
-def _raise_error(status: int, body: bytes, *, method: str = "", path: str = "") -> None:
+def _raise_error(
+    status: int,
+    body: bytes,
+    *,
+    method: str = "",
+    path: str = "",
+    headers: dict[str, str] | None = None,
+) -> None:
     cls: type[ElastikError]
     if status == 401:
         cls = Unauthorized
@@ -1261,7 +1622,7 @@ def _raise_error(status: int, body: bytes, *, method: str = "", path: str = "") 
         cls = ServerError
     else:
         cls = ElastikError
-    raise cls(status, body, method=method, path=path)
+    raise cls(status, body, method=method, path=path, headers=headers)
 
 
 def _warn_near_representation_kwargs(meta: dict[str, Any]) -> None:
