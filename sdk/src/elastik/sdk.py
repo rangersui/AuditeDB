@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
-from collections.abc import MutableMapping
+from collections.abc import Iterable, MutableMapping
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -125,7 +125,7 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
 _log = logging.getLogger("elastik")
 
 DebugHook = Callable[[str, str, int, float, str], None]
-_DEBUG_LEVELS = {"all", "slow", "errors", "off"}
+_DEBUG_LEVELS = {"all", "slow", "errors"}
 _DEBUG_SECRET_HEADERS = {
     "authorization",
     "proxy-authorization",
@@ -134,6 +134,7 @@ _DEBUG_SECRET_HEADERS = {
 }
 _DEBUG_SECRET_SUFFIXES = ("-token", "-key", "-secret")
 _DEBUG_PANEL_PATH = "/tmp/debug-panel.html"
+_DEFAULT_DEBUG_SINK = object()
 _DEBUG_PANEL_HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
@@ -385,14 +386,14 @@ class Elastik(MutableMapping[str, bytes]):
     def enable_debug(
         self,
         *,
-        level: str | None = "all",
+        level: str | None = None,
         slow_ms: float = 100,
         hook: DebugHook | None = None,
         record: bool = False,
         verbose: int | None = None,
-        break_on: int | set[int] | list[int] | tuple[int, ...] | None = None,
-        sink: str | None = "/tmp/debug/requests",
-        panel: bool = True,
+        break_on: int | Iterable[int] | None = None,
+        sink: Any = _DEFAULT_DEBUG_SINK,
+        panel: bool = False,
         panel_path: str = _DEBUG_PANEL_PATH,
     ) -> "Elastik":
         """Enable opt-in SDK request tracing.
@@ -406,12 +407,21 @@ class Elastik(MutableMapping[str, bytes]):
           all    - record every request
           slow   - record slow requests and errors
           errors - record only 4xx/5xx responses
-          off    - disable debug
 
-        `verbose=0/1/2/3` maps to errors/slow/all/all+redacted headers.
-        `panel=True` writes a tiny browser panel to `/tmp/debug-panel.html`.
+        `verbose=0/1/2/3` maps to errors/slow/all/all+redacted headers and is
+        mutually exclusive with `level`. `record=True` keeps an in-memory
+        `debug_history`; pass `sink="/tmp/debug/requests"` if you also want
+        JSONL written into elastik. `panel=True` writes a tiny browser panel to
+        `/tmp/debug-panel.html`.
+
+        Hook signature:
+
+            def hook(method: str, path: str, status: int,
+                     elapsed_ms: float, request_id: str) -> None: ...
         """
         if verbose is not None:
+            if level is not None:
+                raise ValueError("use either level= or verbose=, not both")
             if verbose <= 0:
                 level = "errors"
             elif verbose == 1:
@@ -424,12 +434,14 @@ class Elastik(MutableMapping[str, bytes]):
         level = (level or "all").lower()
         if level not in _DEBUG_LEVELS:
             raise ValueError(f"debug level must be one of {sorted(_DEBUG_LEVELS)}, got {level!r}")
-        self._debug_enabled = level != "off"
+        if sink is _DEFAULT_DEBUG_SINK:
+            sink = None if record else "/tmp/debug/requests"
+        self._debug_enabled = True
         self._debug_level = level
         self._debug_slow_ms = float(slow_ms)
         self._debug_hook = hook
         self._debug_record = bool(record)
-        self._debug_break_on = set(break_on) if isinstance(break_on, (list, tuple)) else break_on
+        self._debug_break_on = _debug_normalize_break_on(break_on)
         self._debug_sink = sink
         if record:
             self.debug_history = []
@@ -442,6 +454,11 @@ class Elastik(MutableMapping[str, bytes]):
         self._debug_enabled = False
         self._debug_level = "off"
         return self
+
+    @property
+    def debug_enabled(self) -> bool:
+        """Whether SDK request tracing is currently enabled."""
+        return self._debug_enabled
 
     def debug_stats(self) -> dict[str, Any]:
         """Summarize `debug_history` collected with enable_debug(record=True)."""
@@ -1585,6 +1602,16 @@ def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
 
 def _is_debug_secret_header(name: str) -> bool:
     return name in _DEBUG_SECRET_HEADERS or name.endswith(_DEBUG_SECRET_SUFFIXES)
+
+
+def _debug_normalize_break_on(value: int | Iterable[int] | None) -> int | set[int] | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, (str, bytes)):
+        return int(value)
+    return {int(item) for item in value}
 
 
 def _debug_break_matches(break_on: int | set[int] | None, status: int) -> bool:

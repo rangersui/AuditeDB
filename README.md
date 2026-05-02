@@ -169,6 +169,26 @@ The SCoAP/UDP surface is opt-in. The core does not open UDP by default; set
 `ELASTIK_COAP_PORT=5683` to enable the UDP-curl adapter. `ELASTIK_COAP_HOST`
 defaults to `127.0.0.1` when CoAP is enabled.
 
+Humans should not hand-type CoAP bytes. The Python SDK is the tiny UDP
+translator:
+
+```powershell
+python -m elastik coap put 127.0.0.1 5683 /home/sensor/temp "23.5" --token write-token
+python -m elastik coap get 127.0.0.1 5683 /home/sensor/temp --token read-token
+```
+
+Or keep the endpoint once in Python:
+
+```python
+c = elastik.CoapClient("127.0.0.1", 5683, token="write-token")
+c.put("/home/sensor/temp", "23.5").raise_for_status()
+print(c.get("/home/sensor/temp").payload)
+```
+
+SCoAP is intentionally small: `GET` and `PUT`, one UDP datagram, content formats
+the core can map (`text/plain`, `application/octet-stream`, `application/json`,
+`application/cbor`). Larger bodies and arbitrary media types should use HTTP.
+
 `ELASTIK_DATA` is the universe selector. Point the same binary at another data
 directory and it serves another Elastik universe. Local SSD/tempdir is best for
 writes. Synced folders and network shares can be useful for distribution, but
@@ -759,7 +779,6 @@ The Python SDK can turn those headers into a temporary request journal under
 
 ```python
 e.enable_debug(level="slow", slow_ms=100, record=True)
-# prints: debug panel: http://127.0.0.1:3105/tmp/debug-panel.html
 
 e.put("/home/note", "hello")
 print(e.debug_history[-1])
@@ -771,10 +790,10 @@ Levels are borrowed from the usual Python debugging instincts:
 - `level="all"` records every request.
 - `level="slow"` records slow requests and 4xx/5xx responses.
 - `level="errors"` records only 4xx/5xx responses.
-- `level="off"` disables the sink.
 
-`verbose=0/1/2/3` maps to errors/slow/all/all-with-redacted-headers. A hook can
-observe each request without changing normal control flow:
+Use `disable_debug()` to turn tracing off. `verbose=0/1/2/3` maps to
+errors/slow/all/all-with-redacted-headers and is mutually exclusive with
+`level=`. A hook can observe each request without changing normal control flow:
 
 ```python
 def alert(method, path, status, ms, rid):
@@ -782,19 +801,27 @@ def alert(method, path, status, ms, rid):
         print(f"slow request {rid}: {method} {path} {ms:.0f}ms")
 
 e.enable_debug(level="all", hook=alert, break_on=412)
+e.enable_debug(level="errors", break_on=range(400, 500))  # break on any 4xx
 ```
 
-The default sink is `/tmp/debug/requests`, with convenience mirrors for
-`/tmp/debug/errors` and `/tmp/debug/slow`. Debug writes are best-effort and do
-not recursively log themselves. Because `/tmp` is memory-backed, these records
-are supposed to disappear when the core restarts.
+With `record=True`, debug history is in-memory only by default. To write JSONL
+into elastik, pass a sink explicitly:
 
-`panel=True` is the default. It writes a tiny HTML panel to
-`/tmp/debug-panel.html`. The panel uses `/listen/tmp/debug/requests` only as a
-wakeup signal, then reads `/tmp/debug/requests` over normal `GET`, preserving
-the core rule that SSE events are control-plane only and do not embed bodies.
-If your core requires read auth, your browser still needs to send the same
-Bearer token, for example through a header extension during local debugging.
+```python
+e.enable_debug(level="slow", sink="/tmp/debug/requests")
+```
+
+The `/tmp/debug/requests` sink has convenience mirrors for `/tmp/debug/errors`
+and `/tmp/debug/slow`. Debug writes are best-effort and do not recursively log
+themselves. Because `/tmp` is memory-backed, these records are supposed to
+disappear when the core restarts.
+
+`panel=True` writes a tiny HTML panel to `/tmp/debug-panel.html` and prints its
+URL to stderr. The panel uses `/listen/tmp/debug/requests` only as a wakeup
+signal, then reads `/tmp/debug/requests` over normal `GET`, preserving the core
+rule that SSE events are control-plane only and do not embed bodies. If your
+core requires read auth, your browser still needs to send the same Bearer
+token, for example through a header extension during local debugging.
 
 You can also launch a child core with tracing already enabled:
 

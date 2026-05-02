@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from elastik._spawn import binary_info, start, stop
+from elastik._coap_client import coap_code_text, get as coap_get, put as coap_put
 from elastik.sdk import Elastik
 from elastik.tools import decode_disk_name
 
@@ -54,6 +55,25 @@ def main() -> int:
     p_du = sub.add_parser("du", help="show Content-Length usage from a running core")
     p_du.add_argument("prefix", nargs="?", default="")
     p_du.add_argument("--max-workers", type=_positive_int, default=4, help="parallel HEAD requests to use (default: 4)")
+
+    p_coap = sub.add_parser("coap", help="send one UDP-curl shaped CoAP request")
+    coap_sub = p_coap.add_subparsers(dest="coap_cmd")
+    p_coap_get = coap_sub.add_parser("get", help="CoAP GET HOST PORT PATH")
+    p_coap_get.add_argument("host")
+    p_coap_get.add_argument("port", type=int)
+    p_coap_get.add_argument("path")
+    p_coap_get.add_argument("--token", default=None, help="elastik auth token carried in CoAP option 65001")
+    p_coap_get.add_argument("--timeout", type=float, default=2.0)
+
+    p_coap_put = coap_sub.add_parser("put", help="CoAP PUT HOST PORT PATH [PAYLOAD]")
+    p_coap_put.add_argument("host")
+    p_coap_put.add_argument("port", type=int)
+    p_coap_put.add_argument("path")
+    p_coap_put.add_argument("payload", nargs="?", default=None, help="UTF-8 payload; omit or use '-' to read stdin bytes")
+    p_coap_put.add_argument("--token", default=None, help="elastik auth token carried in CoAP option 65001")
+    p_coap_put.add_argument("--content-type", default=None, help="text/plain, application/json, application/octet-stream, or application/cbor")
+    p_coap_put.add_argument("--timeout", type=float, default=2.0)
+    p_coap_put.add_argument("--verbose", action="store_true", help="print CoAP status to stderr")
 
     p_run = sub.add_parser(
         "run",
@@ -116,6 +136,64 @@ def main() -> int:
         for path, size in Elastik().du(args.prefix, max_workers=args.max_workers).items():
             print(f"{size}\t{path}")
         return 0
+
+    if args.cmd == "coap":
+        if args.coap_cmd == "get":
+            try:
+                response = coap_get(
+                    args.host,
+                    args.port,
+                    args.path,
+                    token=args.token,
+                    timeout=args.timeout,
+                )
+            except TimeoutError:
+                print("coap: timeout", file=sys.stderr)
+                return 1
+            except ValueError as exc:
+                print(f"coap: {exc}", file=sys.stderr)
+                return 1
+            if not response.ok:
+                print(f"coap: {response.status}", file=sys.stderr)
+                if response.payload:
+                    sys.stderr.buffer.write(response.payload)
+                return 1
+            sys.stdout.buffer.write(response.payload)
+            return 0
+        if args.coap_cmd == "put":
+            payload = (
+                sys.stdin.buffer.read()
+                if args.payload is None or args.payload == "-"
+                else args.payload
+            )
+            try:
+                response = coap_put(
+                    args.host,
+                    args.port,
+                    args.path,
+                    payload,
+                    token=args.token,
+                    content_type=args.content_type,
+                    timeout=args.timeout,
+                )
+            except TimeoutError:
+                print("coap: timeout", file=sys.stderr)
+                return 1
+            except ValueError as exc:
+                print(f"coap: {exc}", file=sys.stderr)
+                return 1
+            if not response.ok:
+                print(f"coap: {response.status}", file=sys.stderr)
+                if response.payload:
+                    sys.stderr.buffer.write(response.payload)
+                return 1
+            if args.verbose:
+                print(coap_code_text(response.code), file=sys.stderr)
+            if response.payload:
+                sys.stdout.buffer.write(response.payload)
+            return 0
+        p_coap.print_help()
+        return 2
 
     if args.cmd == "run":
         try:
