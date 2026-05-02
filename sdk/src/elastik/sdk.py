@@ -1161,10 +1161,11 @@ class Elastik(MutableMapping[str, bytes]):
             self.debug_history.append(dict(event))
         line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
         self._debug_append(self._debug_sink, line)
-        if response.status >= 400:
-            self._debug_append("/tmp/debug/errors", line)
-        if elapsed_ms >= self._debug_slow_ms:
-            self._debug_append("/tmp/debug/slow", line)
+        if self._debug_sink:
+            if response.status >= 400:
+                self._debug_append("/tmp/debug/errors", line)
+            if elapsed_ms >= self._debug_slow_ms:
+                self._debug_append("/tmp/debug/slow", line)
         if _debug_break_matches(self._debug_break_on, response.status):
             breakpoint()
 
@@ -1558,14 +1559,7 @@ def _etag_value(value: str | None) -> str | None:
 
 
 def _is_debug_path(path: str) -> bool:
-    normalized = path.strip("/")
-    if not normalized:
-        return False
-    if normalized.startswith("tmp/debug/"):
-        return True
-    if "/" not in normalized:
-        normalized = f"home/{normalized}"
-    return normalized.startswith("tmp/debug/")
+    return path.strip("/").startswith("tmp/debug/")
 
 
 def _int_header(headers: dict[str, str], name: str) -> int | None:
