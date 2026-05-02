@@ -29,8 +29,8 @@
 //! Env:
 //!   ELASTIK_HOST           default 127.0.0.1
 //!   ELASTIK_PORT           default 3105
-//!   ELASTIK_COAP_HOST      default 127.0.0.1
-//!   ELASTIK_COAP_PORT      default 5683
+//!   ELASTIK_COAP_PORT      optional; enables SCoAP/UDP when set
+//!   ELASTIK_COAP_HOST      default 127.0.0.1 when CoAP is enabled
 //!   ELASTIK_DATA           default ./data
 //!   ELASTIK_READ_TOKEN     T1 token  (optional read gate)
 //!   ELASTIK_WRITE_TOKEN    T2 token  (writes to /home/*, includes read)
@@ -233,11 +233,7 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3105);
-    let coap_host = std::env::var("ELASTIK_COAP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let coap_port: u16 = std::env::var("ELASTIK_COAP_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5683);
+    let coap_bind = coap_bind_from_env();
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
@@ -265,14 +261,20 @@ async fn main() {
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
+    let bind_ip = listener
+        .local_addr()
+        .map(|addr| addr.ip())
+        .unwrap_or_else(|_| IpAddr::from([127, 0, 0, 1]));
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
-    print_auth_summary(&state.tokens);
-    let coap_addr = listen_addr(&coap_host, coap_port);
-    let coap_state = state.clone();
-    let coap_shutdown = shutdown_rx.clone();
-    tokio::spawn(async move {
-        coap::serve(coap_state, coap_addr, coap_shutdown).await;
-    });
+    print_auth_summary(&state.tokens, bind_ip);
+    if let Some((coap_host, coap_port)) = coap_bind {
+        let coap_addr = listen_addr(&coap_host, coap_port);
+        let coap_state = state.clone();
+        let coap_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            coap::serve(coap_state, coap_addr, coap_shutdown).await;
+        });
+    }
     let app = Router::new()
         .route("/", any(root_hint))
         .route("/listen/*pattern", any(listen::handler))
@@ -294,7 +296,7 @@ async fn main() {
         .unwrap();
 }
 
-fn print_auth_summary(tokens: &auth::Tokens) {
+fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
     eprintln!("auth:");
     eprintln!(
         "  read:    {}",
@@ -325,6 +327,11 @@ fn print_auth_summary(tokens: &auth::Tokens) {
     // meant to fill them in; silent acceptance was the old footgun.
     if auth::env_set_but_empty("ELASTIK_READ_TOKEN") {
         eprintln!("  warning: empty ELASTIK_READ_TOKEN treated as unset (reads public)");
+    }
+    if should_warn_public_read(bind_ip, tokens) {
+        eprintln!(
+            "  WARNING: reads are public on non-loopback interface {bind_ip}; set ELASTIK_READ_TOKEN to gate reads."
+        );
     }
     if auth::env_set_but_empty("ELASTIK_WRITE_TOKEN") {
         eprintln!("  warning: empty ELASTIK_WRITE_TOKEN treated as unset (PUT/POST disabled)");
@@ -386,6 +393,27 @@ fn env_usize(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+fn coap_bind_from_env() -> Option<(String, u16)> {
+    let raw = std::env::var("ELASTIK_COAP_PORT").ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let port: u16 = match raw.parse() {
+        Ok(port) => port,
+        Err(_) => {
+            eprintln!("  warning: invalid ELASTIK_COAP_PORT={raw:?}; SCoAP/UDP surface disabled.");
+            return None;
+        }
+    };
+    let host = std::env::var("ELASTIK_COAP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    Some((host, port))
+}
+
+fn should_warn_public_read(bind_ip: IpAddr, tokens: &auth::Tokens) -> bool {
+    !bind_ip.is_loopback() && !tokens.read_required()
 }
 
 fn listen_addr(host: &str, port: u16) -> String {
@@ -1013,6 +1041,39 @@ fn server_error(msg: String) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex as TestMutex, OnceLock};
+
+    fn env_lock() -> &'static TestMutex<()> {
+        static LOCK: OnceLock<TestMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| TestMutex::new(()))
+    }
+
+    struct CoapEnvGuard {
+        host: Option<String>,
+        port: Option<String>,
+    }
+
+    impl CoapEnvGuard {
+        fn capture() -> Self {
+            Self {
+                host: std::env::var("ELASTIK_COAP_HOST").ok(),
+                port: std::env::var("ELASTIK_COAP_PORT").ok(),
+            }
+        }
+    }
+
+    impl Drop for CoapEnvGuard {
+        fn drop(&mut self) {
+            match &self.host {
+                Some(v) => std::env::set_var("ELASTIK_COAP_HOST", v),
+                None => std::env::remove_var("ELASTIK_COAP_HOST"),
+            }
+            match &self.port {
+                Some(v) => std::env::set_var("ELASTIK_COAP_PORT", v),
+                None => std::env::remove_var("ELASTIK_COAP_PORT"),
+            }
+        }
+    }
 
     #[test]
     fn var_log_requires_approve_token() {
@@ -1040,6 +1101,52 @@ mod tests {
         assert_eq!(listen_addr("0.0.0.0", 3105), "0.0.0.0:3105");
         assert_eq!(listen_addr("::1", 3105), "[::1]:3105");
         assert_eq!(listen_addr("localhost", 3105), "localhost:3105");
+    }
+
+    #[test]
+    fn coap_bind_is_opt_in_by_port_env() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = CoapEnvGuard::capture();
+        std::env::remove_var("ELASTIK_COAP_HOST");
+        std::env::remove_var("ELASTIK_COAP_PORT");
+
+        assert_eq!(coap_bind_from_env(), None);
+
+        std::env::set_var("ELASTIK_COAP_HOST", "0.0.0.0");
+        assert_eq!(coap_bind_from_env(), None);
+
+        std::env::set_var("ELASTIK_COAP_PORT", "5683");
+        assert_eq!(coap_bind_from_env(), Some(("0.0.0.0".to_owned(), 5683)));
+
+        std::env::set_var("ELASTIK_COAP_HOST", "127.0.0.1");
+        std::env::set_var("ELASTIK_COAP_PORT", " ");
+        assert_eq!(coap_bind_from_env(), None);
+
+        std::env::set_var("ELASTIK_COAP_PORT", "not-a-port");
+        assert_eq!(coap_bind_from_env(), None);
+    }
+
+    #[test]
+    fn non_loopback_public_read_gets_warning_flag() {
+        let mut tokens = auth::Tokens {
+            read: None,
+            write: None,
+            approve: None,
+        };
+        assert!(!should_warn_public_read(
+            "127.0.0.1".parse::<IpAddr>().unwrap(),
+            &tokens
+        ));
+        assert!(should_warn_public_read(
+            "0.0.0.0".parse::<IpAddr>().unwrap(),
+            &tokens
+        ));
+
+        tokens.read = Some(b"reader".to_vec());
+        assert!(!should_warn_public_read(
+            "0.0.0.0".parse::<IpAddr>().unwrap(),
+            &tokens
+        ));
     }
 
     #[tokio::test]
