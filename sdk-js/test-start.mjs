@@ -20,12 +20,8 @@ if (!resolveBinary()) {
     process.exit(2);
 }
 
-console.log("\n=== start({ random key, ephemeral data dir }) ===");
-const e = await start({
-    writeToken: "w",
-    readToken: "r",
-    approveToken: "a",
-});
+console.log("\n=== start() with random key/token + ephemeral data dir ===");
+const e = await start();
 check(typeof e.url === "string" && e.url.startsWith("http://"), "client.url is set", e.url);
 check(typeof e.dataDir === "string" && fs.existsSync(e.dataDir), "data dir exists", e.dataDir);
 check(typeof e.stop === "function", "client.stop is a function");

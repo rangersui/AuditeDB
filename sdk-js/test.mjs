@@ -101,6 +101,14 @@ try {
     check(err instanceof TypeError, "put object throws TypeError");
     check(err.message.includes("putJson"), "TypeError suggests putJson");
 }
+try {
+    await e.getJson("sdk-test/text");
+    bad("getJson on text should TypeError");
+} catch (err) {
+    check(err instanceof TypeError, "getJson invalid JSON throws TypeError");
+    check(err.message.includes("sdk-test/text"), "getJson error includes path");
+    check(err.message.includes("text/plain"), "getJson error includes Content-Type");
+}
 
 console.log("\n=== delete ===");
 const d4 = await eApprove.delete("sdk-test/note");
@@ -220,7 +228,8 @@ try {
 // ─── Test 12: version + worlds + exists ──────────────────────
 console.log("\n=== /proc + exists ===");
 const ver = await e.version();
-check(typeof ver === "string" && ver.startsWith("elastik-core "), "version starts with 'elastik-core '", ver.trim());
+check(typeof ver === "string" && ver.startsWith("elastik-core "), "version starts with 'elastik-core '", ver);
+check(!ver.endsWith("\n"), "version() trims trailing newline");
 const worlds = await e.worlds();
 check(typeof worlds === "string", "worlds is text");
 const listed = await e.list("sdk-test");

@@ -8,31 +8,26 @@ store. Works in any environment that has `fetch` — browser, Node 18+, Deno, Bu
 Workers, Vercel Edge, you name it.
 
 ```js
+import { Elastik } from "@elastikjs/client/start";
+
+const e = await Elastik.start();   // random key/token/port
+
+await e.put("home/note", "hello");
+const body = await e.get("home/note");          // → "hello"
+const meta = await e.head("home/note");         // → { etag, contentType, size, headers }
+
+await e.stop();   // kills the process, wipes the temp data dir
+```
+
+**Or connect to an already-running core:**
+
+```js
 import { Elastik } from "@elastikjs/client";
 
 const e = new Elastik("http://127.0.0.1:3105", { writeToken: "write-token" });
 
 await e.put("home/note", "hello");
-const body = await e.get("home/note");          // → "hello"
-const meta = await e.head("home/note");         // → { etag, contentType, size, headers }
-```
-
-**Or, in Node, with no running core:**
-
-```js
-import { Elastik } from "@elastikjs/client/start";
-
-// Spawns the bundled Rust core, picks a free port, returns a connected client.
-const e = await Elastik.start({
-    writeToken: "w",
-    readToken: "r",
-    approveToken: "a",
-});
-
-await e.put("home/note", "hello");
 console.log(await e.get("home/note"));   // "hello"
-
-await e.stop();   // kills the process, wipes the temp data dir
 ```
 
 The `npm install` shipped a Rust binary too. You didn't notice. That's the
@@ -62,6 +57,13 @@ npm install @elastikjs/client
 
 `@elastikjs/client` ships a JavaScript SDK *and* a Rust HTTP engine. You only
 ever talk to the JavaScript part. The Rust part runs in the background.
+
+`Elastik.start()` is sandbox-first: with no options it creates a random HMAC
+key, a random session token used for read/write/approve, an OS-assigned port,
+and a fresh temp data directory that is deleted on `.stop()`. Pass `dataDir` or
+`cleanup:false` when you want persistence. It also reads a local `.env` file by
+default (`ELASTIK_NO_DOTENV=1` disables this) and uses any `ELASTIK_*` values it
+finds.
 
 ```
 npm install @elastikjs/client
@@ -130,6 +132,21 @@ The `start.mjs` machinery is silently absent from your bundle.
 
 ---
 
+## Coming from `pip install elastik`?
+
+The JS SDK speaks the same core protocol, but it keeps the JavaScript shape:
+
+| Python SDK | JavaScript SDK |
+| --- | --- |
+| `elastik.start()` expects explicit server-ish config | `Elastik.start()` defaults to a disposable sandbox |
+| `import elastik` auto-loads `.env` | `@elastikjs/client/start` auto-loads `.env` |
+| module-level `elastik.put(...)` singleton | explicit `const e = ...; await e.put(...)` |
+| `@elastik.listen(...)` + `elastik.run()` reactor | `e.listen(pattern, callback)` |
+| 304 from `get()` returns `None` | 304 from `get()` throws `NotModified` |
+| many Python-format helpers | small JS core plus browser-policy shortcuts |
+
+Same bytes. Same HTTP. Different host language instincts.
+
 ## API
 
 ### `new Elastik(url, options?)`
@@ -188,6 +205,9 @@ const text = await e.getText("home/note");
 await e.putJson("home/config", { debug: true });
 const cfg = await e.getJson("home/config");
 ```
+
+If `getJson()` sees invalid JSON, it raises a `TypeError` that includes the
+path and current `Content-Type`, so "I forgot `putJson()`" is obvious.
 
 #### Automatic Content-Type from path extension
 
@@ -585,14 +605,18 @@ Resume after a disconnect by passing `lastEventId`:
 e.listen("home/*", cb, { lastEventId: lastSeenId });
 ```
 
+Connection errors arrive as `{ type: "error", error }` events instead of a
+rejected promise because `listen()` is a long-lived stream, not a one-shot
+request. Handle that branch in the callback and keep your unsubscribe function.
+
 The stream is control-plane only — **the body of each write is NOT included in the event**.
 If you need the bytes, follow up with `e.get(ev.path)`.
 
 ### Convenience
 
 ```js
-await e.exists("home/note");   // → boolean (HEAD → 200 vs 404)
-await e.version();             // → "elastik-core 6.4.3 (rust)\n"
+await e.exists("home/note");   // → false only on 404; auth/network errors throw
+await e.version();             // → "elastik-core 6.4.3 (rust)"
 await e.worlds();              // → "home/note\nhome/log\n..."
 ```
 

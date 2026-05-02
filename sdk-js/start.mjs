@@ -34,7 +34,7 @@
 //
 // The spawned core's data lives in `dataDir` (default: a fresh temp dir,
 // wiped on stop). Two first-class lifetimes:
-//   - one-shot:   start({ writeToken: "w" }) → use → stop() → temp dir gone
+//   - one-shot:   start() → use → stop() → temp dir gone
 //                 (great for tests, CI, transient mocks)
 //   - long-lived: pass an explicit `dataDir` (and optionally cleanup:false)
 //                 to keep state across runs.
@@ -49,6 +49,7 @@ import * as os from "node:os";
 import { Elastik, ElastikError } from "./index.mjs";
 
 const require = createRequire(import.meta.url);
+loadDotenv();
 
 // Map of (process.platform, process.arch) → npm package name + binary file.
 // Keep in sync with the @elastikjs/core-* packages that actually exist.
@@ -221,13 +222,13 @@ function killCore(core) {
  * child process and (by default) wipes its data directory.
  *
  * @param {object} [options]
- * @param {string} [options.key]          ELASTIK_KEY (HMAC). Defaults to a random hex key.
- * @param {string} [options.host]         "127.0.0.1"
- * @param {number} [options.port]         OS-assigned if omitted
- * @param {string} [options.dataDir]      defaults to a fresh temp dir
- * @param {string} [options.readToken]    sets ELASTIK_READ_TOKEN if non-empty; omit for public reads
- * @param {string} [options.writeToken]   sets ELASTIK_WRITE_TOKEN if non-empty; omit to disable writes
- * @param {string} [options.approveToken] sets ELASTIK_APPROVE_TOKEN if non-empty; needed for delete/admin writes
+ * @param {string} [options.key]          ELASTIK_KEY (HMAC). Defaults to .env/env or a random hex key.
+ * @param {string} [options.host]         .env/env ELASTIK_HOST or "127.0.0.1"
+ * @param {number} [options.port]         .env/env ELASTIK_PORT or OS-assigned if omitted
+ * @param {string} [options.dataDir]      .env/env ELASTIK_DATA or a fresh temp dir
+ * @param {string} [options.readToken]    .env/env ELASTIK_READ_TOKEN or writeToken; pass "" for public reads
+ * @param {string} [options.writeToken]   .env/env ELASTIK_WRITE_TOKEN or a random session token; pass "" to disable writes
+ * @param {string} [options.approveToken] .env/env ELASTIK_APPROVE_TOKEN or writeToken; needed for delete/admin writes
  * @param {boolean}[options.quiet]        suppress core stdout/stderr while capturing it for startup errors (default: true)
  * @param {boolean}[options.cleanup]      wipe dataDir on stop() (default: true if dataDir was auto-created)
  * @returns {Promise<StartedElastik>}
@@ -236,18 +237,21 @@ export async function start(options = {}) {
     const binary = resolveBinary();
     if (!binary) throw new NoBinaryError(process.platform, process.arch);
 
-    const host = options.host ?? "127.0.0.1";
+    const host = options.host ?? process.env.ELASTIK_HOST ?? "127.0.0.1";
     // ELASTIK_KEY is mandatory for the core; pick something unique if not given.
-    const key = options.key ?? randomKey();
-    const dataDirAutoCreated = options.dataDir == null;
-    const dataDir = options.dataDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "elastikjs-core-"));
+    const key = options.key ?? process.env.ELASTIK_KEY ?? randomKey();
+    const writeToken = pickOption(options, "writeToken", "ELASTIK_WRITE_TOKEN", randomToken);
+    const readToken = pickOption(options, "readToken", "ELASTIK_READ_TOKEN", () => writeToken);
+    const approveToken = pickOption(options, "approveToken", "ELASTIK_APPROVE_TOKEN", () => writeToken);
+    const dataDirAutoCreated = options.dataDir == null && process.env.ELASTIK_DATA == null;
+    const dataDir = options.dataDir ?? process.env.ELASTIK_DATA ?? fs.mkdtempSync(path.join(os.tmpdir(), "elastikjs-core-"));
     const cleanup = options.cleanup ?? dataDirAutoCreated;
     const quiet = options.quiet ?? true;
-    const explicitPort = options.port != null;
+    const explicitPort = options.port != null || process.env.ELASTIK_PORT != null;
     let lastError = null;
 
     for (let attempt = 1; attempt <= (explicitPort ? 1 : 5); attempt++) {
-        const port = explicitPort ? options.port : await freePort(host);
+        const port = explicitPort ? Number(options.port ?? process.env.ELASTIK_PORT) : await freePort(host);
         const env = {
             ...process.env,
             ELASTIK_KEY: key,
@@ -256,9 +260,9 @@ export async function start(options = {}) {
             ELASTIK_DATA: dataDir,
         };
         for (const [k, v] of [
-            ["ELASTIK_READ_TOKEN", options.readToken],
-            ["ELASTIK_WRITE_TOKEN", options.writeToken],
-            ["ELASTIK_APPROVE_TOKEN", options.approveToken],
+            ["ELASTIK_READ_TOKEN", readToken],
+            ["ELASTIK_WRITE_TOKEN", writeToken],
+            ["ELASTIK_APPROVE_TOKEN", approveToken],
         ]) {
             if (v) env[k] = v;
             else delete env[k];
@@ -268,7 +272,12 @@ export async function start(options = {}) {
         const baseUrl = `http://${urlHost(host)}:${port}`;
         const status = await waitForStartup(`${baseUrl}/proc/version`, core, 10000);
         if (status === "ready") {
-            return attachClient(core, baseUrl, dataDir, binary, cleanup, options);
+            return attachClient(core, baseUrl, dataDir, binary, cleanup, {
+                ...options,
+                writeToken,
+                readToken,
+                approveToken,
+            });
         }
 
         killCore(core);
@@ -282,9 +291,9 @@ export async function start(options = {}) {
 
 function attachClient(core, baseUrl, dataDir, binary, cleanup, options) {
     const client = new Elastik(baseUrl, {
-        token: options.writeToken,
-        readToken: options.readToken ?? options.writeToken,
-        approveToken: options.approveToken ?? options.writeToken,
+        writeToken: options.writeToken,
+        readToken: options.readToken,
+        approveToken: options.approveToken,
     });
 
     // Lifecycle bag attached to the returned client.
@@ -316,8 +325,37 @@ function attachClient(core, baseUrl, dataDir, binary, cleanup, options) {
 Elastik.start = start;
 export { Elastik, ElastikError };
 
+function loadDotenv() {
+    if (process.env.ELASTIK_NO_DOTENV === "1") return;
+    const file = path.join(process.cwd(), ".env");
+    let text;
+    try { text = fs.readFileSync(file, "utf8"); } catch { return; }
+    for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line || line.startsWith("#")) continue;
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq).trim();
+        let value = line.slice(eq + 1).trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+        }
+        if (process.env[key] == null) process.env[key] = value;
+    }
+}
+
+function pickOption(options, optionName, envName, fallback) {
+    if (Object.prototype.hasOwnProperty.call(options, optionName)) return options[optionName];
+    if (process.env[envName] != null) return process.env[envName];
+    return fallback();
+}
+
 function randomKey() {
     return randomBytes(32).toString("hex");
+}
+
+function randomToken() {
+    return randomBytes(18).toString("base64url");
 }
 
 function safeRm(dir) {

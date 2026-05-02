@@ -195,7 +195,18 @@ export class Elastik {
     }
 
     async getJson(path, options = {}) {
-        return JSON.parse(await this.getText(path, options));
+        const text = await this.getText(path, options);
+        try {
+            return JSON.parse(text);
+        } catch (err) {
+            let contentType = "";
+            try { contentType = (await this.head(path, options)).contentType; } catch { /* best-effort */ }
+            throw new TypeError(
+                `getJson(${JSON.stringify(path)}): body is not valid JSON` +
+                (contentType ? ` (Content-Type: ${contentType})` : "") +
+                `: ${err.message}`
+            );
+        }
     }
 
     async head(path, options = {}) {
@@ -316,7 +327,7 @@ export class Elastik {
         await this._throwIfError(res, `/proc/audit/${world}/verify`);
         return res.headers.get("x-audit-valid") === "true";
     }
-    async version() { return this._textGet("/proc/version"); }
+    async version() { return (await this._textGet("/proc/version")).trim(); }
     async worlds()  { return this._textGet("/proc/worlds"); }
 
     // ─── internals ───────────────────────────────────────
