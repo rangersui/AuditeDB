@@ -543,6 +543,28 @@ Memory worlds use a body hash:
 ETag: "sha256-..."
 ```
 
+Audit verification is HTTP too. The core owns the HMAC key, so it replays the
+chain itself and answers in status plus headers:
+
+```http
+HEAD /proc/audit/home/note/verify
+```
+
+An intact durable chain returns:
+
+```http
+HTTP/1.1 200 OK
+X-Audit-Valid: true
+X-Audit-Events: 42
+X-Audit-Genesis: hmac-...
+X-Audit-Latest: hmac-...
+```
+
+A broken chain returns `409 Conflict` with `X-Audit-Valid: false`,
+`X-Audit-Break-At`, `X-Audit-Expected`, and `X-Audit-Actual`. Missing worlds
+return `404 Not Found`. Memory worlds return `204 No Content` with
+`X-Audit-Valid: n/a`.
+
 Create only if missing:
 
 ```powershell

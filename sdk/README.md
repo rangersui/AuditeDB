@@ -393,6 +393,7 @@ More stdlib-shaped helpers are thin wrappers over HTTP:
 e.get_cached("note")                  # GET + If-None-Match cache
 e.checksum("note")                    # HEAD -> ETag
 e.is_audited("note")                  # True if ETag is hmac-backed
+e.verify("note")                      # HEAD /proc/audit/home/note/verify
 e.diff("note", "new text")            # local unified diff
 e.preview("note", max_bytes=512)      # Range GET + text preview
 e.put_gzip("log.gz", "hello")         # Content-Encoding: gzip
@@ -403,8 +404,10 @@ e.get_many(["a", "b"])                # concurrent GETs, no batch endpoint
 
 `is_audited()` is only a storage-mode check. It tells you whether the current
 ETag is HMAC-backed, not whether the full audit chain has been replayed.
-`verify()` is reserved for that future full-chain check and currently raises
-`NotImplementedError`.
+`verify()` asks the core to replay the durable audit chain via
+`HEAD /proc/audit/{path}/verify`. It returns `True` only for `200 OK` with
+`X-Audit-Valid: true`; memory worlds (`204 No Content`) and broken chains
+(`409 Conflict`) return `False`.
 
 `open(path, "rb")` returns a read-only file-like object backed by Range GETs:
 

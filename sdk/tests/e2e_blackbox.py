@@ -636,12 +636,7 @@ def main() -> int:
             check(reader.sizeof("/home/sdk/mapping") == 6, "sizeof() reads Content-Length")
             check(reader.checksum("/home/sdk/mapping").strip('"').startswith("hmac-"), "checksum() returns ETag")
             check(reader.is_audited("/home/sdk/mapping"), "is_audited() detects hmac ETag")
-            try:
-                reader.verify("/home/sdk/mapping")
-            except NotImplementedError:
-                check(True, "verify() is reserved for full audit-chain replay")
-            else:
-                raise AssertionError("FAIL: verify() should not pretend to replay the audit chain")
+            check(reader.verify("/home/sdk/mapping"), "verify() replays durable audit chain")
             check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached first read downloads")
             check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached second read uses validator")
             writer.put("/home/sdk/mapping", "remapped")
@@ -1033,6 +1028,7 @@ def main() -> int:
             tmp_head = reader.head("/tmp/sdk/scratch")
             check(reader.get("/tmp/sdk/scratch") == b"temp", "tmp memory world reads")
             check(tmp_head["etag"].startswith('"sha256-'), "tmp world uses body ETag")
+            check(not reader.verify("/tmp/sdk/scratch"), "verify() reports memory worlds as not applicable")
 
             # Tier checks.
             expect_error(lambda: reader.put("/home/sdk/nope", b"x"), 401, check, "read token cannot write")

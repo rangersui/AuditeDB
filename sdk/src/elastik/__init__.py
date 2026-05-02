@@ -473,7 +473,7 @@ def is_audited(path: str) -> bool:
 
 
 def verify(path: str) -> bool:
-    """Reserve the name for future full audit-chain replay verification."""
+    """Ask core to replay and verify the durable audit chain."""
     return _client().verify(path)
 
 

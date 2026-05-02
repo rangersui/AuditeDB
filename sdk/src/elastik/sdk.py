@@ -835,11 +835,23 @@ class Elastik(MutableMapping[str, bytes]):
         return self.checksum(path).strip('"').startswith("hmac-")
 
     def verify(self, path: str) -> bool:
-        """Reserve the name for future full audit-chain replay verification."""
-        raise NotImplementedError(
-            "Full audit-chain verification requires a /proc/audit endpoint. "
-            "Use is_audited() to check whether this world is HMAC-backed."
-        )
+        """Ask core to replay and verify the durable audit chain.
+
+        Returns True only when core returns 200 with X-Audit-Valid: true.
+        Memory worlds return False because they are not audit-backed. Broken
+        chains return False. Missing worlds and auth failures still raise the
+        normal ElastikError subclasses.
+        """
+        world = _canonical_world_name(path)
+        audit_path = f"/proc/audit/{world}/verify"
+        resp = self.request("HEAD", audit_path)
+        if resp.status == 200:
+            return resp.headers.get("x-audit-valid") == "true"
+        if resp.status in (204, 409):
+            return False
+        if resp.status >= 400:
+            _raise_for_response(resp, "HEAD", audit_path)
+        return False
 
     def diff(self, path: str, new_data: str) -> str:
         """Return a unified text diff between current body and new_data."""
@@ -1480,13 +1492,32 @@ def _best_env_token() -> str:
 
 
 def _quote_path(path: str) -> str:
+    proc_path = _canonical_proc_path(path)
+    if proc_path is not None:
+        return "/" + urllib.parse.quote(proc_path, safe="/")
     world = _canonical_world_name(path)
-    if world in _PROC_ENDPOINTS:
-        return "/" + urllib.parse.quote(world, safe="/")
     if world == "proc" or world.startswith("proc/"):
         raise ValueError("/proc is reserved; only /proc/version and /proc/worlds exist")
     _validate_world_name(world)
     return "/" + urllib.parse.quote(world, safe="/")
+
+
+def _canonical_proc_path(path: str) -> str | None:
+    stripped = path.lstrip("/")
+    if stripped in _PROC_ENDPOINTS:
+        return stripped
+    prefix = "proc/audit/"
+    suffix = "/verify"
+    if not stripped.startswith(prefix):
+        return None
+    if not stripped.endswith(suffix):
+        raise ValueError("/proc/audit only exposes /proc/audit/{path}/verify")
+    raw_world = stripped[len(prefix) : -len(suffix)].strip("/")
+    if not raw_world:
+        raise ValueError("/proc/audit verify requires a world path")
+    world = _canonical_world_name(raw_world)
+    _validate_world_name(world)
+    return f"proc/audit/{world}/verify"
 
 
 def _canonical_world_name(path: str) -> str:
