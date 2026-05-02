@@ -99,6 +99,31 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
     "if-range",
     "if-modified-since",
     "if-unmodified-since",
+    "device-memory",
+    "downlink",
+    "dpr",
+    "ect",
+    "rtt",
+    "save-data",
+    "width",
+    "viewport-width",
+    "accept-ch",
+    "alt-used",
+    "attribution-reporting-eligible",
+    "available-dictionary",
+    "dictionary-id",
+    "early-data",
+    "idempotency-key",
+    "service-worker",
+    "service-worker-navigation-preload",
+    "upgrade-insecure-requests",
+    "alt-svc",
+    "server-timing",
+    "retry-after",
+    "x-powered-by",
+    "preference-applied",
+    "priority",
+    "critical-ch",
     "content-type",
     "content-length",
     "etag",
@@ -1595,6 +1620,7 @@ def _should_persist_response_header(name: str) -> bool:
         bool(n)
         and not n.startswith("sec-")
         and not n.startswith("access-control-request-")
+        and not n.startswith("want-")
         and n not in _NON_PERSISTED_RESPONSE_HEADERS
     )
 

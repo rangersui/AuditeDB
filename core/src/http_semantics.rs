@@ -217,6 +217,7 @@ fn is_persisted_representation_header_lowercase(name: &str) -> bool {
 fn is_never_persisted_header(name: &str) -> bool {
     name.starts_with("sec-")
         || name.starts_with("access-control-request-")
+        || name.starts_with("want-")
         || matches!(
             name,
             // Credentials and ambient identity must never come back as stored data.
@@ -256,6 +257,34 @@ fn is_never_persisted_header(name: &str) -> bool {
                 | "if-range"
                 | "if-modified-since"
                 | "if-unmodified-since"
+                // Browser client hints are request-only hints, not response metadata.
+                | "device-memory"
+                | "downlink"
+                | "dpr"
+                | "ect"
+                | "rtt"
+                | "save-data"
+                | "width"
+                | "viewport-width"
+                // Browser/client negotiation state is consumed per request.
+                | "accept-ch"
+                | "alt-used"
+                | "attribution-reporting-eligible"
+                | "available-dictionary"
+                | "dictionary-id"
+                | "early-data"
+                | "idempotency-key"
+                | "service-worker"
+                | "service-worker-navigation-preload"
+                | "upgrade-insecure-requests"
+                // Server/transport advertisements describe this response or stream.
+                | "alt-svc"
+                | "server-timing"
+                | "retry-after"
+                | "x-powered-by"
+                | "preference-applied"
+                | "priority"
+                | "critical-ch"
                 // Core-owned response headers are derived from stored bytes/audit.
                 // Content-Type is persisted separately as Stage.content_type.
                 | "content-type"

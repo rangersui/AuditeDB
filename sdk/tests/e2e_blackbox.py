@@ -596,7 +596,22 @@ def main() -> int:
                     "X-Future-HTTP-Thing": "ok",
                 },
             )
+            writer.put(
+                "/home/sdk/browser-put.html",
+                "<html>",
+                content_type="text/html",
+                headers={
+                    "Device-Memory": "8",
+                    "DPR": "2",
+                    "Save-Data": "on",
+                    "Idempotency-Key": "abc",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Want-Content-Digest": "sha-256",
+                    "Server-Timing": "dur=1",
+                },
+            )
             policy_head = reader.head("/home/sdk/logo.png")
+            browser_put_head = reader.head("/home/sdk/browser-put.html")
             check(
                 policy_head["access-control-allow-origin"] == "*",
                 "safe response policy header is stored",
@@ -610,6 +625,19 @@ def main() -> int:
                 policy_head["x-future-http-thing"] == "ok",
                 "future safe response header is stored",
             )
+            for request_only in [
+                "device-memory",
+                "dpr",
+                "save-data",
+                "idempotency-key",
+                "upgrade-insecure-requests",
+                "want-content-digest",
+                "server-timing",
+            ]:
+                check(
+                    request_only not in browser_put_head,
+                    f"browser request header {request_only} is not persisted",
+                )
             check("home/sdk/text" in reader.list(), "sdk list sees world")
             check("home/sdk/text" in reader.list_paths(), "sdk list_paths aliases list")
             check("home/sdk/text" in reader.list_keys(), "sdk list_keys aliases list")
@@ -785,6 +813,8 @@ def main() -> int:
                     "Access-Control-Allow-Origin": "*",
                     "Content-Security-Policy": "default-src 'self'",
                     "Authorization": "Bearer should-not-persist",
+                    "Device-Memory": "8",
+                    "Want-Content-Digest": "sha-256",
                 },
             )
             check(fake.head("fake/raw")["content-type"] == "text/custom", "FakeElastik request preserves Content-Type")
@@ -796,6 +826,11 @@ def main() -> int:
             check(
                 "authorization" not in fake.head("fake/raw"),
                 "FakeElastik does not persist Authorization",
+            )
+            check(
+                "device-memory" not in fake.head("fake/raw")
+                and "want-content-digest" not in fake.head("fake/raw"),
+                "FakeElastik does not persist browser request headers",
             )
             config_buf = io.StringIO()
             with contextlib.redirect_stdout(config_buf):
