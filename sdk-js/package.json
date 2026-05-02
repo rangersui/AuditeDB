@@ -6,6 +6,7 @@
   "main": "./index.mjs",
   "module": "./index.mjs",
   "browser": {
+    "./start": false,
     "./start.mjs": false
   },
   "exports": {
@@ -15,12 +16,18 @@
       "default": "./index.mjs"
     },
     "./start": {
+      "browser": null,
       "node": "./start.mjs",
       "import": "./start.mjs",
       "default": "./start.mjs"
     },
     "./index.mjs": "./index.mjs",
-    "./start.mjs": "./start.mjs",
+    "./start.mjs": {
+      "browser": null,
+      "node": "./start.mjs",
+      "import": "./start.mjs",
+      "default": "./start.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -41,6 +41,8 @@
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { randomBytes } from "node:crypto";
+import { createServer } from "node:net";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -105,20 +107,24 @@ export function resolveBinary() {
     return binary;
 }
 
-function freePort() {
+function freePort(host) {
     return new Promise((resolve, reject) => {
         // node:net `Server` will pick an OS-assigned free port if we listen on 0.
-        // Doing this without "net" import: spawn a server, capture port, close.
-        import("node:net").then(({ createServer }) => {
-            const srv = createServer();
-            srv.unref();
-            srv.on("error", reject);
-            srv.listen(0, "127.0.0.1", () => {
-                const { port } = srv.address();
-                srv.close(() => resolve(port));
-            });
+        const srv = createServer();
+        srv.unref();
+        srv.on("error", reject);
+        srv.listen(0, host, () => {
+            const { port } = srv.address();
+            srv.close(() => resolve(port));
         });
     });
+}
+
+function urlHost(host) {
+    if (host === "0.0.0.0") return "127.0.0.1";
+    if (host === "::") return "[::1]";
+    if (host.includes(":") && !host.startsWith("[")) return `[${host}]`;
+    return host;
 }
 
 async function waitForUrl(url, deadlineMs = 10000) {
@@ -155,7 +161,7 @@ export async function start(options = {}) {
     if (!binary) throw new NoBinaryError(process.platform, process.arch);
 
     const host = options.host ?? "127.0.0.1";
-    const port = options.port ?? await freePort();
+    const port = options.port ?? await freePort(host);
     // ELASTIK_KEY is mandatory for the core; pick something unique if not given.
     const key = options.key ?? randomKey();
     const dataDirAutoCreated = options.dataDir == null;
@@ -188,7 +194,7 @@ export async function start(options = {}) {
     let exitCode = null;
     child.on("exit", (code) => { exited = true; exitCode = code; });
 
-    const baseUrl = `http://${host}:${port}`;
+    const baseUrl = `http://${urlHost(host)}:${port}`;
     const ok = await waitForUrl(`${baseUrl}/proc/version`, 10000);
     if (!ok) {
         try { child.kill("SIGKILL"); } catch { /* ignore */ }
@@ -236,16 +242,7 @@ Elastik.start = start;
 export { Elastik, ElastikError };
 
 function randomKey() {
-    // Use crypto.randomUUID if available (Node 14.17+ / browsers); fall back
-    // to a simple Math.random hex for ancient runtimes. Either way the key
-    // is per-spawn and ephemeral.
-    try {
-        return globalThis.crypto.randomUUID().replace(/-/g, "");
-    } catch {
-        return Array.from({ length: 16 }, () =>
-            Math.floor(Math.random() * 256).toString(16).padStart(2, "0")
-        ).join("");
-    }
+    return randomBytes(32).toString("hex");
 }
 
 function safeRm(dir) {

@@ -46,7 +46,7 @@ async function cleanup() {
         "sdk-test/binary", "sdk-test/exists", "sdk-test/withmeta",
         "home/sdk-test/listen/a", "home/sdk-test/unrelated/x",
     ]) {
-        try { await eApprove.delete(p); } catch (err) { if (err.status !== 404) {/* ignore */} }
+        try { await eApprove.delete(p); } catch (err) { if (err.status !== 404) throw err; }
     }
 }
 await cleanup();
