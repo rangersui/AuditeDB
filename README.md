@@ -869,6 +869,24 @@ PUT /home/task/a  -> SSE event -> SDK handler -> PUT /home/result/a
 
 No Kafka. No Redis. No WebSocket server. Just HTTP plus an SDK callback.
 
+Lifecycle hooks wrap the SDK event loop. They are useful for worker health
+worlds and cleanup:
+
+```python
+@elastik.on_startup
+def ready(e):
+    e.put("/sys/health/worker-1", "alive")
+
+@elastik.on_shutdown
+def gone(e):
+    e.delete("/sys/health/worker-1")
+
+elastik.run(e)
+```
+
+Hooks may accept no arguments or ask for `e`. Shutdown hooks run even when
+`run()` exits through `max_events`, Ctrl+C, or an exception.
+
 ## Trusted Shell Pool
 
 For local agent pipelines, the SDK includes a warmed shell pool:

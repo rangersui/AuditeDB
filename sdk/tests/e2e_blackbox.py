@@ -197,6 +197,7 @@ def main() -> int:
         check("sdk-shell" in shell.stdout, "TrustedShellPool is exported and runs")
 
     elastik.clear_routes()
+    elastik.clear_lifecycle_hooks()
     try:
         elastik.run(reconnect=False)
     except RuntimeError as e:
@@ -223,6 +224,111 @@ def main() -> int:
         raise AssertionError("FAIL: duplicate reactor handler was accepted")
     elastik.unlisten("/home/sdk/unit/*")
     check(not elastik.has_routes(), "reactor unlisten removes handler")
+    lifecycle_calls: list[str] = []
+
+    @elastik.on_startup
+    def _startup_no_args():
+        lifecycle_calls.append("startup-no-args")
+
+    @elastik.on_shutdown
+    def _shutdown_no_args():
+        lifecycle_calls.append("shutdown-no-args")
+
+    elastik.clear_lifecycle_hooks()
+    check(lifecycle_calls == [], "clear_lifecycle_hooks removes registered hooks")
+    startup_failure_calls: list[str] = []
+
+    @elastik.listen("/home/sdk/unit/*")
+    def _startup_failure_handler(body):
+        return None
+
+    @elastik.on_startup
+    def _startup_fails():
+        startup_failure_calls.append("startup")
+        raise RuntimeError("boom")
+
+    @elastik.on_shutdown
+    def _shutdown_after_startup_failure():
+        startup_failure_calls.append("shutdown")
+
+    try:
+        elastik.run(elastik.FakeElastik(), reconnect=False, max_events=1)
+    except RuntimeError as e:
+        check("boom" in str(e), "reactor surfaces startup hook failures")
+    else:
+        raise AssertionError("FAIL: startup hook failure did not propagate")
+    check(
+        startup_failure_calls == ["startup", "shutdown"],
+        "shutdown hooks run after startup failure",
+    )
+    elastik.clear_routes()
+    elastik.clear_lifecycle_hooks()
+
+    preserve_calls: list[str] = []
+
+    @elastik.listen("/home/sdk/unit/*")
+    def _preserve_handler(body):
+        return None
+
+    @elastik.on_startup
+    def _startup_root_cause():
+        preserve_calls.append("startup")
+        raise RuntimeError("root-cause")
+
+    @elastik.on_shutdown
+    def _shutdown_breaks_too():
+        preserve_calls.append("shutdown")
+        raise RuntimeError("cleanup-broke")
+
+    try:
+        elastik.run(elastik.FakeElastik(), reconnect=False, max_events=1)
+    except RuntimeError as e:
+        check(
+            "root-cause" in str(e),
+            "shutdown hook failure preserves original run exception",
+            str(e),
+        )
+    else:
+        raise AssertionError("FAIL: shutdown failure replaced original exception")
+    check(
+        preserve_calls == ["startup", "shutdown"],
+        "failing shutdown hook still runs during unwind",
+    )
+    elastik.clear_routes()
+    elastik.clear_lifecycle_hooks()
+
+    snapshot_calls: list[str] = []
+
+    @elastik.listen("/home/sdk/unit/*")
+    def _snapshot_handler(body):
+        return None
+
+    @elastik.on_startup
+    def _snapshot_exit():
+        raise RuntimeError("snapshot-exit")
+
+    @elastik.on_shutdown
+    def _shutdown_last_from_snapshot():
+        snapshot_calls.append("last")
+
+    @elastik.on_shutdown
+    def _shutdown_mutates_registry():
+        snapshot_calls.append("mutates")
+        elastik.clear_lifecycle_hooks()
+
+    try:
+        elastik.run(elastik.FakeElastik(), reconnect=False, max_events=1)
+    except RuntimeError as e:
+        check("snapshot-exit" in str(e), "snapshot test exits through startup hook")
+    else:
+        raise AssertionError("FAIL: snapshot startup failure did not propagate")
+    check(
+        snapshot_calls == ["mutates", "last"],
+        "shutdown hooks run from an immutable reverse-order snapshot",
+        str(snapshot_calls),
+    )
+    elastik.clear_routes()
+    elastik.clear_lifecycle_hooks()
 
     client_env = (
         "ELASTIK_URL",
@@ -919,23 +1025,38 @@ def main() -> int:
             check(int(replay.get("id", "0")) > int(ev.get("id", "0")), "replayed SSE id advances")
 
             elastik.clear_routes()
+            elastik.clear_lifecycle_hooks()
             handled: list[tuple[str, bytes]] = []
+            lifecycle: list[str] = []
 
             @elastik.listen("/home/sdk/reactor-run/*")
             def _on_reactor_event(body, path):
                 handled.append((path, body))
 
+            @elastik.on_startup
+            def _on_startup(e):
+                lifecycle.append("startup")
+                e.put("/tmp/sdk/lifecycle/ready", "alive")
+
+            @elastik.on_shutdown
+            def _on_shutdown(e):
+                lifecycle.append("shutdown")
+                e.delete("/tmp/sdk/lifecycle/ready")
+
             threading.Timer(
                 0.2,
                 lambda: writer.put("/home/sdk/reactor-run/a", b"reactor"),
             ).start()
-            elastik.run(reader, reconnect=False, max_events=1)
+            elastik.run(approver, reconnect=False, max_events=1)
             check(
                 handled == [("/home/sdk/reactor-run/a", b"reactor")],
                 "reactor run dispatches path kwarg and exits with max_events",
                 repr(handled),
             )
+            check(lifecycle == ["startup", "shutdown"], "reactor lifecycle hooks wrap run()")
+            expect_error(lambda: reader.get("/tmp/sdk/lifecycle/ready"), 404, check, "shutdown hook cleaned health world")
             elastik.clear_routes()
+            elastik.clear_lifecycle_hooks()
 
             print(f"\nPASS sdk e2e blackbox: {check.n} checks")
             return 0
