@@ -5,24 +5,32 @@
   "type": "module",
   "main": "./index.mjs",
   "module": "./index.mjs",
+  "types": "./index.d.ts",
   "browser": {
     "./start": false,
     "./start.mjs": false
   },
   "exports": {
     ".": {
+      "types": "./index.d.ts",
       "browser": "./index.mjs",
       "import": "./index.mjs",
       "default": "./index.mjs"
     },
     "./start": {
+      "types": "./start.d.ts",
       "browser": null,
       "node": "./start.mjs",
       "import": "./start.mjs",
       "default": "./start.mjs"
     },
-    "./index.mjs": "./index.mjs",
+    "./index.mjs": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    },
     "./start.mjs": {
+      "types": "./start.d.ts",
       "browser": null,
       "node": "./start.mjs",
       "import": "./start.mjs",
@@ -32,7 +40,9 @@
   },
   "files": [
     "index.mjs",
+    "index.d.ts",
     "start.mjs",
+    "start.d.ts",
     "README.md"
   ],
   "scripts": {

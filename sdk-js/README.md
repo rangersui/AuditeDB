@@ -7,6 +7,9 @@ JavaScript SDK for the [Elastik V6 Engine](https://github.com/rangersui/Elastik)
 store. Works in any environment that has `fetch` — browser, Node 18+, Deno, Bun, Cloudflare
 Workers, Vercel Edge, you name it.
 
+TypeScript users get bundled `.d.ts` files for both `@elastikjs/client` and
+`@elastikjs/client/start`; no DefinitelyTyped package needed.
+
 ```js
 import { Elastik } from "@elastikjs/client/start";
 
