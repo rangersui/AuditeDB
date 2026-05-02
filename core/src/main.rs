@@ -572,7 +572,7 @@ async fn proc_audit_verify(
     }
 
     if store::is_memory_world(&world_name) {
-        if core.read_world(&world_name).is_none() {
+        if !core.mem.contains(&world_name) {
             return not_found();
         }
         return audit_not_applicable();
@@ -1914,6 +1914,27 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "n/a");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_missing_disk_world_does_not_create_db() {
+        let (core, dir) = test_core("proc-audit-missing-no-create");
+        let db = world::world_db(&core.data, "home/missing-audit");
+        assert!(!db.exists());
+
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(state),
+            Method::HEAD,
+            AxPath("home/missing-audit/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(!db.exists());
 
         let _ = std::fs::remove_dir_all(dir);
     }

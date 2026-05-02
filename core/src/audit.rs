@@ -141,11 +141,9 @@ pub fn verify_chain(
     world_name: &str,
     key: &[u8],
 ) -> rusqlite::Result<Option<VerifyReport>> {
-    let path = world::world_db(data_root, world_name);
-    if !path.exists() {
+    let Some(c) = world::open_existing(data_root, world_name)? else {
         return Ok(None);
-    }
-    let c = world::open(data_root, world_name)?;
+    };
     verify_connection(&c, key).map(Some)
 }
 
