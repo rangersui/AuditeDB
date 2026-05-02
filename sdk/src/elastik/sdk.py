@@ -864,8 +864,9 @@ class Elastik(MutableMapping[str, bytes]):
 
         Returns True only when core returns 200 with X-Audit-Valid: true.
         Memory worlds return False because they are not audit-backed. Broken
-        chains return False. Missing worlds and auth failures still raise the
-        normal ElastikError subclasses.
+        chains return False. Cores that do not expose the verify endpoint
+        return False after confirming the target path exists. Missing worlds
+        and auth failures still raise the normal ElastikError subclasses.
         """
         world = _canonical_world_name(path)
         audit_path = f"/proc/audit/{world}/verify"
@@ -873,6 +874,12 @@ class Elastik(MutableMapping[str, bytes]):
         if resp.status == 200:
             return resp.headers.get("x-audit-valid") == "true"
         if resp.status in (204, 409):
+            return False
+        if resp.status == 404:
+            try:
+                self.head(path)
+            except NotFound:
+                _raise_for_response(resp, "HEAD", audit_path)
             return False
         if resp.status >= 400:
             _raise_for_response(resp, "HEAD", audit_path)

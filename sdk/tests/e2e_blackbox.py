@@ -799,6 +799,7 @@ def main() -> int:
             check(isinstance(fake, MutableMapping), "FakeElastik is also MutableMapping-shaped")
             check(fake.get_text("fake/note") == "hello", "FakeElastik get_text works")
             check(fake.head("fake/note")["etag"].startswith("fake-"), "FakeElastik returns fake ETags")
+            check(not fake.verify("fake/note"), "FakeElastik verify reports audit unsupported")
             check(fake.get_cached("fake/note") == b"hello", "FakeElastik supports get_cached")
             fake_ref = fake / "home" / "fake" / "ref"
             fake_ref.write("fake-ref")

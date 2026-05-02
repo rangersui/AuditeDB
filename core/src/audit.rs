@@ -4,7 +4,7 @@
 //! the HTTP write.
 
 use hmac::{Hmac, Mac};
-use rusqlite::{Connection, Statement, Transaction};
+use rusqlite::{Connection, Transaction};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -149,18 +149,22 @@ pub fn verify_chain(
 
 fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyReport> {
     let mut stmt = c.prepare(
-        r#"SELECT id, event_type, target, body_sha256, size,
-                  content_type, meta_sha256, hmac, prev_hmac
-           FROM events
-           ORDER BY id ASC"#,
+        r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
+                  e.content_type, e.meta_sha256, e.hmac, e.prev_hmac,
+                  h.name, h.value
+           FROM events e
+           LEFT JOIN event_headers h ON h.event_id=e.id
+           ORDER BY e.id ASC, h.name ASC, h.value ASC"#,
     )?;
     let mut prev = String::new();
     let mut genesis = String::new();
     let mut events = 0usize;
-    let mut header_stmt =
-        c.prepare("SELECT name, value FROM event_headers WHERE event_id=? ORDER BY name, value")?;
-    let rows = stmt.query_map([], |r| {
-        Ok(EventRow {
+    let mut rows = stmt.query([])?;
+    let mut current: Option<EventRow> = None;
+    let mut headers = Vec::new();
+
+    while let Some(r) = rows.next()? {
+        let row = EventRow {
             id: r.get(0)?,
             event_type: r.get(1)?,
             target: r.get(2)?,
@@ -170,52 +174,32 @@ fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyRepor
             meta_sha256: r.get(6)?,
             hmac: r.get(7)?,
             prev_hmac: r.get(8)?,
-        })
-    })?;
+        };
+        if current.as_ref().is_some_and(|event| event.id != row.id) {
+            let event = current.take().expect("current event");
+            if let Some(break_report) =
+                verify_event(&event, &headers, key, &mut prev, &mut genesis, &mut events)
+            {
+                return Ok(VerifyReport::Broken(break_report));
+            }
+            headers.clear();
+        }
+        if current.is_none() {
+            current = Some(row);
+        }
+        let header_name: Option<String> = r.get(9)?;
+        let header_value: Option<String> = r.get(10)?;
+        if let (Some(name), Some(value)) = (header_name, header_value) {
+            headers.push((name, value));
+        }
+    }
 
-    for row in rows {
-        let row = row?;
-        let idx = events;
-        if row.prev_hmac != prev {
-            return Ok(VerifyReport::Broken(VerifyBreak {
-                break_at: idx,
-                expected: hmac_label(&prev),
-                actual: hmac_label(&row.prev_hmac),
-            }));
+    if let Some(event) = current {
+        if let Some(break_report) =
+            verify_event(&event, &headers, key, &mut prev, &mut genesis, &mut events)
+        {
+            return Ok(VerifyReport::Broken(break_report));
         }
-        let headers = event_headers(&mut header_stmt, row.id)?;
-        let expected_meta = meta_sha256_canonical(&row.content_type, &headers);
-        if expected_meta != row.meta_sha256 {
-            return Ok(VerifyReport::Broken(VerifyBreak {
-                break_at: idx,
-                expected: format!("meta-sha256-{expected_meta}"),
-                actual: format!("meta-sha256-{}", row.meta_sha256),
-            }));
-        }
-        let expected_hmac = event_hmac(
-            key,
-            EventHmacInput {
-                prev: &prev,
-                event_type: &row.event_type,
-                target: &row.target,
-                body_sha256: &row.body_sha256,
-                size: row.size,
-                content_type: &row.content_type,
-                meta_sha256: &row.meta_sha256,
-            },
-        );
-        if expected_hmac != row.hmac {
-            return Ok(VerifyReport::Broken(VerifyBreak {
-                break_at: idx,
-                expected: hmac_label(&expected_hmac),
-                actual: hmac_label(&row.hmac),
-            }));
-        }
-        if idx == 0 {
-            genesis = row.hmac.clone();
-        }
-        prev = row.hmac.clone();
-        events += 1;
     }
 
     if events == 0 {
@@ -233,14 +217,55 @@ fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyRepor
     }))
 }
 
-fn event_headers(
-    stmt: &mut Statement<'_>,
-    event_id: i64,
-) -> rusqlite::Result<Vec<(String, String)>> {
-    let rows = stmt
-        .query_map([event_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect();
-    rows
+fn verify_event(
+    row: &EventRow,
+    headers: &[(String, String)],
+    key: &[u8],
+    prev: &mut String,
+    genesis: &mut String,
+    events: &mut usize,
+) -> Option<VerifyBreak> {
+    let idx = *events;
+    if row.prev_hmac != *prev {
+        return Some(VerifyBreak {
+            break_at: idx,
+            expected: hmac_label(prev),
+            actual: hmac_label(&row.prev_hmac),
+        });
+    }
+    let expected_meta = meta_sha256_canonical(&row.content_type, headers);
+    if expected_meta != row.meta_sha256 {
+        return Some(VerifyBreak {
+            break_at: idx,
+            expected: format!("meta-sha256-{expected_meta}"),
+            actual: format!("meta-sha256-{}", row.meta_sha256),
+        });
+    }
+    let expected_hmac = event_hmac(
+        key,
+        EventHmacInput {
+            prev,
+            event_type: &row.event_type,
+            target: &row.target,
+            body_sha256: &row.body_sha256,
+            size: row.size,
+            content_type: &row.content_type,
+            meta_sha256: &row.meta_sha256,
+        },
+    );
+    if expected_hmac != row.hmac {
+        return Some(VerifyBreak {
+            break_at: idx,
+            expected: hmac_label(&expected_hmac),
+            actual: hmac_label(&row.hmac),
+        });
+    }
+    if idx == 0 {
+        *genesis = row.hmac.clone();
+    }
+    *prev = row.hmac.clone();
+    *events += 1;
+    None
 }
 
 #[cfg(test)]
