@@ -171,8 +171,8 @@ set. The SDK gives humans a small translator so nobody has to hand-type CoAP
 bytes:
 
 ```powershell
-python -m elastik coap put 127.0.0.1 5683 /home/sensor/temp "23.5" --token write-token
-python -m elastik coap get 127.0.0.1 5683 /home/sensor/temp --token read-token
+python -m elastik coap put 127.0.0.1 5683 home/sensor/temp "23.5" --token write-token
+python -m elastik coap get 127.0.0.1 5683 home/sensor/temp --token read-token
 ```
 
 Or keep the endpoint once:
@@ -181,8 +181,8 @@ Or keep the endpoint once:
 from elastik import CoapClient
 
 c = CoapClient("127.0.0.1", 5683, token="write-token")
-c.put("/home/sensor/temp", "23.5").raise_for_status()
-print(c.get("/home/sensor/temp").payload)
+c.put("home/sensor/temp", "23.5").raise_for_status()
+print(c.get("home/sensor/temp").payload)
 ```
 
 This is not a full RFC 7252 CoAP stack. It is a CoAP-shaped UDP adapter:
@@ -194,6 +194,8 @@ discovery, `Max-Age`, or strict critical-option handling.
 Elastik private option `65001` carries the raw auth token, like a UDP-shaped
 `Authorization: Bearer ...`. It is not encryption. Use a CoAP gateway at the
 edge if you need full CoAP behavior; use HTTP for reliability or large bodies.
+Bodies near 1 KiB or above should use HTTP: the SDK enforces a 1152-byte
+datagram limit and rejects oversize `PUT`s with `ValueError` immediately.
 
 ## Paths
 

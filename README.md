@@ -173,21 +173,23 @@ Humans should not hand-type CoAP bytes. The Python SDK is the tiny UDP
 translator:
 
 ```powershell
-python -m elastik coap put 127.0.0.1 5683 /home/sensor/temp "23.5" --token write-token
-python -m elastik coap get 127.0.0.1 5683 /home/sensor/temp --token read-token
+python -m elastik coap put 127.0.0.1 5683 home/sensor/temp "23.5" --token write-token
+python -m elastik coap get 127.0.0.1 5683 home/sensor/temp --token read-token
 ```
 
 Or keep the endpoint once in Python:
 
 ```python
 c = elastik.CoapClient("127.0.0.1", 5683, token="write-token")
-c.put("/home/sensor/temp", "23.5").raise_for_status()
-print(c.get("/home/sensor/temp").payload)
+c.put("home/sensor/temp", "23.5").raise_for_status()
+print(c.get("home/sensor/temp").payload)
 ```
 
 SCoAP is intentionally small: `GET` and `PUT`, one UDP datagram, content formats
 the core can map (`text/plain`, `application/octet-stream`, `application/json`,
-`application/cbor`). Larger bodies and arbitrary media types should use HTTP.
+`application/cbor`). Bodies near 1 KiB or above should use HTTP: the SDK
+enforces a 1152-byte datagram limit and rejects oversize `PUT`s with
+`ValueError` immediately. Arbitrary media types should also use HTTP.
 
 This is not a full RFC 7252 CoAP stack. It is a CoAP-shaped UDP surface:
 CoAP wire format, HTTP-shaped storage semantics, and elastik auth.
