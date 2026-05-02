@@ -165,7 +165,7 @@ __all__ = [
 try:
     __version__ = version("elastik")
 except PackageNotFoundError:
-    __version__ = "6.2.1"
+    __version__ = "6.3.0"
 
 
 # ── module-level singleton client ──────────────────────────────────
