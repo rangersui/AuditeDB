@@ -139,6 +139,10 @@ ELASTIK_HOST=127.0.0.1
 ELASTIK_PORT=3105
 ELASTIK_DATA=./data
 
+# Optional SCoAP/UDP surface. Disabled unless ELASTIK_COAP_PORT is set.
+# ELASTIK_COAP_HOST=127.0.0.1
+# ELASTIK_COAP_PORT=5683
+
 ELASTIK_KEY=change-me
 ELASTIK_READ_TOKEN=
 ELASTIK_WRITE_TOKEN=
@@ -154,6 +158,16 @@ starting; they disable the corresponding protected operations:
 - no `ELASTIK_READ_TOKEN`: reads are public.
 - no `ELASTIK_WRITE_TOKEN`: ordinary `PUT` and `POST` are disabled.
 - no `ELASTIK_APPROVE_TOKEN`: `DELETE` and system writes are disabled.
+
+Local-first default: public reads are fine on `127.0.0.1` because that is your
+own machine reading its own disk. If you bind `ELASTIK_HOST` to a non-loopback
+interface without `ELASTIK_READ_TOKEN`, the core prints a startup warning:
+you have deliberately exposed public reads and should decide whether that is
+the surface you want.
+
+The SCoAP/UDP surface is opt-in. The core does not open UDP by default; set
+`ELASTIK_COAP_PORT=5683` to enable the UDP-curl adapter. `ELASTIK_COAP_HOST`
+defaults to `127.0.0.1` when CoAP is enabled.
 
 `ELASTIK_DATA` is the universe selector. Point the same binary at another data
 directory and it serves another Elastik universe. Local SSD/tempdir is best for
