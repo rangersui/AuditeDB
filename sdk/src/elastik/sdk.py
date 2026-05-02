@@ -523,10 +523,12 @@ class Elastik(MutableMapping[str, bytes]):
     ) -> dict:
         """PUT body to path, replacing any existing body.
 
-        `content_type` and standard representation kwargs are stored
-        as HTTP representation metadata and returned verbatim by GET
-        and HEAD. Extra kwargs become X-Meta-* headers; they are plain
-        metadata, not auth or audit fields.
+        `content_type` is stored as the representation media type and
+        returned as Content-Type. Other standard representation kwargs are
+        persisted as safe response headers and returned by GET and HEAD.
+        Extra kwargs become X-Meta-* headers. They do not drive auth or
+        routing, but durable worlds include them in audited representation
+        metadata.
 
         `create_only=True` sends `If-None-Match: *`.
         `if_none_match="etag"` sends a quoted ETag validator.
