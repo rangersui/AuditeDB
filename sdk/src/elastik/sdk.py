@@ -1160,12 +1160,15 @@ class Elastik(MutableMapping[str, bytes]):
         if self._debug_record:
             self.debug_history.append(dict(event))
         line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+        if not self._debug_sink:
+            if _debug_break_matches(self._debug_break_on, response.status):
+                breakpoint()
+            return
         self._debug_append(self._debug_sink, line)
-        if self._debug_sink:
-            if response.status >= 400:
-                self._debug_append("/tmp/debug/errors", line)
-            if elapsed_ms >= self._debug_slow_ms:
-                self._debug_append("/tmp/debug/slow", line)
+        if response.status >= 400:
+            self._debug_append("/tmp/debug/errors", line)
+        if elapsed_ms >= self._debug_slow_ms:
+            self._debug_append("/tmp/debug/slow", line)
         if _debug_break_matches(self._debug_break_on, response.status):
             breakpoint()
 

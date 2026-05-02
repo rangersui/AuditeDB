@@ -419,6 +419,19 @@ def main() -> int:
                 len(writer.debug_history) == threaded_history_before + 1,
                 "debug recursion guard is thread-local",
             )
+            sinkless = Elastik(base, bearer_token=write_token)
+            sinkless.enable_debug(level="all", sink=None, record=True, slow_ms=0, panel=False)
+            sinkless_writes: list[str | None] = []
+            sinkless._debug_append = lambda path, line: sinkless_writes.append(path)  # type: ignore[method-assign]
+            sinkless._debug_after_response(
+                "GET",
+                "/home/sdk/sinkless-debug",
+                {},
+                elastik.Response(500, {"x-request-id": "sinkless", "x-elapsed-us": "1"}, b"boom"),
+                101.0,
+            )
+            check(sinkless.debug_history[-1]["status"] == 500, "debug sink=None still records in memory")
+            check(sinkless_writes == [], "debug sink=None disables request/error/slow sink writes")
             writer.disable_debug()
             writer.put(
                 "/home/sdk/logo.png",
