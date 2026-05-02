@@ -6,7 +6,13 @@
 //     ELASTIK_READ_TOKEN=r ELASTIK_WRITE_TOKEN=w ELASTIK_APPROVE_TOKEN=a \
 //     node test.mjs
 
-import { Elastik, ElastikError } from "./index.mjs";
+import {
+    Elastik,
+    ElastikError,
+    NotFound,
+    NotModified,
+    PreconditionFailed,
+} from "./index.mjs";
 
 const URL_BASE = process.env.ELASTIK_URL || "http://127.0.0.1:3105";
 const READ_TOKEN = process.env.ELASTIK_READ_TOKEN || "r";
@@ -44,6 +50,7 @@ async function cleanup() {
         "sdk-test/cond", "sdk-test/blob",
         "sdk-test/cancelled", "sdk-test/createonly",
         "sdk-test/binary", "sdk-test/exists", "sdk-test/withmeta",
+        "sdk-test/json", "sdk-test/text", "sdk-test/list/a",
         "home/sdk-test/listen/a", "home/sdk-test/unrelated/x",
     ]) {
         try { await eApprove.delete(p); } catch (err) { if (err.status !== 404) throw err; }
@@ -80,6 +87,21 @@ const headAfterPost = await e.head("sdk-test/note");
 eq(headAfterPost.contentType, "text/plain; charset=utf-8", "POST kept Content-Type");
 
 // ─── Test 4: DELETE ──────────────────────────────────────────
+console.log("\n=== text/json helpers + body validation ===");
+await e.putText("sdk-test/text", "hello text");
+eq(await e.getText("sdk-test/text"), "hello text", "putText/getText round-trip");
+eq((await e.head("sdk-test/text")).contentType, "text/plain; charset=utf-8", "putText content-type");
+await e.putJson("sdk-test/json", { ok: true, n: 6 });
+eq(await e.getJson("sdk-test/json"), { ok: true, n: 6 }, "putJson/getJson round-trip");
+eq((await e.head("sdk-test/json")).contentType, "application/json; charset=utf-8", "putJson content-type");
+try {
+    await e.put("sdk-test/oops", { nope: true });
+    bad("put object should TypeError");
+} catch (err) {
+    check(err instanceof TypeError, "put object throws TypeError");
+    check(err.message.includes("putJson"), "TypeError suggests putJson");
+}
+
 console.log("\n=== delete ===");
 const d4 = await eApprove.delete("sdk-test/note");
 check(d4.status === 204, "delete returns 204", String(d4.status));
@@ -92,6 +114,7 @@ try {
     bad("get missing should throw");
 } catch (err) {
     check(err instanceof ElastikError, "throws ElastikError");
+    check(err instanceof NotFound, "404 throws NotFound");
     check(err.status === 404, "404 status", String(err.status));
     check(typeof err.statusText === "string", "statusText present");
     check(err.path === "sdk-test/missing-yo", "error.path", err.path);
@@ -105,10 +128,11 @@ try {
     await e.put("sdk-test/cond", "v2", { etag: '"hmac-stale"' });
     bad("stale If-Match should throw 412");
 } catch (err) {
+    check(err instanceof PreconditionFailed, "stale If-Match throws PreconditionFailed");
     check(err.status === 412, "stale If-Match → 412");
 }
 const condEtag = (await e.head("sdk-test/cond")).etag;
-const r6 = await e.put("sdk-test/cond", "v2", { etag: condEtag });
+const r6 = await e.put("sdk-test/cond", "v2", { ifMatch: condEtag });
 check(r6.status === 200, "current If-Match → 200");
 eq(await e.get("sdk-test/cond"), "v2", "If-Match write took effect");
 
@@ -120,14 +144,20 @@ try {
     await e.put("sdk-test/createonly", "second", { ifNoneMatch: "*" });
     bad("create-only on existing should 412");
 } catch (err) {
+    check(err instanceof PreconditionFailed, "create-only throws PreconditionFailed");
     check(err.status === 412, "create-only on existing → 412");
 }
 
-// ─── Test 8: Conditional GET (If-None-Match → 304 → null) ────
+// ─── Test 8: Conditional GET (If-None-Match → 304 → NotModified) ────
 console.log("\n=== If-None-Match cache ===");
 const cacheEtag = (await e.head("sdk-test/cond")).etag;
-const cached = await e.get("sdk-test/cond", { ifNoneMatch: cacheEtag });
-check(cached === null, "If-None-Match same etag → null (304)");
+try {
+    await e.get("sdk-test/cond", { ifNoneMatch: cacheEtag });
+    bad("If-None-Match same etag should throw NotModified");
+} catch (err) {
+    check(err instanceof NotModified, "If-None-Match same etag → NotModified");
+    check(err.status === 304, "NotModified status 304");
+}
 const fresh = await e.get("sdk-test/cond", { ifNoneMatch: '"hmac-something-else"' });
 eq(fresh, "v2", "If-None-Match different etag → body returned");
 
@@ -193,8 +223,14 @@ const ver = await e.version();
 check(typeof ver === "string" && ver.startsWith("elastik-core "), "version starts with 'elastik-core '", ver.trim());
 const worlds = await e.worlds();
 check(typeof worlds === "string", "worlds is text");
+const listed = await e.list("sdk-test");
+check(Array.isArray(listed) && listed.includes("home/sdk-test/cond"), "list(prefix) returns canonical paths");
 check(await e.exists("sdk-test/cond"), "exists() → true for existing");
 check(!(await e.exists("sdk-test/never-existed")), "exists() → false for missing");
+check(await e.sizeof("sdk-test/cond") > 0, "sizeof() uses HEAD content-length");
+check((await e.checksum("sdk-test/cond")).startsWith('"hmac-'), "checksum() returns ETag");
+check(await e.isAudited("sdk-test/cond"), "isAudited() detects durable hmac ETag");
+check(await e.verify("sdk-test/cond"), "verify() checks audit chain");
 
 // ─── Test 13: AbortController ────────────────────────────────
 console.log("\n=== AbortController ===");

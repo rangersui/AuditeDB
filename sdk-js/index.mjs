@@ -47,7 +47,7 @@
 export class ElastikError extends Error {
     constructor(status, statusText, path, body = "") {
         super(`${status} ${statusText}: ${path}${body ? ` — ${body.slice(0, 120)}` : ""}`);
-        this.name = "ElastikError";
+        this.name = this.constructor.name;
         this.status = status;
         this.statusText = statusText;
         this.path = path;
@@ -55,20 +55,38 @@ export class ElastikError extends Error {
     }
 }
 
+export class NotModified extends ElastikError {}
+export class Unauthorized extends ElastikError {}
+export class Forbidden extends ElastikError {}
+export class NotFound extends ElastikError {}
+export class PreconditionFailed extends ElastikError {}
+export class PayloadTooLarge extends ElastikError {}
+export class ServerError extends ElastikError {}
+
+const ERROR_BY_STATUS = Object.freeze({
+    304: NotModified,
+    401: Unauthorized,
+    403: Forbidden,
+    404: NotFound,
+    412: PreconditionFailed,
+    413: PayloadTooLarge,
+});
+
 export class Elastik {
     /**
      * @param {string} url   base URL of the elastik core, e.g. "http://127.0.0.1:3105"
      * @param {object} [options]
-     * @param {string} [options.token]         write token (used as default; fallthrough for read/approve)
+     * @param {string} [options.writeToken]    write token (preferred; fallthrough for read/approve)
+     * @param {string} [options.token]         deprecated alias for writeToken
      * @param {string} [options.readToken]     read-only token (overrides token for GET/HEAD/listen)
      * @param {string} [options.approveToken]  approve token (DELETE + system writes)
      * @param {Function} [options.fetch]       custom fetch impl (testing, polyfill)
      */
     constructor(url, options = {}) {
         this.url = String(url).replace(/\/+$/, "");
-        this.writeToken = options.token ?? "";
-        this.readToken = options.readToken ?? options.token ?? "";
-        this.approveToken = options.approveToken ?? options.token ?? "";
+        this.writeToken = options.writeToken ?? options.token ?? "";
+        this.readToken = options.readToken ?? this.writeToken;
+        this.approveToken = options.approveToken ?? this.writeToken;
         // bind() so user can do `const get = e.get`. Native fetch hates being
         // detached from globalThis on some runtimes; bind defensively.
         this.fetch = (options.fetch ?? globalThis.fetch).bind(globalThis);
@@ -110,12 +128,14 @@ export class Elastik {
     // themselves; JS SDK runs in browsers, where MIME is law.
     // Explicit options.contentType always wins.
     async put(path, body, options = {}) {
+        assertBodyType(body, "put");
         const policy = expandPolicies(options);
         const merged = policy ? { ...policy, ...(options.headers || {}) } : options.headers;
         const headers = this._auth(this.writeToken, merged);
         const ct = options.contentType ?? mimeFromPath(path);
         if (ct) headers["Content-Type"] = ct;
-        if (options.etag) headers["If-Match"] = options.etag;
+        const ifMatch = options.ifMatch ?? options.etag;
+        if (ifMatch) headers["If-Match"] = ifMatch;
         if (options.ifNoneMatch) headers["If-None-Match"] = options.ifNoneMatch;
         const res = await this.fetch(this._url(path), {
             method: "PUT", body, headers, signal: options.signal,
@@ -128,7 +148,21 @@ export class Elastik {
     // Default: returns body (string for text-ish content, ArrayBuffer for binary).
     // options.meta = true       → { body, etag, contentType, size, contentRange }
     // options.range = "0-99"    → byte range (sets Content-Range on meta result)
-    // options.ifNoneMatch       → conditional read; returns null on 304
+    // options.ifNoneMatch       → conditional read; throws NotModified on 304
+    async putText(path, text, options = {}) {
+        return this.put(path, String(text), {
+            ...options,
+            contentType: options.contentType ?? "text/plain; charset=utf-8",
+        });
+    }
+
+    async putJson(path, value, options = {}) {
+        return this.put(path, JSON.stringify(value), {
+            ...options,
+            contentType: options.contentType ?? "application/json; charset=utf-8",
+        });
+    }
+
     async get(path, options = {}) {
         const headers = this._auth(this.readToken, options.headers);
         if (options.range) headers["Range"] = `bytes=${options.range}`;
@@ -137,7 +171,6 @@ export class Elastik {
         const res = await this.fetch(this._url(path), {
             method: "GET", headers, signal: options.signal,
         });
-        if (res.status === 304) return null;
         await this._throwIfError(res, path);
         const contentType = res.headers.get("content-type") || "";
         const body = isTextType(contentType) ? await res.text() : await res.arrayBuffer();
@@ -156,6 +189,15 @@ export class Elastik {
 
     // ─── HEAD ────────────────────────────────────────────
     // Metadata only. Returns { etag, contentType, size, headers }.
+    async getText(path, options = {}) {
+        const body = await this.get(path, { ...options, meta: false });
+        return typeof body === "string" ? body : new TextDecoder("utf-8").decode(body);
+    }
+
+    async getJson(path, options = {}) {
+        return JSON.parse(await this.getText(path, options));
+    }
+
     async head(path, options = {}) {
         const headers = this._auth(this.readToken, options.headers);
         const res = await this.fetch(this._url(path), {
@@ -176,8 +218,10 @@ export class Elastik {
     // Append. Does not change Content-Type or X-Meta-* (PUT owns metadata).
     // Returns { etag, status }.
     async post(path, body, options = {}) {
+        assertBodyType(body, "post");
         const headers = this._auth(this.writeToken, options.headers);
-        if (options.etag) headers["If-Match"] = options.etag;
+        const ifMatch = options.ifMatch ?? options.etag;
+        if (ifMatch) headers["If-Match"] = ifMatch;
         const res = await this.fetch(this._url(path), {
             method: "POST", body, headers, signal: options.signal,
         });
@@ -187,10 +231,11 @@ export class Elastik {
 
     // ─── DELETE ──────────────────────────────────────────
     // Requires approve token. Returns { status } (204 on success).
-    // options.etag → If-Match (conditional delete, 412 on stale)
+    // options.ifMatch → If-Match (conditional delete, 412 on stale)
     async delete(path, options = {}) {
         const headers = this._auth(this.approveToken, options.headers);
-        if (options.etag) headers["If-Match"] = options.etag;
+        const ifMatch = options.ifMatch ?? options.etag;
+        if (ifMatch) headers["If-Match"] = ifMatch;
         const res = await this.fetch(this._url(path), {
             method: "DELETE", headers, signal: options.signal,
         });
@@ -225,7 +270,7 @@ export class Elastik {
                 const res = await this.fetch(url, { headers, signal: controller.signal });
                 if (!res.ok) {
                     const body = await res.text().catch(() => "");
-                    safeCall(callback, { type: "error", error: new ElastikError(res.status, res.statusText, cleanPattern, body) });
+                    safeCall(callback, { type: "error", error: makeError(res.status, res.statusText, cleanPattern, body) });
                     return;
                 }
                 if (!res.body) {
@@ -247,6 +292,30 @@ export class Elastik {
         try { await this.head(path); return true; }
         catch (err) { if (err.status === 404) return false; throw err; }
     }
+    async list(prefix = "") {
+        const p = canonicalPath(prefix);
+        const lines = (await this.worlds()).split("\n").filter(Boolean);
+        return p ? lines.filter((line) => line === p || line.startsWith(`${p}/`)) : lines;
+    }
+    async sizeof(path) {
+        return (await this.head(path)).size ?? 0;
+    }
+    async checksum(path) {
+        return (await this.head(path)).etag ?? "";
+    }
+    async isAudited(path) {
+        return stripQuotes(await this.checksum(path)).startsWith("hmac-");
+    }
+    async verify(path) {
+        const world = canonicalPath(path);
+        const res = await this.fetch(this._url(`/proc/audit/${world}/verify`), {
+            method: "HEAD",
+            headers: this._auth(this.readToken),
+        });
+        if (res.status === 204) return false;
+        await this._throwIfError(res, `/proc/audit/${world}/verify`);
+        return res.headers.get("x-audit-valid") === "true";
+    }
     async version() { return this._textGet("/proc/version"); }
     async worlds()  { return this._textGet("/proc/worlds"); }
 
@@ -264,7 +333,7 @@ export class Elastik {
         if (res.ok) return;
         let body = "";
         try { body = await res.text(); } catch { /* ignore */ }
-        throw new ElastikError(res.status, res.statusText, path, body);
+        throw makeError(res.status, res.statusText, path, body);
     }
     async _textGet(path) {
         const res = await this.fetch(`${this.url}${path}`, { headers: this._auth(this.readToken) });
@@ -426,6 +495,35 @@ function numberOrNull(v) {
     if (v == null) return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
+}
+
+function stripQuotes(v) {
+    return String(v ?? "").replace(/^"|"$/g, "");
+}
+
+const RESERVED_NAMESPACES = new Set(["home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"]);
+
+function canonicalPath(path) {
+    const clean = String(path ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
+    if (!clean) return "";
+    const first = clean.split("/", 1)[0];
+    return RESERVED_NAMESPACES.has(first) ? clean : `home/${clean}`;
+}
+
+function makeError(status, statusText, path, body = "") {
+    const ErrorClass = ERROR_BY_STATUS[status] ?? (status >= 500 ? ServerError : ElastikError);
+    return new ErrorClass(status, statusText, path, body);
+}
+
+function assertBodyType(body, method) {
+    if (body == null || typeof body === "string") return;
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return;
+    if (typeof Blob !== "undefined" && body instanceof Blob) return;
+    if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return;
+    throw new TypeError(
+        `${method}() body must be string | ArrayBuffer | TypedArray | Blob | ReadableStream; ` +
+        `got ${Object.prototype.toString.call(body)}. Did you mean ${method}Json()?`
+    );
 }
 
 function safeCall(cb, ev) {

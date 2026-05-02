@@ -10,7 +10,7 @@ Workers, Vercel Edge, you name it.
 ```js
 import { Elastik } from "@elastikjs/client";
 
-const e = new Elastik("http://127.0.0.1:3105", { token: "write-token" });
+const e = new Elastik("http://127.0.0.1:3105", { writeToken: "write-token" });
 
 await e.put("home/note", "hello");
 const body = await e.get("home/note");          // → "hello"
@@ -136,16 +136,31 @@ The `start.mjs` machinery is silently absent from your bundle.
 
 ```js
 const e = new Elastik("http://127.0.0.1:3105", {
-    token: "write-token",            // default Authorization (write tier)
+    writeToken: "write-token",       // default Authorization (write tier)
     readToken: "read-token",         // optional separate read token
     approveToken: "approve-token",   // optional approve token (DELETE / system writes)
     fetch: customFetch,              // optional fetch impl (testing / polyfills)
 });
 ```
 
-- `token` is the write token; it falls through to read and approve if those aren't set.
+- `writeToken` is the write token; it falls through to read and approve if those aren't set.
+- `token` is accepted as a backwards-compatible alias, but new code should use `writeToken`.
 - `readToken` overrides for `GET` / `HEAD` / `listen`.
 - `approveToken` overrides for `DELETE` and writes to system worlds.
+- If you pass `Authorization` inside `options.headers`, it wins over the client's token. `headers` is the raw HTTP escape hatch.
+
+Typed errors mirror the Python SDK:
+
+```js
+import { NotFound, NotModified, PreconditionFailed } from "@elastikjs/client";
+
+try {
+    await e.get("home/missing");
+} catch (err) {
+    if (err instanceof NotFound) return null;
+    throw err;
+}
+```
 
 ### `await e.put(path, body, options?)` → `{ etag, status }`
 
@@ -154,14 +169,25 @@ Replace bytes at `path`. Status is `201 Created` for new worlds, `200 OK` for re
 ```js
 await e.put("home/note", "hello");
 await e.put("home/img.png", pngBuffer);                        // ← auto MIME from .png
-await e.put("home/note", "v2", { etag: previousEtag });        // If-Match
+await e.put("home/note", "v2", { ifMatch: previousEtag });    // If-Match
 await e.put("home/note", "first", { ifNoneMatch: "*" });       // create-only
 await e.put("home/note", body, { signal: controller.signal }); // cancellable
 await e.put("home/note", body, { headers: { "X-Meta-Author": "ranger" } });
 ```
 
-`body` accepts: `string`, `ArrayBuffer`, `TypedArray`, `Blob`, `ReadableStream` — anything
-`fetch` accepts.
+`body` accepts: `string`, `ArrayBuffer`, `TypedArray`, `Blob`, `ReadableStream`.
+Plain objects are rejected with a hint to use `putJson()` instead of silently
+storing `"[object Object]"`.
+
+Text and JSON helpers are explicit when you do not want MIME-based guessing:
+
+```js
+await e.putText("home/note", "hello");
+const text = await e.getText("home/note");
+
+await e.putJson("home/config", { debug: true });
+const cfg = await e.getJson("home/config");
+```
 
 #### Automatic Content-Type from path extension
 
@@ -267,7 +293,7 @@ options that read like the policies they describe.
 
 ```js
 import { Elastik } from "@elastikjs/client";
-const e = new Elastik("http://127.0.0.1:3105", { token: "w" });
+const e = new Elastik("http://127.0.0.1:3105", { writeToken: "w" });
 
 await e.put("site/index.html", html, {
     csp: "default-src 'self'",
@@ -398,7 +424,7 @@ proxy-config nightmare. Instead, store the CORS policy ON the mock:
 ```js
 // In a tiny dev script — runs once, dies:
 import { Elastik } from "@elastikjs/client";
-const e = new Elastik("http://localhost:3105", { token: "w" });
+const e = new Elastik("http://localhost:3105", { writeToken: "w" });
 
 await e.put("api/users", JSON.stringify(users), {
     cors: { origin: "http://localhost:3000", methods: "GET, HEAD" },
@@ -454,7 +480,7 @@ Born-deprecated. Used once. Deleted. Truly elastik.
 > (JavaScript). Both ship the same Rust binary; the educational JS port
 > is for the moments when you don't want to install anything at all.
 
-### `await e.get(path, options?)` → body | meta object | null
+### `await e.get(path, options?)` → body | meta object
 
 Default: returns the body as a `string` (when Content-Type is text-ish) or an
 `ArrayBuffer` (otherwise).
@@ -463,11 +489,16 @@ Default: returns the body as a `string` (when Content-Type is text-ish) or an
 const text  = await e.get("home/note");                       // → "hello"
 const bytes = await e.get("home/img.png");                    // → ArrayBuffer
 
-// Conditional read — null on 304
-const cached = await e.get("home/note", { ifNoneMatch: etag });
+// Conditional read — throws NotModified on 304
+try {
+    const fresh = await e.get("home/note", { ifNoneMatch: etag });
+} catch (err) {
+    if (err instanceof NotModified) useYourCache();
+    else throw err;
+}
 
-// Range — returns the meta object so you can read Content-Range
-const slice = await e.get("home/big.bin", { range: "0-1023" });
+// Range + meta returns the Content-Range details
+const slice = await e.get("home/big.bin", { range: "0-1023", meta: true });
 // → { body, etag, contentType, size, contentRange: "bytes 0-1023/...", status: 206 }
 
 // Full meta on a normal read
@@ -484,6 +515,16 @@ const head = await e.head("home/note");
 console.log(head.etag);           // "\"hmac-...\""
 console.log(head.size);           // 5
 console.log(head.headers);        // raw lower-cased header map
+```
+
+Small inspection helpers are just `HEAD` / `/proc` wrappers:
+
+```js
+await e.list("home/site");         // ["home/site/index.html", ...]
+await e.sizeof("home/note");       // 5
+await e.checksum("home/note");     // current ETag
+await e.isAudited("home/note");    // true for durable HMAC-backed worlds
+await e.verify("home/note");       // true when the core verifies the audit chain
 ```
 
 ### `await e.post(path, body, options?)` → `{ etag, status }`
@@ -503,7 +544,7 @@ Requires the approve token. Returns `204 No Content` on success.
 
 ```js
 await e.delete("home/note");
-await e.delete("home/note", { etag: currentEtag });   // If-Match
+await e.delete("home/note", { ifMatch: currentEtag });   // If-Match
 ```
 
 ### `e.listen(pattern, callback, options?)` → unsubscribe function
@@ -679,7 +720,7 @@ own via `options.fetch`.
 
 ```js
 import { Elastik } from "@elastikjs/client";
-const e = new Elastik("http://127.0.0.1:3105", { token: "w" });
+const e = new Elastik("http://127.0.0.1:3105", { writeToken: "w" });
 
 // Worker: process tasks
 e.listen("home/task/*", async (ev) => {
