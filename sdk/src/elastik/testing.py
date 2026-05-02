@@ -114,6 +114,10 @@ class FakeElastik(Elastik):
         except KeyError:
             raise NotFound(404, b"not found", method="HEAD", path=path) from None
 
+    def verify(self, path: str) -> bool:
+        self.head(path)
+        return False
+
     def delete(self, path: str, **_kwargs: Any) -> bool:
         world = self._world(path)
         self._etag_cache.pop(world, None)

@@ -596,7 +596,22 @@ def main() -> int:
                     "X-Future-HTTP-Thing": "ok",
                 },
             )
+            writer.put(
+                "/home/sdk/browser-put.html",
+                "<html>",
+                content_type="text/html",
+                headers={
+                    "Device-Memory": "8",
+                    "DPR": "2",
+                    "Save-Data": "on",
+                    "Idempotency-Key": "abc",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Want-Content-Digest": "sha-256",
+                    "Server-Timing": "dur=1",
+                },
+            )
             policy_head = reader.head("/home/sdk/logo.png")
+            browser_put_head = reader.head("/home/sdk/browser-put.html")
             check(
                 policy_head["access-control-allow-origin"] == "*",
                 "safe response policy header is stored",
@@ -610,6 +625,19 @@ def main() -> int:
                 policy_head["x-future-http-thing"] == "ok",
                 "future safe response header is stored",
             )
+            for request_only in [
+                "device-memory",
+                "dpr",
+                "save-data",
+                "idempotency-key",
+                "upgrade-insecure-requests",
+                "want-content-digest",
+                "server-timing",
+            ]:
+                check(
+                    request_only not in browser_put_head,
+                    f"browser request header {request_only} is not persisted",
+                )
             check("home/sdk/text" in reader.list(), "sdk list sees world")
             check("home/sdk/text" in reader.list_paths(), "sdk list_paths aliases list")
             check("home/sdk/text" in reader.list_keys(), "sdk list_keys aliases list")
@@ -636,7 +664,7 @@ def main() -> int:
             check(reader.sizeof("/home/sdk/mapping") == 6, "sizeof() reads Content-Length")
             check(reader.checksum("/home/sdk/mapping").strip('"').startswith("hmac-"), "checksum() returns ETag")
             check(reader.is_audited("/home/sdk/mapping"), "is_audited() detects hmac ETag")
-            check(reader.verify("/home/sdk/mapping"), "verify() aliases is_audited")
+            check(reader.verify("/home/sdk/mapping"), "verify() replays durable audit chain")
             check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached first read downloads")
             check(reader.get_cached("/home/sdk/mapping") == b"mapped", "get_cached second read uses validator")
             writer.put("/home/sdk/mapping", "remapped")
@@ -771,6 +799,7 @@ def main() -> int:
             check(isinstance(fake, MutableMapping), "FakeElastik is also MutableMapping-shaped")
             check(fake.get_text("fake/note") == "hello", "FakeElastik get_text works")
             check(fake.head("fake/note")["etag"].startswith("fake-"), "FakeElastik returns fake ETags")
+            check(not fake.verify("fake/note"), "FakeElastik verify reports audit unsupported")
             check(fake.get_cached("fake/note") == b"hello", "FakeElastik supports get_cached")
             fake_ref = fake / "home" / "fake" / "ref"
             fake_ref.write("fake-ref")
@@ -785,6 +814,8 @@ def main() -> int:
                     "Access-Control-Allow-Origin": "*",
                     "Content-Security-Policy": "default-src 'self'",
                     "Authorization": "Bearer should-not-persist",
+                    "Device-Memory": "8",
+                    "Want-Content-Digest": "sha-256",
                 },
             )
             check(fake.head("fake/raw")["content-type"] == "text/custom", "FakeElastik request preserves Content-Type")
@@ -796,6 +827,11 @@ def main() -> int:
             check(
                 "authorization" not in fake.head("fake/raw"),
                 "FakeElastik does not persist Authorization",
+            )
+            check(
+                "device-memory" not in fake.head("fake/raw")
+                and "want-content-digest" not in fake.head("fake/raw"),
+                "FakeElastik does not persist browser request headers",
             )
             config_buf = io.StringIO()
             with contextlib.redirect_stdout(config_buf):
@@ -1028,6 +1064,7 @@ def main() -> int:
             tmp_head = reader.head("/tmp/sdk/scratch")
             check(reader.get("/tmp/sdk/scratch") == b"temp", "tmp memory world reads")
             check(tmp_head["etag"].startswith('"sha256-'), "tmp world uses body ETag")
+            check(not reader.verify("/tmp/sdk/scratch"), "verify() reports memory worlds as not applicable")
 
             # Tier checks.
             expect_error(lambda: reader.put("/home/sdk/nope", b"x"), 401, check, "read token cannot write")

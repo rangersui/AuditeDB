@@ -25,7 +25,7 @@
 
 use crate::audit;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -110,6 +110,27 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
         "#,
     )?;
     Ok(c)
+}
+
+/// Open an existing world's universe.db without creating directories,
+/// files, or schema. Audit verification uses this path because probing
+/// a missing world must not resurrect it.
+pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<Connection>> {
+    let path = world_db(data_root, world);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let c = match Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => {
+            if !path.exists() {
+                return Ok(None);
+            }
+            return Err(e);
+        }
+    };
+    c.busy_timeout(Duration::from_millis(5000))?;
+    Ok(Some(c))
 }
 
 pub struct Stage {

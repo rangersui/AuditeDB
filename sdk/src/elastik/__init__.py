@@ -32,9 +32,10 @@ Path rule: "foo" and "/foo" both mean "/home/foo". "tmp/foo" means
 /proc internals are reserved by the core.
 
 put(..., project="demo") stores `X-Meta-Project: demo`. These kwargs
-are plain metadata, not auth or audit fields. Standard HTTP
-representation headers use named kwargs: content_type, cache_control,
-content_encoding, content_language, and content_disposition.
+do not drive auth or routing, but durable worlds include them in audited
+representation metadata. Standard HTTP representation headers use named
+kwargs: content_type, cache_control, content_encoding, content_language,
+and content_disposition.
 
 Reactor (declarative event handlers):
 
@@ -472,7 +473,7 @@ def is_audited(path: str) -> bool:
 
 
 def verify(path: str) -> bool:
-    """Alias for is_audited(); does not replay the full audit chain."""
+    """Ask core to replay and verify the durable audit chain."""
     return _client().verify(path)
 
 

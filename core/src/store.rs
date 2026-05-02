@@ -55,6 +55,10 @@ impl MemoryStore {
         })
     }
 
+    pub fn contains(&self, world: &str) -> bool {
+        self.map_guard().contains_key(world)
+    }
+
     pub fn write(
         &self,
         world: &str,
