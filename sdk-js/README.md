@@ -449,7 +449,10 @@ Born-deprecated. Used once. Deleted. Truly elastik.
 
 > The educational implementation's lifetime: one curl, one PUT, one debug
 > session. Then `rm -rf data/`, then `npx`'s cache forgets it. The package
-> never accumulates production weight because production = `pip install elastik`.
+> never accumulates production weight because production already has two
+> paths — `pip install elastik` (Python) and `npm install @elastikjs/client`
+> (JavaScript). Both ship the same Rust binary; the educational JS port
+> is for the moments when you don't want to install anything at all.
 
 ### `await e.get(path, options?)` → body | meta object | null
 

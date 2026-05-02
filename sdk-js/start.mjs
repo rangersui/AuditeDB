@@ -32,10 +32,12 @@
 //     ↓
 //   return a connected Elastik client + .stop() lifecycle
 //
-// The spawned core's data lives in `dataDir` (default: a temp dir, wiped on
-// stop unless you opt out). Born-deprecated, used-once, deleted — same as
-// the @elastikjs/server educational package, but with a real Rust binary
-// underneath instead of the JS port.
+// The spawned core's data lives in `dataDir` (default: a fresh temp dir,
+// wiped on stop). Two first-class lifetimes:
+//   - one-shot:   start({}) → use → stop() → temp dir gone
+//                 (great for tests, CI, transient mocks)
+//   - long-lived: pass an explicit `dataDir` (and optionally cleanup:false)
+//                 to keep state across runs.
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
