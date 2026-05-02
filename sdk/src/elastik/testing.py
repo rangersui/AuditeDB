@@ -26,9 +26,7 @@ class FakeElastik(Elastik):
     """In-memory SDK-compatible fake for handler/unit tests."""
 
     def __init__(self):
-        self.url = "fake://elastik"
-        self.bearer_token = "fake"
-        self._etag_cache: dict[str, tuple[str, bytes]] = {}
+        super().__init__("fake://elastik", bearer_token="fake")
         self._store: dict[str, tuple[bytes, WorldMeta]] = {}
 
     def __repr__(self) -> str:

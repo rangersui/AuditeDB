@@ -23,6 +23,7 @@ import compileall
 import contextlib
 import csv
 import io
+import json
 import os
 import shutil
 import socket
@@ -353,6 +354,72 @@ def main() -> int:
             check(head["cache-control"] == "max-age=60", "head cache-control")
             check(head["x-meta-author"] == "ranger", "head x-meta")
             check(head["accept-ranges"] == "bytes", "head accept-ranges")
+            debug_hooks: list[tuple[str, str, int, str]] = []
+            writer.enable_debug(
+                level="all",
+                record=True,
+                verbose=3,
+                slow_ms=0,
+                hook=lambda method, path, status, _ms, rid: debug_hooks.append(
+                    (method, path, status, rid)
+                ),
+            )
+            panel_html = reader.get_text("/tmp/debug-panel.html")
+            check("EventSource(\"/listen/tmp/debug/requests\")" in panel_html, "debug panel listens for sink wakeups")
+            check("fetch(SINK" in panel_html, "debug panel reads log body via GET")
+            writer.put("/home/sdk/debug", "trace")
+            check(writer.debug_history[-1]["path"] == "/home/sdk/debug", "debug_history records request path")
+            check(writer.debug_history[-1]["rid"] != "?", "debug_history captures X-Request-Id")
+            check(
+                writer.debug_history[-1]["request_headers"]["authorization"] == "<redacted>",
+                "debug verbose redacts Authorization",
+            )
+            check(debug_hooks[-1][:3] == ("PUT", "/home/sdk/debug", 201), "debug hook receives request summary")
+            secret_resp = writer.request("OPTIONS", "/home/sdk/debug", headers={"X-Api-Key": "secret"})
+            check(secret_resp.status == 204, "debug redaction probe request succeeds")
+            check(
+                writer.debug_history[-1]["request_headers"]["x-api-key"] == "<redacted>",
+                "debug verbose redacts *-key headers",
+            )
+            debug_log = reader.get_text("/tmp/debug/requests")
+            check("/home/sdk/debug" in debug_log, "debug sink records request JSONL in /tmp")
+            check("/tmp/debug/requests" not in debug_log, "debug sink does not recursively log itself")
+            slow_log = reader.get_text("/tmp/debug/slow")
+            check("/home/sdk/debug" in slow_log, "debug slow sink records slow-threshold matches")
+            try:
+                writer.get("/home/sdk/debug-missing")
+            except elastik.NotFound:
+                pass
+            else:
+                raise AssertionError("FAIL: debug missing read did not raise NotFound")
+            error_log = reader.get_text("/tmp/debug/errors")
+            check('"status": 404' in error_log, "debug error sink records 4xx responses")
+            stats = writer.debug_stats()
+            check(stats["total_requests"] >= 2, "debug_stats summarizes recorded requests")
+            check(stats["by_method"].get("PUT", 0) >= 1, "debug_stats groups by method")
+            check(stats["by_status"].get(404, 0) >= 1, "debug_stats groups by status")
+            first_debug_event = json.loads(debug_log.splitlines()[0])
+            check("core_us" in first_debug_event, "debug JSONL includes core elapsed us")
+            writer._debug_set_in_progress(True)
+            threaded_history_before = len(writer.debug_history)
+            debug_thread = threading.Thread(
+                target=lambda: writer._debug_after_response(
+                    "GET",
+                    "/home/sdk/thread-local-debug",
+                    {},
+                    elastik.Response(200, {"x-request-id": "thread", "x-elapsed-us": "1"}, b"ok"),
+                    1.0,
+                ),
+                daemon=True,
+            )
+            debug_thread.start()
+            debug_thread.join(5)
+            writer._debug_set_in_progress(False)
+            check(
+                len(writer.debug_history) == threaded_history_before + 1,
+                "debug recursion guard is thread-local",
+            )
+            writer.disable_debug()
             writer.put(
                 "/home/sdk/logo.png",
                 b"\x89PNG\r\n",
