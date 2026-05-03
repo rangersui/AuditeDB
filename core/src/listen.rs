@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path as AxPath, State},
-    http::{header, HeaderMap, Method},
+    http::{header, HeaderMap, Method, StatusCode},
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
 };
@@ -47,6 +47,14 @@ pub(crate) async fn handler(
     if !can_read(&core, tier) {
         return unauthorized("listen requires read token");
     }
+    let Ok(listen_permit) = core.listen_slots.clone().try_acquire_owned() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "too many listen connections\n",
+        )
+            .into_response();
+    };
     let pattern = pattern(&raw_pattern);
     let last_event_id = headers
         .get("last-event-id")
@@ -88,7 +96,13 @@ pub(crate) async fn handler(
     let replay_stream = futures_util::StreamExt::chain(lag_stream, replay_stream);
     let live_stream = futures_util::StreamExt::take_until(live_stream, shutdown_signal);
 
-    Sse::new(futures_util::StreamExt::chain(replay_stream, live_stream))
+    let stream = futures_util::StreamExt::chain(replay_stream, live_stream);
+    let stream = futures_util::StreamExt::map(stream, move |event| {
+        let _keep_alive = &listen_permit;
+        event
+    });
+
+    Sse::new(stream)
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))
@@ -169,7 +183,7 @@ mod tests {
         path::PathBuf,
         sync::{atomic::AtomicU64, Arc, Mutex as StdMutex},
     };
-    use tokio::sync::{broadcast, watch, Mutex};
+    use tokio::sync::{broadcast, watch, Mutex, Semaphore};
 
     #[test]
     fn patterns_are_prefix_or_exact() {
@@ -216,6 +230,7 @@ mod tests {
             max_world_bytes: 1024,
             max_memory_bytes: 1024,
             events,
+            listen_slots: Arc::new(Semaphore::new(crate::MAX_LISTEN_CONNECTIONS)),
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: Arc::new(AtomicU64::new(0)),
@@ -257,6 +272,7 @@ mod tests {
             max_world_bytes: 1024,
             max_memory_bytes: 1024,
             events,
+            listen_slots: Arc::new(Semaphore::new(crate::MAX_LISTEN_CONNECTIONS)),
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: Arc::new(AtomicU64::new(0)),

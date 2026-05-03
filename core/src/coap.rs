@@ -516,6 +516,7 @@ mod tests {
                 max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                 max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
                 events,
+                listen_slots: Arc::new(tokio::sync::Semaphore::new(crate::MAX_LISTEN_CONNECTIONS)),
                 event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(LISTEN_REPLAY_MAX))),
                 shutdown: watch::channel(false).1,
                 next_event: Arc::new(AtomicU64::new(0)),

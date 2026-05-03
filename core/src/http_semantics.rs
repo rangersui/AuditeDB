@@ -68,6 +68,11 @@ pub(crate) fn check_write_preconditions(
     world_name: &str,
     req_headers: &HeaderMap,
 ) -> Result<(), Response> {
+    if !req_headers.contains_key(header::IF_MATCH)
+        && !req_headers.contains_key(header::IF_NONE_MATCH)
+    {
+        return Ok(());
+    }
     let current = core.read_world(world_name);
     let current_tag = current
         .as_ref()
@@ -108,19 +113,21 @@ pub(crate) fn read_not_modified(req_headers: &HeaderMap, current: &str) -> bool 
 }
 
 pub(crate) fn etag_list_strong_matches(header_value: &str, current: &str) -> bool {
+    let quoted = format!("\"{current}\"");
     header_value
         .split(',')
         .map(str::trim)
-        .any(|candidate| candidate == "*" || candidate == format!("\"{current}\""))
+        .any(|candidate| candidate == "*" || candidate == quoted.as_str())
 }
 
 pub(crate) fn etag_list_weak_matches(header_value: &str, current: &str) -> bool {
+    let quoted = format!("\"{current}\"");
     header_value.split(',').map(str::trim).any(|candidate| {
         candidate == "*"
-            || candidate == format!("\"{current}\"")
+            || candidate == quoted.as_str()
             || candidate
                 .strip_prefix("W/")
-                .map(|weak| weak == format!("\"{current}\""))
+                .map(|weak| weak == quoted.as_str())
                 .unwrap_or(false)
     })
 }

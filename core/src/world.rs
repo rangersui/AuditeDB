@@ -143,6 +143,37 @@ pub struct AppendResult {
     pub body_sha256_after: String,
 }
 
+pub fn metadata(
+    data_root: &Path,
+    world: &str,
+) -> rusqlite::Result<Option<(usize, String, Vec<(String, String)>)>> {
+    let Some(c) = open_existing(data_root, world)? else {
+        return Ok(None);
+    };
+    let (body_len, content_type) = c.query_row(
+        "SELECT length(body), content_type FROM stage_meta WHERE id=1",
+        [],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0).unwrap_or(0).max(0) as usize,
+                r.get::<_, String>(1)
+                    .unwrap_or_else(|_| "application/octet-stream".into()),
+            ))
+        },
+    )?;
+    let mut headers = Vec::new();
+    if let Ok(mut stmt) = c.prepare("SELECT name, value FROM meta_headers ORDER BY name") {
+        if let Ok(rows) =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        {
+            for pair in rows.flatten() {
+                headers.push(pair);
+            }
+        }
+    }
+    Ok(Some((body_len, content_type, headers)))
+}
+
 /// Read body/meta and latest audit hmac through one SQLite connection.
 /// This keeps GET/HEAD from pairing an old body with a newer ETag when
 /// a write lands between two independent reads.
@@ -272,19 +303,21 @@ pub fn append(
     if !path.exists() {
         return Ok(None);
     }
-    let c = open(data_root, world)?;
-    let current: Vec<u8> = c
+    let mut c = open(data_root, world)?;
+    let tx = c.transaction()?;
+    let current: Vec<u8> = tx
         .query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| r.get(0))
         .unwrap_or_default();
     let mut new_body = current;
     new_body.extend_from_slice(body);
     let after = sha256_hex(&new_body);
-    c.execute(
+    tx.execute(
         r#"UPDATE stage_meta
            SET body=?
            WHERE id=1"#,
         params![new_body],
     )?;
+    tx.commit()?;
     Ok(Some(AppendResult {
         body_sha256_after: after,
     }))

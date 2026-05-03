@@ -62,7 +62,7 @@ use std::sync::{
     Arc, Mutex as StdMutex,
 };
 use std::time::Instant;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, watch, Mutex, Semaphore};
 
 use crate::http_semantics as hs;
 use crate::world::{AppendResult, Stage};
@@ -81,6 +81,7 @@ struct Core {
     max_world_bytes: usize,
     max_memory_bytes: usize,
     events: broadcast::Sender<listen::ChangeEvent>,
+    listen_slots: Arc<Semaphore>,
     event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
     shutdown: watch::Receiver<bool>,
     next_event: Arc<AtomicU64>,
@@ -97,10 +98,9 @@ impl Core {
 
     fn read_world_with_etag(&self, world: &str) -> Option<(Stage, String)> {
         if store::is_memory_world(world) {
-            self.mem.read(world).map(|stage| {
-                let etag = hs::body_etag(&stage.body);
-                (stage, etag)
-            })
+            self.mem
+                .read_with_hash(world)
+                .map(|(stage, hash)| (stage, format!("sha256-{hash}")))
         } else {
             world::read_with_hmac(&self.data, world).map(|(stage, hmac)| {
                 let etag = hmac
@@ -131,6 +131,17 @@ impl Core {
             Ok(self.mem.append(world, body))
         } else {
             world::append(&self.data, world, body)
+        }
+    }
+
+    fn world_metadata(
+        &self,
+        world: &str,
+    ) -> rusqlite::Result<Option<(usize, String, Vec<(String, String)>)>> {
+        if store::is_memory_world(world) {
+            Ok(self.mem.metadata(world))
+        } else {
+            world::metadata(&self.data, world)
         }
     }
 
@@ -230,6 +241,7 @@ const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 const LISTEN_REPLAY_MAX: usize = 1024;
 const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+const MAX_LISTEN_CONNECTIONS: usize = 1024;
 
 #[tokio::main]
 async fn main() {
@@ -257,6 +269,7 @@ async fn main() {
         max_world_bytes,
         max_memory_bytes,
         events,
+        listen_slots: Arc::new(Semaphore::new(MAX_LISTEN_CONNECTIONS)),
         event_log: Arc::new(StdMutex::new(VecDeque::new())),
         shutdown: shutdown_rx.clone(),
         next_event: Arc::new(AtomicU64::new(0)),
@@ -865,10 +878,13 @@ async fn handle_post(
     if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
         return resp;
     }
-    let Some(stage) = core.read_world(world_name) else {
+    let Some((body_len, content_type, stored_headers)) = (match core.world_metadata(world_name) {
+        Ok(meta) => meta,
+        Err(e) => return storage_error("storage metadata", e),
+    }) else {
         return not_found();
     };
-    let Some(projected_len) = stage.body.len().checked_add(body.len()) else {
+    let Some(projected_len) = body_len.checked_add(body.len()) else {
         return payload_too_large(core.max_world_bytes);
     };
     if projected_len > core.max_world_bytes {
@@ -879,8 +895,8 @@ async fn handle_post(
             &core.data,
             world_name,
             &body,
-            &stage.content_type,
-            &stage.headers,
+            &content_type,
+            &stored_headers,
             &core.hmac_key,
         ) {
             Ok(Some((_result, h))) => hs::hmac_etag(&h),
@@ -888,7 +904,7 @@ async fn handle_post(
             Err(e) => return storage_error("storage/audit", e),
         }
     } else {
-        if memory_append_projected_bytes(core, world_name, body.len()) > core.max_memory_bytes {
+        if memory_append_projected_bytes(core, body.len()) > core.max_memory_bytes {
             return payload_too_large(core.max_memory_bytes);
         }
         let result = match core.append_world(world_name, &body) {
@@ -1010,7 +1026,7 @@ fn memory_write_projected_bytes(core: &Core, world_name: &str, new_len: usize) -
         .saturating_add(new_len)
 }
 
-fn memory_append_projected_bytes(core: &Core, _world_name: &str, add_len: usize) -> usize {
+fn memory_append_projected_bytes(core: &Core, add_len: usize) -> usize {
     core.mem.total_bytes().saturating_add(add_len)
 }
 
@@ -2820,6 +2836,7 @@ mod tests {
                     max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                     max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
                     events,
+                    listen_slots: Arc::new(Semaphore::new(MAX_LISTEN_CONNECTIONS)),
                     event_log: Arc::new(StdMutex::new(VecDeque::new())),
                     shutdown: watch::channel(false).1,
                     next_event: Arc::new(AtomicU64::new(0)),
