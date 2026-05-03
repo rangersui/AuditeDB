@@ -84,7 +84,7 @@ export class Elastik {
      * @param {Function} [options.fetch]       custom fetch impl (testing, polyfill)
      */
     constructor(url, options = {}) {
-        this.url = String(url).replace(/\/+$/, "");
+        this.url = stripTrailingSlashes(String(url));
         this.writeToken = options.writeToken ?? options.token ?? "";
         this.readToken = options.readToken ?? this.writeToken;
         this.approveToken = options.approveToken ?? this.writeToken;
@@ -293,7 +293,7 @@ export class Elastik {
         headers["Accept"] = "text/event-stream";
         if (options.lastEventId != null) headers["Last-Event-ID"] = String(options.lastEventId);
 
-        const cleanPattern = String(pattern).replace(/^\/+/, "");
+        const cleanPattern = stripLeadingSlashes(String(pattern));
         const url = `${this.url}/listen/${encodePath(cleanPattern)}`;
 
         // Connect + decode in the background. Errors land in the callback as
@@ -354,7 +354,7 @@ export class Elastik {
 
     // ─── internals ───────────────────────────────────────
     _url(path) {
-        const cleaned = String(path).replace(/^\/+/, "");
+        const cleaned = stripLeadingSlashes(String(path));
         return `${this.url}/${encodePath(cleaned)}`;
     }
     _auth(token, extras = {}) {
@@ -548,10 +548,22 @@ function stripQuotes(v) {
 const RESERVED_NAMESPACES = new Set(["home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"]);
 
 function canonicalPath(path) {
-    const clean = String(path ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const clean = stripTrailingSlashes(stripLeadingSlashes(String(path ?? "")));
     if (!clean) return "";
     const first = clean.split("/", 1)[0];
     return RESERVED_NAMESPACES.has(first) ? clean : `home/${clean}`;
+}
+
+function stripLeadingSlashes(value) {
+    let i = 0;
+    while (i < value.length && value.charCodeAt(i) === 47) i++;
+    return value.slice(i);
+}
+
+function stripTrailingSlashes(value) {
+    let end = value.length;
+    while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+    return value.slice(0, end);
 }
 
 function makeError(status, statusText, path, body = "") {
