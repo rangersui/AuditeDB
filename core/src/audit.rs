@@ -253,7 +253,7 @@ fn verify_event(
             meta_sha256: &row.meta_sha256,
         },
     );
-    if expected_hmac != row.hmac {
+    if !crate::auth::ct_eq(expected_hmac.as_bytes(), row.hmac.as_bytes()) {
         return Some(VerifyBreak {
             break_at: idx,
             expected: hmac_label(&expected_hmac),
