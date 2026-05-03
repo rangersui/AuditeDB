@@ -2,50 +2,58 @@
 
 ## Supported Versions
 
-Elastik is a small project with one supported security line: the latest released
-version.
+Only the latest released version is supported for security fixes.
 
 | Version | Supported |
 | ------- | --------- |
 | latest release | Yes |
 | older releases | No |
 
-If you are running an older version, please upgrade before reporting unless the
-issue also reproduces on the latest release.
+Please upgrade first if the issue does not reproduce on the latest release.
 
 ## Reporting a Vulnerability
 
-Please report security issues privately through GitHub private vulnerability
-reporting or GitHub Security Advisories for this repository.
+Report security issues privately through GitHub private vulnerability reporting
+or GitHub Security Advisories.
 
 Do not open a public issue for a vulnerability.
 
-Please include:
-
-- The affected version and platform.
-- Whether the issue affects `elastik-core`, the Python SDK, the JavaScript SDK,
-  or release packaging.
-- A minimal reproduction, if possible.
-- Whether credentials, tokens, or persisted data may have been exposed.
-
-We will triage reports as soon as practical and respond with one of:
-
-- Accepted: we believe this is a security issue and will prepare a fix or
-  advisory.
-- Needs information: we need a smaller reproduction or more environment detail.
-- Declined: the report is outside Elastik's security boundary.
+Please include the affected version, platform, component (`elastik-core`,
+Python SDK, JavaScript SDK, or packaging), and a small reproduction if possible.
 
 ## Security Boundary
 
-Elastik core stores and serves bytes over explicit protocol surfaces. It does
-not provide browser sandboxing, HTML sanitization, TLS termination, schema
-validation, application authorization rules, or deployment policy.
+Elastik is a byte store.
 
-These are expected to live in the client, SDK, application, browser, or edge
-proxy. For example, HTML resources should carry their own browser policy
-(`Content-Security-Policy`, frame policy, CORS policy, and related response
-headers) when that policy matters.
+The core accepts bytes, stores bytes, returns bytes, enforces token tiers, signs
+durable writes into an HMAC audit chain, and replays safe persisted response
+metadata. That is the security boundary.
 
-Valid security reports for Elastik usually involve the core, SDKs, release
-artifacts, token enforcement, audit-chain integrity, persisted safe-header
-semantics, or accidental credential exposure.
+Documentation tokens such as `read-token`, `write-token`, `approve-token`,
+`admin-token`, `dev-hmac-key`, and `change-me` are examples only. Elastik does
+not use them as built-in defaults. If those copied strings protect a shared
+deployment, that is a deployment configuration problem, not a hidden default
+credential.
+
+Good security reports usually involve one of these:
+
+- Token enforcement can be bypassed.
+- The HMAC audit chain can be forged, skipped, or verified incorrectly.
+- Persisted response headers can inject protocol state, credentials, or unsafe
+  bytes.
+- Tokens or other credentials are exposed by logs, SDKs, packages, release
+  artifacts, or default configuration.
+- A published package ships the wrong binary or a binary that does not match
+  the source/release.
+
+Usually outside the Elastik security boundary:
+
+- HTML sanitization, XSS filtering, CSP authoring, iframe policy, or browser
+  sandboxing.
+- TLS termination, public edge routing, CDN policy, or firewall policy.
+- Application schemas, business rules, per-user authorization, or validation.
+- Bugs in user plugins, user applications, or content stored in Elastik.
+
+If you store an HTML app, that HTML app owns its browser policy. If you expose
+Elastik to a network, that deployment owns its edge policy. The core remains a
+small storage engine: bytes in, bytes out, with token gates and an audit chain.

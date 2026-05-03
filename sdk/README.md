@@ -126,6 +126,10 @@ e = elastik.start(
 )
 ```
 
+`read-token`, `write-token`, `admin-token`, and `dev-hmac-key` in these examples
+are local placeholders only. Elastik does not ship with those credentials. Use
+fresh per-deployment secrets outside throwaway demos.
+
 Python kwargs use underscores (`read_token`). CLI flags use hyphens
 (`--read-token`).
 

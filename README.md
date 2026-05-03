@@ -101,6 +101,11 @@ $env:ELASTIK_WRITE_TOKEN = "write-token"
 cargo run
 ```
 
+`dev-hmac-key`, `read-token`, `write-token`, and similar strings in this
+README are placeholders for local demos. Elastik does not use them as built-in
+defaults. For any shared or networked deployment, generate unique secrets
+instead of copying the examples.
+
 In another terminal:
 
 ```powershell
@@ -149,8 +154,9 @@ ELASTIK_WRITE_TOKEN=
 ELASTIK_APPROVE_TOKEN=
 ```
 
-`ELASTIK_KEY` is required. It signs the audit chain. A public or empty key makes
-the audit chain meaningless.
+`change-me` is a placeholder, not a safe value. `ELASTIK_KEY` is required and
+signs the audit chain. A public, empty, reused, or copied example key makes the
+audit chain meaningless.
 
 Tokens are optional capability gates. Missing tokens do not stop the core from
 starting; they disable the corresponding protected operations:

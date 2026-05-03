@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-core-assets:
     name: build core asset (${{ matrix.name }})
@@ -50,6 +54,14 @@ jobs:
       - name: install musl toolchain
         if: startsWith(matrix.rust-target, 'x86_64-unknown-linux-musl') || startsWith(matrix.rust-target, 'aarch64-unknown-linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: show musl compiler
+        if: startsWith(matrix.rust-target, 'x86_64-unknown-linux-musl') || startsWith(matrix.rust-target, 'aarch64-unknown-linux-musl')
+        shell: bash
+        run: |
+          command -v musl-gcc
+          musl-gcc --version
+          musl-gcc -dumpmachine || true
 
       - name: build core (musl)
         if: matrix.rust-target != ''
@@ -96,6 +108,13 @@ jobs:
         with:
           files: ${{ matrix.asset-name }}
 
+      - name: upload core asset artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-asset-${{ matrix.name }}
+          path: ${{ matrix.asset-name }}
+          if-no-files-found: error
+
       - uses: actions/setup-node@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
@@ -108,6 +127,8 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          version="${GITHUB_REF_NAME#v}"
+          pkg_name="@elastikjs/core-${{ matrix.npm-platform }}-${{ matrix.npm-arch }}"
           if [ "${{ runner.os }}" = "Windows" ]; then
             binary="core/target/release/elastik-core.exe"
           elif [ -n "${{ matrix.rust-target }}" ]; then
@@ -115,11 +136,27 @@ jobs:
           else
             binary="core/target/release/elastik-core"
           fi
-          node sdk-js/scripts/pack-platform.mjs "${{ matrix.npm-platform }}" "${{ matrix.npm-arch }}" "$binary"
-          npm publish "./sdk-js/core-${{ matrix.npm-platform }}-${{ matrix.npm-arch }}" --access public
+          node sdk-js/scripts/pack-platform.mjs "${{ matrix.npm-platform }}" "${{ matrix.npm-arch }}" "$binary" --version "$version"
+          mkdir -p npm-packages
+          npm pack "./sdk-js/core-${{ matrix.npm-platform }}-${{ matrix.npm-arch }}" --pack-destination npm-packages
+          tgz_path=$(ls npm-packages/*.tgz | head -n 1)
+          if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
+            echo "${pkg_name}@${version} already published; skipping npm publish"
+          else
+            npm publish "$tgz_path" --access public
+          fi
+
+      - name: upload npm platform package artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-platform-${{ matrix.name }}
+          path: npm-packages/*.tgz
+          if-no-files-found: error
 
   build-wheels:
     name: build wheel (${{ matrix.name }})
+    needs: build-core-assets
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -129,6 +166,10 @@ jobs:
             os: ubuntu-latest
             wheel-platform-tag: ""
             wheel-platform-regex: "manylinux.*_x86_64"
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            wheel-platform-tag: ""
+            wheel-platform-regex: "manylinux.*_aarch64"
           - name: macos-arm64
             os: macos-14
             wheel-platform-tag: "macosx_11_0_arm64"
@@ -139,7 +180,6 @@ jobs:
             wheel-platform-regex: "win_amd64"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -147,22 +187,52 @@ jobs:
       - name: show platform
         run: python -c "import platform, sys; print(sys.platform, platform.machine())"
 
-      - name: build core
-        run: cargo build --release --manifest-path core/Cargo.toml
+      - name: download core asset
+        uses: actions/download-artifact@v4
+        with:
+          name: core-asset-${{ matrix.name }}
+          path: core-asset
+
+      - name: unpack core asset
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+          import stat
+          import zipfile
+
+          zips = list(pathlib.Path("core-asset").glob("*.zip"))
+          if len(zips) != 1:
+              raise SystemExit(f"expected one core asset zip, got {zips}")
+          out = pathlib.Path("core-asset/unpacked")
+          out.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(zips[0]) as z:
+              z.extractall(out)
+          candidates = [
+              out / "elastik-core",
+              out / "elastik-core.exe",
+          ]
+          binary = next((p for p in candidates if p.exists()), None)
+          if binary is None:
+              raise SystemExit("core asset does not contain elastik-core binary")
+          if binary.name == "elastik-core":
+              binary.chmod(binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+          print(binary)
+          PY
 
       - name: bundle core binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force sdk/src/elastik/_bin | Out-Null
-          Copy-Item core/target/release/elastik-core.exe sdk/src/elastik/_bin/elastik-core.exe
+          Copy-Item core-asset/unpacked/elastik-core.exe sdk/src/elastik/_bin/elastik-core.exe
 
       - name: bundle core binary (unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p sdk/src/elastik/_bin
-          cp core/target/release/elastik-core sdk/src/elastik/_bin/elastik-core
+          cp core-asset/unpacked/elastik-core sdk/src/elastik/_bin/elastik-core
           chmod +x sdk/src/elastik/_bin/elastik-core
 
       - name: build wheel
@@ -271,8 +341,177 @@ jobs:
       - name: publish npm client
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node - <<'JS'
+          const fs = require("node:fs");
+          const version = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          pkg.version = version;
+          for (const name of Object.keys(pkg.optionalDependencies || {})) {
+            pkg.optionalDependencies[name] = version;
+          }
+          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          console.log(`publish-npm-client: set ${pkg.name} and optional deps to ${version}`);
+          JS
+          pkg_name=$(node -e "const fs=require('node:fs'); console.log(JSON.parse(fs.readFileSync('package.json','utf8')).name)")
+          mkdir -p ../npm-packages
+          npm pack --pack-destination ../npm-packages
+          tgz_path=$(ls ../npm-packages/*.tgz | head -n 1)
+          if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
+            echo "${pkg_name}@${version} already published; skipping npm publish"
+          else
+            npm publish "$tgz_path" --access public
+          fi
         working-directory: sdk-js
+
+      - name: upload npm client package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-client
+          path: npm-packages/*.tgz
+          if-no-files-found: error
+
+  release-checksums:
+    name: publish release checksums
+    needs:
+      - publish-pypi
+      - publish-npm-client
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: generate checksum manifests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import pathlib
+          import tarfile
+          import zipfile
+
+          root = pathlib.Path("artifacts")
+          packages = sorted(
+              p for p in root.rglob("*")
+              if p.is_file() and p.suffix in {".zip", ".whl", ".tgz"}
+          )
+          if not packages:
+              raise SystemExit("no release package artifacts found")
+
+          def sha256_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          def sha256_file(path: pathlib.Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          package_lines = []
+          binary_lines = []
+          binary_by_channel = {}
+
+          for path in packages:
+              rel = path.relative_to(root).as_posix()
+              package_lines.append(f"{sha256_file(path)}  {rel}")
+
+              artifact_dir = rel.split("/", 1)[0]
+              channel = None
+              platform = None
+              if artifact_dir.startswith("core-asset-"):
+                  channel = "github-release"
+                  platform = artifact_dir.removeprefix("core-asset-")
+              elif artifact_dir.startswith("npm-platform-"):
+                  channel = "npm"
+                  platform = artifact_dir.removeprefix("npm-platform-")
+              elif artifact_dir.startswith("elastik-wheel-"):
+                  channel = "pypi"
+                  platform = artifact_dir.removeprefix("elastik-wheel-")
+
+              def record_binary(name: str, data: bytes) -> None:
+                  digest = sha256_bytes(data)
+                  binary_lines.append(f"{digest}  {rel}!{name}")
+                  if channel and platform:
+                      binary_by_channel[(channel, platform)] = digest
+
+              if path.suffix in {".zip", ".whl"}:
+                  with zipfile.ZipFile(path) as z:
+                      for name in sorted(z.namelist()):
+                          if pathlib.PurePosixPath(name).name in {"elastik-core", "elastik-core.exe"}:
+                              record_binary(name, z.read(name))
+              elif path.suffix == ".tgz":
+                  with tarfile.open(path, "r:gz") as t:
+                      for member in sorted(t.getmembers(), key=lambda m: m.name):
+                          if pathlib.PurePosixPath(member.name).name in {"elastik-core", "elastik-core.exe"}:
+                              extracted = t.extractfile(member)
+                              if extracted is not None:
+                                  record_binary(member.name, extracted.read())
+
+          match_lines = []
+          platforms = sorted({
+              platform
+              for channel, platform in binary_by_channel
+              if channel in {"github-release", "npm", "pypi"}
+          })
+          for platform in platforms:
+              if ("github-release", platform) not in binary_by_channel:
+                  continue
+              release_digest = binary_by_channel[("github-release", platform)]
+              matched_channels = ["GitHub Release"]
+              for channel, label in [("npm", "npm"), ("pypi", "PyPI")]:
+                  if (channel, platform) not in binary_by_channel:
+                      continue
+                  channel_digest = binary_by_channel[(channel, platform)]
+                  if release_digest != channel_digest:
+                      raise SystemExit(
+                          f"binary mismatch for {platform}: "
+                          f"GitHub Release {release_digest} != {label} {channel_digest}"
+                      )
+                  matched_channels.append(label)
+              if len(matched_channels) > 1:
+                  match_lines.append(f"{platform}: {' == '.join(matched_channels)} ({release_digest})")
+
+          pathlib.Path("SHA256SUMS.txt").write_text("\n".join(package_lines) + "\n", encoding="utf-8")
+          pathlib.Path("BINARY-SHA256SUMS.txt").write_text("\n".join(binary_lines) + "\n", encoding="utf-8")
+          pathlib.Path("CHANNEL-MATCHES.txt").write_text("\n".join(match_lines) + "\n", encoding="utf-8")
+
+          note = [
+              "## Release checksums",
+              "",
+              "These checksums are generated by CI from the exact artifacts uploaded or published for this tag.",
+              "",
+              "Package file hashes are in `SHA256SUMS.txt`.",
+              "Embedded `elastik-core` binary hashes are in `BINARY-SHA256SUMS.txt`.",
+              "Cross-channel binary equality checks are in `CHANNEL-MATCHES.txt`.",
+              "",
+              "The workflow fails if a GitHub Release core zip, its matching npm platform package, or its matching PyPI wheel contain different core bytes.",
+              "",
+              "```text",
+              *package_lines,
+              "```",
+          ]
+          pathlib.Path("CHECKSUMS.md").write_text("\n".join(note) + "\n", encoding="utf-8")
+          PY
+          cat SHA256SUMS.txt
+          cat BINARY-SHA256SUMS.txt
+          cat CHANNEL-MATCHES.txt
+
+      - name: upload checksum assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SHA256SUMS.txt
+            BINARY-SHA256SUMS.txt
+            CHANNEL-MATCHES.txt
+          body_path: CHECKSUMS.md
+          append_body: true
 
   verify-npm-publish:
     name: verify npm publish
@@ -286,25 +525,13 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-      - name: install published package
+      - name: install published package and run bundled core
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
           mkdir verify-npm && cd verify-npm
           npm init -y
-          for attempt in 1 2 3 4 5; do
-            if npm install "@elastikjs/client@${version}"; then
-              exit 0
-            fi
-            echo "npm install did not see @elastikjs/client@${version} yet; retry ${attempt}/5"
-            sleep 10
-          done
-          exit 1
-      - name: start bundled core and round-trip
-        shell: bash
-        working-directory: verify-npm
-        run: |
-          node --input-type=module <<'JS'
+          cat > smoke.mjs <<'JS'
           import { Elastik } from "@elastikjs/client/start";
 
           const e = await Elastik.start({
@@ -323,3 +550,12 @@ jobs:
             await e.stop();
           }
           JS
+          for attempt in 1 2 3 4 5 6 7 8; do
+            rm -rf node_modules package-lock.json
+            if npm install "@elastikjs/core-linux-x64@${version}" "@elastikjs/client@${version}" && node smoke.mjs; then
+              exit 0
+            fi
+            echo "published npm packages not fully propagated yet; retry ${attempt}/8"
+            sleep 15
+          done
+          exit 1

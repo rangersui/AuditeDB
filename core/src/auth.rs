@@ -10,6 +10,8 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
+const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     Anon,
@@ -49,6 +51,9 @@ impl Tokens {
         let Some(value) = authorization else {
             return Tier::Anon;
         };
+        if value.len() > MAX_AUTHORIZATION_BYTES {
+            return Tier::Anon;
+        }
         let Some((scheme, credentials)) = value.split_once(char::is_whitespace) else {
             return Tier::Anon;
         };
@@ -218,6 +223,18 @@ mod tests {
 
         assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
         assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
+    }
+
+    #[test]
+    fn oversized_authorization_header_is_anon() {
+        let tokens = Tokens {
+            read: Some(b"reader".to_vec()),
+            write: Some(b"writer".to_vec()),
+            approve: Some(b"approve".to_vec()),
+        };
+        let header = format!("Bearer {}", "x".repeat(MAX_AUTHORIZATION_BYTES));
+
+        assert_eq!(tokens.check(Some(&header)), Tier::Anon);
     }
 
     #[test]

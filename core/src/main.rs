@@ -900,14 +900,10 @@ async fn handle_delete(
     };
     let body_sha256_before = world::sha256_hex(&stage.body);
 
-    let ok = core.delete_world(world_name);
-    if !ok {
-        return server_error("delete failed after preflight".to_string());
-    }
-
-    // Audit AFTER the disk op, so the global ledger records successful
-    // deletion, not merely an attempt. The ledger itself is sqlite even
-    // when the deleted world was memory-backed.
+    // WAL rule: record the delete intent before the physical delete.
+    // If the process crashes after this point, recovery sees an explicit
+    // pending delete instead of a vanished world with no causal record.
+    // The ledger itself is sqlite even when the deleted world is memory-backed.
     let delete_meta = hs::request_meta_headers(req_headers);
     if let Err(e) = audit::append(
         &core.data,
@@ -924,6 +920,11 @@ async fn handle_delete(
         &core.hmac_key,
     ) {
         return server_error(format!("audit: {e}"));
+    }
+
+    let ok = core.delete_world(world_name);
+    if !ok {
+        return server_error("delete failed after audit intent".to_string());
     }
     core.notify("DELETE", world_name, "");
     (StatusCode::NO_CONTENT, "").into_response()
@@ -1433,6 +1434,26 @@ mod tests {
         assert_eq!(headers.get("x-elapsed-us").unwrap(), "7");
         assert_eq!(headers.get(header::VARY).unwrap(), "Authorization");
         assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    }
+
+    #[test]
+    fn poisoned_persisted_headers_are_not_replayed() {
+        let mut out = Vec::new();
+        apply_meta_headers(
+            &[
+                (
+                    "x-custom".to_owned(),
+                    "evil\r\nset-cookie: admin=true".to_owned(),
+                ),
+                ("bad name".to_owned(), "ok".to_owned()),
+                ("x-safe".to_owned(), "ok".to_owned()),
+            ],
+            &mut out,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.as_str(), "x-safe");
+        assert_eq!(out[0].1, "ok");
     }
 
     #[test]
@@ -2621,6 +2642,11 @@ mod tests {
         let resp = handle_delete(&core, "home/delete-cas", &good, auth::Tier::Approve).await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert!(core.read_world("home/delete-cas").is_none());
+        assert!(core.read_world("var/log/deletes").is_some());
+        assert!(matches!(
+            audit::verify_chain(&core.data, "var/log/deletes", &core.hmac_key).unwrap(),
+            Some(audit::VerifyReport::Valid(_))
+        ));
 
         let _ = std::fs::remove_dir_all(dir);
     }
