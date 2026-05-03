@@ -124,6 +124,7 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
     "preference-applied",
     "priority",
     "critical-ch",
+    "clear-site-data",
     "content-type",
     "content-length",
     "etag",

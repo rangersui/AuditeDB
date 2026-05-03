@@ -134,11 +134,15 @@ impl Core {
         }
     }
 
-    fn delete_world(&self, world: &str) -> bool {
+    async fn delete_world_blocking(&self, world: &str) -> bool {
         if store::is_memory_world(world) {
             self.mem.delete(world)
         } else {
-            world::delete(&self.data, world)
+            let data = self.data.clone();
+            let world = world.to_string();
+            tokio::task::spawn_blocking(move || world::delete(&data, &world))
+                .await
+                .unwrap_or(false)
         }
     }
 
@@ -195,7 +199,7 @@ impl Core {
                 &self.hmac_key,
             ) {
                 Ok(h) => hs::hmac_etag(&h),
-                Err(e) => return Err(server_error(format!("storage/audit: {e}"))),
+                Err(e) => return Err(storage_error("storage/audit", e)),
             }
         } else {
             if memory_write_projected_bytes(self, world_name, body.len()) > self.max_memory_bytes {
@@ -203,7 +207,7 @@ impl Core {
             }
             match self.write_world(world_name, body, content_type, headers) {
                 Ok(()) => hs::body_etag(body),
-                Err(e) => return Err(server_error(format!("storage: {e}"))),
+                Err(e) => return Err(storage_error("storage", e)),
             }
         };
         self.notify("PUT", world_name, &new_etag);
@@ -239,9 +243,9 @@ async fn main() {
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
     std::fs::create_dir_all(&data).expect("create data dir");
-    let hmac_key = std::env::var("ELASTIK_KEY")
-        .expect("ELASTIK_KEY required: the audit chain has no meaning without it")
-        .into_bytes();
+    let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
+        "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
+    );
 
     let (events, _) = broadcast::channel(1024);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -582,7 +586,7 @@ async fn proc_audit_verify(
         Ok(Some(audit::VerifyReport::Valid(report))) => audit_valid(report),
         Ok(Some(audit::VerifyReport::Broken(report))) => audit_broken(report),
         Ok(None) => not_found(),
-        Err(e) => server_error(format!("audit verify: {e}")),
+        Err(e) => storage_error("audit verify", e),
     }
 }
 
@@ -654,7 +658,31 @@ fn valid_world_name(world_name: &str) -> bool {
         && !world_name.chars().any(char::is_control)
         && world_name
             .split('/')
-            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+            .all(|segment| !segment.is_empty() && !is_dot_segment(segment))
+}
+
+fn is_dot_segment(segment: &str) -> bool {
+    let Some(rest) = strip_dot_token(segment) else {
+        return false;
+    };
+    rest.is_empty()
+        || strip_dot_token(rest)
+            .map(|tail| tail.is_empty())
+            .unwrap_or(false)
+}
+
+fn strip_dot_token(segment: &str) -> Option<&str> {
+    if let Some(rest) = segment.strip_prefix('.') {
+        return Some(rest);
+    }
+    if segment
+        .as_bytes()
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"%2e"))
+    {
+        return Some(&segment[3..]);
+    }
+    None
 }
 
 fn is_reserved_world_name(world_name: &str) -> bool {
@@ -857,7 +885,7 @@ async fn handle_post(
         ) {
             Ok(Some((_result, h))) => hs::hmac_etag(&h),
             Ok(None) => return not_found(),
-            Err(e) => return server_error(format!("storage/audit: {e}")),
+            Err(e) => return storage_error("storage/audit", e),
         }
     } else {
         if memory_append_projected_bytes(core, world_name, body.len()) > core.max_memory_bytes {
@@ -866,7 +894,7 @@ async fn handle_post(
         let result = match core.append_world(world_name, &body) {
             Ok(Some(r)) => r,
             Ok(None) => return not_found(),
-            Err(e) => return server_error(format!("storage: {e}")),
+            Err(e) => return storage_error("storage", e),
         };
         format!("sha256-{}", result.body_sha256_after)
     };
@@ -908,7 +936,7 @@ async fn handle_delete(
     if let Err(e) = audit::append(
         &core.data,
         "var/log/deletes",
-        "delete",
+        "delete_intent",
         world_name,
         &body_sha256_before,
         0,
@@ -919,12 +947,29 @@ async fn handle_delete(
         &delete_meta,
         &core.hmac_key,
     ) {
-        return server_error(format!("audit: {e}"));
+        return storage_error("delete audit intent", e);
     }
 
-    let ok = core.delete_world(world_name);
+    let ok = core.delete_world_blocking(world_name).await;
     if !ok {
         return server_error("delete failed after audit intent".to_string());
+    }
+
+    if let Err(e) = audit::append(
+        &core.data,
+        "var/log/deletes",
+        "delete_commit",
+        world_name,
+        &body_sha256_before,
+        0,
+        req_headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        &delete_meta,
+        &core.hmac_key,
+    ) {
+        return storage_error("delete audit commit", e);
     }
     core.notify("DELETE", world_name, "");
     (StatusCode::NO_CONTENT, "").into_response()
@@ -1002,6 +1047,9 @@ fn to_header_map(pairs: Vec<(HeaderName, HeaderValue)>) -> HeaderMap {
 
 fn apply_meta_headers(headers: &[(String, String)], out: &mut Vec<(HeaderName, HeaderValue)>) {
     for (k, v) in headers {
+        if hs::is_never_persisted_header(&k.to_ascii_lowercase()) {
+            continue;
+        }
         let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
             continue;
         };
@@ -1171,6 +1219,17 @@ fn server_error(msg: String) -> Response {
         .into_response()
 }
 
+fn storage_error(scope: &str, err: impl std::fmt::Display) -> Response {
+    eprintln!("elastik-core internal {scope}: {err}");
+    server_error("storage failure".to_string())
+}
+
+fn hmac_key_from_env_value(value: Option<String>) -> Option<Vec<u8>> {
+    value
+        .filter(|s| !s.trim().is_empty())
+        .map(String::into_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1206,6 +1265,17 @@ mod tests {
                 None => std::env::remove_var("ELASTIK_COAP_PORT"),
             }
         }
+    }
+
+    #[test]
+    fn hmac_key_requires_nonempty_semantic_content() {
+        assert!(hmac_key_from_env_value(None).is_none());
+        assert!(hmac_key_from_env_value(Some(String::new())).is_none());
+        assert!(hmac_key_from_env_value(Some(" \t\n".to_string())).is_none());
+        assert_eq!(
+            hmac_key_from_env_value(Some(" secret ".to_string())).unwrap(),
+            b" secret ".to_vec()
+        );
     }
 
     #[test]
@@ -1445,6 +1515,8 @@ mod tests {
                     "x-custom".to_owned(),
                     "evil\r\nset-cookie: admin=true".to_owned(),
                 ),
+                ("set-cookie".to_owned(), "sid=admin; Path=/".to_owned()),
+                ("clear-site-data".to_owned(), "\"cookies\"".to_owned()),
                 ("bad name".to_owned(), "ok".to_owned()),
                 ("x-safe".to_owned(), "ok".to_owned()),
             ],
@@ -1475,6 +1547,7 @@ mod tests {
     #[test]
     fn dot_segments_empty_segments_and_backslashes_are_not_valid_world_names() {
         assert!(!valid_world_name("home/../etc/secret"));
+        assert!(!valid_world_name("home/%2E%2E/etc/secret"));
         assert!(!valid_world_name("home/./x"));
         assert!(!valid_world_name("home//x"));
         assert!(!valid_world_name("home/x/"));
@@ -2308,6 +2381,7 @@ mod tests {
         headers.insert("x-forwarded-for", HeaderValue::from_static("127.0.0.1"));
         headers.insert("x-forwarded-host", HeaderValue::from_static("example.com"));
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert("clear-site-data", HeaderValue::from_static("\"cookies\""));
 
         let meta = hs::request_meta_headers(&headers);
         let has = |name: &str| meta.iter().any(|(n, _)| n == name);
@@ -2379,6 +2453,7 @@ mod tests {
             "x-forwarded-for",
             "x-forwarded-host",
             "x-forwarded-proto",
+            "clear-site-data",
         ] {
             assert!(!has(name), "{name} should not be persisted");
         }
@@ -2647,6 +2722,18 @@ mod tests {
             audit::verify_chain(&core.data, "var/log/deletes", &core.hmac_key).unwrap(),
             Some(audit::VerifyReport::Valid(_))
         ));
+        let ledger = world::open_existing(&core.data, "var/log/deletes")
+            .unwrap()
+            .unwrap();
+        let mut stmt = ledger
+            .prepare("SELECT event_type FROM events ORDER BY id")
+            .unwrap();
+        let events: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(events, vec!["delete_intent", "delete_commit"]);
 
         let _ = std::fs::remove_dir_all(dir);
     }

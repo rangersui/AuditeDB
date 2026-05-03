@@ -57,3 +57,5 @@ Usually outside the Elastik security boundary:
 If you store an HTML app, that HTML app owns its browser policy. If you expose
 Elastik to a network, that deployment owns its edge policy. The core remains a
 small storage engine: bytes in, bytes out, with token gates and an audit chain.
+On the optional SCoAP/UDP surface, auth tokens travel as plaintext datagram
+metadata unless you wrap that edge in CoAPS/DTLS or another trusted tunnel.

@@ -214,7 +214,7 @@ fn is_persisted_representation_header_lowercase(name: &str) -> bool {
     !is_never_persisted_header(name)
 }
 
-fn is_never_persisted_header(name: &str) -> bool {
+pub(crate) fn is_never_persisted_header(name: &str) -> bool {
     name.starts_with("sec-")
         || name.starts_with("access-control-request-")
         || name.starts_with("want-")
@@ -285,6 +285,7 @@ fn is_never_persisted_header(name: &str) -> bool {
                 | "preference-applied"
                 | "priority"
                 | "critical-ch"
+                | "clear-site-data"
                 // Core-owned response headers are derived from stored bytes/audit.
                 // Content-Type is persisted separately as Stage.content_type.
                 | "content-type"
