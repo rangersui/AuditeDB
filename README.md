@@ -469,7 +469,15 @@ trail, or core-generated state are not stored. The blacklist is category-based:
 - proxy trail: `Forwarded`, `Via`, `X-Forwarded-For`, `X-Forwarded-Host`,
   `X-Forwarded-Proto`
 - browser probes and CORS preflight request headers: `Sec-*`,
-  `Access-Control-Request-*`
+  `Access-Control-Request-*`, `Want-*`
+
+Because this policy is denylist-based, the repository also carries a drift
+radar. `tools/header_policy_scan.py` compares the reviewed baseline in
+`tools/header_policy_baseline.txt` with the IANA HTTP Field Name Registry and
+MDN browser header data. New upstream header names fail the weekly header
+policy workflow until a human classifies them as request state, transport
+state, core-owned state, or representation metadata that may travel with the
+bytes.
 
 That split is the core contract:
 
