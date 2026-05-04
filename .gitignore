@@ -37,6 +37,7 @@ bus.crt
 bus.key
 
 # Local-only
+docs/
 openapi.json
 semantic-results.md
 

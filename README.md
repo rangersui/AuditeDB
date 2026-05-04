@@ -507,9 +507,6 @@ curl.exe -X PUT http://127.0.0.1:3105/home/logo.png `
 core does not know what CORS or frame policy means; it just preserves safe
 response metadata for the client that does know.
 
-For edge-cache examples, see the optional, unmaintained
-[`CDN Header Quick Reference`](docs/cdn-header-quick-reference.md).
-
 ## Trust Model
 
 The core is a byte store, not a browser security product.
