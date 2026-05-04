@@ -38,7 +38,6 @@ use crate::{auth, can_read, canonicalize_path, valid_world_name, Core};
 
 const MAX_DATAGRAM: usize = 1152;
 const RECV_BUF: usize = MAX_DATAGRAM + 1;
-const MAX_IN_FLIGHT: usize = 1024;
 /// Experimental critical CoAP option carrying the raw elastik token bytes.
 ///
 /// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
@@ -99,6 +98,7 @@ pub(crate) async fn serve(
     core: std::sync::Arc<Core>,
     bind: String,
     mut shutdown: watch::Receiver<bool>,
+    max_in_flight: usize,
 ) {
     let socket = match UdpSocket::bind(&bind).await {
         Ok(socket) => socket,
@@ -108,7 +108,7 @@ pub(crate) async fn serve(
         }
     };
     let socket = std::sync::Arc::new(socket);
-    let permits = std::sync::Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    let permits = std::sync::Arc::new(Semaphore::new(max_in_flight));
     eprintln!("scoap: listening on coap://{bind}/");
     eprintln!("scoap: UDP curl surface; auth option {ELASTIK_AUTH_OPTION} maps to token tier");
     let mut buf = [0_u8; RECV_BUF];
@@ -138,7 +138,18 @@ pub(crate) async fn serve(
                 let permit = match permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
-                        eprintln!("scoap: dropping datagram from {peer}: in-flight limit reached");
+                        eprintln!("scoap: rejecting datagram from {peer}: in-flight limit reached");
+                        if let Ok(request) = parse_packet(&data) {
+                            let response = encode_response(
+                                &request,
+                                163,
+                                Some(0),
+                                b"too many coap requests\n",
+                            );
+                            if let Err(e) = socket.send_to(&response, peer).await {
+                                eprintln!("scoap: send_to {peer}: {e}");
+                            }
+                        }
                         continue;
                     }
                 };
@@ -480,7 +491,8 @@ fn status_to_coap(status: StatusCode) -> u8 {
 mod tests {
     use super::*;
     use crate::{
-        auth, store, Core, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES, LISTEN_REPLAY_MAX,
+        auth, store, Core, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
+        DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
     };
     use std::collections::VecDeque;
     use std::path::PathBuf;
@@ -516,8 +528,11 @@ mod tests {
                 max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                 max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
                 events,
-                listen_slots: Arc::new(tokio::sync::Semaphore::new(crate::MAX_LISTEN_CONNECTIONS)),
-                event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(LISTEN_REPLAY_MAX))),
+                listen_slots: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_LISTEN_CONNECTIONS)),
+                listen_replay_max: DEFAULT_LISTEN_REPLAY_MAX,
+                event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(
+                    DEFAULT_LISTEN_REPLAY_MAX,
+                ))),
                 shutdown: watch::channel(false).1,
                 next_event: Arc::new(AtomicU64::new(0)),
                 next_request: Arc::new(AtomicU64::new(0)),
@@ -567,6 +582,16 @@ mod tests {
     #[test]
     fn receive_buffer_can_detect_one_byte_oversize_datagrams() {
         assert_eq!(RECV_BUF, MAX_DATAGRAM + 1);
+    }
+
+    #[test]
+    fn in_flight_limit_response_is_explicit_service_unavailable() {
+        let p = packet(&[0x41, 0x01, 0x12, 0x34, 0xaa]);
+        let out = encode_response(&p, 163, Some(0), b"too many coap requests\n");
+        assert_eq!(&out[..5], &[0x61, 163, 0x12, 0x34, 0xaa]);
+        assert_eq!(out[5], 0xc0); // Content-Format: text/plain
+        assert_eq!(out[6], 0xff);
+        assert_eq!(&out[7..], b"too many coap requests\n");
     }
 
     #[test]

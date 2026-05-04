@@ -82,6 +82,7 @@ struct Core {
     max_memory_bytes: usize,
     events: broadcast::Sender<listen::ChangeEvent>,
     listen_slots: Arc<Semaphore>,
+    listen_replay_max: usize,
     event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
     shutdown: watch::Receiver<bool>,
     next_event: Arc<AtomicU64>,
@@ -171,7 +172,7 @@ impl Core {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             log.push_back(change.clone());
-            while log.len() > LISTEN_REPLAY_MAX {
+            while log.len() > self.listen_replay_max {
                 log.pop_front();
             }
         }
@@ -238,10 +239,11 @@ const ROOT_ALLOW: &str = "GET, HEAD, OPTIONS";
 const PROC_ALLOW: &str = "GET, HEAD, OPTIONS";
 const AUDIT_VERIFY_ALLOW: &str = "GET, HEAD, OPTIONS";
 const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
-const LISTEN_REPLAY_MAX: usize = 1024;
 const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
-const MAX_LISTEN_CONNECTIONS: usize = 1024;
+const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;
+const DEFAULT_MAX_LISTEN_CONNECTIONS: usize = 1024;
+const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
 
 #[tokio::main]
 async fn main() {
@@ -254,12 +256,20 @@ async fn main() {
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
+    let max_listen_connections = env_nonzero_usize(
+        "ELASTIK_MAX_LISTEN_CONNECTIONS",
+        DEFAULT_MAX_LISTEN_CONNECTIONS,
+    );
+    let listen_replay_max =
+        env_nonzero_usize("ELASTIK_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX);
+    let coap_max_in_flight =
+        env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT);
     std::fs::create_dir_all(&data).expect("create data dir");
     let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
         "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
     );
 
-    let (events, _) = broadcast::channel(1024);
+    let (events, _) = broadcast::channel(listen_replay_max);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(Core {
         data,
@@ -269,8 +279,9 @@ async fn main() {
         max_world_bytes,
         max_memory_bytes,
         events,
-        listen_slots: Arc::new(Semaphore::new(MAX_LISTEN_CONNECTIONS)),
-        event_log: Arc::new(StdMutex::new(VecDeque::new())),
+        listen_slots: Arc::new(Semaphore::new(max_listen_connections)),
+        listen_replay_max,
+        event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(listen_replay_max))),
         shutdown: shutdown_rx.clone(),
         next_event: Arc::new(AtomicU64::new(0)),
         next_request: Arc::new(AtomicU64::new(0)),
@@ -290,7 +301,7 @@ async fn main() {
         let coap_state = state.clone();
         let coap_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            coap::serve(coap_state, coap_addr, coap_shutdown).await;
+            coap::serve(coap_state, coap_addr, coap_shutdown, coap_max_in_flight).await;
         });
     }
     let app = Router::new()
@@ -412,6 +423,13 @@ fn env_usize(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+fn env_nonzero_usize(name: &str, default: usize) -> usize {
+    match env_usize(name, default) {
+        0 => default,
+        value => value,
+    }
 }
 
 fn coap_bind_from_env() -> Option<(String, u16)> {
@@ -1292,6 +1310,16 @@ mod tests {
             hmac_key_from_env_value(Some(" secret ".to_string())).unwrap(),
             b" secret ".to_vec()
         );
+    }
+
+    #[test]
+    fn resource_cap_env_zero_falls_back_to_default() {
+        let key = format!("ELASTIK_TEST_ZERO_CAP_{}", std::process::id());
+        std::env::set_var(&key, "0");
+        assert_eq!(env_nonzero_usize(&key, 7), 7);
+        std::env::set_var(&key, "9");
+        assert_eq!(env_nonzero_usize(&key, 7), 9);
+        std::env::remove_var(&key);
     }
 
     #[test]
@@ -2836,8 +2864,11 @@ mod tests {
                     max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                     max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
                     events,
-                    listen_slots: Arc::new(Semaphore::new(MAX_LISTEN_CONNECTIONS)),
-                    event_log: Arc::new(StdMutex::new(VecDeque::new())),
+                    listen_slots: Arc::new(Semaphore::new(DEFAULT_MAX_LISTEN_CONNECTIONS)),
+                    listen_replay_max: DEFAULT_LISTEN_REPLAY_MAX,
+                    event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(
+                        DEFAULT_LISTEN_REPLAY_MAX,
+                    ))),
                     shutdown: watch::channel(false).1,
                     next_event: Arc::new(AtomicU64::new(0)),
                     next_request: Arc::new(AtomicU64::new(0)),

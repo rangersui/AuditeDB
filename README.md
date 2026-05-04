@@ -243,10 +243,15 @@ Resource caps:
 |---|---:|---|
 | `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum stored size of one world after `PUT` or `POST`. |
 | `ELASTIK_MAX_MEMORY_BYTES` | `268435456` | Maximum total bytes in memory-backed worlds (`/tmp`, `/dev`, `/sys`). |
+| `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE connections. |
+| `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Number of recent change events kept for `Last-Event-ID` replay. |
+| `ELASTIK_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent SCoAP/UDP request handlers when CoAP is enabled. |
 
 The HTTP request body limit is 64 MiB. `POST` append also checks the projected
 final world size before writing. If a write would cross a cap, the core returns
-`413 Payload Too Large`.
+`413 Payload Too Large`. If `/listen/*` is full, the core returns
+`503 Service Unavailable`. If SCoAP/UDP in-flight work is full, the core
+returns CoAP `5.03 Service Unavailable`.
 
 ## Auth
 
