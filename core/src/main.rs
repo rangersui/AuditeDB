@@ -460,9 +460,33 @@ fn listen_addr(host: &str, port: u16) -> String {
 }
 
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
-    let _ = tokio::signal::ctrl_c().await;
+    wait_for_shutdown_signal().await;
     eprintln!("elastik-core: shutdown signal received");
     let _ = shutdown_tx.send(true);
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(sigterm) => sigterm,
+        Err(e) => {
+            eprintln!("elastik-core: failed to install SIGTERM handler: {e}; waiting for Ctrl-C");
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = sigterm.recv() => {},
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Bare `GET /` — not protocol, not UI. Just a courtesy text/plain
