@@ -1238,6 +1238,15 @@ fn payload_too_large(max_bytes: usize) -> Response {
         .into_response()
 }
 
+fn insufficient_storage() -> Response {
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "insufficient storage\n",
+    )
+        .into_response()
+}
+
 fn options_response(allow: &'static str) -> Response {
     (
         StatusCode::NO_CONTENT,
@@ -1277,9 +1286,27 @@ fn server_error(msg: String) -> Response {
         .into_response()
 }
 
-fn storage_error(scope: &str, err: impl std::fmt::Display) -> Response {
+fn storage_error(scope: &str, err: rusqlite::Error) -> Response {
     eprintln!("elastik-core internal {scope}: {err}");
-    server_error("storage failure".to_string())
+    if is_insufficient_storage_error(&err) {
+        insufficient_storage()
+    } else {
+        server_error("storage failure".to_string())
+    }
+}
+
+fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {
+    if matches!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ffi::ErrorCode::DiskFull)
+    ) {
+        return true;
+    }
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("database or disk is full")
+        || msg.contains("disk is full")
+        || msg.contains("no space left")
+        || msg.contains("not enough space")
 }
 
 fn hmac_key_from_env_value(value: Option<String>) -> Option<Vec<u8>> {
@@ -1344,6 +1371,30 @@ mod tests {
         std::env::set_var(&key, "9");
         assert_eq!(env_nonzero_usize(&key, 7), 9);
         std::env::remove_var(&key);
+    }
+
+    #[test]
+    fn sqlite_disk_full_maps_to_507() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        );
+        assert!(is_insufficient_storage_error(&err));
+
+        let resp = storage_error("test", err);
+        assert_eq!(resp.status(), StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    #[test]
+    fn non_storage_sqlite_errors_stay_500() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        );
+        assert!(!is_insufficient_storage_error(&err));
+
+        let resp = storage_error("test", err);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]

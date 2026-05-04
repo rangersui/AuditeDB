@@ -482,6 +482,7 @@ fn status_to_coap(status: StatusCode) -> u8 {
         412 => 140,
         413 => 141,
         415 => 143,
+        507 => 167,
         500..=599 => 160,
         _ => 128,
     }
@@ -592,6 +593,11 @@ mod tests {
         assert_eq!(out[5], 0xc0); // Content-Format: text/plain
         assert_eq!(out[6], 0xff);
         assert_eq!(&out[7..], b"too many coap requests\n");
+    }
+
+    #[test]
+    fn http_507_maps_to_coap_insufficient_storage() {
+        assert_eq!(status_to_coap(StatusCode::INSUFFICIENT_STORAGE), 167);
     }
 
     #[test]

@@ -25,8 +25,9 @@
 
 use crate::audit;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{ffi, params, Connection, OpenFlags};
 use sha2::{Digest, Sha256};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -72,7 +73,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// Open or create the world's universe.db with the v5.0 schema.
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     let dir = world_dir(data_root, world);
-    std::fs::create_dir_all(&dir).expect("create world dir");
+    std::fs::create_dir_all(&dir).map_err(create_dir_error)?;
     let c = Connection::open(world_db(data_root, world))?;
     c.busy_timeout(Duration::from_millis(5000))?;
     c.execute_batch(
@@ -110,6 +111,18 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
         "#,
     )?;
     Ok(c)
+}
+
+fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
+    let code = match err.kind() {
+        ErrorKind::StorageFull | ErrorKind::WriteZero => ffi::SQLITE_FULL,
+        ErrorKind::PermissionDenied => ffi::SQLITE_PERM,
+        _ => ffi::SQLITE_CANTOPEN,
+    };
+    rusqlite::Error::SqliteFailure(
+        ffi::Error::new(code),
+        Some(format!("create world dir failed: {err}")),
+    )
 }
 
 /// Open an existing world's universe.db without creating directories,
@@ -470,5 +483,14 @@ mod tests {
             .decode_utf8()
             .unwrap();
         assert_eq!(decoded, world);
+    }
+
+    #[test]
+    fn create_dir_storage_full_maps_to_sqlite_disk_full() {
+        let err = create_dir_error(std::io::Error::from(ErrorKind::StorageFull));
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ffi::ErrorCode::DiskFull)
+        );
     }
 }

@@ -251,7 +251,8 @@ The HTTP request body limit is 64 MiB. `POST` append also checks the projected
 final world size before writing. If a write would cross a cap, the core returns
 `413 Payload Too Large`. If `/listen/*` is full, the core returns
 `503 Service Unavailable`. If SCoAP/UDP in-flight work is full, the core
-returns CoAP `5.03 Service Unavailable`.
+returns CoAP `5.03 Service Unavailable`. If the underlying filesystem or
+SQLite reports storage exhaustion, the core returns `507 Insufficient Storage`.
 
 ## Auth
 
