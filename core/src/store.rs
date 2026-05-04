@@ -13,8 +13,9 @@
 //! Audit/HMAC chain only fires on durable writes — memory worlds are
 //! by definition not tamper-evident across restarts.
 
-use crate::world::{self, AppendResult, Stage};
+use crate::world::{self, AppendResult, Stage, WorldMetadata};
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -63,7 +64,7 @@ impl MemoryStore {
         ))
     }
 
-    pub fn metadata(&self, world: &str) -> Option<(usize, String, Vec<(String, String)>)> {
+    pub fn metadata(&self, world: &str) -> Option<WorldMetadata> {
         let map = self.map_guard();
         let e = map.get(world)?;
         Some((e.body.len(), e.content_type.clone(), e.headers.clone()))
@@ -117,16 +118,27 @@ impl MemoryStore {
             .sum()
     }
 
+    pub fn sizes(&self) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = self
+            .map_guard()
+            .iter()
+            .map(|(world, entry)| (world.clone(), entry.body.len()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     fn map_guard(&self) -> MutexGuard<'_, HashMap<String, MemEntry>> {
         self.map.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 }
 
-/// Combined view: sqlite + memory. Used by /proc/worlds.
-pub fn list_all(data_root: &Path, mem: &MemoryStore) -> Vec<String> {
-    let mut out = world::list(data_root);
+/// Combined view: sqlite + memory. Used by tests that assert both stores agree.
+#[cfg(test)]
+pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<String>> {
+    let mut out = world::list(data_root)?;
     out.extend(mem.list());
     out.sort();
     out.dedup();
-    out
+    Ok(out)
 }

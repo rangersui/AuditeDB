@@ -159,6 +159,7 @@ export class NotFound extends ElastikError {}
 export class PreconditionFailed extends ElastikError {}
 export class PayloadTooLarge extends ElastikError {}
 export class ServerError extends ElastikError {}
+export class InsufficientStorage extends ServerError {}
 export class NetworkError extends ElastikError {}
 
 export class Elastik {

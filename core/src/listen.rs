@@ -181,7 +181,10 @@ mod tests {
     use std::{
         collections::VecDeque,
         path::PathBuf,
-        sync::{atomic::AtomicU64, Arc, Mutex as StdMutex},
+        sync::{
+            atomic::{AtomicBool, AtomicU64, AtomicUsize},
+            Arc, Mutex as StdMutex,
+        },
     };
     use tokio::sync::{broadcast, watch, Mutex, Semaphore};
 
@@ -215,6 +218,45 @@ mod tests {
         assert!(!wire.contains("body"));
     }
 
+    #[tokio::test]
+    async fn handler_returns_503_when_listen_slots_are_full() {
+        let (events, _) = broadcast::channel(16);
+        let core = Arc::new(Core {
+            data: PathBuf::new(),
+            tokens: auth::Tokens {
+                read: None,
+                write: None,
+                approve: None,
+            },
+            hmac_key: b"test-key".to_vec(),
+            mem: Arc::new(store::MemoryStore::new()),
+            max_world_bytes: 1024,
+            max_memory_bytes: 1024,
+            max_storage_bytes: None,
+            storage_body_bytes: Arc::new(AtomicUsize::new(0)),
+            durable_world_count: Arc::new(AtomicUsize::new(0)),
+            delete_ledger_created: Arc::new(AtomicBool::new(false)),
+            events,
+            listen_slots: Arc::new(Semaphore::new(0)),
+            listen_replay_max: crate::DEFAULT_LISTEN_REPLAY_MAX,
+            event_log: Arc::new(StdMutex::new(VecDeque::new())),
+            shutdown: watch::channel(false).1,
+            next_event: Arc::new(AtomicU64::new(0)),
+            next_request: Arc::new(AtomicU64::new(0)),
+            write_lock: Arc::new(Mutex::new(())),
+        });
+
+        let resp = handler(
+            State(core),
+            Method::GET,
+            HeaderMap::new(),
+            AxPath("home/task/*".to_string()),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     #[test]
     fn replay_after_reports_ring_gap_and_replays_available_events() {
         let (events, _) = broadcast::channel(16);
@@ -229,6 +271,10 @@ mod tests {
             mem: Arc::new(store::MemoryStore::new()),
             max_world_bytes: 1024,
             max_memory_bytes: 1024,
+            max_storage_bytes: None,
+            storage_body_bytes: Arc::new(AtomicUsize::new(0)),
+            durable_world_count: Arc::new(AtomicUsize::new(0)),
+            delete_ledger_created: Arc::new(AtomicBool::new(false)),
             events,
             listen_slots: Arc::new(Semaphore::new(crate::DEFAULT_MAX_LISTEN_CONNECTIONS)),
             listen_replay_max: crate::DEFAULT_LISTEN_REPLAY_MAX,
@@ -272,6 +318,10 @@ mod tests {
             mem: Arc::new(store::MemoryStore::new()),
             max_world_bytes: 1024,
             max_memory_bytes: 1024,
+            max_storage_bytes: None,
+            storage_body_bytes: Arc::new(AtomicUsize::new(0)),
+            durable_world_count: Arc::new(AtomicUsize::new(0)),
+            delete_ledger_created: Arc::new(AtomicBool::new(false)),
             events,
             listen_slots: Arc::new(Semaphore::new(crate::DEFAULT_MAX_LISTEN_CONNECTIONS)),
             listen_replay_max: crate::DEFAULT_LISTEN_REPLAY_MAX,

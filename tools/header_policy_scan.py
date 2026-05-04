@@ -77,17 +77,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, help="write a markdown report")
     parser.add_argument("--refresh-baseline", action="store_true", help="replace baseline with fetched upstream names")
     parser.add_argument("--offline", action="store_true", help="use the baseline as the upstream set")
+    parser.add_argument(
+        "--check-baseline",
+        action="store_true",
+        help="fetch upstream registries and fail if the checked-in baseline has unreviewed edits",
+    )
     parser.add_argument("--self-test", action="store_true", help="run parser self-tests and exit")
     args = parser.parse_args(argv)
+
+    if args.check_baseline and args.offline:
+        raise SystemExit("--check-baseline cannot be combined with --offline")
 
     if args.self_test:
         self_test()
         print("header policy scanner self-test: ok")
         return 0
 
+    if not args.refresh_baseline and not args.baseline.exists():
+        raise SystemExit(f"baseline file not found: {args.baseline}")
+
     baseline = read_name_file(args.baseline)
     rust_deny, rust_prefixes = parse_rust_policy(args.rust)
-    python_deny = parse_python_policy(args.python)
+    python_deny, python_prefixes = parse_python_policy(args.python)
 
     if args.offline:
         upstream = set(baseline)
@@ -104,10 +115,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refreshed {args.baseline} with {len(upstream)} names")
         return 0
 
+    if args.check_baseline:
+        extra = sorted(baseline - upstream)
+        missing = sorted(upstream - baseline)
+        if extra or missing:
+            lines = [
+                "# Header Policy Baseline Check",
+                "",
+                "The checked-in baseline does not match the live upstream registries.",
+                "Run `python tools/header_policy_scan.py --refresh-baseline` only after reviewing policy changes.",
+                "",
+            ]
+            if missing:
+                lines.extend(["## Missing From Baseline", ""])
+                lines.extend(f"- `{name}`" for name in missing)
+                lines.append("")
+            if extra:
+                lines.extend(["## Extra In Baseline", ""])
+                lines.extend(f"- `{name}`" for name in extra)
+                lines.append("")
+            check_report = "\n".join(lines)
+            if args.report:
+                args.report.write_text(check_report, encoding="utf-8")
+            print(check_report)
+            return 1
+
     new_names = sorted(upstream - baseline)
     removed_names = sorted(baseline - upstream) if not args.offline else []
     parity_only_rust = sorted(rust_deny - python_deny)
     parity_only_python = sorted(python_deny - rust_deny)
+    prefix_only_rust = sorted(rust_prefixes - python_prefixes)
+    prefix_only_python = sorted(python_prefixes - rust_prefixes)
     missing_required = sorted(name for name in REQUIRED_DENY if name not in rust_deny)
 
     report = build_report(
@@ -116,10 +154,13 @@ def main(argv: list[str] | None = None) -> int:
         rust_deny=rust_deny,
         rust_prefixes=rust_prefixes,
         python_deny=python_deny,
+        python_prefixes=python_prefixes,
         new_names=new_names,
         removed_names=removed_names,
         parity_only_rust=parity_only_rust,
         parity_only_python=parity_only_python,
+        prefix_only_rust=prefix_only_rust,
+        prefix_only_python=prefix_only_python,
         missing_required=missing_required,
     )
 
@@ -127,7 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         args.report.write_text(report, encoding="utf-8")
     print(report)
 
-    if new_names or parity_only_rust or parity_only_python or missing_required:
+    if (
+        new_names
+        or parity_only_rust
+        or parity_only_python
+        or prefix_only_rust
+        or prefix_only_python
+        or missing_required
+    ):
         return 1
     return 0
 
@@ -201,12 +249,36 @@ def parse_rust_policy_from_text(
     return deny, prefixes
 
 
-def parse_python_policy(path: Path) -> set[str]:
+def parse_python_policy(path: Path) -> tuple[set[str], set[str]]:
     text = path.read_text(encoding="utf-8")
+    return parse_python_policy_from_text(text, path=path)
+
+
+def parse_python_policy_from_text(
+    text: str,
+    *,
+    path: Path | str = "<memory>",
+) -> tuple[set[str], set[str]]:
     match = re.search(r"_NON_PERSISTED_RESPONSE_HEADERS\s*=\s*\{(?P<body>.*?)\n\}", text, re.S)
     if not match:
         raise SystemExit(f"could not find _NON_PERSISTED_RESPONSE_HEADERS in {path}")
-    return {normalize(name) for name in re.findall(r'"([A-Za-z0-9][A-Za-z0-9-]*)"', match.group("body"))}
+    fn = extract_python_function(text, "_should_persist_response_header")
+    deny = {
+        normalize(name)
+        for name in re.findall(r'"([A-Za-z0-9][A-Za-z0-9-]*)"', match.group("body"))
+    }
+    prefixes = {
+        normalize(prefix)
+        for prefix in re.findall(r'n\.startswith\("([A-Za-z0-9-]+-)"\)', fn)
+    }
+    return deny, prefixes
+
+
+def extract_python_function(text: str, name: str) -> str:
+    match = re.search(rf"^def\s+{re.escape(name)}\b.*?(?=^def\s|\Z)", text, re.S | re.M)
+    if not match:
+        raise SystemExit(f"could not find Python function {name}")
+    return match.group(0)
 
 
 def extract_function(text: str, name: str) -> str:
@@ -380,10 +452,13 @@ def build_report(
     rust_deny: set[str],
     rust_prefixes: set[str],
     python_deny: set[str],
+    python_prefixes: set[str],
     new_names: list[str],
     removed_names: list[str],
     parity_only_rust: list[str],
     parity_only_python: list[str],
+    prefix_only_rust: list[str],
+    prefix_only_python: list[str],
     missing_required: list[str],
 ) -> str:
     lines = [
@@ -395,6 +470,7 @@ def build_report(
         f"| Rust deny names | {len(rust_deny)} |",
         f"| Rust deny prefixes | {len(rust_prefixes)} |",
         f"| Python deny names | {len(python_deny)} |",
+        f"| Python deny prefixes | {len(python_prefixes)} |",
     ]
     for label, names in sources.items():
         lines.append(f"| Upstream {label} names | {len(names)} |")
@@ -420,7 +496,7 @@ def build_report(
             lines.append(f"- `{name}`")
         lines.append("")
 
-    if parity_only_rust or parity_only_python:
+    if parity_only_rust or parity_only_python or prefix_only_rust or prefix_only_python:
         lines.extend(["## Rust/Python Denylist Drift", ""])
         if parity_only_rust:
             lines.append("Only in Rust:")
@@ -428,6 +504,12 @@ def build_report(
         if parity_only_python:
             lines.append("Only in Python:")
             lines.extend(f"- `{name}`" for name in parity_only_python)
+        if prefix_only_rust:
+            lines.append("Only in Rust prefixes:")
+            lines.extend(f"- `{name}`" for name in prefix_only_rust)
+        if prefix_only_python:
+            lines.append("Only in Python prefixes:")
+            lines.extend(f"- `{name}`" for name in prefix_only_python)
         lines.append("")
     else:
         lines.extend(["## Rust/Python Denylist Drift", "", "None.", ""])
@@ -500,6 +582,26 @@ def self_test() -> None:
     }
     '''
     deny, prefixes = parse_rust_policy_from_text(fake_rust)
+    assert deny == {"authorization", "cookie", "set-cookie"}, deny
+    assert prefixes == {"sec-", "want-"}, prefixes
+
+    fake_python = r'''
+_NON_PERSISTED_RESPONSE_HEADERS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+}
+
+def _should_persist_response_header(name: str) -> bool:
+    n = name.strip().lower()
+    return (
+        bool(n)
+        and not n.startswith("sec-")
+        and not n.startswith("want-")
+        and n not in _NON_PERSISTED_RESPONSE_HEADERS
+    )
+'''
+    deny, prefixes = parse_python_policy_from_text(fake_python)
     assert deny == {"authorization", "cookie", "set-cookie"}, deny
     assert prefixes == {"sec-", "want-"}, prefixes
 

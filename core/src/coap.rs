@@ -34,7 +34,9 @@ use axum::http::StatusCode;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
-use crate::{auth, can_read, canonicalize_path, valid_world_name, Core};
+use crate::{
+    auth, can_read, canonicalize_path, is_insufficient_storage_error, valid_world_name, Core,
+};
 
 const MAX_DATAGRAM: usize = 1152;
 const RECV_BUF: usize = MAX_DATAGRAM + 1;
@@ -193,7 +195,7 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                 return encode_response(request, 129, Some(0), b"unauthorized\n");
             }
             match core.read_world(&world_name) {
-                Some(stage) => {
+                Ok(Some(stage)) => {
                     if encoded_len(
                         request,
                         media_type_to_cf(&stage.content_type),
@@ -214,7 +216,11 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                         &stage.body,
                     )
                 }
-                None => encode_response(request, 132, Some(0), b"not found\n"),
+                Ok(None) => encode_response(request, 132, Some(0), b"not found\n"),
+                Err(e) if is_insufficient_storage_error(&e) => {
+                    encode_response(request, 167, Some(0), b"insufficient storage\n")
+                }
+                Err(_) => encode_response(request, 160, Some(0), b"storage error\n"),
             }
         }
         Method::Put => {
@@ -497,7 +503,10 @@ mod tests {
     };
     use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::{atomic::AtomicU64, Arc, Mutex as StdMutex};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize},
+        Arc, Mutex as StdMutex,
+    };
     use tokio::sync::{broadcast, watch, Mutex};
 
     fn packet(bytes: &[u8]) -> Packet<'_> {
@@ -528,6 +537,10 @@ mod tests {
                 mem: Arc::new(store::MemoryStore::new()),
                 max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                 max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
+                max_storage_bytes: None,
+                storage_body_bytes: Arc::new(AtomicUsize::new(0)),
+                durable_world_count: Arc::new(AtomicUsize::new(0)),
+                delete_ledger_created: Arc::new(AtomicBool::new(false)),
                 events,
                 listen_slots: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_LISTEN_CONNECTIONS)),
                 listen_replay_max: DEFAULT_LISTEN_REPLAY_MAX,
@@ -654,7 +667,10 @@ mod tests {
         let response = handle(&core, &put).await;
 
         assert_eq!(response[1], 129); // 4.01 Unauthorized
-        assert!(core.read_world("home/sensor/kitchen/temp").is_none());
+        assert!(core
+            .read_world("home/sensor/kitchen/temp")
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -717,7 +733,10 @@ mod tests {
         let put_response = handle(&core, &put).await;
         assert_eq!(put_response[1], 65); // 2.01 Created
 
-        let stage = core.read_world("home/sensor/kitchen/temp").unwrap();
+        let stage = core
+            .read_world("home/sensor/kitchen/temp")
+            .unwrap()
+            .unwrap();
         assert_eq!(stage.body, b"23.5");
         assert_eq!(stage.content_type, "text/plain; charset=utf-8");
 

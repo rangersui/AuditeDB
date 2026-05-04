@@ -82,10 +82,10 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
         PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS stage_meta(
             id INTEGER PRIMARY KEY CHECK(id=1),
-            body BLOB DEFAULT '',
+            body BLOB DEFAULT x'',
             content_type TEXT DEFAULT 'application/octet-stream'
         );
-        INSERT OR IGNORE INTO stage_meta(id) VALUES(1);
+        INSERT OR IGNORE INTO stage_meta(id, body) VALUES(1, x'');
         CREATE TABLE IF NOT EXISTS meta_headers(
             name TEXT NOT NULL,
             value TEXT NOT NULL,
@@ -152,72 +152,101 @@ pub struct Stage {
     pub headers: Vec<(String, String)>,
 }
 
+pub type MetaHeaders = Vec<(String, String)>;
+pub type WorldMetadata = (usize, String, MetaHeaders);
+
 pub struct AppendResult {
     pub body_sha256_after: String,
 }
 
-pub fn metadata(
-    data_root: &Path,
-    world: &str,
-) -> rusqlite::Result<Option<(usize, String, Vec<(String, String)>)>> {
+pub struct WriteAuditResult {
+    pub hmac: String,
+    pub previous_len: usize,
+    pub existed: bool,
+}
+
+pub enum WriteAuditError {
+    Sqlite(rusqlite::Error),
+    Quota {
+        used: usize,
+        quota: usize,
+        projected: usize,
+    },
+}
+
+impl From<rusqlite::Error> for WriteAuditError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::Sqlite(value)
+    }
+}
+
+pub fn metadata(data_root: &Path, world: &str) -> rusqlite::Result<Option<WorldMetadata>> {
     let Some(c) = open_existing(data_root, world)? else {
         return Ok(None);
     };
     let (body_len, content_type) = c.query_row(
-        "SELECT length(body), content_type FROM stage_meta WHERE id=1",
+        "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END, content_type FROM stage_meta WHERE id=1",
         [],
         |r| {
-            Ok((
-                r.get::<_, i64>(0).unwrap_or(0).max(0) as usize,
-                r.get::<_, String>(1)
-                    .unwrap_or_else(|_| "application/octet-stream".into()),
-            ))
+            let body_len = r.get::<_, i64>(0)?.max(0) as usize;
+            let content_type = r.get::<_, String>(1)?;
+            Ok((body_len, content_type))
         },
     )?;
+    let mut stmt = c.prepare("SELECT name, value FROM meta_headers ORDER BY name")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     let mut headers = Vec::new();
-    if let Ok(mut stmt) = c.prepare("SELECT name, value FROM meta_headers ORDER BY name") {
-        if let Ok(rows) =
-            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        {
-            for pair in rows.flatten() {
-                headers.push(pair);
-            }
-        }
+    for pair in rows {
+        headers.push(pair?);
     }
     Ok(Some((body_len, content_type, headers)))
+}
+
+pub fn body_len(data_root: &Path, world: &str) -> rusqlite::Result<Option<usize>> {
+    let Some(c) = open_existing(data_root, world)? else {
+        return Ok(None);
+    };
+    c.query_row(
+        "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
+        [],
+        |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
+    )
+    .map(Some)
+}
+
+pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(String, usize)>> {
+    let mut out = Vec::new();
+    for world in list(data_root)? {
+        if let Some(size) = body_len(data_root, &world)? {
+            out.push((world, size));
+        }
+    }
+    Ok(out)
 }
 
 /// Read body/meta and latest audit hmac through one SQLite connection.
 /// This keeps GET/HEAD from pairing an old body with a newer ETag when
 /// a write lands between two independent reads.
-pub fn read_with_hmac(data_root: &Path, world: &str) -> Option<(Stage, Option<String>)> {
-    let path = world_db(data_root, world);
-    if !path.exists() {
-        return None;
-    }
-    let mut c = Connection::open(&path).ok()?;
-    let _ = c.busy_timeout(Duration::from_millis(5000));
-    let tx = c.transaction().ok()?;
+pub fn read_with_hmac(
+    data_root: &Path,
+    world: &str,
+) -> rusqlite::Result<Option<(Stage, Option<String>)>> {
+    let Some(mut c) = open_existing(data_root, world)? else {
+        return Ok(None);
+    };
+    let tx = c.transaction()?;
     let (body, content_type) = {
-        let mut stmt = tx
-            .prepare("SELECT body, content_type FROM stage_meta WHERE id=1")
-            .ok()?;
+        let mut stmt = tx.prepare("SELECT body, content_type FROM stage_meta WHERE id=1")?;
         stmt.query_row([], |r| {
-            Ok((
-                r.get::<_, Vec<u8>>(0).unwrap_or_default(),
-                r.get::<_, String>(1)
-                    .unwrap_or_else(|_| "application/octet-stream".into()),
-            ))
-        })
-        .ok()?
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?))
+        })?
     };
     let mut headers = Vec::new();
-    if let Ok(mut hs) = tx.prepare("SELECT name, value FROM meta_headers ORDER BY name") {
-        if let Ok(rows) = hs.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        {
-            for pair in rows.flatten() {
-                headers.push(pair);
-            }
+    {
+        let mut hs = tx.prepare("SELECT name, value FROM meta_headers ORDER BY name")?;
+        let rows = hs.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for pair in rows {
+            headers.push(pair?);
         }
     }
     let latest_hmac = {
@@ -226,17 +255,21 @@ pub fn read_with_hmac(data_root: &Path, world: &str) -> Option<(Stage, Option<St
             [],
             |r| r.get::<_, String>(0),
         );
-        result.ok()
+        match result {
+            Ok(hmac) => Some(hmac),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        }
     };
-    tx.commit().ok()?;
-    Some((
+    tx.commit()?;
+    Ok(Some((
         Stage {
             body,
             content_type,
             headers,
         },
         latest_hmac,
-    ))
+    )))
 }
 
 pub fn write(
@@ -266,6 +299,7 @@ pub fn write(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn write_with_audit(
     data_root: &Path,
     world: &str,
@@ -274,8 +308,53 @@ pub fn write_with_audit(
     headers: &[(String, String)],
     key: &[u8],
 ) -> rusqlite::Result<String> {
+    write_with_audit_checked(data_root, world, body, content_type, headers, key, None)
+        .map(|result| result.hmac)
+        .map_err(|err| match err {
+            WriteAuditError::Sqlite(e) => e,
+            WriteAuditError::Quota { .. } => unreachable!("quota is disabled"),
+        })
+}
+
+pub fn write_with_audit_checked(
+    data_root: &Path,
+    world: &str,
+    body: &[u8],
+    content_type: &str,
+    headers: &[(String, String)],
+    key: &[u8],
+    quota: Option<(usize, usize)>,
+) -> Result<WriteAuditResult, WriteAuditError> {
+    let existed = world_db(data_root, world).exists();
+    if !existed {
+        if let Some((used, quota)) = quota {
+            let projected = used.saturating_add(body.len());
+            if projected > quota {
+                return Err(WriteAuditError::Quota {
+                    used,
+                    quota,
+                    projected,
+                });
+            }
+        }
+    }
     let mut c = open(data_root, world)?;
     let tx = c.transaction()?;
+    let previous_len = tx.query_row(
+        "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
+        [],
+        |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
+    )?;
+    if let Some((used, quota)) = quota {
+        let projected = used.saturating_sub(previous_len).saturating_add(body.len());
+        if projected > quota {
+            return Err(WriteAuditError::Quota {
+                used,
+                quota,
+                projected,
+            });
+        }
+    }
     tx.execute(
         r#"UPDATE stage_meta
            SET body=?,
@@ -301,7 +380,11 @@ pub fn write_with_audit(
         key,
     )?;
     tx.commit()?;
-    Ok(h)
+    Ok(WriteAuditResult {
+        hmac: h,
+        previous_len,
+        existed,
+    })
 }
 
 /// Append bytes to an existing world's body. Returns Ok(None) if the
@@ -318,9 +401,9 @@ pub fn append(
     }
     let mut c = open(data_root, world)?;
     let tx = c.transaction()?;
-    let current: Vec<u8> = tx
-        .query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| r.get(0))
-        .unwrap_or_default();
+    let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
+        r.get::<_, Vec<u8>>(0)
+    })?;
     let mut new_body = current;
     new_body.extend_from_slice(body);
     let after = sha256_hex(&new_body);
@@ -350,9 +433,9 @@ pub fn append_with_audit(
     }
     let mut c = open(data_root, world)?;
     let tx = c.transaction()?;
-    let current: Vec<u8> = tx
-        .query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| r.get(0))
-        .unwrap_or_default();
+    let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
+        r.get::<_, Vec<u8>>(0)
+    })?;
     let mut new_body = current;
     new_body.extend_from_slice(body);
     let after = sha256_hex(&new_body);
@@ -433,12 +516,11 @@ fn release_wal_files(data_root: &Path, world: &str) {
 
 /// List all sqlite-backed world keys by scanning the data dir.
 /// Returns canonical (decoded) names.
-pub fn list(data_root: &Path) -> Vec<String> {
+pub fn list(data_root: &Path) -> rusqlite::Result<Vec<String>> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(data_root) else {
-        return out;
-    };
-    for entry in rd.flatten() {
+    let rd = std::fs::read_dir(data_root).map_err(create_dir_error)?;
+    for entry in rd {
+        let entry = entry.map_err(create_dir_error)?;
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
@@ -451,12 +533,25 @@ pub fn list(data_root: &Path) -> Vec<String> {
         out.push(decoded);
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("elastik-world-test-{name}-{}", std::process::id()))
+    }
+
+    fn force_text_body(data_root: &Path, world: &str, text: &str) {
+        let c = Connection::open(world_db(data_root, world)).unwrap();
+        c.execute(
+            "UPDATE stage_meta SET body=?1, content_type='text/plain; charset=utf-8' WHERE id=1",
+            params![text],
+        )
+        .unwrap();
+    }
 
     #[test]
     fn disk_names_do_not_alias_literal_percent_with_encoded_slash() {
@@ -492,5 +587,48 @@ mod tests {
             err.sqlite_error_code(),
             Some(rusqlite::ffi::ErrorCode::DiskFull)
         );
+    }
+
+    #[test]
+    fn text_body_storage_is_schema_corruption_not_legacy() {
+        let root = test_root("text-body-corruption");
+        let _ = std::fs::remove_dir_all(&root);
+
+        write(
+            &root,
+            "home/plain",
+            b"seed",
+            "text/plain; charset=utf-8",
+            &[],
+        )
+        .unwrap();
+        force_text_body(&root, "home/plain", "\u{00e9}");
+
+        assert!(body_len(&root, "home/plain").is_err());
+        assert!(metadata(&root, "home/plain").is_err());
+        assert!(sizes(&root).is_err());
+        assert!(read_with_hmac(&root, "home/plain").is_err());
+        assert!(append(&root, "home/plain", b"!").is_err());
+
+        write(
+            &root,
+            "home/audited",
+            b"seed",
+            "text/plain; charset=utf-8",
+            &[],
+        )
+        .unwrap();
+        force_text_body(&root, "home/audited", "\u{00e9}");
+        assert!(append_with_audit(
+            &root,
+            "home/audited",
+            b"!",
+            "text/plain; charset=utf-8",
+            &[],
+            b"test-key",
+        )
+        .is_err());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

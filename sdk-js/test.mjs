@@ -9,10 +9,12 @@
 import {
     Elastik,
     ElastikError,
+    InsufficientStorage,
     NetworkError,
     NotFound,
     NotModified,
     PreconditionFailed,
+    ServerError,
 } from "./index.mjs";
 
 const URL_BASE = process.env.ELASTIK_URL || "http://127.0.0.1:3105";
@@ -79,6 +81,20 @@ eq(head.contentType, "text/plain; charset=utf-8", "head content-type");
 eq(head.size, 5, "head size");
 check(head.etag.startsWith('"hmac-'), "head etag is hmac");
 check(typeof head.headers === "object" && head.headers["accept-ranges"] === "bytes", "head exposes raw headers");
+check(new InsufficientStorage(507, "Insufficient Storage", "sdk-test/full") instanceof ServerError,
+      "InsufficientStorage is a ServerError subclass");
+const eFull = new Elastik("http://stub", {
+    token: "x",
+    fetch: async () => new Response("storage full", { status: 507, statusText: "Insufficient Storage" }),
+});
+try {
+    await eFull.get("sdk-test/full");
+    bad("507 should throw InsufficientStorage");
+} catch (err) {
+    check(err instanceof InsufficientStorage, "507 throws InsufficientStorage");
+    check(err instanceof ServerError, "507 remains a ServerError");
+    check(err.status === 507, "507 status preserved");
+}
 
 // ─── Test 3: POST append ─────────────────────────────────────
 console.log("\n=== post append ===");
@@ -108,6 +124,22 @@ try {
 } catch (err) {
     check(err instanceof TypeError, "put object to .json throws before fetch");
     check(err.message.includes("putJson"), "json object TypeError suggests putJson");
+}
+for (const badPath of ["sdk-test/./x", "sdk-test/../x", "sdk-test/%2E/x", "sdk-test/%2e%2E/x"]) {
+    try {
+        await e.put(badPath, "x");
+        bad(`invalid path ${badPath} should TypeError`);
+    } catch (err) {
+        check(err instanceof TypeError, `invalid path ${badPath} throws before fetch`);
+    }
+}
+for (const badPattern of ["home/%2E%2E/x", "proc/worlds"]) {
+    try {
+        e.listen(badPattern, () => {});
+        bad(`invalid listen pattern ${badPattern} should TypeError`);
+    } catch (err) {
+        check(err instanceof TypeError, `invalid listen pattern ${badPattern} throws before fetch`);
+    }
 }
 try {
     await e.getJson("sdk-test/text");
@@ -266,6 +298,12 @@ const worlds = await e.worlds();
 check(typeof worlds === "string", "worlds is text");
 const listed = await e.list("sdk-test");
 check(Array.isArray(listed) && listed.includes("home/sdk-test/cond"), "list(prefix) returns canonical paths");
+const listedWithSlash = await e.list("sdk-test/");
+check(Array.isArray(listedWithSlash) && listedWithSlash.includes("home/sdk-test/cond"), "list(prefix/) trims trailing slash");
+const homeListed = await e.list("home");
+check(Array.isArray(homeListed) && homeListed.includes("home/sdk-test/cond"), "list(namespace root) is allowed");
+const homeSlashListed = await e.list("home/");
+check(Array.isArray(homeSlashListed) && homeSlashListed.includes("home/sdk-test/cond"), "list(namespace root/) trims trailing slash");
 check(await e.exists("sdk-test/cond"), "exists() → true for existing");
 check(!(await e.exists("sdk-test/never-existed")), "exists() → false for missing");
 check(await e.sizeof("sdk-test/cond") > 0, "sizeof() uses HEAD content-length");
@@ -344,8 +382,10 @@ check(events2.length === 0, "no events delivered after unsub");
 // ─── Test 17: custom fetch (stub) ────────────────────────────
 console.log("\n=== custom fetch ===");
 let stubCalls = 0;
+let stubUrl = "";
 const stubFetch = async (url, init) => {
     stubCalls++;
+    stubUrl = String(url);
     return new Response("stubbed", {
         status: 200,
         headers: { "Content-Type": "text/plain", "ETag": '"hmac-stub"', "Content-Length": "8" },
@@ -355,6 +395,7 @@ const eStub = new Elastik("http://stub", { token: "x", fetch: stubFetch });
 const stubBody = await eStub.get("anywhere");
 eq(stubBody, "stubbed", "custom fetch is used");
 check(stubCalls === 1, "custom fetch was called once");
+check(stubUrl === "http://stub/home/anywhere", "bare SDK paths canonicalize to /home", stubUrl);
 
 // ─── Test 18: template strings + nested paths ───────────────
 console.log("\n=== template strings ===");

@@ -327,6 +327,7 @@ fn canonical_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
     out
 }
 
+#[cfg(test)]
 pub fn latest_hmac(data_root: &Path, world_name: &str) -> Option<String> {
     let path = world::world_db(data_root, world_name);
     if !path.exists() {

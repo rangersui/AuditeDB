@@ -6,7 +6,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::BTreeMap;
 
 use crate::world::Stage;
-use crate::{apply_meta_headers, audit, precondition_failed, store, to_header_map, world, Core};
+use crate::{apply_meta_headers, precondition_failed, storage_error, to_header_map, world, Core};
 
 const URL_PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -40,15 +40,6 @@ pub(crate) fn apply_world_links(world_name: &str, out: &mut Vec<(HeaderName, Hea
     ));
 }
 
-pub(crate) fn current_etag(core: &Core, world_name: &str, stage: &Stage) -> String {
-    if store::is_persistent(world_name) {
-        if let Some(h) = audit::latest_hmac(&core.data, world_name) {
-            return hmac_etag(&h);
-        }
-    }
-    body_etag(&stage.body)
-}
-
 pub(crate) fn hmac_etag(hmac: &str) -> String {
     format!("hmac-{hmac}")
 }
@@ -73,10 +64,10 @@ pub(crate) fn check_write_preconditions(
     {
         return Ok(());
     }
-    let current = core.read_world(world_name);
-    let current_tag = current
-        .as_ref()
-        .map(|stage| current_etag(core, world_name, stage));
+    let current = core
+        .read_world_with_etag(world_name)
+        .map_err(|e| storage_error("precondition read", e))?;
+    let current_tag = current.as_ref().map(|(_, etag)| etag.clone());
 
     if let Some(h) = req_headers
         .get(header::IF_MATCH)
