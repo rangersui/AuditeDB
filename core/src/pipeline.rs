@@ -137,10 +137,20 @@ pub(crate) enum Verb {
 /// and SDK error mapping all match against this enum. Strings as
 /// reasons turn into log soup; an enum forces a fixed vocabulary.
 ///
-/// `#[allow(dead_code)]` covers variants that no caller emits yet.
-/// 4a / 4b emit a subset (Auth(Read), PathInvalid, MethodNotAllowed,
-/// NotFound, StorageRead, RangeNotSatisfiable). The allow comes off
-/// in 4c when verb handlers cover the rest.
+/// PR 4c wires every variant: `execute_put` emits PayloadTooLarge /
+/// PreconditionFailed / QuotaExceeded / InsufficientStorage /
+/// StorageWriteAudit; `execute_delete` adds AuthGate::Delete;
+/// `execute_*` handlers cover the read-side variants the 4b code
+/// already used. AuditChainBroken is reserved for the
+/// `/proc/audit/verify` path (proc.rs) and not emitted by the
+/// pipeline driver itself.
+///
+/// `#[allow(dead_code)]` on the enum is for the *inner data* of
+/// variants like `Auth(AuthGate)` and `PathInvalid(&'static str)`:
+/// those fields are read by the `Debug` formatter (`format!("{:?}",
+/// reason)` in `trace::emit_error`), which rustc's dead-code
+/// analysis intentionally ignores. The variants themselves are all
+/// constructed.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum ErrorReason {
@@ -163,12 +173,16 @@ pub(crate) enum ErrorReason {
     InsufficientStorage,
     StorageRead,
     StorageWriteAudit,
+    /// 409 — `/proc/audit/verify` discovers an HMAC chain break.
+    /// Reserved for the proc-side audit verifier (proc.rs); the
+    /// pipeline driver itself never emits it. The verifier handler
+    /// runs outside `pipeline::run` (proc routes are direct), so the
+    /// variant is currently unused at the FSM layer but kept for
+    /// when the proc surface migrates onto the pipeline.
+    #[allow(dead_code)]
     AuditChainBroken,
 }
 
-/// `#[allow(dead_code)]` mirrors `ErrorReason` — only `Read` is
-/// constructed in 4a tests; the rest land in 4b/4c verb handlers.
-#[allow(dead_code)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum AuthGate {
     Read,

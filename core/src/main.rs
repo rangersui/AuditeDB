@@ -65,7 +65,7 @@ use axum::{
     extract::{Path as AxPath, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::Response,
     routing::any,
     Router,
 };
@@ -87,21 +87,31 @@ type BoxedResponse = Box<Response>;
 
 pub(crate) struct WriteOutcome {
     pub status: StatusCode,
+    /// Etag is part of `put_bytes`'s contract for any future caller
+    /// that wants to include it in a response. The current CoAP
+    /// caller in `coap.rs` only reads `status`; HTTP writes flow
+    /// through `handler::execute_put` (which does not call
+    /// `put_bytes`). Allow until CoAP migrates to the FSM (PR 7+),
+    /// at which point `put_bytes` and `WriteOutcome` can be retired.
+    #[allow(dead_code)]
     pub etag: String,
 }
 
 #[derive(Clone)]
 struct Core {
-    data: PathBuf,
+    // Fields used by handler.rs's verb implementations are pub(crate);
+    // the rest stay private to main.rs. PR 4c lifted the write/audit
+    // path from main.rs into handler.rs, which forced these widenings.
+    pub(crate) data: PathBuf,
     tokens: auth::Tokens,
-    hmac_key: Vec<u8>,
-    mem: Arc<store::MemoryStore>,
-    max_world_bytes: usize,
-    max_memory_bytes: usize,
-    max_storage_bytes: Option<usize>,
-    storage_body_bytes: Arc<AtomicUsize>,
-    durable_world_count: Arc<AtomicUsize>,
-    delete_ledger_created: Arc<AtomicBool>,
+    pub(crate) hmac_key: Vec<u8>,
+    pub(crate) mem: Arc<store::MemoryStore>,
+    pub(crate) max_world_bytes: usize,
+    pub(crate) max_memory_bytes: usize,
+    pub(crate) max_storage_bytes: Option<usize>,
+    pub(crate) storage_body_bytes: Arc<AtomicUsize>,
+    pub(crate) durable_world_count: Arc<AtomicUsize>,
+    pub(crate) delete_ledger_created: Arc<AtomicBool>,
     events: broadcast::Sender<listen::ChangeEvent>,
     listen_slots: Arc<Semaphore>,
     listen_replay_max: usize,
@@ -134,12 +144,12 @@ impl Core {
     /// Lock ordering rule for callers that need more than one world lock
     /// (currently only DELETE, which also touches the shared `var/log/deletes`
     /// ledger): always acquire the target world lock FIRST, then any shared
-    /// ledger lock(s). This avoids cycles. See handle_delete for the only
-    /// current example.
+    /// ledger lock(s). This avoids cycles. See `handler::execute_delete`
+    /// for the only current example.
     ///
     /// The DashMap entry guard is dropped before `.await`, so we never
     /// hold a sync shard lock across an await.
-    async fn acquire_world_lock(&self, world: &str) -> OwnedMutexGuard<()> {
+    pub(crate) async fn acquire_world_lock(&self, world: &str) -> OwnedMutexGuard<()> {
         let lock = {
             self.world_locks
                 .entry(world.to_string())
@@ -149,7 +159,7 @@ impl Core {
         lock.lock_owned().await
     }
 
-    fn read_world(&self, world: &str) -> rusqlite::Result<Option<Stage>> {
+    pub(crate) fn read_world(&self, world: &str) -> rusqlite::Result<Option<Stage>> {
         Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
     }
 
@@ -207,7 +217,10 @@ impl Core {
         }
     }
 
-    fn world_metadata(&self, world: &str) -> rusqlite::Result<Option<world::WorldMetadata>> {
+    pub(crate) fn world_metadata(
+        &self,
+        world: &str,
+    ) -> rusqlite::Result<Option<world::WorldMetadata>> {
         if store::is_memory_world(world) {
             Ok(self.mem.metadata(world))
         } else {
@@ -215,7 +228,7 @@ impl Core {
         }
     }
 
-    async fn delete_world_blocking(&self, world: &str) -> bool {
+    pub(crate) async fn delete_world_blocking(&self, world: &str) -> bool {
         if store::is_memory_world(world) {
             self.mem.delete(world)
         } else {
@@ -227,7 +240,7 @@ impl Core {
         }
     }
 
-    fn notify(&self, method: &'static str, world: &str, etag: &str) {
+    pub(crate) fn notify(&self, method: &'static str, world: &str, etag: &str) {
         let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
         let change = listen::ChangeEvent {
             id,
@@ -267,7 +280,11 @@ impl Core {
     ///
     /// `prev_len` is 0 for new worlds and for append (where the existing
     /// bytes stay and we only add `new_len` new).
-    fn reserve_storage(&self, prev_len: usize, new_len: usize) -> Result<(), BoxedResponse> {
+    pub(crate) fn reserve_storage(
+        &self,
+        prev_len: usize,
+        new_len: usize,
+    ) -> Result<(), BoxedResponse> {
         if let Some(quota) = self.max_storage_bytes {
             let result = self.storage_body_bytes.fetch_update(
                 Ordering::Relaxed,
@@ -301,7 +318,7 @@ impl Core {
 
     /// Inverse of `reserve_storage`. Call when the reserved write
     /// subsequently fails so we credit the bytes back into available quota.
-    fn rollback_storage_reservation(&self, prev_len: usize, new_len: usize) {
+    pub(crate) fn rollback_storage_reservation(&self, prev_len: usize, new_len: usize) {
         let _ =
             self.storage_body_bytes
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
@@ -716,48 +733,21 @@ async fn world_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // PR 4b: GET / HEAD now flow through the pipeline FSM
-    // (`pipeline::run` handles auth, path validation, dispatch, and
-    // delegates to `handler::execute_get` / `handler::execute_head`).
-    // PUT / POST / DELETE / OPTIONS / unsupported methods stay on
-    // the legacy direct path until PR 4c moves them too.
+    // OPTIONS is policy-free — answer it without entering the FSM.
+    // Every other method (including unsupported ones, which the
+    // dispatch step rejects with MethodNotAllowed) flows through
+    // `pipeline::run`. PR 4c retired the GET/HEAD short-circuit and
+    // the legacy `handle_*` write handlers; all five real verbs now
+    // share the FSM driver and produce trace output under
+    // `ELASTIK_TRACE_PIPELINE=1`.
     //
     // `req_id` comes from `add_core_response_headers` middleware via
     // request extensions — same id stamped on `x-request-id` so
     // trace output and response header agree.
-    if matches!(method, Method::GET | Method::HEAD) {
-        return pipeline::run(method, path, headers, body, &core, req_id).await;
+    if method == Method::OPTIONS {
+        return options_response(WORLD_ALLOW);
     }
-
-    let world_name = canonicalize_path(&path);
-    if let Err(reason) = validate_world_name(&world_name) {
-        return bad_request(reason);
-    }
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
-
-    handle_world_method(&core, method, &world_name, &headers, body, tier).await
-}
-
-async fn handle_world_method(
-    core: &Core,
-    method: Method,
-    world_name: &str,
-    headers: &HeaderMap,
-    body: Bytes,
-    tier: auth::Tier,
-) -> Response {
-    match method {
-        Method::OPTIONS => options_response(WORLD_ALLOW),
-        Method::GET => handle_get(core, world_name, headers, tier),
-        Method::HEAD => handle_head(core, world_name, headers, tier),
-        Method::PUT => handle_put(core, world_name, headers, body, tier).await,
-        Method::POST => handle_post(core, world_name, headers, body, tier).await,
-        Method::DELETE => handle_delete(core, world_name, headers, tier).await,
-        _ => method_not_allowed(WORLD_ALLOW),
-    }
+    pipeline::run(method, path, headers, body, &core, req_id).await
 }
 
 // Path validation and canonicalization (canonicalize_path,
@@ -765,451 +755,13 @@ async fn handle_world_method(
 // strip_dot_token, is_reserved_world_name) live in `path.rs` and
 // are re-exported at the crate root.
 
-// ─── handlers ───────────────────────────────────────────────────────
-
-/// GET: body bytes with stored Content-Type. No JSON envelope.
-fn handle_get(
-    core: &Core,
-    world_name: &str,
-    req_headers: &HeaderMap,
-    tier: auth::Tier,
-) -> Response {
-    if !can_read(core, tier) {
-        return unauthorized("read requires read token");
-    }
-    let Some((stage, etag)) = (match core.read_world_with_etag(world_name) {
-        Ok(current) => current,
-        Err(e) => return storage_error("storage read", e),
-    }) else {
-        return not_found();
-    };
-    if hs::read_not_modified(req_headers, &etag) {
-        return hs::not_modified(world_name, &etag, &stage);
-    }
-    let mut resp_headers = vec![
-        (
-            header::CONTENT_TYPE,
-            HeaderValue::from_str(&stage.content_type)
-                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-        ),
-        (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
-        (header::ETAG, hs::etag_header(&etag)),
-    ];
-    hs::apply_world_links(world_name, &mut resp_headers);
-    apply_meta_headers(&stage.headers, &mut resp_headers);
-    match hs::effective_range(req_headers, stage.body.len(), &etag) {
-        Ok(Some((start, end))) => {
-            let chunk = stage.body[start..=end].to_vec();
-            resp_headers.push((
-                header::CONTENT_LENGTH,
-                HeaderValue::from_str(&chunk.len().to_string()).unwrap(),
-            ));
-            resp_headers.push((
-                header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {start}-{end}/{}", stage.body.len()))
-                    .unwrap(),
-            ));
-            return (
-                StatusCode::PARTIAL_CONTENT,
-                to_header_map(resp_headers),
-                chunk,
-            )
-                .into_response();
-        }
-        Ok(None) => {
-            resp_headers.push((
-                header::CONTENT_LENGTH,
-                HeaderValue::from_str(&stage.body.len().to_string()).unwrap(),
-            ));
-        }
-        Err(()) => return hs::range_not_satisfiable(stage.body.len()),
-    }
-    (StatusCode::OK, to_header_map(resp_headers), stage.body).into_response()
-}
-
-/// HEAD — same headers as GET, no body.
-fn handle_head(
-    core: &Core,
-    world_name: &str,
-    req_headers: &HeaderMap,
-    tier: auth::Tier,
-) -> Response {
-    if !can_read(core, tier) {
-        return unauthorized("read requires read token");
-    }
-    let Some((stage, etag)) = (match core.read_world_with_etag(world_name) {
-        Ok(current) => current,
-        Err(e) => return storage_error("storage read", e),
-    }) else {
-        return not_found();
-    };
-    if hs::read_not_modified(req_headers, &etag) {
-        return hs::not_modified(world_name, &etag, &stage);
-    }
-    let mut resp_headers = vec![
-        (
-            header::CONTENT_TYPE,
-            HeaderValue::from_str(&stage.content_type)
-                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-        ),
-        (
-            header::CONTENT_LENGTH,
-            HeaderValue::from_str(&stage.body.len().to_string()).unwrap(),
-        ),
-        (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
-        (header::ETAG, hs::etag_header(&etag)),
-    ];
-    hs::apply_world_links(world_name, &mut resp_headers);
-    apply_meta_headers(&stage.headers, &mut resp_headers);
-    match hs::effective_range(req_headers, stage.body.len(), &etag) {
-        Ok(Some((start, end))) => {
-            resp_headers.retain(|(name, _)| name != header::CONTENT_LENGTH);
-            resp_headers.push((
-                header::CONTENT_LENGTH,
-                HeaderValue::from_str(&(end - start + 1).to_string()).unwrap(),
-            ));
-            resp_headers.push((
-                header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {start}-{end}/{}", stage.body.len()))
-                    .unwrap(),
-            ));
-            return (StatusCode::PARTIAL_CONTENT, to_header_map(resp_headers), "").into_response();
-        }
-        Ok(None) => {}
-        Err(()) => return hs::range_not_satisfiable(stage.body.len()),
-    }
-    (StatusCode::OK, to_header_map(resp_headers), "").into_response()
-}
-
-async fn handle_put(
-    core: &Core,
-    world_name: &str,
-    req_headers: &HeaderMap,
-    body: Bytes,
-    tier: auth::Tier,
-) -> Response {
-    let content_type = hs::request_content_type(req_headers);
-
-    let meta = hs::request_meta_headers(req_headers);
-
-    let outcome = match core
-        .put_bytes(
-            world_name,
-            &body,
-            &content_type,
-            &meta,
-            tier,
-            Some(req_headers),
-        )
-        .await
-    {
-        Ok(outcome) => outcome,
-        Err(resp) => return resp,
-    };
-
-    let mut resp_headers = vec![(header::ETAG, hs::etag_header(&outcome.etag))];
-    if outcome.status == StatusCode::CREATED {
-        resp_headers.push((
-            header::LOCATION,
-            HeaderValue::from_str(&hs::world_url(world_name))
-                .unwrap_or_else(|_| HeaderValue::from_static("/")),
-        ));
-    }
-    (outcome.status, to_header_map(resp_headers), "").into_response()
-}
-
-/// POST — append body bytes to existing world. 404 if world absent
-/// (PUT is the create/replace path). Never updates X-Meta-*.
-async fn handle_post(
-    core: &Core,
-    world_name: &str,
-    req_headers: &HeaderMap,
-    body: Bytes,
-    tier: auth::Tier,
-) -> Response {
-    if !can_write(world_name, tier) {
-        return unauthorized("write requires token; system worlds need approve token");
-    }
-    let _write_guard = core.acquire_world_lock(world_name).await;
-    if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
-        return resp;
-    }
-    let Some((body_len, content_type, stored_headers)) = (match core.world_metadata(world_name) {
-        Ok(meta) => meta,
-        Err(e) => return storage_error("storage metadata", e),
-    }) else {
-        return not_found();
-    };
-    let Some(projected_len) = body_len.checked_add(body.len()) else {
-        return payload_too_large(core.max_world_bytes);
-    };
-    if projected_len > core.max_world_bytes {
-        return payload_too_large(core.max_world_bytes);
-    }
-    let new_etag = if store::is_persistent(world_name) {
-        // Atomic CAS reservation BEFORE the append. prev_len = 0 because
-        // POST adds bytes on top of whatever the world already holds; the
-        // existing bytes stay accounted as before.
-        if let Err(resp) = core.reserve_storage(0, body.len()) {
-            return *resp;
-        }
-        match world::append_with_audit(
-            &core.data,
-            world_name,
-            &body,
-            &content_type,
-            &stored_headers,
-            &core.hmac_key,
-        ) {
-            Ok(Some((_result, h))) => hs::hmac_etag(&h),
-            Ok(None) => {
-                // World disappeared between the metadata read and the
-                // append. Credit the reservation back.
-                core.rollback_storage_reservation(0, body.len());
-                return not_found();
-            }
-            Err(e) => {
-                core.rollback_storage_reservation(0, body.len());
-                return storage_error("storage/audit", e);
-            }
-        }
-    } else {
-        // Memory append: same atomic-quota pattern as put_bytes' memory
-        // branch. The MemoryStore HashMap mutex is held across "compute
-        // current total -> compare against max -> append", so concurrent
-        // appends to different memory worlds cannot both pass a stale
-        // snapshot and overshoot ELASTIK_MAX_MEMORY_BYTES.
-        match core
-            .mem
-            .append_with_quota(world_name, &body, core.max_memory_bytes)
-        {
-            Ok(Some(result)) => format!("sha256-{}", result.body_sha256_after),
-            Ok(None) => return not_found(),
-            Err(store::MemoryQuotaError { quota, .. }) => return payload_too_large(quota),
-        }
-    };
-
-    let resp_headers = [(header::ETAG, hs::etag_header(&new_etag))];
-    core.notify("POST", world_name, &new_etag);
-    (StatusCode::OK, resp_headers, "").into_response()
-}
-
-async fn handle_delete(
-    core: &Core,
-    world_name: &str,
-    req_headers: &HeaderMap,
-    tier: auth::Tier,
-) -> Response {
-    if !can_delete(tier) {
-        return unauthorized("delete requires token; system worlds need approve token");
-    }
-    if world_name == "var/log/deletes" {
-        return unauthorized("delete ledger is append-only");
-    }
-    let _write_guard = core.acquire_world_lock(world_name).await;
-    if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
-        return resp;
-    }
-
-    // Capture body hash BEFORE the world disappears. A missing world is
-    // not a delete event; do not mutate the ledger for a 404.
-    let Some(stage) = (match core.read_world(world_name) {
-        Ok(current) => current,
-        Err(e) => return storage_error("storage read", e),
-    }) else {
-        return not_found();
-    };
-    let body_sha256_before = world::sha256_hex(&stage.body);
-
-    // WAL rule: record the delete intent before the physical delete.
-    // If the process crashes after this point, recovery sees an explicit
-    // delete that needs reconciliation instead of a vanished world with
-    // no causal record. A later commit append is best-effort because the
-    // physical delete is already externally visible.
-    // The ledger itself is sqlite even when the deleted world is memory-backed.
-    let delete_meta = hs::request_meta_headers(req_headers);
-    let delete_content_type = req_headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    // Audit appends touch the shared `var/log/deletes` ledger. Acquire the
-    // ledger lock briefly around the existence check + intent append so two
-    // concurrent DELETEs of different target worlds don't double-count
-    // ledger creation or interleave their HMAC-chain reads/writes outside
-    // SQLite's transaction. Lock ordering: target world lock FIRST (already
-    // held), then ledger lock — see Core::acquire_world_lock docs.
-    let intent_outcome = {
-        let _ledger_guard = core.acquire_world_lock("var/log/deletes").await;
-        let existed = match world_exists_blocking(core.data.clone(), "var/log/deletes").await {
-            Ok(existed) => existed,
-            Err(e) => return blocking_storage_error("delete audit intent", e),
-        };
-        if let Err(e) = audit_append_blocking(
-            core.data.clone(),
-            AuditAppendJob {
-                ledger_world: "var/log/deletes",
-                event_type: "delete_intent",
-                target: world_name.to_string(),
-                body_sha256: body_sha256_before.clone(),
-                size: 0,
-                content_type: delete_content_type.clone(),
-                headers: delete_meta.clone(),
-                key: core.hmac_key.clone(),
-            },
-        )
-        .await
-        {
-            return blocking_storage_error("delete audit intent", e);
-        }
-        existed
-    };
-    if !intent_outcome {
-        core.durable_world_count.fetch_add(1, Ordering::Relaxed);
-        core.delete_ledger_created.store(true, Ordering::Relaxed);
-    }
-
-    let ok = core.delete_world_blocking(world_name).await;
-    if !ok {
-        return server_error("delete failed after audit intent".to_string());
-    }
-
-    if store::is_persistent(world_name) {
-        core.storage_body_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                Some(used.saturating_sub(stage.body.len()))
-            })
-            .ok();
-        core.durable_world_count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                Some(count.saturating_sub(1))
-            })
-            .ok();
-    }
-    core.notify("DELETE", world_name, "");
-
-    // Re-acquire the ledger lock briefly for the commit / commit_failed
-    // appends. Each append is a single SQLite transaction; the lock
-    // serializes ordering of *audit chain entries* across concurrent
-    // DELETEs on different target worlds. Intent and commit from the same
-    // DELETE may interleave with a different DELETE's intent in the chain
-    // — this is intentional and fine, the chain is HMAC-linked, not
-    // grouped by target world.
-    let _ledger_guard = core.acquire_world_lock("var/log/deletes").await;
-    if let Err(e) = audit_append_blocking(
-        core.data.clone(),
-        AuditAppendJob {
-            ledger_world: "var/log/deletes",
-            event_type: "delete_commit",
-            target: world_name.to_string(),
-            body_sha256: body_sha256_before.clone(),
-            size: 0,
-            content_type: delete_content_type.clone(),
-            headers: delete_meta.clone(),
-            key: core.hmac_key.clone(),
-        },
-    )
-    .await
-    {
-        eprintln!("  WARNING: delete_commit audit append failed for {world_name}: {e:?}");
-        if let Err(failed_event_err) = audit_append_blocking(
-            core.data.clone(),
-            AuditAppendJob {
-                ledger_world: "var/log/deletes",
-                event_type: "delete_commit_failed",
-                target: world_name.to_string(),
-                body_sha256: body_sha256_before,
-                size: 0,
-                content_type: delete_content_type,
-                headers: delete_meta,
-                key: core.hmac_key.clone(),
-            },
-        )
-        .await
-        {
-            eprintln!(
-                "  WARNING: delete_commit_failed audit append also failed for {world_name}: {failed_event_err:?}"
-            );
-        }
-    }
-    (StatusCode::NO_CONTENT, "").into_response()
-}
-
-#[derive(Debug)]
-enum BlockingSqliteError {
-    Sqlite(rusqlite::Error),
-    Worker,
-}
-
-struct AuditAppendJob {
-    ledger_world: &'static str,
-    event_type: &'static str,
-    target: String,
-    body_sha256: String,
-    size: i64,
-    content_type: String,
-    headers: Vec<(String, String)>,
-    key: Vec<u8>,
-}
-
-fn blocking_storage_error(scope: &str, err: BlockingSqliteError) -> Response {
-    match err {
-        BlockingSqliteError::Sqlite(err) => storage_error(scope, err),
-        BlockingSqliteError::Worker => server_error(format!("{scope} worker failed")),
-    }
-}
-
-async fn world_exists_blocking(
-    data: PathBuf,
-    world_name: &'static str,
-) -> Result<bool, BlockingSqliteError> {
-    match tokio::task::spawn_blocking(move || {
-        world::open_existing(&data, world_name).map(|existing| existing.is_some())
-    })
-    .await
-    {
-        Ok(Ok(existed)) => Ok(existed),
-        Ok(Err(err)) => Err(BlockingSqliteError::Sqlite(err)),
-        Err(_) => Err(BlockingSqliteError::Worker),
-    }
-}
-
-async fn audit_append_blocking(
-    data: PathBuf,
-    job: AuditAppendJob,
-) -> Result<String, BlockingSqliteError> {
-    match tokio::task::spawn_blocking(move || {
-        audit::append(
-            &data,
-            job.ledger_world,
-            job.event_type,
-            &job.target,
-            &job.body_sha256,
-            job.size,
-            &job.content_type,
-            &job.headers,
-            &job.key,
-        )
-    })
-    .await
-    {
-        Ok(Ok(hmac)) => Ok(hmac),
-        Ok(Err(err)) => Err(BlockingSqliteError::Sqlite(err)),
-        Err(_) => Err(BlockingSqliteError::Worker),
-    }
-}
-
 // ─── helpers ────────────────────────────────────────────────────────
 
-fn can_write(world_name: &str, tier: auth::Tier) -> bool {
+pub(crate) fn can_write(world_name: &str, tier: auth::Tier) -> bool {
     // Harvard gate: /lib/, /etc/, /boot/, /usr/, and audit logs
     // require approve. /home/, /tmp/, /dev/, /sys/, and non-log
     // /var/ worlds accept the normal token. Anon refused.
-    let needs_approve = exact_or_child(world_name, "lib")
-        || exact_or_child(world_name, "etc")
-        || exact_or_child(world_name, "boot")
-        || exact_or_child(world_name, "usr")
-        || exact_or_child(world_name, "var/log");
+    let needs_approve = needs_write_approve(world_name);
     match tier {
         auth::Tier::Anon => false,
         auth::Tier::Read => false,
@@ -1218,7 +770,19 @@ fn can_write(world_name: &str, tier: auth::Tier) -> bool {
     }
 }
 
-fn can_delete(tier: auth::Tier) -> bool {
+/// Mirrors the harvard-gate decision in `can_write`. Lifted out so
+/// `handler::execute_put` / `execute_post` can classify a rejected
+/// write as `Auth(Write)` vs `Auth(WriteApprove)` for the FSM trace
+/// without re-deriving the predicate.
+pub(crate) fn needs_write_approve(world_name: &str) -> bool {
+    exact_or_child(world_name, "lib")
+        || exact_or_child(world_name, "etc")
+        || exact_or_child(world_name, "boot")
+        || exact_or_child(world_name, "usr")
+        || exact_or_child(world_name, "var/log")
+}
+
+pub(crate) fn can_delete(tier: auth::Tier) -> bool {
     matches!(tier, auth::Tier::Approve)
 }
 
@@ -1241,7 +805,7 @@ fn can_delete(tier: auth::Tier) -> bool {
 // to_header_map) live in `response.rs` and are re-exported at the
 // crate root. Helpers below use them through that re-export.
 
-fn exact_or_child(world_name: &str, prefix: &str) -> bool {
+pub(crate) fn exact_or_child(world_name: &str, prefix: &str) -> bool {
     world_name == prefix
         || world_name
             .strip_prefix(prefix)
@@ -1280,7 +844,31 @@ fn hmac_key_from_env_value(value: Option<String>) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
     use std::sync::{Mutex as TestMutex, OnceLock};
+
+    /// PR 4c: 50 unit tests below were renamed mechanically from
+    /// `handle_*` (sync `&Core → Response`) to `execute_*` (async
+    /// `&Core, &TraceCtx → Phase`). The verb-handler entry point
+    /// returns `Phase`, but the assertions all operate on the
+    /// underlying `Response`. This helper unwraps the three terminal
+    /// `Phase` variants `execute_*` can return so tests can keep
+    /// asserting on `.status()` / `.headers()` without scaffolding
+    /// per call site.
+    fn unwrap_response(phase: Phase) -> Response {
+        match phase {
+            Phase::ExecutedRead(r) | Phase::CommittedWrite(r) | Phase::Done(r) => r,
+            Phase::Error { resp, .. } => resp,
+            // execute_* never returns a non-terminal Phase; reaching
+            // any of these would be a bug in the handler module.
+            Phase::Received { .. }
+            | Phase::Authenticated { .. }
+            | Phase::PathValidated { .. }
+            | Phase::Dispatched { .. } => {
+                panic!("execute_* returned a non-terminal Phase variant")
+            }
+        }
+    }
 
     fn env_lock() -> &'static TestMutex<()> {
         static LOCK: OnceLock<TestMutex<()>> = OnceLock::new();
@@ -1385,38 +973,47 @@ mod tests {
         core.max_storage_bytes = Some(4);
         let headers = HeaderMap::new();
 
-        let first = handle_put(
-            &core,
-            "home/a",
-            &headers,
-            Bytes::from_static(b"1234"),
-            auth::Tier::Write,
-        )
-        .await;
+        let first = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"1234"),
+                auth::Tier::Write,
+                "home/a".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(first.status(), StatusCode::CREATED);
 
-        let over = handle_put(
-            &core,
-            "home/b",
-            &headers,
-            Bytes::from_static(b"5"),
-            auth::Tier::Write,
-        )
-        .await;
+        let over = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"5"),
+                auth::Tier::Write,
+                "home/b".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(over.status(), StatusCode::INSUFFICIENT_STORAGE);
         assert_eq!(over.headers().get("x-storage-usage").unwrap(), "4");
         assert_eq!(over.headers().get("x-storage-quota").unwrap(), "4");
         assert_eq!(over.headers().get("x-storage-needed").unwrap(), "1");
         assert!(core.read_world("home/b").unwrap().is_none());
 
-        let append = handle_post(
-            &core,
-            "home/a",
-            &headers,
-            Bytes::from_static(b"5"),
-            auth::Tier::Write,
-        )
-        .await;
+        let append = unwrap_response(
+            execute_post(
+                headers.clone(),
+                Bytes::from_static(b"5"),
+                auth::Tier::Write,
+                "home/a".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(append.status(), StatusCode::INSUFFICIENT_STORAGE);
         assert_eq!(append.headers().get("x-storage-usage").unwrap(), "4");
         assert_eq!(append.headers().get("x-storage-quota").unwrap(), "4");
@@ -1452,7 +1049,17 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let path = format!("home/race/{i}");
                 let body = Bytes::copy_from_slice(&vec![b'x'; body_len]);
-                handle_put(&core, &path, &HeaderMap::new(), body, auth::Tier::Write).await
+                unwrap_response(
+                    execute_put(
+                        HeaderMap::new(),
+                        body,
+                        auth::Tier::Write,
+                        path.to_string(),
+                        &core,
+                        &TraceCtx::disabled(),
+                    )
+                    .await,
+                )
             }));
         }
 
@@ -1500,7 +1107,17 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let path = format!("tmp/race/{i}");
                 let body = Bytes::copy_from_slice(&vec![b'm'; body_len]);
-                handle_put(&core, &path, &HeaderMap::new(), body, auth::Tier::Write).await
+                unwrap_response(
+                    execute_put(
+                        HeaderMap::new(),
+                        body,
+                        auth::Tier::Write,
+                        path.to_string(),
+                        &core,
+                        &TraceCtx::disabled(),
+                    )
+                    .await,
+                )
             }));
         }
 
@@ -1608,34 +1225,43 @@ mod tests {
         core.max_world_bytes = 4;
         let headers = HeaderMap::new();
 
-        let too_big = handle_put(
-            &core,
-            "home/too-big",
-            &headers,
-            Bytes::from_static(b"12345"),
-            auth::Tier::Write,
-        )
-        .await;
+        let too_big = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"12345"),
+                auth::Tier::Write,
+                "home/too-big".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(too_big.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
-        let ok = handle_put(
-            &core,
-            "home/four",
-            &headers,
-            Bytes::from_static(b"1234"),
-            auth::Tier::Write,
-        )
-        .await;
+        let ok = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"1234"),
+                auth::Tier::Write,
+                "home/four".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(ok.status(), StatusCode::CREATED);
 
-        let append = handle_post(
-            &core,
-            "home/four",
-            &headers,
-            Bytes::from_static(b"5"),
-            auth::Tier::Write,
-        )
-        .await;
+        let append = unwrap_response(
+            execute_post(
+                headers.clone(),
+                Bytes::from_static(b"5"),
+                auth::Tier::Write,
+                "home/four".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(append.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1647,32 +1273,41 @@ mod tests {
         core.max_memory_bytes = 4;
         let headers = HeaderMap::new();
 
-        let first = handle_put(
-            &core,
-            "tmp/a",
-            &headers,
-            Bytes::from_static(b"12"),
-            auth::Tier::Write,
-        )
-        .await;
+        let first = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"12"),
+                auth::Tier::Write,
+                "tmp/a".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(first.status(), StatusCode::CREATED);
-        let second = handle_put(
-            &core,
-            "tmp/b",
-            &headers,
-            Bytes::from_static(b"34"),
-            auth::Tier::Write,
-        )
-        .await;
+        let second = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"34"),
+                auth::Tier::Write,
+                "tmp/b".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(second.status(), StatusCode::CREATED);
-        let third = handle_put(
-            &core,
-            "tmp/c",
-            &headers,
-            Bytes::from_static(b"5"),
-            auth::Tier::Write,
-        )
-        .await;
+        let third = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"5"),
+                auth::Tier::Write,
+                "tmp/c".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(third.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1710,17 +1345,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn get_and_head_require_read_token_when_enabled() {
+    #[tokio::test]
+    async fn get_and_head_require_read_token_when_enabled() {
         let (mut core, dir) = test_core("read-token-handlers");
         core.write_world("home/private", b"secret", "text/plain", &[])
             .unwrap();
         core.tokens.read = Some(b"reader".to_vec());
 
         let headers = HeaderMap::new();
-        let get_anon = handle_get(&core, "home/private", &headers, auth::Tier::Anon);
+        let get_anon = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/private".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get_anon.status(), StatusCode::UNAUTHORIZED);
-        let head_reader = handle_head(&core, "home/private", &headers, auth::Tier::Read);
+        let head_reader = unwrap_response(
+            execute_head(
+                headers.clone(),
+                auth::Tier::Read,
+                "home/private".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(head_reader.status(), StatusCode::OK);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1862,15 +1515,24 @@ mod tests {
         assert_eq!(hs::parse_range(&h, 10), Ok(None));
     }
 
-    #[test]
-    fn get_and_head_honor_single_byte_range() {
+    #[tokio::test]
+    async fn get_and_head_honor_single_byte_range() {
         let (core, dir) = test_core("range-handler");
         core.write_world("home/range", b"abcdef", "text/plain", &[])
             .unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
 
-        let get = handle_get(&core, "home/range", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/range".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(
             get.headers().get(header::CONTENT_RANGE).unwrap(),
@@ -1878,7 +1540,16 @@ mod tests {
         );
         assert_eq!(get.headers().get(header::CONTENT_LENGTH).unwrap(), "3");
 
-        let head = handle_head(&core, "home/range", &headers, auth::Tier::Anon);
+        let head = unwrap_response(
+            execute_head(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/range".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(head.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(
             head.headers().get(header::CONTENT_RANGE).unwrap(),
@@ -1889,33 +1560,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn get_and_head_advertise_accept_ranges_on_full_body() {
+    #[tokio::test]
+    async fn get_and_head_advertise_accept_ranges_on_full_body() {
         let (core, dir) = test_core("accept-ranges");
         core.write_world("home/ranges", b"abcdef", "text/plain", &[])
             .unwrap();
         let headers = HeaderMap::new();
 
-        let get = handle_get(&core, "home/ranges", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/ranges".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::OK);
         assert_eq!(get.headers().get(header::ACCEPT_RANGES).unwrap(), "bytes");
 
-        let head = handle_head(&core, "home/ranges", &headers, auth::Tier::Anon);
+        let head = unwrap_response(
+            execute_head(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/ranges".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(head.status(), StatusCode::OK);
         assert_eq!(head.headers().get(header::ACCEPT_RANGES).unwrap(), "bytes");
 
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn unsatisfied_range_returns_416_with_content_range() {
+    #[tokio::test]
+    async fn unsatisfied_range_returns_416_with_content_range() {
         let (core, dir) = test_core("range-416");
         core.write_world("home/range", b"abcdef", "text/plain", &[])
             .unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=99-100"));
 
-        let get = handle_get(&core, "home/range", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/range".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::RANGE_NOT_SATISFIABLE);
         assert_eq!(
             get.headers().get(header::CONTENT_RANGE).unwrap(),
@@ -1926,15 +1624,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn multi_range_is_ignored_and_returns_full_body() {
+    #[tokio::test]
+    async fn multi_range_is_ignored_and_returns_full_body() {
         let (core, dir) = test_core("multi-range");
         core.write_world("home/range", b"abcdef", "text/plain", &[])
             .unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1,4-5"));
 
-        let get = handle_get(&core, "home/range", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/range".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::OK);
         assert!(get.headers().get(header::CONTENT_RANGE).is_none());
         assert_eq!(get.headers().get(header::CONTENT_LENGTH).unwrap(), "6");
@@ -1942,14 +1649,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn world_reads_advertise_monitor_and_collection_links() {
+    #[tokio::test]
+    async fn world_reads_advertise_monitor_and_collection_links() {
         let (core, dir) = test_core("link-headers");
         core.write_world("home/links", b"hello", "text/plain", &[])
             .unwrap();
         let headers = HeaderMap::new();
 
-        let get = handle_get(&core, "home/links", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/links".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         let links: Vec<_> = get.headers().get_all(header::LINK).iter().collect();
         assert_eq!(links.len(), 2);
         assert!(links
@@ -1959,7 +1675,16 @@ mod tests {
             .iter()
             .any(|v| *v == "</proc/worlds>; rel=\"collection\""));
 
-        let head = handle_head(&core, "home/links", &headers, auth::Tier::Anon);
+        let head = unwrap_response(
+            execute_head(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/links".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(head.headers().get_all(header::LINK).iter().count(), 2);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1985,8 +1710,8 @@ mod tests {
         assert_eq!(hs::effective_range(&h, 6, "hmac-current"), Ok(None));
     }
 
-    #[test]
-    fn stale_if_range_returns_full_body() {
+    #[tokio::test]
+    async fn stale_if_range_returns_full_body() {
         let (core, dir) = test_core("if-range-stale");
         core.write_world("home/range", b"abcdef", "text/plain", &[])
             .unwrap();
@@ -1994,7 +1719,16 @@ mod tests {
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
         headers.insert(header::IF_RANGE, HeaderValue::from_static("\"hmac-stale\""));
 
-        let get = handle_get(&core, "home/range", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/range".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::OK);
         assert!(get.headers().get(header::CONTENT_RANGE).is_none());
         assert_eq!(get.headers().get(header::CONTENT_LENGTH).unwrap(), "6");
@@ -2002,8 +1736,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn get_and_head_honor_if_none_match_cache_revalidation() {
+    #[tokio::test]
+    async fn get_and_head_honor_if_none_match_cache_revalidation() {
         let (core, dir) = test_core("read-if-none-match");
         let h = world::write_with_audit(
             &core.data,
@@ -2018,7 +1752,16 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
 
-        let get = handle_get(&core, "home/cache", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/cache".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(get.headers().get(header::ETAG).unwrap(), etag.as_str());
         assert!(get
@@ -2027,7 +1770,16 @@ mod tests {
             .iter()
             .any(|v| v == "</listen/home/cache>; rel=\"monitor\""));
 
-        let head = handle_head(&core, "home/cache", &headers, auth::Tier::Anon);
+        let head = unwrap_response(
+            execute_head(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/cache".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(head.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(head.headers().get(header::ETAG).unwrap(), etag.as_str());
 
@@ -2035,7 +1787,16 @@ mod tests {
             header::IF_NONE_MATCH,
             HeaderValue::from_static("\"hmac-stale\""),
         );
-        let get = handle_get(&core, "home/cache", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/cache".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::OK);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -2043,28 +1804,24 @@ mod tests {
 
     #[tokio::test]
     async fn options_and_405_advertise_allow_headers() {
+        // PR 4c: `handle_world_method` was retired. OPTIONS is now
+        // answered directly in `world_handler` (policy-free, never
+        // enters the FSM); PATCH and any other unsupported method
+        // are rejected by `pipeline::dispatch` with `MethodNotAllowed`.
         let (core, dir) = test_core("allow");
-        let headers = HeaderMap::new();
+        let core = std::sync::Arc::new(core);
 
-        let options = handle_world_method(
-            &core,
-            Method::OPTIONS,
-            "home/allow",
-            &headers,
-            Bytes::new(),
-            auth::Tier::Anon,
-        )
-        .await;
+        let options = options_response(WORLD_ALLOW);
         assert_eq!(options.status(), StatusCode::NO_CONTENT);
         assert_eq!(options.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
 
-        let patch = handle_world_method(
-            &core,
+        let patch = pipeline::run(
             Method::PATCH,
-            "home/allow",
-            &headers,
+            "home/allow".to_string(),
+            HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Anon,
+            &core,
+            0,
         )
         .await;
         assert_eq!(patch.status(), StatusCode::METHOD_NOT_ALLOWED);
@@ -2299,14 +2056,17 @@ mod tests {
     async fn put_created_returns_location() {
         let (core, dir) = test_core("put-location");
         let headers = HeaderMap::new();
-        let resp = handle_put(
-            &core,
-            "home/created",
-            &headers,
-            Bytes::from_static(b"new"),
-            auth::Tier::Write,
-        )
-        .await;
+        let resp = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"new"),
+                auth::Tier::Write,
+                "home/created".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
 
         assert_eq!(resp.status(), StatusCode::CREATED);
         assert_eq!(
@@ -2314,14 +2074,17 @@ mod tests {
             "/home/created"
         );
 
-        let resp = handle_put(
-            &core,
-            "home/created",
-            &headers,
-            Bytes::from_static(b"again"),
-            auth::Tier::Write,
-        )
-        .await;
+        let resp = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"again"),
+                auth::Tier::Write,
+                "home/created".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp.headers().get(header::LOCATION).is_none());
 
@@ -2332,21 +2095,33 @@ mod tests {
     async fn location_and_link_headers_percent_encode_world_urls() {
         let (core, dir) = test_core("encoded-headers");
         let headers = HeaderMap::new();
-        let resp = handle_put(
-            &core,
-            "home/café report",
-            &headers,
-            Bytes::from_static(b"new"),
-            auth::Tier::Write,
-        )
-        .await;
+        let resp = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"new"),
+                auth::Tier::Write,
+                "home/café report".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(resp.status(), StatusCode::CREATED);
         assert_eq!(
             resp.headers().get(header::LOCATION).unwrap(),
             "/home/caf%C3%A9%20report"
         );
 
-        let get = handle_get(&core, "home/café report", &headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                headers.clone(),
+                auth::Tier::Anon,
+                "home/café report".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         let links: Vec<_> = get.headers().get_all(header::LINK).iter().collect();
         assert!(links
             .iter()
@@ -2355,8 +2130,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn unicode_worlds_roundtrip_body_headers_and_proc_listing() {
+    #[tokio::test]
+    async fn unicode_worlds_roundtrip_body_headers_and_proc_listing() {
         let (core, dir) = test_core("unicode-roundtrip");
         let headers = vec![(
             "content-disposition".to_string(),
@@ -2371,7 +2146,16 @@ mod tests {
         .unwrap();
 
         let req_headers = HeaderMap::new();
-        let get = handle_get(&core, "home/销售/报告", &req_headers, auth::Tier::Anon);
+        let get = unwrap_response(
+            execute_get(
+                req_headers.clone(),
+                auth::Tier::Anon,
+                "home/销售/报告".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(get.status(), StatusCode::OK);
         assert_eq!(
             get.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -2439,24 +2223,30 @@ mod tests {
 
         let mut stale = HeaderMap::new();
         stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
-        let put = handle_put(
-            &core,
-            "home/cas",
-            &stale,
-            Bytes::from_static(b"two"),
-            auth::Tier::Write,
-        )
-        .await;
+        let put = unwrap_response(
+            execute_put(
+                stale.clone(),
+                Bytes::from_static(b"two"),
+                auth::Tier::Write,
+                "home/cas".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(put.status(), StatusCode::PRECONDITION_FAILED);
 
-        let post = handle_post(
-            &core,
-            "home/cas",
-            &stale,
-            Bytes::from_static(b" plus"),
-            auth::Tier::Write,
-        )
-        .await;
+        let post = unwrap_response(
+            execute_post(
+                stale.clone(),
+                Bytes::from_static(b" plus"),
+                auth::Tier::Write,
+                "home/cas".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(post.status(), StatusCode::PRECONDITION_FAILED);
 
         let mut good = HeaderMap::new();
@@ -2464,14 +2254,17 @@ mod tests {
             header::IF_MATCH,
             HeaderValue::from_str(&format!("\"{}\"", hs::hmac_etag(&h))).unwrap(),
         );
-        let post = handle_post(
-            &core,
-            "home/cas",
-            &good,
-            Bytes::from_static(b" plus"),
-            auth::Tier::Write,
-        )
-        .await;
+        let post = unwrap_response(
+            execute_post(
+                good.clone(),
+                Bytes::from_static(b" plus"),
+                auth::Tier::Write,
+                "home/cas".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(post.status(), StatusCode::OK);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -2732,8 +2525,8 @@ mod tests {
         assert_eq!(meta, vec![("x-meta-author".to_string(), "bob".to_string())]);
     }
 
-    #[test]
-    fn get_returns_stored_standard_representation_headers() {
+    #[tokio::test]
+    async fn get_returns_stored_standard_representation_headers() {
         let (core, dir) = test_core("representation-headers");
         let headers = vec![
             ("content-encoding".to_string(), "gzip".to_string()),
@@ -2757,7 +2550,16 @@ mod tests {
         .unwrap();
 
         let req_headers = HeaderMap::new();
-        let resp = handle_get(&core, "home/gzip", &req_headers, auth::Tier::Anon);
+        let resp = unwrap_response(
+            execute_get(
+                req_headers.clone(),
+                auth::Tier::Anon,
+                "home/gzip".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
             resp.headers().get(header::CONTENT_ENCODING).unwrap(),
@@ -2918,14 +2720,17 @@ mod tests {
             HeaderValue::from_static("application/pdf"),
         );
         req_headers.insert(header::CONTENT_LANGUAGE, HeaderValue::from_static("zh-CN"));
-        let resp = handle_post(
-            &core,
-            "home/post-audit-meta",
-            &req_headers,
-            Bytes::from_static(b" world"),
-            auth::Tier::Write,
-        )
-        .await;
+        let resp = unwrap_response(
+            execute_post(
+                req_headers.clone(),
+                Bytes::from_static(b" world"),
+                auth::Tier::Write,
+                "home/post-audit-meta".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(resp.status(), StatusCode::OK);
 
         let c = rusqlite::Connection::open(world::world_db(&core.data, "home/post-audit-meta"))
@@ -2967,7 +2772,16 @@ mod tests {
 
         let mut stale = HeaderMap::new();
         stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
-        let resp = handle_delete(&core, "home/delete-cas", &stale, auth::Tier::Approve).await;
+        let resp = unwrap_response(
+            execute_delete(
+                stale.clone(),
+                auth::Tier::Approve,
+                "home/delete-cas".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
         assert!(core.read_world("home/delete-cas").unwrap().is_some());
 
@@ -2976,7 +2790,16 @@ mod tests {
             header::IF_MATCH,
             HeaderValue::from_str(&format!("\"{}\"", hs::hmac_etag(&h))).unwrap(),
         );
-        let resp = handle_delete(&core, "home/delete-cas", &good, auth::Tier::Approve).await;
+        let resp = unwrap_response(
+            execute_delete(
+                good.clone(),
+                auth::Tier::Approve,
+                "home/delete-cas".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert!(core.read_world("home/delete-cas").unwrap().is_none());
         assert!(core.read_world("var/log/deletes").unwrap().is_some());
@@ -3023,13 +2846,29 @@ mod tests {
         .unwrap();
         let headers = HeaderMap::new();
 
-        let auth_delete =
-            handle_delete(&core, "home/delete-policy", &headers, auth::Tier::Write).await;
+        let auth_delete = unwrap_response(
+            execute_delete(
+                headers.clone(),
+                auth::Tier::Write,
+                "home/delete-policy".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(auth_delete.status(), StatusCode::UNAUTHORIZED);
         assert!(core.read_world("home/delete-policy").unwrap().is_some());
 
-        let ledger_delete =
-            handle_delete(&core, "var/log/deletes", &headers, auth::Tier::Approve).await;
+        let ledger_delete = unwrap_response(
+            execute_delete(
+                headers.clone(),
+                auth::Tier::Approve,
+                "var/log/deletes".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(ledger_delete.status(), StatusCode::UNAUTHORIZED);
         assert!(core.read_world("var/log/deletes").unwrap().is_some());
 
@@ -3040,7 +2879,16 @@ mod tests {
     async fn delete_missing_world_does_not_write_delete_ledger() {
         let (core, dir) = test_core("delete-missing");
         let headers = HeaderMap::new();
-        let resp = handle_delete(&core, "home/missing", &headers, auth::Tier::Approve).await;
+        let resp = unwrap_response(
+            execute_delete(
+                headers.clone(),
+                auth::Tier::Approve,
+                "home/missing".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert!(core.read_world("var/log/deletes").unwrap().is_none());
 
@@ -3109,14 +2957,17 @@ mod tests {
         let (core, dir) = test_core("proc-df-world-count");
         let headers = HeaderMap::new();
 
-        let put = handle_put(
-            &core,
-            "home/count",
-            &headers,
-            Bytes::from_static(b"x"),
-            auth::Tier::Write,
-        )
-        .await;
+        let put = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"x"),
+                auth::Tier::Write,
+                "home/count".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(put.status(), StatusCode::CREATED);
 
         let state = Arc::new(core);
@@ -3125,7 +2976,16 @@ mod tests {
             .await
             .contains("worlds\t1\tunlimited\tunlimited\n"));
 
-        let delete = handle_delete(&state, "home/count", &headers, auth::Tier::Approve).await;
+        let delete = unwrap_response(
+            execute_delete(
+                headers.clone(),
+                auth::Tier::Approve,
+                "home/count".to_string(),
+                &state,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
         assert_eq!(delete.status(), StatusCode::NO_CONTENT);
 
         let after = proc_df(State(state), Method::GET, headers).await;
@@ -3143,17 +3003,18 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    // ── pipeline route-level coverage (PR 4b) ─────────────────
+    // ── pipeline route-level coverage (PR 4b/4c) ───────────────
     //
-    // The 17 inline GET/HEAD tests above call `handle_get` /
-    // `handle_head` directly — they cover the *legacy* read path.
-    // The tests below call `pipeline::run` with the same Core
-    // fixture, exercising the `world_handler → pipeline::run →
-    // handler::execute_get/head` route that production GET/HEAD
-    // requests now take. Without these, a bug in the pipeline wiring
-    // (path canonicalization, auth threading, dispatch, response
-    // construction in the handler) would not be caught by unit
-    // tests; only e2e_blackbox would surface it.
+    // The white-box tests above call `execute_get` / `execute_head`
+    // / `execute_put` / `execute_post` / `execute_delete` directly
+    // (renamed mechanically from `handle_*` in PR 4c) — they cover
+    // verb-handler logic in isolation. The tests below call
+    // `pipeline::run` with the same Core fixture, exercising the
+    // `world_handler → pipeline::run → handler::execute` route that
+    // every real request now takes. Without these, a bug in the
+    // pipeline wiring (path canonicalization, auth threading,
+    // dispatch, response construction in the handler) would not be
+    // caught by white-box tests; only e2e_blackbox would surface it.
 
     #[tokio::test]
     async fn pipeline_get_existing_world_returns_200_with_body() {
