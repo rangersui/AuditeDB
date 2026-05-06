@@ -40,399 +40,52 @@
 mod audit;
 mod auth;
 mod coap;
+mod config;
 mod handler;
 mod http_semantics;
 mod listen;
+mod middleware;
 mod path;
 mod pipeline;
 mod proc;
 mod response;
+mod route;
+mod state;
 mod store;
 mod world;
 
 // Re-export the small pure-function modules at the crate root so
 // sibling modules keep referring to `crate::not_found` /
-// `crate::canonicalize_path` / `crate::Phase` etc. without
-// per-extraction import churn. Each cascading PR adds one line here.
+// `crate::canonicalize_path` / `crate::Phase` / `crate::Core` etc.
+// without per-extraction import churn.
 pub(crate) use crate::path::*;
 pub(crate) use crate::pipeline::*;
 pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
+pub(crate) use crate::state::*;
 
-use axum::{
-    body::{Body, Bytes},
-    extract::DefaultBodyLimit,
-    extract::{Path as AxPath, State},
-    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
-    middleware::{self, Next},
-    response::Response,
-    routing::any,
-    Router,
-};
-use dashmap::DashMap;
 use std::collections::VecDeque;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize},
     Arc, Mutex as StdMutex,
 };
-use std::time::Instant;
-use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
-use crate::http_semantics as hs;
-use crate::world::Stage;
+use dashmap::DashMap;
+use tokio::sync::{broadcast, watch, Semaphore};
 
-type BoxedResponse = Box<Response>;
-
-pub(crate) struct WriteOutcome {
-    pub status: StatusCode,
-    /// Etag is part of `put_bytes`'s contract for any future caller
-    /// that wants to include it in a response. The current CoAP
-    /// caller in `coap.rs` only reads `status`; HTTP writes flow
-    /// through `handler::execute_put` (which does not call
-    /// `put_bytes`). Allow until CoAP migrates to the FSM (PR 7+),
-    /// at which point `put_bytes` and `WriteOutcome` can be retired.
-    #[allow(dead_code)]
-    pub etag: String,
-}
-
-#[derive(Clone)]
-struct Core {
-    // Fields used by handler.rs's verb implementations are pub(crate);
-    // the rest stay private to main.rs. PR 4c lifted the write/audit
-    // path from main.rs into handler.rs, which forced these widenings.
-    pub(crate) data: PathBuf,
-    tokens: auth::Tokens,
-    pub(crate) hmac_key: Vec<u8>,
-    pub(crate) mem: Arc<store::MemoryStore>,
-    pub(crate) max_world_bytes: usize,
-    pub(crate) max_memory_bytes: usize,
-    pub(crate) max_storage_bytes: Option<usize>,
-    pub(crate) storage_body_bytes: Arc<AtomicUsize>,
-    pub(crate) durable_world_count: Arc<AtomicUsize>,
-    pub(crate) delete_ledger_created: Arc<AtomicBool>,
-    events: broadcast::Sender<listen::ChangeEvent>,
-    listen_slots: Arc<Semaphore>,
-    listen_replay_max: usize,
-    event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
-    shutdown: watch::Receiver<bool>,
-    next_event: Arc<AtomicU64>,
-    next_request: Arc<AtomicU64>,
-    // Per-world async write lock. Replaces the previous global write_lock.
-    // Writes to different worlds run concurrently; writes to the same world
-    // serialize (preserving If-Match/If-None-Match + write atomicity).
-    // Locks are created lazily on first write and never evicted while the
-    // process runs. See acquire_world_lock for the rationale (eviction is
-    // unsafe when waiters hold a clone of the Arc). DashMap shards reads,
-    // so lookup is mostly lock-free.
-    world_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
-}
-
-impl Core {
-    /// Acquire the per-world write lock. Different worlds run concurrent
-    /// writes; same-world writes serialize. Lazy creation: the lock is
-    /// inserted on first acquire and never evicted while the process runs.
-    ///
-    /// We deliberately do NOT remove the entry on DELETE. Removing while
-    /// another waiter holds a clone of the Arc would let the next acquirer
-    /// create a fresh Arc<Mutex<()>> for the same world, breaking mutual
-    /// exclusion (two concurrent writers, two different mutexes). The map
-    /// grows by one entry per distinct world ever written -- bounded in
-    /// practice by total world cardinality.
-    ///
-    /// Lock ordering rule for callers that need more than one world lock
-    /// (currently only DELETE, which also touches the shared `var/log/deletes`
-    /// ledger): always acquire the target world lock FIRST, then any shared
-    /// ledger lock(s). This avoids cycles. See `handler::execute_delete`
-    /// for the only current example.
-    ///
-    /// The DashMap entry guard is dropped before `.await`, so we never
-    /// hold a sync shard lock across an await.
-    pub(crate) async fn acquire_world_lock(&self, world: &str) -> OwnedMutexGuard<()> {
-        let lock = {
-            self.world_locks
-                .entry(world.to_string())
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        };
-        lock.lock_owned().await
-    }
-
-    pub(crate) fn read_world(&self, world: &str) -> rusqlite::Result<Option<Stage>> {
-        Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
-    }
-
-    pub(crate) fn read_world_with_etag(
-        &self,
-        world: &str,
-    ) -> rusqlite::Result<Option<(Stage, String)>> {
-        if store::is_memory_world(world) {
-            Ok(self
-                .mem
-                .read_with_hash(world)
-                .map(|(stage, hash)| (stage, format!("sha256-{hash}"))))
-        } else {
-            Ok(
-                world::read_with_hmac(&self.data, world)?.map(|(stage, hmac)| {
-                    let etag = hmac
-                        .map(|h| hs::hmac_etag(&h))
-                        .unwrap_or_else(|| hs::body_etag(&stage.body));
-                    (stage, etag)
-                }),
-            )
-        }
-    }
-
-    /// Test-only fixture: seed a world directly without going through
-    /// auth/preconditions/audit. Production writes go through `put_bytes`
-    /// (durable: `world::write_with_audit_checked` + `reserve_storage`;
-    /// memory: `MemoryStore::write_with_quota`). Kept for the existing
-    /// 80+ unit tests that build small fixture worlds before exercising
-    /// handler paths.
-    #[cfg(test)]
-    fn write_world(
-        &self,
-        world: &str,
-        body: &[u8],
-        content_type: &str,
-        headers: &[(String, String)],
-    ) -> rusqlite::Result<()> {
-        if store::is_memory_world(world) {
-            self.mem.write(world, body, content_type, headers);
-            Ok(())
-        } else {
-            let current_len = world::body_len(&self.data, world)?;
-            world::write(&self.data, world, body, content_type, headers)?;
-            let prev = current_len.unwrap_or(0);
-            let _ = self.storage_body_bytes.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |used| Some(used.saturating_sub(prev).saturating_add(body.len())),
-            );
-            if current_len.is_none() {
-                self.durable_world_count.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(())
-        }
-    }
-
-    pub(crate) fn world_metadata(
-        &self,
-        world: &str,
-    ) -> rusqlite::Result<Option<world::WorldMetadata>> {
-        if store::is_memory_world(world) {
-            Ok(self.mem.metadata(world))
-        } else {
-            world::metadata(&self.data, world)
-        }
-    }
-
-    pub(crate) async fn delete_world_blocking(&self, world: &str) -> bool {
-        if store::is_memory_world(world) {
-            self.mem.delete(world)
-        } else {
-            let data = self.data.clone();
-            let world = world.to_string();
-            tokio::task::spawn_blocking(move || world::delete(&data, &world))
-                .await
-                .unwrap_or(false)
-        }
-    }
-
-    pub(crate) fn notify(&self, method: &'static str, world: &str, etag: &str) {
-        let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
-        let change = listen::ChangeEvent {
-            id,
-            method,
-            path: format!("/{world}"),
-            etag: etag.to_owned(),
-        };
-        {
-            let mut log = self
-                .event_log
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            log.push_back(change.clone());
-            while log.len() > self.listen_replay_max {
-                log.pop_front();
-            }
-        }
-        let _ = self.events.send(change);
-    }
-
-    // (`check_storage_quota_for_append` was removed; quota is now enforced
-    // by `reserve_storage` which atomically checks and reserves in one CAS,
-    // closing the race that the snapshot-based check could not handle.)
-
-    /// Atomic reservation: check the quota and reserve `new_len - prev_len`
-    /// in a single CAS step. Replaces the old "snapshot then write then
-    /// adjust" pattern, which raced under per-world locking when two
-    /// concurrent writes on different worlds both observed usage below
-    /// quota and only afterwards pushed it past.
-    ///
-    /// Caller must hold `acquire_world_lock(world)` so that `prev_len`
-    /// reflects the world's true current body length (cannot change
-    /// underneath us). On success the global counter has already been
-    /// updated; on success of the subsequent storage write, no further
-    /// counter change is needed. On failure of the storage write, call
-    /// `rollback_storage_reservation` to credit back.
-    ///
-    /// `prev_len` is 0 for new worlds and for append (where the existing
-    /// bytes stay and we only add `new_len` new).
-    pub(crate) fn reserve_storage(
-        &self,
-        prev_len: usize,
-        new_len: usize,
-    ) -> Result<(), BoxedResponse> {
-        if let Some(quota) = self.max_storage_bytes {
-            let result = self.storage_body_bytes.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |used| {
-                    let projected = used.saturating_sub(prev_len).saturating_add(new_len);
-                    if projected > quota {
-                        None
-                    } else {
-                        Some(projected)
-                    }
-                },
-            );
-            match result {
-                Ok(_) => Ok(()),
-                Err(used) => {
-                    let projected = used.saturating_sub(prev_len).saturating_add(new_len);
-                    Err(Box::new(storage_quota_exceeded(used, quota, projected)))
-                }
-            }
-        } else {
-            // No quota: still keep the counter coherent for /proc/df.
-            let _ = self.storage_body_bytes.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |used| Some(used.saturating_sub(prev_len).saturating_add(new_len)),
-            );
-            Ok(())
-        }
-    }
-
-    /// Inverse of `reserve_storage`. Call when the reserved write
-    /// subsequently fails so we credit the bytes back into available quota.
-    pub(crate) fn rollback_storage_reservation(&self, prev_len: usize, new_len: usize) {
-        let _ =
-            self.storage_body_bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                    Some(used.saturating_sub(new_len).saturating_add(prev_len))
-                });
-    }
-
-    async fn put_bytes(
-        &self,
-        world_name: &str,
-        body: &[u8],
-        content_type: &str,
-        headers: &[(String, String)],
-        tier: auth::Tier,
-        preconditions: Option<&HeaderMap>,
-    ) -> Result<WriteOutcome, Response> {
-        if !can_write(world_name, tier) {
-            return Err(unauthorized(
-                "write requires token; system worlds need approve token",
-            ));
-        }
-        if body.len() > self.max_world_bytes {
-            return Err(payload_too_large(self.max_world_bytes));
-        }
-        let _write_guard = self.acquire_world_lock(world_name).await;
-        if let Some(req_headers) = preconditions {
-            hs::check_write_preconditions(self, world_name, req_headers)?;
-        }
-        let existed;
-        let new_etag = if store::is_persistent(world_name) {
-            // Read previous body length under the per-world lock; cannot
-            // change while we hold the guard. None means new world.
-            let prev_len_opt = world::body_len(&self.data, world_name)
-                .map_err(|e| storage_error("storage metadata", e))?;
-            existed = prev_len_opt.is_some();
-            let prev_len = prev_len_opt.unwrap_or(0);
-
-            // Atomic CAS quota reservation. Race-free across worlds: two
-            // writes on different worlds cannot both observe usage below
-            // quota and then push it past, because the CAS sees the latest
-            // counter value. On reservation failure no write happens.
-            self.reserve_storage(prev_len, body.len()).map_err(|b| *b)?;
-
-            // Quota already enforced by reservation; pass None to skip the
-            // (now redundant and racy) snapshot check inside world.rs.
-            match world::write_with_audit_checked(
-                &self.data,
-                world_name,
-                body,
-                content_type,
-                headers,
-                &self.hmac_key,
-                None,
-            ) {
-                Ok(result) => {
-                    if !existed {
-                        self.durable_world_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    hs::hmac_etag(&result.hmac)
-                }
-                Err(world::WriteAuditError::Quota { .. }) => {
-                    // Unreachable: we passed quota=None above.
-                    self.rollback_storage_reservation(prev_len, body.len());
-                    return Err(server_error("unexpected quota error".to_string()));
-                }
-                Err(world::WriteAuditError::Sqlite(e)) => {
-                    self.rollback_storage_reservation(prev_len, body.len());
-                    return Err(storage_error("storage/audit", e));
-                }
-            }
-        } else {
-            // Memory worlds: the existence check, the quota check, and the
-            // actual insert all happen under one MemoryStore HashMap mutex
-            // acquisition. That mutex was the implicit serializer the global
-            // write_lock used to provide; per-world locks alone don't help
-            // here because the budget is shared across all memory worlds.
-            match self.mem.write_with_quota(
-                world_name,
-                body,
-                content_type,
-                headers,
-                self.max_memory_bytes,
-            ) {
-                Ok(outcome) => {
-                    existed = outcome.existed;
-                    hs::body_etag(body)
-                }
-                Err(store::MemoryQuotaError { quota, .. }) => {
-                    return Err(payload_too_large(quota));
-                }
-            }
-        };
-        self.notify("PUT", world_name, &new_etag);
-        Ok(WriteOutcome {
-            status: if existed {
-                StatusCode::OK
-            } else {
-                StatusCode::CREATED
-            },
-            etag: new_etag,
-        })
-    }
-}
+use crate::config::{
+    coap_bind_from_env, env_nonzero_usize, env_optional_usize, env_usize, hmac_key_from_env_value,
+    listen_addr, should_warn_public_read, DEFAULT_COAP_MAX_IN_FLIGHT, DEFAULT_LISTEN_REPLAY_MAX,
+    DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
+};
 
 // Re-exported to crate root for `proc.rs` (root_hint, proc_version)
 // and main()'s startup banner. The other namespace constants
 // (ROOT_ALLOW, PROC_ALLOW, AUDIT_VERIFY_ALLOW) live in proc.rs now.
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
-const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
-const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
-const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;
-const DEFAULT_MAX_LISTEN_CONNECTIONS: usize = 1024;
-const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
 
 #[tokio::main]
 async fn main() {
@@ -509,23 +162,7 @@ async fn main() {
             coap::serve(coap_state, coap_addr, coap_shutdown, coap_max_in_flight).await;
         });
     }
-    let app = Router::new()
-        .route("/", any(root_hint))
-        .route("/listen/*pattern", any(listen::handler))
-        .route("/proc/version", any(proc_version))
-        .route("/proc/worlds", any(proc_worlds))
-        .route("/proc/du", any(proc_du))
-        .route("/proc/df", any(proc_df))
-        .route("/proc/audit/*audit_path", any(proc_audit_verify))
-        .route("/proc", any(proc_reserved))
-        .route("/proc/*reserved", any(proc_reserved))
-        .route("/*world", any(world_handler))
-        .with_state(state.clone())
-        .layer(DefaultBodyLimit::max(max_world_bytes))
-        .layer(middleware::from_fn_with_state(
-            state,
-            add_core_response_headers,
-        ));
+    let app = route::build_app(state, max_world_bytes);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
@@ -591,102 +228,6 @@ fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
     }
 }
 
-async fn add_core_response_headers(
-    State(core): State<Arc<Core>>,
-    mut req: axum::http::Request<Body>,
-    next: Next,
-) -> Response {
-    let request_id = core.next_request.fetch_add(1, Ordering::Relaxed) + 1;
-    // Stash on request extensions so the FSM driver
-    // (`pipeline::run`) reads the SAME id we'll stamp on the
-    // response. Without this, the middleware and `pipeline::run`
-    // each call `next_request.fetch_add` and produce off-by-one
-    // ids — trace says `req-43` while the response says `42`.
-    req.extensions_mut()
-        .insert(crate::pipeline::RequestId(request_id));
-    let start = Instant::now();
-    let mut response = next.run(req).await;
-    stamp_core_response_headers(
-        request_id,
-        start.elapsed().as_micros(),
-        response.headers_mut(),
-    );
-    response
-}
-
-fn stamp_core_response_headers(request_id: u64, elapsed_us: u128, headers: &mut HeaderMap) {
-    headers.insert(
-        HeaderName::from_static("x-request-id"),
-        HeaderValue::from_str(&request_id.to_string())
-            .unwrap_or_else(|_| HeaderValue::from_static("0")),
-    );
-    headers.insert(
-        HeaderName::from_static("x-elapsed-us"),
-        HeaderValue::from_str(&elapsed_us.to_string())
-            .unwrap_or_else(|_| HeaderValue::from_static("0")),
-    );
-    headers.insert(header::VARY, HeaderValue::from_static("Authorization"));
-    headers.insert(
-        HeaderName::from_static("x-content-type-options"),
-        HeaderValue::from_static("nosniff"),
-    );
-}
-
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .unwrap_or(default)
-}
-
-fn env_optional_usize(name: &str) -> Option<usize> {
-    let Ok(raw) = std::env::var(name) else {
-        return None;
-    };
-    let value = raw.trim();
-    if value.is_empty() {
-        return None;
-    }
-    let parsed = value
-        .parse::<usize>()
-        .unwrap_or_else(|_| panic!("{name} must be a non-negative integer byte count"));
-    (parsed > 0).then_some(parsed)
-}
-
-fn env_nonzero_usize(name: &str, default: usize) -> usize {
-    match env_usize(name, default) {
-        0 => default,
-        value => value,
-    }
-}
-
-fn coap_bind_from_env() -> Option<(String, u16)> {
-    let raw = std::env::var("ELASTIK_COAP_PORT").ok()?;
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let port: u16 = match raw.parse() {
-        Ok(port) => port,
-        Err(_) => {
-            eprintln!("  warning: invalid ELASTIK_COAP_PORT={raw:?}; SCoAP/UDP surface disabled.");
-            return None;
-        }
-    };
-    let host = std::env::var("ELASTIK_COAP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    Some((host, port))
-}
-
-fn should_warn_public_read(bind_ip: IpAddr, tokens: &auth::Tokens) -> bool {
-    !bind_ip.is_loopback() && !tokens.read_required()
-}
-
-fn listen_addr(host: &str, port: u16) -> String {
-    host.parse::<IpAddr>()
-        .map(|ip| SocketAddr::new(ip, port).to_string())
-        .unwrap_or_else(|_| format!("{host}:{port}"))
-}
-
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
     wait_for_shutdown_signal().await;
     eprintln!("elastik-core: shutdown signal received");
@@ -723,33 +264,6 @@ async fn wait_for_shutdown_signal() {
 // the inline tests in this file reach them by short name.
 
 // ─── /<world> all five methods ──────────────────────────────────────
-async fn world_handler(
-    State(core): State<Arc<Core>>,
-    axum::Extension(crate::pipeline::RequestId(req_id)): axum::Extension<
-        crate::pipeline::RequestId,
-    >,
-    method: Method,
-    AxPath(path): AxPath<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    // OPTIONS is policy-free — answer it without entering the FSM.
-    // Every other method (including unsupported ones, which the
-    // dispatch step rejects with MethodNotAllowed) flows through
-    // `pipeline::run`. PR 4c retired the GET/HEAD short-circuit and
-    // the legacy `handle_*` write handlers; all five real verbs now
-    // share the FSM driver and produce trace output under
-    // `ELASTIK_TRACE_PIPELINE=1`.
-    //
-    // `req_id` comes from `add_core_response_headers` middleware via
-    // request extensions — same id stamped on `x-request-id` so
-    // trace output and response header agree.
-    if method == Method::OPTIONS {
-        return options_response(WORLD_ALLOW);
-    }
-    pipeline::run(method, path, headers, body, &core, req_id).await
-}
-
 // Path validation and canonicalization (canonicalize_path,
 // valid_world_name, validate_world_name, is_dot_segment,
 // strip_dot_token, is_reserved_world_name) live in `path.rs` and
@@ -820,31 +334,20 @@ pub(crate) fn can_read(core: &Core, tier: auth::Tier) -> bool {
         )
 }
 
-fn apply_meta_headers(headers: &[(String, String)], out: &mut Vec<(HeaderName, HeaderValue)>) {
-    for (k, v) in headers {
-        if hs::is_never_persisted_header(&k.to_ascii_lowercase()) {
-            continue;
-        }
-        let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
-            continue;
-        };
-        let Ok(val) = HeaderValue::from_str(v) else {
-            continue;
-        };
-        out.push((name, val));
-    }
-}
-
-fn hmac_key_from_env_value(value: Option<String>) -> Option<Vec<u8>> {
-    value
-        .filter(|s| !s.trim().is_empty())
-        .map(String::into_bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
+    use crate::http_semantics as hs;
+    use crate::middleware::{add_core_response_headers, stamp_core_response_headers};
+    use crate::route::world_handler;
+    use axum::body::Bytes;
+    use axum::extract::{Path as AxPath, State};
+    use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+    use axum::response::Response;
+    use axum::routing::any;
+    use axum::Router;
+    use std::sync::atomic::Ordering;
     use std::sync::{Mutex as TestMutex, OnceLock};
 
     /// PR 4c: 50 unit tests below were renamed mechanically from
@@ -1412,7 +915,7 @@ mod tests {
     #[test]
     fn poisoned_persisted_headers_are_not_replayed() {
         let mut out = Vec::new();
-        apply_meta_headers(
+        hs::apply_meta_headers(
             &[
                 (
                     "x-custom".to_owned(),

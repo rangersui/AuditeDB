@@ -48,10 +48,9 @@ use axum::{
 };
 
 use crate::{
-    apply_meta_headers, auth, can_read, can_write, http_semantics as hs,
-    is_insufficient_storage_error, needs_write_approve, not_found, payload_too_large, server_error,
-    storage_error, store, to_header_map, unauthorized, world, AuthGate, Core, ErrorReason, Phase,
-    TraceCtx, Verb,
+    auth, can_read, can_write, http_semantics as hs, is_insufficient_storage_error,
+    needs_write_approve, not_found, payload_too_large, server_error, storage_error, store,
+    to_header_map, unauthorized, world, AuthGate, Core, ErrorReason, Phase, TraceCtx, Verb,
 };
 
 /// Dispatch from `Phase::Dispatched` to the verb-specific handler.
@@ -117,7 +116,7 @@ pub(crate) async fn execute_get(
         (header::ETAG, hs::etag_header(&etag)),
     ];
     hs::apply_world_links(&world, &mut resp_headers);
-    apply_meta_headers(&stage.headers, &mut resp_headers);
+    hs::apply_meta_headers(&stage.headers, &mut resp_headers);
     match hs::effective_range(&headers, stage.body.len(), &etag) {
         Ok(Some((start, end))) => {
             let chunk = stage.body[start..=end].to_vec();
@@ -202,7 +201,7 @@ pub(crate) async fn execute_head(
         (header::ETAG, hs::etag_header(&etag)),
     ];
     hs::apply_world_links(&world, &mut resp_headers);
-    apply_meta_headers(&stage.headers, &mut resp_headers);
+    hs::apply_meta_headers(&stage.headers, &mut resp_headers);
     match hs::effective_range(&headers, stage.body.len(), &etag) {
         Ok(Some((start, end))) => {
             resp_headers.retain(|(name, _)| name != header::CONTENT_LENGTH);
