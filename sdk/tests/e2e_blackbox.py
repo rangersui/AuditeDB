@@ -198,7 +198,13 @@ def main() -> int:
             os.environ.pop("ELASTIK_URL", None)
         else:
             os.environ["ELASTIK_URL"] = prior_url
-    with elastik.TrustedShellPool(size=1, timeout=2) as pool:
+    # Cold PowerShell on GHA Windows runners can take 1-2s just to spawn
+    # and start reading stdin; the previous timeout=2 left zero headroom and
+    # tripped a flaky -1 returncode (see PR #100 master CI run 25417478484).
+    # The check is "does the API export and run", not "does it finish in
+    # under 2s", so timeout=15 is generous on cold runners while still
+    # bounding genuinely stuck cases.
+    with elastik.TrustedShellPool(size=1, timeout=15) as pool:
         shell = pool.run("echo sdk-shell", check=True)
         check("sdk-shell" in shell.stdout, "TrustedShellPool is exported and runs")
 
