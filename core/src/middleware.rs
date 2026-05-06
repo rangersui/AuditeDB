@@ -38,7 +38,7 @@ pub(crate) async fn add_core_response_headers(
     // (`pipeline::run`) reads the SAME id we'll stamp on the
     // response. Without this, the middleware and `pipeline::run`
     // each call `next_request.fetch_add` and produce off-by-one
-    // ids — trace says `req-43` while the response says `42`.
+    // ids -- trace says `req-43` while the response says `42`.
     req.extensions_mut()
         .insert(crate::pipeline::RequestId(request_id));
     let start = Instant::now();

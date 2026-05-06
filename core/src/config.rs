@@ -2,7 +2,7 @@
 //! and the small helpers `main()` uses to compose them.
 //!
 //! Everything here is invoked from `main()` exactly once, at
-//! startup. None of these helpers are called per-request — if a
+//! startup. None of these helpers are called per-request -- if a
 //! handler ever needs them at request time, that's a code smell
 //! (env should be latched into `Core` at startup, not re-read).
 

@@ -1,4 +1,4 @@
-//! `Core` — the application state shared across all routes.
+//! `Core` -- the application state shared across all routes.
 //!
 //! Holds tokens, the per-world lock map, the in-memory store handle,
 //! storage counters, the SSE broadcast channel, the shutdown

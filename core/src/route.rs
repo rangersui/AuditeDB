@@ -54,7 +54,7 @@ pub(crate) async fn world_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // OPTIONS is policy-free — answer it without entering the FSM.
+    // OPTIONS is policy-free -- answer it without entering the FSM.
     // Every other method (including unsupported ones, which the
     // dispatch step rejects with MethodNotAllowed) flows through
     // `pipeline::run`. PR 4c retired the GET/HEAD short-circuit and
@@ -63,7 +63,7 @@ pub(crate) async fn world_handler(
     // `ELASTIK_TRACE_PIPELINE=1`.
     //
     // `req_id` comes from `add_core_response_headers` middleware via
-    // request extensions — same id stamped on `x-request-id` so
+    // request extensions -- same id stamped on `x-request-id` so
     // trace output and response header agree.
     if method == Method::OPTIONS {
         return options_response(WORLD_ALLOW);
