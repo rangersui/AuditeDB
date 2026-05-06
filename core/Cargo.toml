@@ -17,6 +17,14 @@ base64 = "0.22"
 percent-encoding = "2"
 dashmap = "6"
 
+[dev-dependencies]
+# `tower::util::ServiceExt::oneshot` is the standard axum testing
+# pattern (axum 0.7 does not re-export it). Used by route-level
+# tests in main.rs to send a synthetic Request through Router +
+# middleware + world_handler so we can assert middleware-stamped
+# response headers like `x-request-id`.
+tower = { version = "0.5", features = ["util"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
