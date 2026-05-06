@@ -40,6 +40,7 @@
 mod audit;
 mod auth;
 mod coap;
+mod handler;
 mod http_semantics;
 mod listen;
 mod path;
@@ -51,14 +52,10 @@ mod world;
 
 // Re-export the small pure-function modules at the crate root so
 // sibling modules keep referring to `crate::not_found` /
-// `crate::canonicalize_path` / `crate::proc_version` etc. without
+// `crate::canonicalize_path` / `crate::Phase` etc. without
 // per-extraction import churn. Each cascading PR adds one line here.
-//
-// `pipeline::*` is intentionally NOT re-exported in 4a because no
-// sibling references its types yet. PR 4b adds the re-export when
-// `handler.rs` lands and needs `crate::Phase`, `crate::Verb`,
-// `crate::TraceCtx`, etc.
 pub(crate) use crate::path::*;
+pub(crate) use crate::pipeline::*;
 pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
 
@@ -156,7 +153,10 @@ impl Core {
         Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
     }
 
-    fn read_world_with_etag(&self, world: &str) -> rusqlite::Result<Option<(Stage, String)>> {
+    pub(crate) fn read_world_with_etag(
+        &self,
+        world: &str,
+    ) -> rusqlite::Result<Option<(Stage, String)>> {
         if store::is_memory_world(world) {
             Ok(self
                 .mem
@@ -576,10 +576,17 @@ fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
 
 async fn add_core_response_headers(
     State(core): State<Arc<Core>>,
-    req: axum::http::Request<Body>,
+    mut req: axum::http::Request<Body>,
     next: Next,
 ) -> Response {
     let request_id = core.next_request.fetch_add(1, Ordering::Relaxed) + 1;
+    // Stash on request extensions so the FSM driver
+    // (`pipeline::run`) reads the SAME id we'll stamp on the
+    // response. Without this, the middleware and `pipeline::run`
+    // each call `next_request.fetch_add` and produce off-by-one
+    // ids — trace says `req-43` while the response says `42`.
+    req.extensions_mut()
+        .insert(crate::pipeline::RequestId(request_id));
     let start = Instant::now();
     let mut response = next.run(req).await;
     stamp_core_response_headers(
@@ -701,11 +708,27 @@ async fn wait_for_shutdown_signal() {
 // ─── /<world> all five methods ──────────────────────────────────────
 async fn world_handler(
     State(core): State<Arc<Core>>,
+    axum::Extension(crate::pipeline::RequestId(req_id)): axum::Extension<
+        crate::pipeline::RequestId,
+    >,
     method: Method,
     AxPath(path): AxPath<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // PR 4b: GET / HEAD now flow through the pipeline FSM
+    // (`pipeline::run` handles auth, path validation, dispatch, and
+    // delegates to `handler::execute_get` / `handler::execute_head`).
+    // PUT / POST / DELETE / OPTIONS / unsupported methods stay on
+    // the legacy direct path until PR 4c moves them too.
+    //
+    // `req_id` comes from `add_core_response_headers` middleware via
+    // request extensions — same id stamped on `x-request-id` so
+    // trace output and response header agree.
+    if matches!(method, Method::GET | Method::HEAD) {
+        return pipeline::run(method, path, headers, body, &core, req_id).await;
+    }
+
     let world_name = canonicalize_path(&path);
     if let Err(reason) = validate_world_name(&world_name) {
         return bad_request(reason);
@@ -3118,6 +3141,373 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    // ── pipeline route-level coverage (PR 4b) ─────────────────
+    //
+    // The 17 inline GET/HEAD tests above call `handle_get` /
+    // `handle_head` directly — they cover the *legacy* read path.
+    // The tests below call `pipeline::run` with the same Core
+    // fixture, exercising the `world_handler → pipeline::run →
+    // handler::execute_get/head` route that production GET/HEAD
+    // requests now take. Without these, a bug in the pipeline wiring
+    // (path canonicalization, auth threading, dispatch, response
+    // construction in the handler) would not be caught by unit
+    // tests; only e2e_blackbox would surface it.
+
+    #[tokio::test]
+    async fn pipeline_get_existing_world_returns_200_with_body() {
+        let (core, dir) = test_core("pipeline-get-200");
+        core.write_world("home/hello", b"hello world", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/hello".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            42,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain")
+        );
+        assert_eq!(response_text(resp).await, "hello world");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_head_existing_world_returns_headers_no_body() {
+        let (core, dir) = test_core("pipeline-head-200");
+        core.write_world("home/hello", b"hello world", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::HEAD,
+            "/home/hello".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            43,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("11")
+        );
+        // HEAD body must be empty even though Content-Length says 11.
+        assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_nonexistent_world_returns_404() {
+        let (core, dir) = test_core("pipeline-get-404");
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/missing".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            44,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_invalid_dot_segment_returns_400() {
+        let (core, dir) = test_core("pipeline-get-400");
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/../etc/secret".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            45,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_with_read_token_required_rejects_anon() {
+        let (mut core, dir) = test_core("pipeline-get-401");
+        core.tokens.read = Some(b"reader".to_vec());
+        core.write_world("home/secret", b"shhh", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/secret".to_string(),
+            HeaderMap::new(), // no Authorization header
+            Bytes::new(),
+            &core,
+            46,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// World-handler glue test (1/2): the full extractor chain
+    /// (`State` + `Extension<RequestId>` + `Method` + `AxPath` +
+    /// `HeaderMap` + `Bytes`) wires up correctly and `world_handler`
+    /// routes GET to the pipeline. Goes through `tower::oneshot` so
+    /// the `add_core_response_headers` middleware fires too — that
+    /// way we can assert the unified `x-request-id` header lands on
+    /// the response.
+    #[tokio::test]
+    async fn world_handler_get_routes_through_pipeline() {
+        use axum::body::Body;
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let (core, dir) = test_core("world-handler-get");
+        core.write_world("home/hello", b"hello world", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let app = Router::new()
+            .route("/*world", any(world_handler))
+            .layer(axum::middleware::from_fn_with_state(
+                core.clone(),
+                add_core_response_headers,
+            ))
+            .with_state(core.clone());
+
+        let req = HttpRequest::builder()
+            .method("GET")
+            .uri("/home/hello")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Middleware stamps x-request-id; pipeline trace uses the
+        // same id (`pipeline::run` reads RequestId from extensions
+        // rather than allocating its own). The fact that this
+        // header is present on the response is what the unification
+        // fix guarantees — without it, the bug would slip through
+        // again silently.
+        let req_id_header = resp
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("missing");
+        assert!(
+            req_id_header.parse::<u64>().is_ok(),
+            "x-request-id should be a numeric id, got {req_id_header:?}"
+        );
+        assert_eq!(response_text(resp).await, "hello world");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// World-handler glue test (2/2): the same extractor chain works
+    /// for HEAD. Validates the `if matches!(method, Method::GET |
+    /// Method::HEAD)` short-circuit covers HEAD too, not just GET.
+    #[tokio::test]
+    async fn world_handler_head_routes_through_pipeline() {
+        use axum::body::Body;
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let (core, dir) = test_core("world-handler-head");
+        core.write_world("home/hello", b"hello world", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let app = Router::new()
+            .route("/*world", any(world_handler))
+            .layer(axum::middleware::from_fn_with_state(
+                core.clone(),
+                add_core_response_headers,
+            ))
+            .with_state(core.clone());
+
+        let req = HttpRequest::builder()
+            .method("HEAD")
+            .uri("/home/hello")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("11"),
+        );
+        assert!(resp.headers().get("x-request-id").is_some());
+        // HEAD body must be empty even though Content-Length says 11.
+        assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 304 path: `If-None-Match: <current-etag>` short-circuits
+    /// inside `execute_get` to `hs::not_modified`, returning
+    /// `Phase::ExecutedRead(304)`.
+    #[tokio::test]
+    async fn pipeline_get_if_none_match_returns_304() {
+        let (core, dir) = test_core("pipeline-304");
+        core.write_world("home/cached", b"cached body", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        // First GET to discover the current etag.
+        let first = pipeline::run(
+            Method::GET,
+            "/home/cached".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            100,
+        )
+        .await;
+        let etag = first
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .expect("first GET must return an ETag header")
+            .to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/cached".to_string(),
+            headers,
+            Bytes::new(),
+            &core,
+            101,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        // 304 bodies must be empty.
+        assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 416 path: `Range: bytes=999-` against a 3-byte world is out
+    /// of range. `effective_range` returns `Err(())` and
+    /// `execute_get` produces `Phase::Error { reason:
+    /// RangeNotSatisfiable }`. We assert BOTH the surfaced HTTP
+    /// status (via `pipeline::run`) AND the structured reason
+    /// variant (via direct `handler::execute`) so the 12th
+    /// `ErrorReason` variant is verified to fire on a real
+    /// read-path code path. Without the second assertion, a
+    /// regression that emits the right status but the wrong reason
+    /// would slip through and quietly poison trace / metrics.
+    #[tokio::test]
+    async fn pipeline_get_out_of_range_returns_416_with_reason() {
+        let (core, dir) = test_core("pipeline-416");
+        core.write_world("home/short", b"abc", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        // 1) Production path: pipeline::run surfaces 416 to the wire.
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=999-"));
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/short".to_string(),
+            headers,
+            Bytes::new(),
+            &core,
+            200,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+
+        // 2) Internal phase: handler::execute returns the explicit
+        // Phase::Error{RangeNotSatisfiable} variant.
+        let mut headers2 = HeaderMap::new();
+        headers2.insert(header::RANGE, HeaderValue::from_static("bytes=999-"));
+        let phase = crate::handler::execute(
+            Verb::Get,
+            headers2,
+            Bytes::new(),
+            auth::Tier::Anon,
+            "home/short".to_string(),
+            &core,
+            &TraceCtx::disabled(),
+        )
+        .await;
+        match phase {
+            Phase::Error {
+                reason: ErrorReason::RangeNotSatisfiable,
+                resp,
+            } => {
+                assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+            }
+            _ => panic!("expected Phase::Error{{RangeNotSatisfiable}}"),
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_range_returns_206_with_chunk() {
+        let (core, dir) = test_core("pipeline-get-range");
+        core.write_world("home/range", b"abcdef", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/range".to_string(),
+            headers,
+            Bytes::new(),
+            &core,
+            47,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok()),
+            Some("bytes 1-3/6")
+        );
+        assert_eq!(response_text(resp).await, "bcd");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn test_core(label: &str) -> (Core, PathBuf) {

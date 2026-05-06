@@ -189,6 +189,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-stream",
+ "tower",
 ]
 
 [[package]]
