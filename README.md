@@ -280,16 +280,19 @@ indented `aux` lines for sub-steps inside a verb handler:
 [req-42  +0.895ms] Done           status=201 total=0.895ms
 ```
 
-`grep req-42` reconstructs one full request lifecycle. `GET` and `HEAD` skip
-the `aux` block (no lock, no audit, no notify); `DELETE` adds
+`grep req-42` reconstructs one full request lifecycle. `GET` and `HEAD` emit
+one `body_size` aux line but no lock / audit / notify aux — reads don't
+lock, don't write, don't fire change events. `DELETE` adds
 `audit_intent` / `audit_commit` / `audit_commit_failed[_event_failed]` so
 the intent / commit two-step is legible — including the honest
 double-failure case where the commit append AND the subsequent
 failure-event append both fail.
 
 Cost when disabled is one atomic-bool load per phase (≈1 ns). Cost when
-enabled is ≈1 µs per stderr line — a typical write request emits 4 phase
-lines plus 3 aux lines.
+enabled is ≈1 µs per stderr line — a typical write request emits 6
+lifecycle lines (`Received` → `Authenticated` → `PathValidated` →
+`Dispatched` → `CommittedWrite` → `Done`) plus the verb aux lines shown
+in the sample.
 
 The flag is read once at startup and frozen for the process lifetime; toggle
 it by restarting the process. A runtime toggle through `/etc/debug` is on the
