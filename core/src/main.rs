@@ -410,7 +410,7 @@ impl Core {
 // and main()'s startup banner. The other namespace constants
 // (ROOT_ALLOW, PROC_ALLOW, AUDIT_VERIFY_ALLOW) live in proc.rs now.
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
+pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;

@@ -53,7 +53,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{auth, canonicalize_path, validate_world_name, Core};
+use crate::{auth, canonicalize_path, method_not_allowed, validate_world_name, Core, WORLD_ALLOW};
 
 // ─── Phase enum ──────────────────────────────────────────────────
 
@@ -380,7 +380,7 @@ fn dispatch(
         Method::DELETE => Verb::Delete,
         _ => {
             return Phase::Error {
-                resp: method_not_allowed_response(),
+                resp: method_not_allowed(WORLD_ALLOW),
                 reason: ErrorReason::MethodNotAllowed,
             };
         }
@@ -487,19 +487,10 @@ pub(crate) async fn run(
 }
 
 // ─── Local response helpers ──────────────────────────────────────
-
-fn method_not_allowed_response() -> Response {
-    let allow = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
-    (
-        StatusCode::METHOD_NOT_ALLOWED,
-        [
-            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
-            (header::ALLOW, allow),
-        ],
-        "method not allowed\n",
-    )
-        .into_response()
-}
+//
+// `method_not_allowed` for unsupported verbs uses the canonical helper
+// from `response.rs`, parameterized with the crate-root `WORLD_ALLOW`
+// constant — one source of truth for the Allow header string.
 
 fn not_yet_wired_response(verb: Verb) -> Response {
     (
