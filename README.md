@@ -262,6 +262,42 @@ exhaustion is still caught separately as `507 Insufficient Storage`. Invalid
 non-empty storage quota values fail startup so typos do not silently disable
 the cap.
 
+## Pipeline Trace
+
+The Rust core has a structured FSM trace for the request lifecycle. Off by
+default; set `ELASTIK_TRACE_PIPELINE=1` to enable. One stderr line per phase,
+indented `aux` lines for sub-steps inside a verb handler:
+
+```text
+[req-42  +0.000ms] Received       PUT /home/data 1024B
+[req-42  +0.054ms] Authenticated  tier=Write
+[req-42  +0.061ms] PathValidated  world=home/data
+[req-42  +0.063ms] Dispatched     verb=Put
+[req-42  +0.184ms]   aux          lock_acquired
+[req-42  +0.892ms]   aux          sqlite_committed etag=hmac-9f3a...
+[req-42  +0.894ms]   aux          notify_sent
+[req-42  +0.895ms] CommittedWrite status=201
+[req-42  +0.895ms] Done           status=201 total=0.895ms
+```
+
+`grep req-42` reconstructs one full request lifecycle. `GET` and `HEAD` emit
+one `body_size` aux line but no lock / audit / notify aux — reads don't
+lock, don't write, don't fire change events. `DELETE` adds
+`audit_intent` / `audit_commit` / `audit_commit_failed[_event_failed]` so
+the intent / commit two-step is legible — including the honest
+double-failure case where the commit append AND the subsequent
+failure-event append both fail.
+
+Cost when disabled is one atomic-bool load per phase (≈1 ns). Cost when
+enabled is ≈1 µs per stderr line — a typical write request emits 6
+lifecycle lines (`Received` → `Authenticated` → `PathValidated` →
+`Dispatched` → `CommittedWrite` → `Done`) plus the verb aux lines shown
+in the sample.
+
+The flag is read once at startup and frozen for the process lifetime; toggle
+it by restarting the process. A runtime toggle through `/etc/debug` is on the
+roadmap.
+
 ## Auth
 
 There are three token levels:
@@ -488,8 +524,7 @@ trail, or core-generated state are not stored. The blacklist is category-based:
 - core-owned response state: `Content-Type` generic persistence,
   `Content-Length`, `ETag`, `Accept-Ranges`, `Content-Range`, `Link`,
   `Location`, `Allow`, `Date`, `Server`, `WWW-Authenticate`, `Age`, `Vary`,
-  `X-Request-Id`, `X-Elapsed-Us`, `X-Elapsed-Ms`,
-  `X-Content-Type-Options`
+  `X-Request-Id`, `X-Elapsed-Us`, `X-Content-Type-Options`
 - proxy trail: `Forwarded`, `Via`, `X-Forwarded-For`, `X-Forwarded-Host`,
   `X-Forwarded-Proto`
 - browser probes and CORS preflight request headers: `Sec-*`,
@@ -512,7 +547,7 @@ request control headers        -> used once, then discarded
 core generated headers         -> ETag, Content-Length, Accept-Ranges,
                                   Content-Range, Link, Location, Allow, Date,
                                   Server, WWW-Authenticate, Age, Vary,
-                                  X-Request-Id, X-Elapsed-Us, X-Elapsed-Ms,
+                                  X-Request-Id, X-Elapsed-Us,
                                   X-Content-Type-Options
 ```
 

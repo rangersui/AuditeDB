@@ -37,6 +37,7 @@
 //!   ELASTIK_APPROVE_TOKEN  T3 token  (system writes/deletes, includes read)
 //!   ELASTIK_KEY            HMAC key for the audit chain (required)
 //!   ELASTIK_MAX_STORAGE_BYTES optional durable storage quota
+//!   ELASTIK_TRACE_PIPELINE optional; "1" enables the FSM trace on stderr
 mod audit;
 mod auth;
 mod coap;
