@@ -58,6 +58,17 @@ use crate::{
     WORLD_ALLOW,
 };
 
+/// Request ID stamped onto each incoming request by the
+/// `add_core_response_headers` middleware in `main.rs` and threaded
+/// through axum's request extensions so the pipeline driver and the
+/// `x-request-id` response header are guaranteed to use the same
+/// number. Without this, two independent `core.next_request.fetch_add`
+/// calls (one in the middleware, one in `pipeline::run`) produced
+/// off-by-one ids — trace said `req-43` while the response header
+/// said `42`.
+#[derive(Clone, Copy)]
+pub(crate) struct RequestId(pub(crate) u64);
+
 // ─── Phase enum ──────────────────────────────────────────────────
 
 /// FSM state. Five forward nodes plus two terminals (`Done`, `Error`).
@@ -409,21 +420,23 @@ fn dispatch(
 /// atomic flag, drives the request through phase transitions, and
 /// returns the final `Response`.
 ///
-/// **PR 4a scope**: the `Phase::Dispatched` arm is a stub that
-/// returns a 501. PR 4b replaces it with a call to
-/// `handler::execute(verb, ...)` for read verbs; PR 4c covers the
-/// write verbs. Until then, no route in `main.rs` calls this
-/// function — it exists so that the FSM can be exercised in unit
-/// tests.
-#[allow(dead_code)]
+/// `req_id` is the request identifier assigned by the
+/// `add_core_response_headers` middleware in `main.rs` and stamped
+/// onto the response as `x-request-id`. The pipeline does NOT
+/// allocate its own id — that would diverge from the response
+/// header. Tests calling `run` directly pass an explicit id.
 pub(crate) async fn run(
     method: Method,
     path: String,
     headers: HeaderMap,
     body: Bytes,
     core: &Arc<Core>,
+    req_id: u64,
 ) -> Response {
-    let req_id = core.next_request.fetch_add(1, Ordering::Relaxed);
+    // `core.next_request` is intentionally untouched here — see the
+    // RequestId doc comment for the off-by-one history. `core` itself
+    // is consumed inside the loop (passed to `core.tokens` for auth
+    // and to `handler::execute` for the verb).
     let trace = TraceCtx::new(req_id, Instant::now());
 
     let mut phase = Phase::Received {

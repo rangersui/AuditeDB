@@ -576,10 +576,17 @@ fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
 
 async fn add_core_response_headers(
     State(core): State<Arc<Core>>,
-    req: axum::http::Request<Body>,
+    mut req: axum::http::Request<Body>,
     next: Next,
 ) -> Response {
     let request_id = core.next_request.fetch_add(1, Ordering::Relaxed) + 1;
+    // Stash on request extensions so the FSM driver
+    // (`pipeline::run`) reads the SAME id we'll stamp on the
+    // response. Without this, the middleware and `pipeline::run`
+    // each call `next_request.fetch_add` and produce off-by-one
+    // ids — trace says `req-43` while the response says `42`.
+    req.extensions_mut()
+        .insert(crate::pipeline::RequestId(request_id));
     let start = Instant::now();
     let mut response = next.run(req).await;
     stamp_core_response_headers(
@@ -701,6 +708,9 @@ async fn wait_for_shutdown_signal() {
 // ─── /<world> all five methods ──────────────────────────────────────
 async fn world_handler(
     State(core): State<Arc<Core>>,
+    axum::Extension(crate::pipeline::RequestId(req_id)): axum::Extension<
+        crate::pipeline::RequestId,
+    >,
     method: Method,
     AxPath(path): AxPath<String>,
     headers: HeaderMap,
@@ -711,8 +721,12 @@ async fn world_handler(
     // delegates to `handler::execute_get` / `handler::execute_head`).
     // PUT / POST / DELETE / OPTIONS / unsupported methods stay on
     // the legacy direct path until PR 4c moves them too.
+    //
+    // `req_id` comes from `add_core_response_headers` middleware via
+    // request extensions — same id stamped on `x-request-id` so
+    // trace output and response header agree.
     if matches!(method, Method::GET | Method::HEAD) {
-        return pipeline::run(method, path, headers, body, &core).await;
+        return pipeline::run(method, path, headers, body, &core, req_id).await;
     }
 
     let world_name = canonicalize_path(&path);
@@ -3127,6 +3141,172 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    // ── pipeline route-level coverage (PR 4b) ─────────────────
+    //
+    // The 17 inline GET/HEAD tests above call `handle_get` /
+    // `handle_head` directly — they cover the *legacy* read path.
+    // The tests below call `pipeline::run` with the same Core
+    // fixture, exercising the `world_handler → pipeline::run →
+    // handler::execute_get/head` route that production GET/HEAD
+    // requests now take. Without these, a bug in the pipeline wiring
+    // (path canonicalization, auth threading, dispatch, response
+    // construction in the handler) would not be caught by unit
+    // tests; only e2e_blackbox would surface it.
+
+    #[tokio::test]
+    async fn pipeline_get_existing_world_returns_200_with_body() {
+        let (core, dir) = test_core("pipeline-get-200");
+        core.write_world("home/hello", b"hello world", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/hello".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            42,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain")
+        );
+        assert_eq!(response_text(resp).await, "hello world");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_head_existing_world_returns_headers_no_body() {
+        let (core, dir) = test_core("pipeline-head-200");
+        core.write_world("home/hello", b"hello world", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::HEAD,
+            "/home/hello".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            43,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("11")
+        );
+        // HEAD body must be empty even though Content-Length says 11.
+        assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_nonexistent_world_returns_404() {
+        let (core, dir) = test_core("pipeline-get-404");
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/missing".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            44,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_invalid_dot_segment_returns_400() {
+        let (core, dir) = test_core("pipeline-get-400");
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/../etc/secret".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &core,
+            45,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_with_read_token_required_rejects_anon() {
+        let (mut core, dir) = test_core("pipeline-get-401");
+        core.tokens.read = Some(b"reader".to_vec());
+        core.write_world("home/secret", b"shhh", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/secret".to_string(),
+            HeaderMap::new(), // no Authorization header
+            Bytes::new(),
+            &core,
+            46,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_get_range_returns_206_with_chunk() {
+        let (core, dir) = test_core("pipeline-get-range");
+        core.write_world("home/range", b"abcdef", "text/plain", &[])
+            .unwrap();
+        let core = Arc::new(core);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
+
+        let resp = pipeline::run(
+            Method::GET,
+            "/home/range".to_string(),
+            headers,
+            Bytes::new(),
+            &core,
+            47,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok()),
+            Some("bytes 1-3/6")
+        );
+        assert_eq!(response_text(resp).await, "bcd");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn test_core(label: &str) -> (Core, PathBuf) {
