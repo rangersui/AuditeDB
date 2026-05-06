@@ -6,7 +6,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::BTreeMap;
 
 use crate::world::Stage;
-use crate::{apply_meta_headers, audit, precondition_failed, store, to_header_map, world, Core};
+use crate::{apply_meta_headers, precondition_failed, storage_error, to_header_map, world, Core};
 
 const URL_PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -40,15 +40,6 @@ pub(crate) fn apply_world_links(world_name: &str, out: &mut Vec<(HeaderName, Hea
     ));
 }
 
-pub(crate) fn current_etag(core: &Core, world_name: &str, stage: &Stage) -> String {
-    if store::is_persistent(world_name) {
-        if let Some(h) = audit::latest_hmac(&core.data, world_name) {
-            return hmac_etag(&h);
-        }
-    }
-    body_etag(&stage.body)
-}
-
 pub(crate) fn hmac_etag(hmac: &str) -> String {
     format!("hmac-{hmac}")
 }
@@ -68,10 +59,15 @@ pub(crate) fn check_write_preconditions(
     world_name: &str,
     req_headers: &HeaderMap,
 ) -> Result<(), Response> {
-    let current = core.read_world(world_name);
-    let current_tag = current
-        .as_ref()
-        .map(|stage| current_etag(core, world_name, stage));
+    if !req_headers.contains_key(header::IF_MATCH)
+        && !req_headers.contains_key(header::IF_NONE_MATCH)
+    {
+        return Ok(());
+    }
+    let current = core
+        .read_world_with_etag(world_name)
+        .map_err(|e| storage_error("precondition read", e))?;
+    let current_tag = current.as_ref().map(|(_, etag)| etag.clone());
 
     if let Some(h) = req_headers
         .get(header::IF_MATCH)
@@ -108,19 +104,21 @@ pub(crate) fn read_not_modified(req_headers: &HeaderMap, current: &str) -> bool 
 }
 
 pub(crate) fn etag_list_strong_matches(header_value: &str, current: &str) -> bool {
+    let quoted = format!("\"{current}\"");
     header_value
         .split(',')
         .map(str::trim)
-        .any(|candidate| candidate == "*" || candidate == format!("\"{current}\""))
+        .any(|candidate| candidate == "*" || candidate == quoted.as_str())
 }
 
 pub(crate) fn etag_list_weak_matches(header_value: &str, current: &str) -> bool {
+    let quoted = format!("\"{current}\"");
     header_value.split(',').map(str::trim).any(|candidate| {
         candidate == "*"
-            || candidate == format!("\"{current}\"")
+            || candidate == quoted.as_str()
             || candidate
                 .strip_prefix("W/")
-                .map(|weak| weak == format!("\"{current}\""))
+                .map(|weak| weak == quoted.as_str())
                 .unwrap_or(false)
     })
 }
@@ -214,7 +212,7 @@ fn is_persisted_representation_header_lowercase(name: &str) -> bool {
     !is_never_persisted_header(name)
 }
 
-fn is_never_persisted_header(name: &str) -> bool {
+pub(crate) fn is_never_persisted_header(name: &str) -> bool {
     name.starts_with("sec-")
         || name.starts_with("access-control-request-")
         || name.starts_with("want-")
@@ -285,6 +283,7 @@ fn is_never_persisted_header(name: &str) -> bool {
                 | "preference-applied"
                 | "priority"
                 | "critical-ch"
+                | "clear-site-data"
                 // Core-owned response headers are derived from stored bytes/audit.
                 // Content-Type is persisted separately as Stage.content_type.
                 | "content-type"

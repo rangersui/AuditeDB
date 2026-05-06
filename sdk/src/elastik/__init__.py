@@ -79,6 +79,7 @@ from elastik.sdk import (
     ElastikError,
     DebugHook,
     Forbidden,
+    InsufficientStorage,
     NotFound,
     PayloadTooLarge,
     PreconditionFailed,
@@ -139,7 +140,7 @@ __all__ = [
     "ElastikError",
     "DebugHook",
     "Unauthorized", "Forbidden", "NotFound", "PreconditionFailed",
-    "PayloadTooLarge", "ServerError",
+    "PayloadTooLarge", "InsufficientStorage", "ServerError",
     "Response",
     "WorldMeta", "WorldRef", "WorldReader", "FakeElastik",
     # Reactor sugar

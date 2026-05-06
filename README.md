@@ -242,11 +242,25 @@ Resource caps:
 | Variable | Default | Meaning |
 |---|---:|---|
 | `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum stored size of one world after `PUT` or `POST`. |
+| `ELASTIK_MAX_STORAGE_BYTES` | unlimited | Optional durable storage quota across SQLite-backed world body bytes. |
 | `ELASTIK_MAX_MEMORY_BYTES` | `268435456` | Maximum total bytes in memory-backed worlds (`/tmp`, `/dev`, `/sys`). |
+| `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE connections. |
+| `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Number of recent change events kept for `Last-Event-ID` replay. |
+| `ELASTIK_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent SCoAP/UDP request handlers when CoAP is enabled. |
 
 The HTTP request body limit is 64 MiB. `POST` append also checks the projected
 final world size before writing. If a write would cross a cap, the core returns
-`413 Payload Too Large`.
+`413 Payload Too Large`. If `/listen/*` is full, the core returns
+`503 Service Unavailable`. If SCoAP/UDP in-flight work is full, the core
+returns CoAP `5.03 Service Unavailable`. If durable storage quota is exhausted,
+or the underlying filesystem / SQLite reports storage exhaustion, the core
+returns `507 Insufficient Storage`.
+
+`ELASTIK_MAX_STORAGE_BYTES` counts durable body bytes, not SQLite or audit-log
+file overhead. `/proc/df` reports the same body-byte accounting; physical disk
+exhaustion is still caught separately as `507 Insufficient Storage`. Invalid
+non-empty storage quota values fail startup so typos do not silently disable
+the cap.
 
 ## Auth
 
@@ -264,8 +278,9 @@ the Python SDK warn so you can rename it.
 
 Policy is small:
 
-- `GET`, `HEAD`, `OPTIONS`, `/listen/*`, and `/proc/worlds` require read only
-  when `ELASTIK_READ_TOKEN` is configured.
+- `GET`, `HEAD`, `OPTIONS`, `/listen/*`, `/proc/worlds`, `/proc/du`,
+  `/proc/df`, and `/proc/audit/{path}/verify` require read only when
+  `ELASTIK_READ_TOKEN` is configured.
 - `PUT` and `POST` require `ELASTIK_WRITE_TOKEN` for ordinary worlds.
 - `/etc/*`, `/lib/*`, `/boot/*`, `/usr/*`, and `/var/log/*` writes require
   `ELASTIK_APPROVE_TOKEN`.
@@ -394,6 +409,15 @@ curl.exe -X POST http://127.0.0.1:3105/home/log `
 The global delete ledger at `/var/log/deletes` is append-only and cannot be
 deleted through HTTP.
 
+Durable deletes are recorded as `delete_intent` before removal and
+`delete_commit` after removal. If the physical delete succeeds but the commit
+record fails, core returns `204` because the world is already gone and records a
+best-effort `delete_commit_failed` event. An intent without either follow-up is
+an operational reconciliation signal, not audit-chain corruption: the delete may
+have been interrupted, or the physical delete may have completed while both
+follow-up ledger appends failed. Check whether the target world still exists and
+inspect the server warning log before deciding whether recovery is needed.
+
 ```powershell
 curl.exe -X DELETE http://127.0.0.1:3105/home/old `
   -H "Authorization: Bearer approve-token"
@@ -469,7 +493,15 @@ trail, or core-generated state are not stored. The blacklist is category-based:
 - proxy trail: `Forwarded`, `Via`, `X-Forwarded-For`, `X-Forwarded-Host`,
   `X-Forwarded-Proto`
 - browser probes and CORS preflight request headers: `Sec-*`,
-  `Access-Control-Request-*`
+  `Access-Control-Request-*`, `Want-*`
+
+Because this policy is denylist-based, the repository also carries a drift
+radar. `tools/header_policy_scan.py` compares the reviewed baseline in
+`tools/header_policy_baseline.txt` with the IANA HTTP Field Name Registry and
+MDN browser header data. New upstream header names fail the weekly header
+policy workflow until a human classifies them as request state, transport
+state, core-owned state, or representation metadata that may travel with the
+bytes.
 
 That split is the core contract:
 
@@ -693,6 +725,8 @@ use `/listen/*` as a wakeup signal.
 ```powershell
 curl.exe http://127.0.0.1:3105/proc/version
 curl.exe http://127.0.0.1:3105/proc/worlds
+curl.exe http://127.0.0.1:3105/proc/du
+curl.exe http://127.0.0.1:3105/proc/df
 ```
 
 `/proc/worlds` is plain text, one world per line:
@@ -706,6 +740,26 @@ No JSON. Pipe it.
 
 ```powershell
 curl.exe -s http://127.0.0.1:3105/proc/worlds | Select-String '^home/'
+```
+
+`/proc/du` reports body bytes per world:
+
+```text
+home/hello	5
+tmp/scratch	4
+```
+
+`/proc/du` is intentionally unpaginated management introspection: one line per
+world, like Unix `du`. It is read-gated and scans durable state off the Tokio
+worker; use `/proc/df` for cheap polling. `/proc/df` reads maintained durable
+usage and world-count counters instead of scanning every durable world.
+
+`/proc/df` reports usage, quota, and available bytes:
+
+```text
+storage	5	unlimited	unlimited
+memory	4	268435456	268435452
+worlds	2	unlimited	unlimited
 ```
 
 ## SDKs

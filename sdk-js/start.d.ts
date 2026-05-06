@@ -2,6 +2,7 @@ import { Elastik as BaseElastik } from "@elastikjs/client";
 export {
     ElastikError,
     Forbidden,
+    InsufficientStorage,
     NetworkError,
     NotFound,
     NotModified,

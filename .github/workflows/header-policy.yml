@@ -1,0 +1,81 @@
+name: header policy
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/header-policy.yml"
+      - "core/src/http_semantics.rs"
+      - "sdk/src/elastik/sdk.py"
+      - "tools/header_policy_baseline.txt"
+      - "tools/header_policy_scan.py"
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/header-policy.yml"
+      - "core/src/http_semantics.rs"
+      - "sdk/src/elastik/sdk.py"
+      - "tools/header_policy_baseline.txt"
+      - "tools/header_policy_scan.py"
+  schedule:
+    # Monday morning UTC. This is a live upstream drift check against IANA + MDN.
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: header-policy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: scan header policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: scanner self-test
+        run: python tools/header_policy_scan.py --self-test
+
+      - name: scan reviewed header policy
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            python tools/header_policy_scan.py --report header-policy-report.md
+          else
+            python tools/header_policy_scan.py --offline --report header-policy-report.md
+          fi
+
+      - name: guard reviewed baseline edits
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          if ! git cat-file -e "origin/${{ github.base_ref }}:tools/header_policy_baseline.txt" 2>/dev/null; then
+            echo "tools/header_policy_baseline.txt is new on this base; allowing initial reviewed baseline."
+          elif ! git diff --quiet "origin/${{ github.base_ref }}" -- tools/header_policy_baseline.txt; then
+            echo "::error::tools/header_policy_baseline.txt is reviewed upstream state. Run the live scheduled/workflow_dispatch drift scan and commit a deliberate refresh separately."
+            exit 1
+          fi
+
+      - name: write summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f header-policy-report.md ]]; then
+            cat header-policy-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: header-policy-report
+          path: header-policy-report.md
+          if-no-files-found: ignore

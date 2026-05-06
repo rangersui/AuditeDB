@@ -174,12 +174,13 @@ const e = new Elastik("http://127.0.0.1:3105", {
 Typed errors mirror the Python SDK:
 
 ```js
-import { NetworkError, NotFound, NotModified } from "@elastikjs/client";
+import { InsufficientStorage, NetworkError, NotFound, NotModified } from "@elastikjs/client";
 
 try {
     await e.get("home/missing");
 } catch (err) {
     if (err instanceof NotFound) return null;
+    if (err instanceof InsufficientStorage) console.error("storage is full");
     if (err instanceof NetworkError) console.error("core is unreachable");
     throw err;
 }

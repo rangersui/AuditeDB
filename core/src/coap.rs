@@ -34,11 +34,12 @@ use axum::http::StatusCode;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
-use crate::{auth, can_read, canonicalize_path, valid_world_name, Core};
+use crate::{
+    auth, can_read, canonicalize_path, is_insufficient_storage_error, valid_world_name, Core,
+};
 
 const MAX_DATAGRAM: usize = 1152;
 const RECV_BUF: usize = MAX_DATAGRAM + 1;
-const MAX_IN_FLIGHT: usize = 1024;
 /// Experimental critical CoAP option carrying the raw elastik token bytes.
 ///
 /// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
@@ -99,6 +100,7 @@ pub(crate) async fn serve(
     core: std::sync::Arc<Core>,
     bind: String,
     mut shutdown: watch::Receiver<bool>,
+    max_in_flight: usize,
 ) {
     let socket = match UdpSocket::bind(&bind).await {
         Ok(socket) => socket,
@@ -108,7 +110,7 @@ pub(crate) async fn serve(
         }
     };
     let socket = std::sync::Arc::new(socket);
-    let permits = std::sync::Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    let permits = std::sync::Arc::new(Semaphore::new(max_in_flight));
     eprintln!("scoap: listening on coap://{bind}/");
     eprintln!("scoap: UDP curl surface; auth option {ELASTIK_AUTH_OPTION} maps to token tier");
     let mut buf = [0_u8; RECV_BUF];
@@ -138,7 +140,18 @@ pub(crate) async fn serve(
                 let permit = match permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
-                        eprintln!("scoap: dropping datagram from {peer}: in-flight limit reached");
+                        eprintln!("scoap: rejecting datagram from {peer}: in-flight limit reached");
+                        if let Ok(request) = parse_packet(&data) {
+                            let response = encode_response(
+                                &request,
+                                163,
+                                Some(0),
+                                b"too many coap requests\n",
+                            );
+                            if let Err(e) = socket.send_to(&response, peer).await {
+                                eprintln!("scoap: send_to {peer}: {e}");
+                            }
+                        }
                         continue;
                     }
                 };
@@ -182,7 +195,7 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                 return encode_response(request, 129, Some(0), b"unauthorized\n");
             }
             match core.read_world(&world_name) {
-                Some(stage) => {
+                Ok(Some(stage)) => {
                     if encoded_len(
                         request,
                         media_type_to_cf(&stage.content_type),
@@ -203,7 +216,11 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                         &stage.body,
                     )
                 }
-                None => encode_response(request, 132, Some(0), b"not found\n"),
+                Ok(None) => encode_response(request, 132, Some(0), b"not found\n"),
+                Err(e) if is_insufficient_storage_error(&e) => {
+                    encode_response(request, 167, Some(0), b"insufficient storage\n")
+                }
+                Err(_) => encode_response(request, 160, Some(0), b"storage error\n"),
             }
         }
         Method::Put => {
@@ -471,6 +488,7 @@ fn status_to_coap(status: StatusCode) -> u8 {
         412 => 140,
         413 => 141,
         415 => 143,
+        507 => 167,
         500..=599 => 160,
         _ => 128,
     }
@@ -480,11 +498,15 @@ fn status_to_coap(status: StatusCode) -> u8 {
 mod tests {
     use super::*;
     use crate::{
-        auth, store, Core, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES, LISTEN_REPLAY_MAX,
+        auth, store, Core, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
+        DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
     };
     use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::{atomic::AtomicU64, Arc, Mutex as StdMutex};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize},
+        Arc, Mutex as StdMutex,
+    };
     use tokio::sync::{broadcast, watch, Mutex};
 
     fn packet(bytes: &[u8]) -> Packet<'_> {
@@ -515,8 +537,16 @@ mod tests {
                 mem: Arc::new(store::MemoryStore::new()),
                 max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                 max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
+                max_storage_bytes: None,
+                storage_body_bytes: Arc::new(AtomicUsize::new(0)),
+                durable_world_count: Arc::new(AtomicUsize::new(0)),
+                delete_ledger_created: Arc::new(AtomicBool::new(false)),
                 events,
-                event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(LISTEN_REPLAY_MAX))),
+                listen_slots: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_LISTEN_CONNECTIONS)),
+                listen_replay_max: DEFAULT_LISTEN_REPLAY_MAX,
+                event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(
+                    DEFAULT_LISTEN_REPLAY_MAX,
+                ))),
                 shutdown: watch::channel(false).1,
                 next_event: Arc::new(AtomicU64::new(0)),
                 next_request: Arc::new(AtomicU64::new(0)),
@@ -566,6 +596,21 @@ mod tests {
     #[test]
     fn receive_buffer_can_detect_one_byte_oversize_datagrams() {
         assert_eq!(RECV_BUF, MAX_DATAGRAM + 1);
+    }
+
+    #[test]
+    fn in_flight_limit_response_is_explicit_service_unavailable() {
+        let p = packet(&[0x41, 0x01, 0x12, 0x34, 0xaa]);
+        let out = encode_response(&p, 163, Some(0), b"too many coap requests\n");
+        assert_eq!(&out[..5], &[0x61, 163, 0x12, 0x34, 0xaa]);
+        assert_eq!(out[5], 0xc0); // Content-Format: text/plain
+        assert_eq!(out[6], 0xff);
+        assert_eq!(&out[7..], b"too many coap requests\n");
+    }
+
+    #[test]
+    fn http_507_maps_to_coap_insufficient_storage() {
+        assert_eq!(status_to_coap(StatusCode::INSUFFICIENT_STORAGE), 167);
     }
 
     #[test]
@@ -622,7 +667,10 @@ mod tests {
         let response = handle(&core, &put).await;
 
         assert_eq!(response[1], 129); // 4.01 Unauthorized
-        assert!(core.read_world("home/sensor/kitchen/temp").is_none());
+        assert!(core
+            .read_world("home/sensor/kitchen/temp")
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -685,7 +733,10 @@ mod tests {
         let put_response = handle(&core, &put).await;
         assert_eq!(put_response[1], 65); // 2.01 Created
 
-        let stage = core.read_world("home/sensor/kitchen/temp").unwrap();
+        let stage = core
+            .read_world("home/sensor/kitchen/temp")
+            .unwrap()
+            .unwrap();
         assert_eq!(stage.body, b"23.5");
         assert_eq!(stage.content_type, "text/plain; charset=utf-8");
 

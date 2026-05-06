@@ -36,6 +36,7 @@
 //!   ELASTIK_WRITE_TOKEN    T2 token  (writes to /home/*, includes read)
 //!   ELASTIK_APPROVE_TOKEN  T3 token  (system writes/deletes, includes read)
 //!   ELASTIK_KEY            HMAC key for the audit chain (required)
+//!   ELASTIK_MAX_STORAGE_BYTES optional durable storage quota
 mod audit;
 mod auth;
 mod coap;
@@ -58,14 +59,16 @@ use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Mutex as StdMutex,
 };
 use std::time::Instant;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, watch, Mutex, Semaphore};
 
 use crate::http_semantics as hs;
 use crate::world::{AppendResult, Stage};
+
+type BoxedResponse = Box<Response>;
 
 pub(crate) struct WriteOutcome {
     pub status: StatusCode,
@@ -80,7 +83,13 @@ struct Core {
     mem: Arc<store::MemoryStore>,
     max_world_bytes: usize,
     max_memory_bytes: usize,
+    max_storage_bytes: Option<usize>,
+    storage_body_bytes: Arc<AtomicUsize>,
+    durable_world_count: Arc<AtomicUsize>,
+    delete_ledger_created: Arc<AtomicBool>,
     events: broadcast::Sender<listen::ChangeEvent>,
+    listen_slots: Arc<Semaphore>,
+    listen_replay_max: usize,
     event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
     shutdown: watch::Receiver<bool>,
     next_event: Arc<AtomicU64>,
@@ -91,23 +100,25 @@ struct Core {
 }
 
 impl Core {
-    fn read_world(&self, world: &str) -> Option<Stage> {
-        self.read_world_with_etag(world).map(|(stage, _)| stage)
+    fn read_world(&self, world: &str) -> rusqlite::Result<Option<Stage>> {
+        Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
     }
 
-    fn read_world_with_etag(&self, world: &str) -> Option<(Stage, String)> {
+    fn read_world_with_etag(&self, world: &str) -> rusqlite::Result<Option<(Stage, String)>> {
         if store::is_memory_world(world) {
-            self.mem.read(world).map(|stage| {
-                let etag = hs::body_etag(&stage.body);
-                (stage, etag)
-            })
+            Ok(self
+                .mem
+                .read_with_hash(world)
+                .map(|(stage, hash)| (stage, format!("sha256-{hash}"))))
         } else {
-            world::read_with_hmac(&self.data, world).map(|(stage, hmac)| {
-                let etag = hmac
-                    .map(|h| hs::hmac_etag(&h))
-                    .unwrap_or_else(|| hs::body_etag(&stage.body));
-                (stage, etag)
-            })
+            Ok(
+                world::read_with_hmac(&self.data, world)?.map(|(stage, hmac)| {
+                    let etag = hmac
+                        .map(|h| hs::hmac_etag(&h))
+                        .unwrap_or_else(|| hs::body_etag(&stage.body));
+                    (stage, etag)
+                }),
+            )
         }
     }
 
@@ -122,7 +133,19 @@ impl Core {
             self.mem.write(world, body, content_type, headers);
             Ok(())
         } else {
-            world::write(&self.data, world, body, content_type, headers)
+            let current_len = world::body_len(&self.data, world)?;
+            world::write(&self.data, world, body, content_type, headers)?;
+            self.storage_body_bytes.store(
+                self.storage_body_bytes
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(current_len.unwrap_or(0))
+                    .saturating_add(body.len()),
+                Ordering::Relaxed,
+            );
+            if current_len.is_none() {
+                self.durable_world_count.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
         }
     }
 
@@ -134,11 +157,23 @@ impl Core {
         }
     }
 
-    fn delete_world(&self, world: &str) -> bool {
+    fn world_metadata(&self, world: &str) -> rusqlite::Result<Option<world::WorldMetadata>> {
+        if store::is_memory_world(world) {
+            Ok(self.mem.metadata(world))
+        } else {
+            world::metadata(&self.data, world)
+        }
+    }
+
+    async fn delete_world_blocking(&self, world: &str) -> bool {
         if store::is_memory_world(world) {
             self.mem.delete(world)
         } else {
-            world::delete(&self.data, world)
+            let data = self.data.clone();
+            let world = world.to_string();
+            tokio::task::spawn_blocking(move || world::delete(&data, &world))
+                .await
+                .unwrap_or(false)
         }
     }
 
@@ -156,11 +191,22 @@ impl Core {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             log.push_back(change.clone());
-            while log.len() > LISTEN_REPLAY_MAX {
+            while log.len() > self.listen_replay_max {
                 log.pop_front();
             }
         }
         let _ = self.events.send(change);
+    }
+
+    fn check_storage_quota_for_append(&self, add_len: usize) -> Result<usize, BoxedResponse> {
+        let used = self.storage_body_bytes.load(Ordering::Relaxed);
+        if let Some(quota) = self.max_storage_bytes {
+            let projected = used.saturating_add(add_len);
+            if projected > quota {
+                return Err(Box::new(storage_quota_exceeded(used, quota, projected)));
+            }
+        }
+        Ok(used)
     }
 
     async fn put_bytes(
@@ -184,26 +230,56 @@ impl Core {
         if let Some(req_headers) = preconditions {
             hs::check_write_preconditions(self, world_name, req_headers)?;
         }
-        let existed = self.read_world(world_name).is_some();
+        let existed;
         let new_etag = if store::is_persistent(world_name) {
-            match world::write_with_audit(
+            let quota = self.max_storage_bytes.map(|quota| {
+                // Initialized from durable metadata at startup and adjusted
+                // under write_lock, so PUT quota enforcement stays O(1).
+                (self.storage_body_bytes.load(Ordering::Relaxed), quota)
+            });
+            match world::write_with_audit_checked(
                 &self.data,
                 world_name,
                 body,
                 content_type,
                 headers,
                 &self.hmac_key,
+                quota,
             ) {
-                Ok(h) => hs::hmac_etag(&h),
-                Err(e) => return Err(server_error(format!("storage/audit: {e}"))),
+                Ok(result) => {
+                    existed = result.existed;
+                    self.storage_body_bytes.store(
+                        self.storage_body_bytes
+                            .load(Ordering::Relaxed)
+                            .saturating_sub(result.previous_len)
+                            .saturating_add(body.len()),
+                        Ordering::Relaxed,
+                    );
+                    if !result.existed {
+                        self.durable_world_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    hs::hmac_etag(&result.hmac)
+                }
+                Err(world::WriteAuditError::Quota {
+                    used,
+                    quota,
+                    projected,
+                }) => return Err(storage_quota_exceeded(used, quota, projected)),
+                Err(world::WriteAuditError::Sqlite(e)) => {
+                    return Err(storage_error("storage/audit", e))
+                }
             }
         } else {
+            existed = self
+                .read_world(world_name)
+                .map_err(|e| storage_error("storage read", e))?
+                .is_some();
             if memory_write_projected_bytes(self, world_name, body.len()) > self.max_memory_bytes {
                 return Err(payload_too_large(self.max_memory_bytes));
             }
             match self.write_world(world_name, body, content_type, headers) {
                 Ok(()) => hs::body_etag(body),
-                Err(e) => return Err(server_error(format!("storage: {e}"))),
+                Err(e) => return Err(storage_error("storage", e)),
             }
         };
         self.notify("PUT", world_name, &new_etag);
@@ -223,9 +299,11 @@ const ROOT_ALLOW: &str = "GET, HEAD, OPTIONS";
 const PROC_ALLOW: &str = "GET, HEAD, OPTIONS";
 const AUDIT_VERIFY_ALLOW: &str = "GET, HEAD, OPTIONS";
 const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
-const LISTEN_REPLAY_MAX: usize = 1024;
 const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;
+const DEFAULT_MAX_LISTEN_CONNECTIONS: usize = 1024;
+const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
 
 #[tokio::main]
 async fn main() {
@@ -238,12 +316,27 @@ async fn main() {
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
+    let max_storage_bytes = env_optional_usize("ELASTIK_MAX_STORAGE_BYTES");
+    let max_listen_connections = env_nonzero_usize(
+        "ELASTIK_MAX_LISTEN_CONNECTIONS",
+        DEFAULT_MAX_LISTEN_CONNECTIONS,
+    );
+    let listen_replay_max =
+        env_nonzero_usize("ELASTIK_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX);
+    let coap_max_in_flight =
+        env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT);
     std::fs::create_dir_all(&data).expect("create data dir");
-    let hmac_key = std::env::var("ELASTIK_KEY")
-        .expect("ELASTIK_KEY required: the audit chain has no meaning without it")
-        .into_bytes();
+    let durable_sizes = world::sizes(&data).expect("read durable storage usage");
+    let storage_body_bytes = durable_sizes.iter().map(|(_, size)| *size).sum();
+    let durable_world_count = durable_sizes.len();
+    let delete_ledger_created = durable_sizes
+        .iter()
+        .any(|(world_name, _)| world_name == "var/log/deletes");
+    let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
+        "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
+    );
 
-    let (events, _) = broadcast::channel(1024);
+    let (events, _) = broadcast::channel(listen_replay_max);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(Core {
         data,
@@ -252,8 +345,14 @@ async fn main() {
         mem: Arc::new(store::MemoryStore::new()),
         max_world_bytes,
         max_memory_bytes,
+        max_storage_bytes,
+        storage_body_bytes: Arc::new(AtomicUsize::new(storage_body_bytes)),
+        durable_world_count: Arc::new(AtomicUsize::new(durable_world_count)),
+        delete_ledger_created: Arc::new(AtomicBool::new(delete_ledger_created)),
         events,
-        event_log: Arc::new(StdMutex::new(VecDeque::new())),
+        listen_slots: Arc::new(Semaphore::new(max_listen_connections)),
+        listen_replay_max,
+        event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(listen_replay_max))),
         shutdown: shutdown_rx.clone(),
         next_event: Arc::new(AtomicU64::new(0)),
         next_request: Arc::new(AtomicU64::new(0)),
@@ -273,7 +372,7 @@ async fn main() {
         let coap_state = state.clone();
         let coap_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            coap::serve(coap_state, coap_addr, coap_shutdown).await;
+            coap::serve(coap_state, coap_addr, coap_shutdown, coap_max_in_flight).await;
         });
     }
     let app = Router::new()
@@ -281,6 +380,8 @@ async fn main() {
         .route("/listen/*pattern", any(listen::handler))
         .route("/proc/version", any(proc_version))
         .route("/proc/worlds", any(proc_worlds))
+        .route("/proc/du", any(proc_du))
+        .route("/proc/df", any(proc_df))
         .route("/proc/audit/*audit_path", any(proc_audit_verify))
         .route("/proc", any(proc_reserved))
         .route("/proc/*reserved", any(proc_reserved))
@@ -397,6 +498,27 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn env_optional_usize(name: &str) -> Option<usize> {
+    let Ok(raw) = std::env::var(name) else {
+        return None;
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let parsed = value
+        .parse::<usize>()
+        .unwrap_or_else(|_| panic!("{name} must be a non-negative integer byte count"));
+    (parsed > 0).then_some(parsed)
+}
+
+fn env_nonzero_usize(name: &str, default: usize) -> usize {
+    match env_usize(name, default) {
+        0 => default,
+        value => value,
+    }
+}
+
 fn coap_bind_from_env() -> Option<(String, u16)> {
     let raw = std::env::var("ELASTIK_COAP_PORT").ok()?;
     let raw = raw.trim();
@@ -425,9 +547,33 @@ fn listen_addr(host: &str, port: u16) -> String {
 }
 
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
-    let _ = tokio::signal::ctrl_c().await;
+    wait_for_shutdown_signal().await;
     eprintln!("elastik-core: shutdown signal received");
     let _ = shutdown_tx.send(true);
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(sigterm) => sigterm,
+        Err(e) => {
+            eprintln!("elastik-core: failed to install SIGTERM handler: {e}; waiting for Ctrl-C");
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = sigterm.recv() => {},
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Bare `GET /` — not protocol, not UI. Just a courtesy text/plain
@@ -513,7 +659,15 @@ async fn proc_worlds(
     if !can_read(&core, tier) {
         return unauthorized("read requires read token");
     }
-    let names = store::list_all(&core.data, &core.mem);
+    let data = core.data.clone();
+    let mut names = match tokio::task::spawn_blocking(move || world::list(&data)).await {
+        Ok(Ok(names)) => names,
+        Ok(Err(e)) => return storage_error("proc worlds", e),
+        Err(_) => return server_error("proc worlds worker failed".to_string()),
+    };
+    names.extend(core.mem.list());
+    names.sort();
+    names.dedup();
     let body = world_list_body(&names);
     let mut resp_headers = vec![(
         header::CONTENT_TYPE,
@@ -535,6 +689,66 @@ async fn proc_worlds(
         },
     )
         .into_response()
+}
+
+// /proc/du is read-gated management introspection, intentionally unpaginated
+// like Unix du: one line per world. Durable scans run on the blocking pool; use
+// /proc/df for cheap polling instead of scraping this as hot-path telemetry.
+async fn proc_du(State(core): State<Arc<Core>>, method: Method, headers: HeaderMap) -> Response {
+    if method == Method::OPTIONS {
+        return options_response(PROC_ALLOW);
+    }
+    if method != Method::GET && method != Method::HEAD {
+        return method_not_allowed(PROC_ALLOW);
+    }
+    if let Err(resp) = require_read(&core, &headers) {
+        return *resp;
+    }
+    let data = core.data.clone();
+    let mut sizes = match tokio::task::spawn_blocking(move || world::sizes(&data)).await {
+        Ok(Ok(sizes)) => sizes,
+        Ok(Err(e)) => return storage_error("proc du", e),
+        Err(_) => return server_error("proc du worker failed".to_string()),
+    };
+    sizes.extend(core.mem.sizes());
+    sizes.sort_by(|a, b| a.0.cmp(&b.0));
+    sizes.dedup_by(|a, b| a.0 == b.0);
+    let body = du_body(&sizes);
+    proc_text_response(method, body)
+}
+
+async fn proc_df(State(core): State<Arc<Core>>, method: Method, headers: HeaderMap) -> Response {
+    if method == Method::OPTIONS {
+        return options_response(PROC_ALLOW);
+    }
+    if method != Method::GET && method != Method::HEAD {
+        return method_not_allowed(PROC_ALLOW);
+    }
+    if let Err(resp) = require_read(&core, &headers) {
+        return *resp;
+    }
+    let mem = core.mem.clone();
+    let (memory_used, memory_worlds) =
+        match tokio::task::spawn_blocking(move || (mem.total_bytes(), mem.list().len())).await {
+            Ok(counts) => counts,
+            Err(_) => return server_error("proc df worker failed".to_string()),
+        };
+    let storage_used = core.storage_body_bytes.load(Ordering::Relaxed);
+    let durable_worlds = core
+        .durable_world_count
+        .load(Ordering::Relaxed)
+        .saturating_sub(usize::from(
+            core.delete_ledger_created.load(Ordering::Relaxed),
+        ));
+    let worlds = durable_worlds + memory_worlds;
+    let body = df_body(
+        storage_used,
+        core.max_storage_bytes,
+        memory_used,
+        core.max_memory_bytes,
+        worlds,
+    );
+    proc_text_response(method, body)
 }
 
 // /proc/audit/{world}/verify
@@ -559,8 +773,8 @@ async fn proc_audit_verify(
         return bad_request("audit verify requires a world path");
     }
     let world_name = canonicalize_path(raw_world);
-    if !valid_world_name(&world_name) {
-        return bad_request("invalid world path");
+    if let Err(reason) = validate_world_name(&world_name) {
+        return bad_request(reason);
     }
 
     let auth_header = headers
@@ -578,11 +792,22 @@ async fn proc_audit_verify(
         return audit_not_applicable();
     }
 
-    match audit::verify_chain(&core.data, &world_name, &core.hmac_key) {
+    let data = core.data.clone();
+    let hmac_key = core.hmac_key.clone();
+    let verify_result = match tokio::task::spawn_blocking(move || {
+        audit::verify_chain(&data, &world_name, &hmac_key)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => return server_error("audit verify worker failed".to_string()),
+    };
+
+    match verify_result {
         Ok(Some(audit::VerifyReport::Valid(report))) => audit_valid(report),
         Ok(Some(audit::VerifyReport::Broken(report))) => audit_broken(report),
         Ok(None) => not_found(),
-        Err(e) => server_error(format!("audit verify: {e}")),
+        Err(e) => storage_error("audit verify", e),
     }
 }
 
@@ -603,8 +828,8 @@ async fn world_handler(
     body: Bytes,
 ) -> Response {
     let world_name = canonicalize_path(&path);
-    if !valid_world_name(&world_name) {
-        return bad_request("world path contains control bytes");
+    if let Err(reason) = validate_world_name(&world_name) {
+        return bad_request(reason);
     }
     let auth_header = headers
         .get(header::AUTHORIZATION)
@@ -648,13 +873,55 @@ fn canonicalize_path(p: &str) -> String {
 }
 
 fn valid_world_name(world_name: &str) -> bool {
-    !world_name.is_empty()
-        && !is_reserved_world_name(world_name)
-        && !world_name.contains('\\')
-        && !world_name.chars().any(char::is_control)
-        && world_name
-            .split('/')
-            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+    validate_world_name(world_name).is_ok()
+}
+
+fn validate_world_name(world_name: &str) -> Result<(), &'static str> {
+    if world_name.is_empty() {
+        return Err("world path is empty");
+    }
+    if is_reserved_world_name(world_name) {
+        return Err("world path is a reserved namespace root");
+    }
+    if world_name.contains('\\') {
+        return Err("world path contains backslash");
+    }
+    if world_name.chars().any(char::is_control) {
+        return Err("world path contains control bytes");
+    }
+    for segment in world_name.split('/') {
+        if segment.is_empty() {
+            return Err("world path has empty segment");
+        }
+        if is_dot_segment(segment) {
+            return Err("world path contains dot or encoded-dot segment");
+        }
+    }
+    Ok(())
+}
+
+fn is_dot_segment(segment: &str) -> bool {
+    let Some(rest) = strip_dot_token(segment) else {
+        return false;
+    };
+    rest.is_empty()
+        || strip_dot_token(rest)
+            .map(|tail| tail.is_empty())
+            .unwrap_or(false)
+}
+
+fn strip_dot_token(segment: &str) -> Option<&str> {
+    if let Some(rest) = segment.strip_prefix('.') {
+        return Some(rest);
+    }
+    if segment
+        .as_bytes()
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"%2e"))
+    {
+        return Some(&segment[3..]);
+    }
+    None
 }
 
 fn is_reserved_world_name(world_name: &str) -> bool {
@@ -686,7 +953,10 @@ fn handle_get(
     if !can_read(core, tier) {
         return unauthorized("read requires read token");
     }
-    let Some((stage, etag)) = core.read_world_with_etag(world_name) else {
+    let Some((stage, etag)) = (match core.read_world_with_etag(world_name) {
+        Ok(current) => current,
+        Err(e) => return storage_error("storage read", e),
+    }) else {
         return not_found();
     };
     if hs::read_not_modified(req_headers, &etag) {
@@ -743,7 +1013,10 @@ fn handle_head(
     if !can_read(core, tier) {
         return unauthorized("read requires read token");
     }
-    let Some((stage, etag)) = core.read_world_with_etag(world_name) else {
+    let Some((stage, etag)) = (match core.read_world_with_etag(world_name) {
+        Ok(current) => current,
+        Err(e) => return storage_error("storage read", e),
+    }) else {
         return not_found();
     };
     if hs::read_not_modified(req_headers, &etag) {
@@ -837,36 +1110,47 @@ async fn handle_post(
     if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
         return resp;
     }
-    let Some(stage) = core.read_world(world_name) else {
+    let Some((body_len, content_type, stored_headers)) = (match core.world_metadata(world_name) {
+        Ok(meta) => meta,
+        Err(e) => return storage_error("storage metadata", e),
+    }) else {
         return not_found();
     };
-    let Some(projected_len) = stage.body.len().checked_add(body.len()) else {
+    let Some(projected_len) = body_len.checked_add(body.len()) else {
         return payload_too_large(core.max_world_bytes);
     };
     if projected_len > core.max_world_bytes {
         return payload_too_large(core.max_world_bytes);
     }
     let new_etag = if store::is_persistent(world_name) {
+        let used = match core.check_storage_quota_for_append(body.len()) {
+            Ok(used) => used,
+            Err(resp) => return *resp,
+        };
         match world::append_with_audit(
             &core.data,
             world_name,
             &body,
-            &stage.content_type,
-            &stage.headers,
+            &content_type,
+            &stored_headers,
             &core.hmac_key,
         ) {
-            Ok(Some((_result, h))) => hs::hmac_etag(&h),
+            Ok(Some((_result, h))) => {
+                core.storage_body_bytes
+                    .store(used.saturating_add(body.len()), Ordering::Relaxed);
+                hs::hmac_etag(&h)
+            }
             Ok(None) => return not_found(),
-            Err(e) => return server_error(format!("storage/audit: {e}")),
+            Err(e) => return storage_error("storage/audit", e),
         }
     } else {
-        if memory_append_projected_bytes(core, world_name, body.len()) > core.max_memory_bytes {
+        if memory_append_projected_bytes(core, body.len()) > core.max_memory_bytes {
             return payload_too_large(core.max_memory_bytes);
         }
         let result = match core.append_world(world_name, &body) {
             Ok(Some(r)) => r,
             Ok(None) => return not_found(),
-            Err(e) => return server_error(format!("storage: {e}")),
+            Err(e) => return storage_error("storage", e),
         };
         format!("sha256-{}", result.body_sha256_after)
     };
@@ -895,39 +1179,173 @@ async fn handle_delete(
 
     // Capture body hash BEFORE the world disappears. A missing world is
     // not a delete event; do not mutate the ledger for a 404.
-    let Some(stage) = core.read_world(world_name) else {
+    let Some(stage) = (match core.read_world(world_name) {
+        Ok(current) => current,
+        Err(e) => return storage_error("storage read", e),
+    }) else {
         return not_found();
     };
     let body_sha256_before = world::sha256_hex(&stage.body);
 
     // WAL rule: record the delete intent before the physical delete.
     // If the process crashes after this point, recovery sees an explicit
-    // pending delete instead of a vanished world with no causal record.
+    // delete that needs reconciliation instead of a vanished world with
+    // no causal record. A later commit append is best-effort because the
+    // physical delete is already externally visible.
     // The ledger itself is sqlite even when the deleted world is memory-backed.
     let delete_meta = hs::request_meta_headers(req_headers);
-    if let Err(e) = audit::append(
-        &core.data,
-        "var/log/deletes",
-        "delete",
-        world_name,
-        &body_sha256_before,
-        0,
-        req_headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
-        &delete_meta,
-        &core.hmac_key,
-    ) {
-        return server_error(format!("audit: {e}"));
+    let delete_content_type = req_headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let delete_ledger_existed =
+        match world_exists_blocking(core.data.clone(), "var/log/deletes").await {
+            Ok(existed) => existed,
+            Err(e) => return blocking_storage_error("delete audit intent", e),
+        };
+    if let Err(e) = audit_append_blocking(
+        core.data.clone(),
+        AuditAppendJob {
+            ledger_world: "var/log/deletes",
+            event_type: "delete_intent",
+            target: world_name.to_string(),
+            body_sha256: body_sha256_before.clone(),
+            size: 0,
+            content_type: delete_content_type.clone(),
+            headers: delete_meta.clone(),
+            key: core.hmac_key.clone(),
+        },
+    )
+    .await
+    {
+        return blocking_storage_error("delete audit intent", e);
+    };
+    if !delete_ledger_existed {
+        core.durable_world_count.fetch_add(1, Ordering::Relaxed);
+        core.delete_ledger_created.store(true, Ordering::Relaxed);
     }
 
-    let ok = core.delete_world(world_name);
+    let ok = core.delete_world_blocking(world_name).await;
     if !ok {
         return server_error("delete failed after audit intent".to_string());
     }
+
+    if store::is_persistent(world_name) {
+        core.storage_body_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                Some(used.saturating_sub(stage.body.len()))
+            })
+            .ok();
+        core.durable_world_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                Some(count.saturating_sub(1))
+            })
+            .ok();
+    }
     core.notify("DELETE", world_name, "");
+
+    if let Err(e) = audit_append_blocking(
+        core.data.clone(),
+        AuditAppendJob {
+            ledger_world: "var/log/deletes",
+            event_type: "delete_commit",
+            target: world_name.to_string(),
+            body_sha256: body_sha256_before.clone(),
+            size: 0,
+            content_type: delete_content_type.clone(),
+            headers: delete_meta.clone(),
+            key: core.hmac_key.clone(),
+        },
+    )
+    .await
+    {
+        eprintln!("  WARNING: delete_commit audit append failed for {world_name}: {e:?}");
+        if let Err(failed_event_err) = audit_append_blocking(
+            core.data.clone(),
+            AuditAppendJob {
+                ledger_world: "var/log/deletes",
+                event_type: "delete_commit_failed",
+                target: world_name.to_string(),
+                body_sha256: body_sha256_before,
+                size: 0,
+                content_type: delete_content_type,
+                headers: delete_meta,
+                key: core.hmac_key.clone(),
+            },
+        )
+        .await
+        {
+            eprintln!(
+                "  WARNING: delete_commit_failed audit append also failed for {world_name}: {failed_event_err:?}"
+            );
+        }
+    }
     (StatusCode::NO_CONTENT, "").into_response()
+}
+
+#[derive(Debug)]
+enum BlockingSqliteError {
+    Sqlite(rusqlite::Error),
+    Worker,
+}
+
+struct AuditAppendJob {
+    ledger_world: &'static str,
+    event_type: &'static str,
+    target: String,
+    body_sha256: String,
+    size: i64,
+    content_type: String,
+    headers: Vec<(String, String)>,
+    key: Vec<u8>,
+}
+
+fn blocking_storage_error(scope: &str, err: BlockingSqliteError) -> Response {
+    match err {
+        BlockingSqliteError::Sqlite(err) => storage_error(scope, err),
+        BlockingSqliteError::Worker => server_error(format!("{scope} worker failed")),
+    }
+}
+
+async fn world_exists_blocking(
+    data: PathBuf,
+    world_name: &'static str,
+) -> Result<bool, BlockingSqliteError> {
+    match tokio::task::spawn_blocking(move || {
+        world::open_existing(&data, world_name).map(|existing| existing.is_some())
+    })
+    .await
+    {
+        Ok(Ok(existed)) => Ok(existed),
+        Ok(Err(err)) => Err(BlockingSqliteError::Sqlite(err)),
+        Err(_) => Err(BlockingSqliteError::Worker),
+    }
+}
+
+async fn audit_append_blocking(
+    data: PathBuf,
+    job: AuditAppendJob,
+) -> Result<String, BlockingSqliteError> {
+    match tokio::task::spawn_blocking(move || {
+        audit::append(
+            &data,
+            job.ledger_world,
+            job.event_type,
+            &job.target,
+            &job.body_sha256,
+            job.size,
+            &job.content_type,
+            &job.headers,
+            &job.key,
+        )
+    })
+    .await
+    {
+        Ok(Ok(hmac)) => Ok(hmac),
+        Ok(Err(err)) => Err(BlockingSqliteError::Sqlite(err)),
+        Err(_) => Err(BlockingSqliteError::Worker),
+    }
 }
 
 // ─── helpers ────────────────────────────────────────────────────────
@@ -965,8 +1383,76 @@ fn memory_write_projected_bytes(core: &Core, world_name: &str, new_len: usize) -
         .saturating_add(new_len)
 }
 
-fn memory_append_projected_bytes(core: &Core, _world_name: &str, add_len: usize) -> usize {
+fn memory_append_projected_bytes(core: &Core, add_len: usize) -> usize {
     core.mem.total_bytes().saturating_add(add_len)
+}
+
+fn require_read(core: &Core, headers: &HeaderMap) -> Result<(), BoxedResponse> {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let tier = core.tokens.check(auth_header);
+    if can_read(core, tier) {
+        Ok(())
+    } else {
+        Err(Box::new(unauthorized("read requires read token")))
+    }
+}
+
+fn proc_text_response(method: Method, body: String) -> Response {
+    let mut resp_headers = vec![(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    )];
+    if method == Method::HEAD {
+        resp_headers.push((
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&body.len().to_string()).unwrap(),
+        ));
+    }
+    (
+        StatusCode::OK,
+        to_header_map(resp_headers),
+        if method == Method::HEAD {
+            String::new()
+        } else {
+            body
+        },
+    )
+        .into_response()
+}
+
+fn du_body(sizes: &[(String, usize)]) -> String {
+    let mut out = String::new();
+    for (world, size) in sizes {
+        out.push_str(world);
+        out.push('\t');
+        out.push_str(&size.to_string());
+        out.push('\n');
+    }
+    out
+}
+
+fn df_body(
+    storage_used: usize,
+    storage_quota: Option<usize>,
+    memory_used: usize,
+    memory_quota: usize,
+    worlds: usize,
+) -> String {
+    let (storage_quota, storage_available) = match storage_quota {
+        Some(quota) => (
+            quota.to_string(),
+            quota.saturating_sub(storage_used).to_string(),
+        ),
+        None => ("unlimited".to_string(), "unlimited".to_string()),
+    };
+    let memory_available = memory_quota.saturating_sub(memory_used);
+    format!(
+        "storage\t{storage_used}\t{storage_quota}\t{storage_available}\n\
+         memory\t{memory_used}\t{memory_quota}\t{memory_available}\n\
+         worlds\t{worlds}\tunlimited\tunlimited\n"
+    )
 }
 
 fn exact_or_child(world_name: &str, prefix: &str) -> bool {
@@ -1002,6 +1488,9 @@ fn to_header_map(pairs: Vec<(HeaderName, HeaderValue)>) -> HeaderMap {
 
 fn apply_meta_headers(headers: &[(String, String)], out: &mut Vec<(HeaderName, HeaderValue)>) {
     for (k, v) in headers {
+        if hs::is_never_persisted_header(&k.to_ascii_lowercase()) {
+            continue;
+        }
         let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
             continue;
         };
@@ -1132,6 +1621,44 @@ fn payload_too_large(max_bytes: usize) -> Response {
         .into_response()
 }
 
+fn insufficient_storage() -> Response {
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "insufficient storage: disk full\n",
+    )
+        .into_response()
+}
+
+fn storage_quota_exceeded(used: usize, quota: usize, projected: usize) -> Response {
+    let needed = projected.saturating_sub(quota);
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        to_header_map(vec![
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; charset=utf-8"),
+            ),
+            (
+                HeaderName::from_static("x-storage-usage"),
+                HeaderValue::from_str(&used.to_string()).unwrap(),
+            ),
+            (
+                HeaderName::from_static("x-storage-quota"),
+                HeaderValue::from_str(&quota.to_string()).unwrap(),
+            ),
+            (
+                HeaderName::from_static("x-storage-needed"),
+                HeaderValue::from_str(&needed.to_string()).unwrap(),
+            ),
+        ]),
+        format!(
+            "storage quota exceeded: current {used} bytes, quota {quota} bytes, need {needed} more bytes\n"
+        ),
+    )
+        .into_response()
+}
+
 fn options_response(allow: &'static str) -> Response {
     (
         StatusCode::NO_CONTENT,
@@ -1171,6 +1698,35 @@ fn server_error(msg: String) -> Response {
         .into_response()
 }
 
+fn storage_error(scope: &str, err: rusqlite::Error) -> Response {
+    eprintln!("elastik-core internal {scope}: {err}");
+    if is_insufficient_storage_error(&err) {
+        insufficient_storage()
+    } else {
+        server_error("storage failure".to_string())
+    }
+}
+
+pub(crate) fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {
+    if matches!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ffi::ErrorCode::DiskFull)
+    ) {
+        return true;
+    }
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("database or disk is full")
+        || msg.contains("disk is full")
+        || msg.contains("no space left")
+        || msg.contains("not enough space")
+}
+
+fn hmac_key_from_env_value(value: Option<String>) -> Option<Vec<u8>> {
+    value
+        .filter(|s| !s.trim().is_empty())
+        .map(String::into_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1206,6 +1762,121 @@ mod tests {
                 None => std::env::remove_var("ELASTIK_COAP_PORT"),
             }
         }
+    }
+
+    #[test]
+    fn hmac_key_requires_nonempty_semantic_content() {
+        assert!(hmac_key_from_env_value(None).is_none());
+        assert!(hmac_key_from_env_value(Some(String::new())).is_none());
+        assert!(hmac_key_from_env_value(Some(" \t\n".to_string())).is_none());
+        assert_eq!(
+            hmac_key_from_env_value(Some(" secret ".to_string())).unwrap(),
+            b" secret ".to_vec()
+        );
+    }
+
+    #[test]
+    fn resource_cap_env_zero_falls_back_to_default() {
+        let _guard = env_lock().lock().unwrap();
+        let key = format!("ELASTIK_TEST_ZERO_CAP_{}", std::process::id());
+        std::env::set_var(&key, "0");
+        assert_eq!(env_nonzero_usize(&key, 7), 7);
+        std::env::set_var(&key, "9");
+        assert_eq!(env_nonzero_usize(&key, 7), 9);
+        std::env::remove_var(&key);
+    }
+
+    #[test]
+    fn optional_storage_quota_zero_is_unlimited() {
+        let _guard = env_lock().lock().unwrap();
+        let key = format!("ELASTIK_TEST_STORAGE_CAP_{}", std::process::id());
+        std::env::remove_var(&key);
+        assert_eq!(env_optional_usize(&key), None);
+        std::env::set_var(&key, "");
+        assert_eq!(env_optional_usize(&key), None);
+        std::env::set_var(&key, " \t ");
+        assert_eq!(env_optional_usize(&key), None);
+        std::env::set_var(&key, "0");
+        assert_eq!(env_optional_usize(&key), None);
+        std::env::set_var(&key, "11");
+        assert_eq!(env_optional_usize(&key), Some(11));
+        std::env::set_var(&key, "10GB");
+        assert!(std::panic::catch_unwind(|| env_optional_usize(&key)).is_err());
+        std::env::remove_var(&key);
+    }
+
+    #[test]
+    fn sqlite_disk_full_maps_to_507() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        );
+        assert!(is_insufficient_storage_error(&err));
+
+        let resp = storage_error("test", err);
+        assert_eq!(resp.status(), StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    #[test]
+    fn non_storage_sqlite_errors_stay_500() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        );
+        assert!(!is_insufficient_storage_error(&err));
+
+        let resp = storage_error("test", err);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn durable_storage_quota_returns_507_without_writing() {
+        let (mut core, dir) = test_core("storage-quota");
+        core.max_storage_bytes = Some(4);
+        let headers = HeaderMap::new();
+
+        let first = handle_put(
+            &core,
+            "home/a",
+            &headers,
+            Bytes::from_static(b"1234"),
+            auth::Tier::Write,
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let over = handle_put(
+            &core,
+            "home/b",
+            &headers,
+            Bytes::from_static(b"5"),
+            auth::Tier::Write,
+        )
+        .await;
+        assert_eq!(over.status(), StatusCode::INSUFFICIENT_STORAGE);
+        assert_eq!(over.headers().get("x-storage-usage").unwrap(), "4");
+        assert_eq!(over.headers().get("x-storage-quota").unwrap(), "4");
+        assert_eq!(over.headers().get("x-storage-needed").unwrap(), "1");
+        assert!(core.read_world("home/b").unwrap().is_none());
+
+        let append = handle_post(
+            &core,
+            "home/a",
+            &headers,
+            Bytes::from_static(b"5"),
+            auth::Tier::Write,
+        )
+        .await;
+        assert_eq!(append.status(), StatusCode::INSUFFICIENT_STORAGE);
+        assert_eq!(append.headers().get("x-storage-usage").unwrap(), "4");
+        assert_eq!(append.headers().get("x-storage-quota").unwrap(), "4");
+        assert_eq!(append.headers().get("x-storage-needed").unwrap(), "1");
+        assert_eq!(
+            core.read_world("home/a").unwrap().unwrap().body,
+            b"1234".to_vec()
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1445,6 +2116,8 @@ mod tests {
                     "x-custom".to_owned(),
                     "evil\r\nset-cookie: admin=true".to_owned(),
                 ),
+                ("set-cookie".to_owned(), "sid=admin; Path=/".to_owned()),
+                ("clear-site-data".to_owned(), "\"cookies\"".to_owned()),
                 ("bad name".to_owned(), "ok".to_owned()),
                 ("x-safe".to_owned(), "ok".to_owned()),
             ],
@@ -1475,10 +2148,23 @@ mod tests {
     #[test]
     fn dot_segments_empty_segments_and_backslashes_are_not_valid_world_names() {
         assert!(!valid_world_name("home/../etc/secret"));
+        assert!(!valid_world_name("home/%2E%2E/etc/secret"));
         assert!(!valid_world_name("home/./x"));
         assert!(!valid_world_name("home//x"));
         assert!(!valid_world_name("home/x/"));
         assert!(!valid_world_name("home\\x"));
+        assert_eq!(
+            validate_world_name("home/%2E%2E/etc/secret"),
+            Err("world path contains dot or encoded-dot segment")
+        );
+        assert_eq!(
+            validate_world_name("home//x"),
+            Err("world path has empty segment")
+        );
+        assert_eq!(
+            validate_world_name("home\\x"),
+            Err("world path contains backslash")
+        );
     }
 
     #[test]
@@ -2055,7 +2741,7 @@ mod tests {
         );
 
         let names = store::list_all(&core.data, &core.mem);
-        assert_eq!(world_list_body(&names), "home/销售/报告\n");
+        assert_eq!(world_list_body(&names.unwrap()), "home/销售/报告\n");
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2308,6 +2994,7 @@ mod tests {
         headers.insert("x-forwarded-for", HeaderValue::from_static("127.0.0.1"));
         headers.insert("x-forwarded-host", HeaderValue::from_static("example.com"));
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert("clear-site-data", HeaderValue::from_static("\"cookies\""));
 
         let meta = hs::request_meta_headers(&headers);
         let has = |name: &str| meta.iter().any(|(n, _)| n == name);
@@ -2379,6 +3066,7 @@ mod tests {
             "x-forwarded-for",
             "x-forwarded-host",
             "x-forwarded-proto",
+            "clear-site-data",
         ] {
             assert!(!has(name), "{name} should not be persisted");
         }
@@ -2449,7 +3137,7 @@ mod tests {
         core.write_world("home/pdf", b"%PDF-1.7", "application/pdf", &[])
             .unwrap();
 
-        let stage = core.read_world("home/pdf").unwrap();
+        let stage = core.read_world("home/pdf").unwrap().unwrap();
         assert_eq!(stage.content_type, "application/pdf");
         assert_eq!(stage.body, b"%PDF-1.7");
 
@@ -2478,7 +3166,7 @@ mod tests {
         )
         .unwrap();
 
-        let stage = core.read_world("tmp/scratch").unwrap();
+        let stage = core.read_world("tmp/scratch").unwrap().unwrap();
         assert_eq!(stage.body, b"draft");
         assert_eq!(stage.content_type, "text/plain; charset=utf-8");
         assert_eq!(
@@ -2489,7 +3177,7 @@ mod tests {
         assert!(audit::latest_hmac(&core.data, "tmp/scratch").is_none());
 
         let names = store::list_all(&core.data, &core.mem);
-        assert_eq!(names, vec!["tmp/scratch".to_string()]);
+        assert_eq!(names.unwrap(), vec!["tmp/scratch".to_string()]);
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2507,13 +3195,13 @@ mod tests {
         )
         .unwrap();
 
-        let stage = core.read_world("home/report").unwrap();
+        let stage = core.read_world("home/report").unwrap().unwrap();
         assert_eq!(stage.body, b"final");
         assert!(world::world_db(&core.data, "home/report").exists());
         assert_eq!(audit::latest_hmac(&core.data, "home/report"), Some(h));
 
         let names = store::list_all(&core.data, &core.mem);
-        assert_eq!(names, vec!["home/report".to_string()]);
+        assert_eq!(names.unwrap(), vec!["home/report".to_string()]);
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2632,7 +3320,7 @@ mod tests {
         stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
         let resp = handle_delete(&core, "home/delete-cas", &stale, auth::Tier::Approve).await;
         assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
-        assert!(core.read_world("home/delete-cas").is_some());
+        assert!(core.read_world("home/delete-cas").unwrap().is_some());
 
         let mut good = HeaderMap::new();
         good.insert(
@@ -2641,12 +3329,24 @@ mod tests {
         );
         let resp = handle_delete(&core, "home/delete-cas", &good, auth::Tier::Approve).await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        assert!(core.read_world("home/delete-cas").is_none());
-        assert!(core.read_world("var/log/deletes").is_some());
+        assert!(core.read_world("home/delete-cas").unwrap().is_none());
+        assert!(core.read_world("var/log/deletes").unwrap().is_some());
         assert!(matches!(
             audit::verify_chain(&core.data, "var/log/deletes", &core.hmac_key).unwrap(),
             Some(audit::VerifyReport::Valid(_))
         ));
+        let ledger = world::open_existing(&core.data, "var/log/deletes")
+            .unwrap()
+            .unwrap();
+        let mut stmt = ledger
+            .prepare("SELECT event_type FROM events ORDER BY id")
+            .unwrap();
+        let events: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(events, vec!["delete_intent", "delete_commit"]);
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2677,12 +3377,12 @@ mod tests {
         let auth_delete =
             handle_delete(&core, "home/delete-policy", &headers, auth::Tier::Write).await;
         assert_eq!(auth_delete.status(), StatusCode::UNAUTHORIZED);
-        assert!(core.read_world("home/delete-policy").is_some());
+        assert!(core.read_world("home/delete-policy").unwrap().is_some());
 
         let ledger_delete =
             handle_delete(&core, "var/log/deletes", &headers, auth::Tier::Approve).await;
         assert_eq!(ledger_delete.status(), StatusCode::UNAUTHORIZED);
-        assert!(core.read_world("var/log/deletes").is_some());
+        assert!(core.read_world("var/log/deletes").unwrap().is_some());
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2693,7 +3393,7 @@ mod tests {
         let headers = HeaderMap::new();
         let resp = handle_delete(&core, "home/missing", &headers, auth::Tier::Approve).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        assert!(core.read_world("var/log/deletes").is_none());
+        assert!(core.read_world("var/log/deletes").unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2705,6 +3405,93 @@ mod tests {
             world_list_body(&["home/a".to_owned(), "tmp/b".to_owned()]),
             "home/a\ntmp/b\n"
         );
+    }
+
+    #[tokio::test]
+    async fn proc_du_and_df_report_resource_usage() {
+        let (mut core, dir) = test_core("proc-du-df");
+        core.max_storage_bytes = Some(10);
+        core.write_world("home/hello", b"hello", "text/plain", &[])
+            .unwrap();
+        core.write_world("tmp/scratch", b"data", "text/plain", &[])
+            .unwrap();
+        let state = Arc::new(core);
+        let headers = HeaderMap::new();
+
+        let du = proc_du(State(state.clone()), Method::GET, headers.clone()).await;
+        assert_eq!(du.status(), StatusCode::OK);
+        let du_body = response_text(du).await;
+        assert!(du_body.contains("home/hello\t5\n"));
+        assert!(du_body.contains("tmp/scratch\t4\n"));
+
+        let df = proc_df(State(state.clone()), Method::GET, headers.clone()).await;
+        assert_eq!(df.status(), StatusCode::OK);
+        let df_body = response_text(df).await;
+        assert!(df_body.contains("storage\t5\t10\t5\n"));
+        assert!(df_body.contains("memory\t4\t268435456\t268435452\n"));
+        assert!(df_body.contains("worlds\t2\tunlimited\tunlimited\n"));
+
+        let head = proc_du(State(state), Method::HEAD, headers).await;
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers().get(header::CONTENT_LENGTH).unwrap(), "27");
+        assert_eq!(response_text(head).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_du_and_df_require_read_token_when_enabled() {
+        let (mut core, dir) = test_core("proc-du-df-read-token");
+        core.tokens.read = Some(b"reader".to_vec());
+        let state = Arc::new(core);
+        let headers = HeaderMap::new();
+
+        let du = proc_du(State(state.clone()), Method::GET, headers.clone()).await;
+        assert_eq!(du.status(), StatusCode::UNAUTHORIZED);
+
+        let df = proc_df(State(state), Method::GET, headers).await;
+        assert_eq!(df.status(), StatusCode::UNAUTHORIZED);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_df_world_count_tracks_durable_put_and_delete() {
+        let (core, dir) = test_core("proc-df-world-count");
+        let headers = HeaderMap::new();
+
+        let put = handle_put(
+            &core,
+            "home/count",
+            &headers,
+            Bytes::from_static(b"x"),
+            auth::Tier::Write,
+        )
+        .await;
+        assert_eq!(put.status(), StatusCode::CREATED);
+
+        let state = Arc::new(core);
+        let before = proc_df(State(state.clone()), Method::GET, headers.clone()).await;
+        assert!(response_text(before)
+            .await
+            .contains("worlds\t1\tunlimited\tunlimited\n"));
+
+        let delete = handle_delete(&state, "home/count", &headers, auth::Tier::Approve).await;
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        let after = proc_df(State(state), Method::GET, headers).await;
+        let after_body = response_text(after).await;
+        assert!(after_body.contains("storage\t0\tunlimited\tunlimited\n"));
+        assert!(after_body.contains("worlds\t0\tunlimited\tunlimited\n"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    async fn response_text(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
     }
 
     fn test_core(label: &str) -> (Core, PathBuf) {
@@ -2732,8 +3519,16 @@ mod tests {
                     mem: Arc::new(store::MemoryStore::new()),
                     max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                     max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
+                    max_storage_bytes: None,
+                    storage_body_bytes: Arc::new(AtomicUsize::new(0)),
+                    durable_world_count: Arc::new(AtomicUsize::new(0)),
+                    delete_ledger_created: Arc::new(AtomicBool::new(false)),
                     events,
-                    event_log: Arc::new(StdMutex::new(VecDeque::new())),
+                    listen_slots: Arc::new(Semaphore::new(DEFAULT_MAX_LISTEN_CONNECTIONS)),
+                    listen_replay_max: DEFAULT_LISTEN_REPLAY_MAX,
+                    event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(
+                        DEFAULT_LISTEN_REPLAY_MAX,
+                    ))),
                     shutdown: watch::channel(false).1,
                     next_event: Arc::new(AtomicU64::new(0)),
                     next_request: Arc::new(AtomicU64::new(0)),

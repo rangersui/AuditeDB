@@ -33,7 +33,7 @@ from typing import Any, Callable, Iterator, TypedDict
 
 
 _NAMESPACES = {"home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"}
-_PROC_ENDPOINTS = {"proc/version", "proc/worlds"}
+_PROC_ENDPOINTS = {"proc/version", "proc/worlds", "proc/du", "proc/df"}
 _RESERVED_WORLD_NAMES = {
     "home",
     "tmp",
@@ -124,6 +124,7 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
     "preference-applied",
     "priority",
     "critical-ch",
+    "clear-site-data",
     "content-type",
     "content-length",
     "etag",
@@ -324,6 +325,10 @@ class PayloadTooLarge(ElastikError):
 
 class ServerError(ElastikError):
     """5xx server-side failure."""
+
+
+class InsufficientStorage(ServerError):
+    """507 Insufficient Storage."""
 
 
 @dataclass(frozen=True)
@@ -1530,7 +1535,7 @@ def _quote_path(path: str) -> str:
     world = _canonical_world_name(path)
     if world == "proc" or world.startswith("proc/"):
         raise ValueError(
-            "/proc is reserved; only /proc/version, /proc/worlds, "
+            "/proc is reserved; only /proc/version, /proc/worlds, /proc/du, /proc/df, "
             "and /proc/audit/{path}/verify exist"
         )
     _validate_world_name(world)
@@ -1598,8 +1603,19 @@ def _validate_world_name(world: str) -> None:
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in world):
         raise ValueError("control bytes are not allowed in elastik paths")
     for segment in world.split("/"):
-        if segment in ("", ".", ".."):
+        if segment == "" or _is_dot_segment(segment):
             raise ValueError("empty, dot, and dot-dot path segments are not allowed")
+
+
+def _is_dot_segment(segment: str) -> bool:
+    lower = segment.lower()
+    if lower.startswith("."):
+        rest = lower[1:]
+    elif lower.startswith("%2e"):
+        rest = lower[3:]
+    else:
+        return False
+    return rest == "" or rest in (".", "%2e")
 
 
 def _set_if(headers: dict[str, str], name: str, value: str | None) -> None:
@@ -1720,6 +1736,8 @@ def _raise_error(
         cls = PreconditionFailed
     elif status == 413:
         cls = PayloadTooLarge
+    elif status == 507:
+        cls = InsufficientStorage
     elif status >= 500:
         cls = ServerError
     else:

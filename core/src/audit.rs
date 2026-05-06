@@ -226,7 +226,7 @@ fn verify_event(
     events: &mut usize,
 ) -> Option<VerifyBreak> {
     let idx = *events;
-    if row.prev_hmac != *prev {
+    if !crate::auth::ct_eq(row.prev_hmac.as_bytes(), prev.as_bytes()) {
         return Some(VerifyBreak {
             break_at: idx,
             expected: hmac_label(prev),
@@ -234,7 +234,7 @@ fn verify_event(
         });
     }
     let expected_meta = meta_sha256_canonical(&row.content_type, headers);
-    if expected_meta != row.meta_sha256 {
+    if !crate::auth::ct_eq(expected_meta.as_bytes(), row.meta_sha256.as_bytes()) {
         return Some(VerifyBreak {
             break_at: idx,
             expected: format!("meta-sha256-{expected_meta}"),
@@ -327,6 +327,7 @@ fn canonical_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
     out
 }
 
+#[cfg(test)]
 pub fn latest_hmac(data_root: &Path, world_name: &str) -> Option<String> {
     let path = world::world_db(data_root, world_name);
     if !path.exists() {

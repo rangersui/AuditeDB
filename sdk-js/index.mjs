@@ -62,6 +62,7 @@ export class NotFound extends ElastikError {}
 export class PreconditionFailed extends ElastikError {}
 export class PayloadTooLarge extends ElastikError {}
 export class ServerError extends ElastikError {}
+export class InsufficientStorage extends ServerError {}
 export class NetworkError extends ElastikError {}
 
 const ERROR_BY_STATUS = Object.freeze({
@@ -71,6 +72,7 @@ const ERROR_BY_STATUS = Object.freeze({
     404: NotFound,
     412: PreconditionFailed,
     413: PayloadTooLarge,
+    507: InsufficientStorage,
 });
 
 export class Elastik {
@@ -293,7 +295,7 @@ export class Elastik {
         headers["Accept"] = "text/event-stream";
         if (options.lastEventId != null) headers["Last-Event-ID"] = String(options.lastEventId);
 
-        const cleanPattern = stripLeadingSlashes(String(pattern));
+        const cleanPattern = canonicalListenPattern(pattern);
         const url = `${this.url}/listen/${encodePath(cleanPattern)}`;
 
         // Connect + decode in the background. Errors land in the callback as
@@ -326,7 +328,7 @@ export class Elastik {
         catch (err) { if (err.status === 404) return false; throw err; }
     }
     async list(prefix = "") {
-        const p = canonicalPath(prefix);
+        const p = canonicalPrefix(prefix);
         const lines = (await this.worlds()).split("\n").filter(Boolean);
         return p ? lines.filter((line) => line === p || line.startsWith(`${p}/`)) : lines;
     }
@@ -354,7 +356,7 @@ export class Elastik {
 
     // ─── internals ───────────────────────────────────────
     _url(path) {
-        const cleaned = stripLeadingSlashes(String(path));
+        const cleaned = validateRequestPath(path);
         return `${this.url}/${encodePath(cleaned)}`;
     }
     _auth(token, extras = {}) {
@@ -546,12 +548,77 @@ function stripQuotes(v) {
 }
 
 const RESERVED_NAMESPACES = new Set(["home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"]);
+const PROC_ENDPOINTS = new Set(["proc/version", "proc/worlds", "proc/du", "proc/df"]);
 
 function canonicalPath(path) {
-    const clean = stripTrailingSlashes(stripLeadingSlashes(String(path ?? "")));
+    const clean = stripLeadingSlashes(String(path ?? ""));
     if (!clean) return "";
     const first = clean.split("/", 1)[0];
-    return RESERVED_NAMESPACES.has(first) ? clean : `home/${clean}`;
+    const world = RESERVED_NAMESPACES.has(first) ? clean : `home/${clean}`;
+    validateWorldName(world);
+    return world;
+}
+
+function canonicalPrefix(prefix) {
+    const clean = stripTrailingSlashes(stripLeadingSlashes(String(prefix ?? "")));
+    if (!clean) return "";
+    const first = clean.split("/", 1)[0];
+    const world = RESERVED_NAMESPACES.has(first) ? clean : `home/${clean}`;
+    validateWorldName(world, { allowNamespaceRoot: true });
+    return world;
+}
+
+function canonicalListenPattern(pattern) {
+    const clean = stripTrailingSlashes(stripLeadingSlashes(String(pattern ?? "")));
+    if (!clean) return "";
+    if (clean === "proc" || clean.startsWith("proc/")) {
+        throw new TypeError("/proc is reserved; listen patterns must target worlds");
+    }
+    const first = clean.split("/", 1)[0];
+    const world = RESERVED_NAMESPACES.has(first) ? clean : `home/${clean}`;
+    validateWorldName(world, { allowNamespaceRoot: true });
+    return world;
+}
+
+function validateRequestPath(path) {
+    const clean = stripLeadingSlashes(String(path ?? ""));
+    if (PROC_ENDPOINTS.has(clean)) return clean;
+    const prefix = "proc/audit/";
+    const suffix = "/verify";
+    if (clean.startsWith(prefix)) {
+        if (!clean.endsWith(suffix)) throw new TypeError("/proc/audit only exposes /proc/audit/{path}/verify");
+        const rawWorld = clean.slice(prefix.length, -suffix.length);
+        canonicalPath(rawWorld);
+        return clean;
+    }
+    if (clean === "proc" || clean.startsWith("proc/")) {
+        throw new TypeError("/proc is reserved; only declared proc endpoints are valid");
+    }
+    return canonicalPath(clean);
+}
+
+function validateWorldName(world, options = {}) {
+    if (!world) throw new TypeError("empty elastik path");
+    if (!options.allowNamespaceRoot && RESERVED_NAMESPACES.has(world)) throw new TypeError(`/${world} is a reserved namespace root`);
+    if (world.includes("\\")) throw new TypeError("backslash is not allowed in elastik paths");
+    for (let i = 0; i < world.length; i++) {
+        const code = world.charCodeAt(i);
+        if (code < 0x20 || code === 0x7f) throw new TypeError("control bytes are not allowed in elastik paths");
+    }
+    for (const segment of world.split("/")) {
+        if (segment === "" || isDotSegment(segment)) {
+            throw new TypeError("empty, dot, and dot-dot path segments are not allowed");
+        }
+    }
+}
+
+function isDotSegment(segment) {
+    const lower = segment.toLowerCase();
+    let rest = null;
+    if (lower.startsWith(".")) rest = lower.slice(1);
+    else if (lower.startsWith("%2e")) rest = lower.slice(3);
+    else return false;
+    return rest === "" || rest === "." || rest === "%2e";
 }
 
 function stripLeadingSlashes(value) {

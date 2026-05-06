@@ -14,7 +14,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SDK_SRC = ROOT / "sdk" / "src"
 sys.path.insert(0, str(SDK_SRC))
 
-from elastik.sdk import _NON_PERSISTED_RESPONSE_HEADERS  # noqa: E402
+from elastik.sdk import (  # noqa: E402
+    InsufficientStorage,
+    Response,
+    _NON_PERSISTED_RESPONSE_HEADERS,
+    _quote_path,
+    _raise_for_response,
+)
 from elastik._coap_client import _path_segments  # noqa: E402
 from elastik._coap_client import get as coap_get  # noqa: E402
 from elastik.tools import ShellPoolError, TrustedShellPool  # noqa: E402
@@ -72,7 +78,7 @@ def check_coap_unreachable_is_timeout() -> None:
 def check_coap_paths_share_http_validation() -> None:
     assert list(_path_segments("note")) == ["home", "note"]
     assert list(_path_segments("/home/note")) == ["home", "note"]
-    for bad in ("/home//x", "home/x/", "/tmp//", "/proc/version"):
+    for bad in ("/home//x", "home/x/", "/tmp//", "/home/%2E%2E/x", "/proc/version"):
         try:
             list(_path_segments(bad))
         except ValueError:
@@ -80,10 +86,39 @@ def check_coap_paths_share_http_validation() -> None:
         raise AssertionError(f"CoAP SDK accepted invalid path {bad!r}")
 
 
+def check_proc_paths_are_sdk_allowed() -> None:
+    assert _quote_path("/proc/version") == "/proc/version"
+    assert _quote_path("/proc/worlds") == "/proc/worlds"
+    assert _quote_path("/proc/du") == "/proc/du"
+    assert _quote_path("/proc/df") == "/proc/df"
+
+
+def check_encoded_dot_segments_are_rejected() -> None:
+    for bad in ("/home/%2E/x", "/home/%2e%2E/x", "/proc/audit/home/%2E%2E/x/verify"):
+        try:
+            _quote_path(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"SDK accepted encoded dot segment {bad!r}")
+
+
+def check_507_maps_to_insufficient_storage() -> None:
+    resp = Response(507, {}, b"storage full\n")
+    try:
+        _raise_for_response(resp, "PUT", "home/full")
+    except InsufficientStorage as exc:
+        assert exc.status == 507
+        return
+    raise AssertionError("507 did not raise InsufficientStorage")
+
+
 def main() -> int:
     check_header_blacklist_parity()
     check_coap_unreachable_is_timeout()
     check_coap_paths_share_http_validation()
+    check_proc_paths_are_sdk_allowed()
+    check_encoded_dot_segments_are_rejected()
+    check_507_maps_to_insufficient_storage()
 
     with TrustedShellPool(size=1, timeout=2) as pool:
         r = pool.run("echo elastik-ready", check=True)
