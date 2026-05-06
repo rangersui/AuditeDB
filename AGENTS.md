@@ -57,6 +57,49 @@ Without cascading, PR 4's diff = PR 0 + 1 + 2 + 3 + 4 = 1260 lines = AI
 loses the thread. With cascading each PR is an independent 500-line
 review.
 
+### Cascade stack depth: 3-4 levels max
+
+Cascading is not free. To review PR N a reviewer (human or AI) has
+to first mentally accept PR 0 → PR 1 → ... → PR N-1, then read PR N's
+diff against that imagined state. **Each level adds one item to the
+mental stack.** Past 3-4 levels the stack overflows for the same
+reason a single 1500-line PR overflows: working memory runs out.
+
+The cascade form does not eliminate the budget; it changes what the
+budget is spent on. Per-PR diff stays at 500 lines, but cumulative
+stack-depth context is bounded too.
+
+**The rule**:
+
+- **Soft cap: 3 levels**. Comfortable.
+- **Hard cap: 4 levels**. Acceptable when the bottom levels are
+  small or trivial (e.g., one-line `chore/visibility-fix`).
+- **Above 4: stop adding new PRs. Drain the stack first.**
+
+**Draining**:
+
+1. Merge the **bottom** of the stack (the level closest to master,
+   typically the first-written PR) into master.
+2. The level above it now has its base auto-redirected to master and
+   becomes depth 1.
+3. Keep merging upward until the stack is shallow enough.
+4. Then resume opening new PRs.
+
+```
+Before drain:
+  master → PR 0 → PR 1 → PR 2 → PR 3 → PR 4 → PR 5
+                                              (depth 6, blown)
+
+After merging PR 0, 1, 2:
+  master(includes 0/1/2) → PR 3 → PR 4 → PR 5
+                                              (depth 3, fits)
+```
+
+This is why the merge order matches the cascade order: oldest /
+deepest-base first. Trying to merge a higher-up PR while a lower-down
+PR is still open creates a divergent base that GitHub will not
+auto-redirect cleanly.
+
 ### Grandfather clause
 
 Existing oversized files (`core/src/main.rs` in particular) are allowed
