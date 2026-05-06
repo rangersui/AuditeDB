@@ -55,6 +55,7 @@ use axum::{
     routing::any,
     Router,
 };
+use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -63,7 +64,7 @@ use std::sync::{
     Arc, Mutex as StdMutex,
 };
 use std::time::Instant;
-use tokio::sync::{broadcast, watch, Mutex, Semaphore};
+use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
 use crate::http_semantics as hs;
 use crate::world::{AppendResult, Stage};
@@ -94,12 +95,46 @@ struct Core {
     shutdown: watch::Receiver<bool>,
     next_event: Arc<AtomicU64>,
     next_request: Arc<AtomicU64>,
-    // One writer at a time keeps If-Match/If-None-Match + write atomic.
-    // tokio::Mutex avoids blocking a runtime worker while queued writers wait.
-    write_lock: Arc<Mutex<()>>,
+    // Per-world async write lock. Replaces the previous global write_lock.
+    // Writes to different worlds run concurrently; writes to the same world
+    // serialize (preserving If-Match/If-None-Match + write atomicity).
+    // Locks are created lazily on first write and never evicted while the
+    // process runs. See acquire_world_lock for the rationale (eviction is
+    // unsafe when waiters hold a clone of the Arc). DashMap shards reads,
+    // so lookup is mostly lock-free.
+    world_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Core {
+    /// Acquire the per-world write lock. Different worlds run concurrent
+    /// writes; same-world writes serialize. Lazy creation: the lock is
+    /// inserted on first acquire and never evicted while the process runs.
+    ///
+    /// We deliberately do NOT remove the entry on DELETE. Removing while
+    /// another waiter holds a clone of the Arc would let the next acquirer
+    /// create a fresh Arc<Mutex<()>> for the same world, breaking mutual
+    /// exclusion (two concurrent writers, two different mutexes). The map
+    /// grows by one entry per distinct world ever written -- bounded in
+    /// practice by total world cardinality.
+    ///
+    /// Lock ordering rule for callers that need more than one world lock
+    /// (currently only DELETE, which also touches the shared `var/log/deletes`
+    /// ledger): always acquire the target world lock FIRST, then any shared
+    /// ledger lock(s). This avoids cycles. See handle_delete for the only
+    /// current example.
+    ///
+    /// The DashMap entry guard is dropped before `.await`, so we never
+    /// hold a sync shard lock across an await.
+    async fn acquire_world_lock(&self, world: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            self.world_locks
+                .entry(world.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
     fn read_world(&self, world: &str) -> rusqlite::Result<Option<Stage>> {
         Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
     }
@@ -135,12 +170,14 @@ impl Core {
         } else {
             let current_len = world::body_len(&self.data, world)?;
             world::write(&self.data, world, body, content_type, headers)?;
-            self.storage_body_bytes.store(
-                self.storage_body_bytes
-                    .load(Ordering::Relaxed)
-                    .saturating_sub(current_len.unwrap_or(0))
-                    .saturating_add(body.len()),
+            // Atomic delta on the counter: with per-world locking, multiple
+            // worlds can land here concurrently. fetch_update keeps the
+            // counter coherent across writers in different worlds.
+            let prev = current_len.unwrap_or(0);
+            let _ = self.storage_body_bytes.fetch_update(
                 Ordering::Relaxed,
+                Ordering::Relaxed,
+                |used| Some(used.saturating_sub(prev).saturating_add(body.len())),
             );
             if current_len.is_none() {
                 self.durable_world_count.fetch_add(1, Ordering::Relaxed);
@@ -198,15 +235,65 @@ impl Core {
         let _ = self.events.send(change);
     }
 
-    fn check_storage_quota_for_append(&self, add_len: usize) -> Result<usize, BoxedResponse> {
-        let used = self.storage_body_bytes.load(Ordering::Relaxed);
+    // (`check_storage_quota_for_append` was removed; quota is now enforced
+    // by `reserve_storage` which atomically checks and reserves in one CAS,
+    // closing the race that the snapshot-based check could not handle.)
+
+    /// Atomic reservation: check the quota and reserve `new_len - prev_len`
+    /// in a single CAS step. Replaces the old "snapshot then write then
+    /// adjust" pattern, which raced under per-world locking when two
+    /// concurrent writes on different worlds both observed usage below
+    /// quota and only afterwards pushed it past.
+    ///
+    /// Caller must hold `acquire_world_lock(world)` so that `prev_len`
+    /// reflects the world's true current body length (cannot change
+    /// underneath us). On success the global counter has already been
+    /// updated; on success of the subsequent storage write, no further
+    /// counter change is needed. On failure of the storage write, call
+    /// `rollback_storage_reservation` to credit back.
+    ///
+    /// `prev_len` is 0 for new worlds and for append (where the existing
+    /// bytes stay and we only add `new_len` new).
+    fn reserve_storage(&self, prev_len: usize, new_len: usize) -> Result<(), BoxedResponse> {
         if let Some(quota) = self.max_storage_bytes {
-            let projected = used.saturating_add(add_len);
-            if projected > quota {
-                return Err(Box::new(storage_quota_exceeded(used, quota, projected)));
+            let result = self.storage_body_bytes.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |used| {
+                    let projected = used.saturating_sub(prev_len).saturating_add(new_len);
+                    if projected > quota {
+                        None
+                    } else {
+                        Some(projected)
+                    }
+                },
+            );
+            match result {
+                Ok(_) => Ok(()),
+                Err(used) => {
+                    let projected = used.saturating_sub(prev_len).saturating_add(new_len);
+                    Err(Box::new(storage_quota_exceeded(used, quota, projected)))
+                }
             }
+        } else {
+            // No quota: still keep the counter coherent for /proc/df.
+            let _ = self.storage_body_bytes.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |used| Some(used.saturating_sub(prev_len).saturating_add(new_len)),
+            );
+            Ok(())
         }
-        Ok(used)
+    }
+
+    /// Inverse of `reserve_storage`. Call when the reserved write
+    /// subsequently fails so we credit the bytes back into available quota.
+    fn rollback_storage_reservation(&self, prev_len: usize, new_len: usize) {
+        let _ =
+            self.storage_body_bytes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    Some(used.saturating_sub(new_len).saturating_add(prev_len))
+                });
     }
 
     async fn put_bytes(
@@ -226,17 +313,27 @@ impl Core {
         if body.len() > self.max_world_bytes {
             return Err(payload_too_large(self.max_world_bytes));
         }
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.acquire_world_lock(world_name).await;
         if let Some(req_headers) = preconditions {
             hs::check_write_preconditions(self, world_name, req_headers)?;
         }
         let existed;
         let new_etag = if store::is_persistent(world_name) {
-            let quota = self.max_storage_bytes.map(|quota| {
-                // Initialized from durable metadata at startup and adjusted
-                // under write_lock, so PUT quota enforcement stays O(1).
-                (self.storage_body_bytes.load(Ordering::Relaxed), quota)
-            });
+            // Read previous body length under the per-world lock; cannot
+            // change while we hold the guard. None means new world.
+            let prev_len_opt = world::body_len(&self.data, world_name)
+                .map_err(|e| storage_error("storage metadata", e))?;
+            existed = prev_len_opt.is_some();
+            let prev_len = prev_len_opt.unwrap_or(0);
+
+            // Atomic CAS quota reservation. Race-free across worlds: two
+            // writes on different worlds cannot both observe usage below
+            // quota and then push it past, because the CAS sees the latest
+            // counter value. On reservation failure no write happens.
+            self.reserve_storage(prev_len, body.len()).map_err(|b| *b)?;
+
+            // Quota already enforced by reservation; pass None to skip the
+            // (now redundant and racy) snapshot check inside world.rs.
             match world::write_with_audit_checked(
                 &self.data,
                 world_name,
@@ -244,29 +341,22 @@ impl Core {
                 content_type,
                 headers,
                 &self.hmac_key,
-                quota,
+                None,
             ) {
                 Ok(result) => {
-                    existed = result.existed;
-                    self.storage_body_bytes.store(
-                        self.storage_body_bytes
-                            .load(Ordering::Relaxed)
-                            .saturating_sub(result.previous_len)
-                            .saturating_add(body.len()),
-                        Ordering::Relaxed,
-                    );
-                    if !result.existed {
+                    if !existed {
                         self.durable_world_count.fetch_add(1, Ordering::Relaxed);
                     }
                     hs::hmac_etag(&result.hmac)
                 }
-                Err(world::WriteAuditError::Quota {
-                    used,
-                    quota,
-                    projected,
-                }) => return Err(storage_quota_exceeded(used, quota, projected)),
+                Err(world::WriteAuditError::Quota { .. }) => {
+                    // Unreachable: we passed quota=None above.
+                    self.rollback_storage_reservation(prev_len, body.len());
+                    return Err(server_error("unexpected quota error".to_string()));
+                }
                 Err(world::WriteAuditError::Sqlite(e)) => {
-                    return Err(storage_error("storage/audit", e))
+                    self.rollback_storage_reservation(prev_len, body.len());
+                    return Err(storage_error("storage/audit", e));
                 }
             }
         } else {
@@ -356,7 +446,7 @@ async fn main() {
         shutdown: shutdown_rx.clone(),
         next_event: Arc::new(AtomicU64::new(0)),
         next_request: Arc::new(AtomicU64::new(0)),
-        write_lock: Arc::new(Mutex::new(())),
+        world_locks: Arc::new(DashMap::new()),
     });
 
     let addr = listen_addr(&host, port);
@@ -1106,7 +1196,7 @@ async fn handle_post(
     if !can_write(world_name, tier) {
         return unauthorized("write requires token; system worlds need approve token");
     }
-    let _write_guard = core.write_lock.lock().await;
+    let _write_guard = core.acquire_world_lock(world_name).await;
     if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
         return resp;
     }
@@ -1123,10 +1213,12 @@ async fn handle_post(
         return payload_too_large(core.max_world_bytes);
     }
     let new_etag = if store::is_persistent(world_name) {
-        let used = match core.check_storage_quota_for_append(body.len()) {
-            Ok(used) => used,
-            Err(resp) => return *resp,
-        };
+        // Atomic CAS reservation BEFORE the append. prev_len = 0 because
+        // POST adds bytes on top of whatever the world already holds; the
+        // existing bytes stay accounted as before.
+        if let Err(resp) = core.reserve_storage(0, body.len()) {
+            return *resp;
+        }
         match world::append_with_audit(
             &core.data,
             world_name,
@@ -1135,13 +1227,17 @@ async fn handle_post(
             &stored_headers,
             &core.hmac_key,
         ) {
-            Ok(Some((_result, h))) => {
-                core.storage_body_bytes
-                    .store(used.saturating_add(body.len()), Ordering::Relaxed);
-                hs::hmac_etag(&h)
+            Ok(Some((_result, h))) => hs::hmac_etag(&h),
+            Ok(None) => {
+                // World disappeared between the metadata read and the
+                // append. Credit the reservation back.
+                core.rollback_storage_reservation(0, body.len());
+                return not_found();
             }
-            Ok(None) => return not_found(),
-            Err(e) => return storage_error("storage/audit", e),
+            Err(e) => {
+                core.rollback_storage_reservation(0, body.len());
+                return storage_error("storage/audit", e);
+            }
         }
     } else {
         if memory_append_projected_bytes(core, body.len()) > core.max_memory_bytes {
@@ -1172,7 +1268,7 @@ async fn handle_delete(
     if world_name == "var/log/deletes" {
         return unauthorized("delete ledger is append-only");
     }
-    let _write_guard = core.write_lock.lock().await;
+    let _write_guard = core.acquire_world_lock(world_name).await;
     if let Err(resp) = hs::check_write_preconditions(core, world_name, req_headers) {
         return resp;
     }
@@ -1199,29 +1295,38 @@ async fn handle_delete(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let delete_ledger_existed =
-        match world_exists_blocking(core.data.clone(), "var/log/deletes").await {
+    // Audit appends touch the shared `var/log/deletes` ledger. Acquire the
+    // ledger lock briefly around the existence check + intent append so two
+    // concurrent DELETEs of different target worlds don't double-count
+    // ledger creation or interleave their HMAC-chain reads/writes outside
+    // SQLite's transaction. Lock ordering: target world lock FIRST (already
+    // held), then ledger lock — see Core::acquire_world_lock docs.
+    let intent_outcome = {
+        let _ledger_guard = core.acquire_world_lock("var/log/deletes").await;
+        let existed = match world_exists_blocking(core.data.clone(), "var/log/deletes").await {
             Ok(existed) => existed,
             Err(e) => return blocking_storage_error("delete audit intent", e),
         };
-    if let Err(e) = audit_append_blocking(
-        core.data.clone(),
-        AuditAppendJob {
-            ledger_world: "var/log/deletes",
-            event_type: "delete_intent",
-            target: world_name.to_string(),
-            body_sha256: body_sha256_before.clone(),
-            size: 0,
-            content_type: delete_content_type.clone(),
-            headers: delete_meta.clone(),
-            key: core.hmac_key.clone(),
-        },
-    )
-    .await
-    {
-        return blocking_storage_error("delete audit intent", e);
+        if let Err(e) = audit_append_blocking(
+            core.data.clone(),
+            AuditAppendJob {
+                ledger_world: "var/log/deletes",
+                event_type: "delete_intent",
+                target: world_name.to_string(),
+                body_sha256: body_sha256_before.clone(),
+                size: 0,
+                content_type: delete_content_type.clone(),
+                headers: delete_meta.clone(),
+                key: core.hmac_key.clone(),
+            },
+        )
+        .await
+        {
+            return blocking_storage_error("delete audit intent", e);
+        }
+        existed
     };
-    if !delete_ledger_existed {
+    if !intent_outcome {
         core.durable_world_count.fetch_add(1, Ordering::Relaxed);
         core.delete_ledger_created.store(true, Ordering::Relaxed);
     }
@@ -1245,6 +1350,14 @@ async fn handle_delete(
     }
     core.notify("DELETE", world_name, "");
 
+    // Re-acquire the ledger lock briefly for the commit / commit_failed
+    // appends. Each append is a single SQLite transaction; the lock
+    // serializes ordering of *audit chain entries* across concurrent
+    // DELETEs on different target worlds. Intent and commit from the same
+    // DELETE may interleave with a different DELETE's intent in the chain
+    // — this is intentional and fine, the chain is HMAC-linked, not
+    // grouped by target world.
+    let _ledger_guard = core.acquire_world_lock("var/log/deletes").await;
     if let Err(e) = audit_append_blocking(
         core.data.clone(),
         AuditAppendJob {
@@ -1874,6 +1987,54 @@ mod tests {
         assert_eq!(
             core.read_world("home/a").unwrap().unwrap().body,
             b"1234".to_vec()
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_puts_to_distinct_worlds_do_not_overshoot_quota() {
+        // Regression: under per-world locks, the previous "snapshot then
+        // write then adjust" pattern let two concurrent PUTs to different
+        // worlds both observe usage below quota, both commit, and only
+        // afterwards push the counter past quota (lost-update race).
+        // Atomic CAS reservation in `Core::reserve_storage` closes that
+        // race. This test fires N concurrent PUTs each just under the
+        // quota and asserts that ANY mix of accept/reject keeps the
+        // counter coherent and never overshoots.
+        let (mut core, dir) = test_core("quota-race");
+        let quota = 100;
+        core.max_storage_bytes = Some(quota);
+        let core = Arc::new(core);
+
+        let workers = 16;
+        let body_len = 12; // 16 * 12 = 192 > quota: definitely contention
+        let mut handles = Vec::with_capacity(workers);
+        for i in 0..workers {
+            let core = core.clone();
+            handles.push(tokio::spawn(async move {
+                let path = format!("home/race/{i}");
+                let body = Bytes::copy_from_slice(&vec![b'x'; body_len]);
+                handle_put(&core, &path, &HeaderMap::new(), body, auth::Tier::Write).await
+            }));
+        }
+
+        let mut accepted: usize = 0;
+        for handle in handles {
+            let resp = handle.await.unwrap();
+            match resp.status() {
+                StatusCode::CREATED | StatusCode::OK => accepted += 1,
+                StatusCode::INSUFFICIENT_STORAGE => {}
+                other => panic!("unexpected status: {other}"),
+            }
+        }
+
+        let used = core.storage_body_bytes.load(Ordering::Relaxed);
+        let counted = accepted * body_len;
+        assert_eq!(used, counted, "counter must equal sum of accepted bodies");
+        assert!(
+            used <= quota,
+            "counter must never exceed quota: {used} > {quota}"
         );
 
         let _ = std::fs::remove_dir_all(dir);
@@ -3532,7 +3693,7 @@ mod tests {
                     shutdown: watch::channel(false).1,
                     next_event: Arc::new(AtomicU64::new(0)),
                     next_request: Arc::new(AtomicU64::new(0)),
-                    write_lock: Arc::new(Mutex::new(())),
+                    world_locks: Arc::new(DashMap::new()),
                 }
             },
             dir,

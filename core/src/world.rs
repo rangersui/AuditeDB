@@ -161,12 +161,27 @@ pub struct AppendResult {
 
 pub struct WriteAuditResult {
     pub hmac: String,
+    /// Body length before this write. Populated for callers that may want
+    /// it (e.g. counter accounting). Currently unused by the production
+    /// code path because `Core::reserve_storage` reads `previous_len`
+    /// outside the SQLite transaction under the per-world lock.
+    #[allow(dead_code)]
     pub previous_len: usize,
+    /// Whether the world existed before this write. Same status as
+    /// `previous_len` -- kept for potential future callers; the active
+    /// path uses `world::body_len` outside the tx.
+    #[allow(dead_code)]
     pub existed: bool,
 }
 
 pub enum WriteAuditError {
     Sqlite(rusqlite::Error),
+    /// Returned only if the caller passes a `quota` argument to
+    /// `write_with_audit_checked`. The active path passes `None` and
+    /// enforces quota via `Core::reserve_storage` instead, so this variant
+    /// is currently unreachable in production. Kept for diagnostic clarity
+    /// and possible test fixtures.
+    #[allow(dead_code)]
     Quota {
         used: usize,
         quota: usize,

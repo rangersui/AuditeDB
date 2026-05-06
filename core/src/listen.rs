@@ -178,6 +178,7 @@ fn sse_change_event(change: ChangeEvent) -> Event {
 mod tests {
     use super::*;
     use crate::{auth, store, Core};
+    use dashmap::DashMap;
     use std::{
         collections::VecDeque,
         path::PathBuf,
@@ -186,7 +187,7 @@ mod tests {
             Arc, Mutex as StdMutex,
         },
     };
-    use tokio::sync::{broadcast, watch, Mutex, Semaphore};
+    use tokio::sync::{broadcast, watch, Semaphore};
 
     #[test]
     fn patterns_are_prefix_or_exact() {
@@ -243,7 +244,7 @@ mod tests {
             shutdown: watch::channel(false).1,
             next_event: Arc::new(AtomicU64::new(0)),
             next_request: Arc::new(AtomicU64::new(0)),
-            write_lock: Arc::new(Mutex::new(())),
+            world_locks: Arc::new(DashMap::new()),
         });
 
         let resp = handler(
@@ -282,7 +283,7 @@ mod tests {
             shutdown: watch::channel(false).1,
             next_event: Arc::new(AtomicU64::new(0)),
             next_request: Arc::new(AtomicU64::new(0)),
-            write_lock: Arc::new(Mutex::new(())),
+            world_locks: Arc::new(DashMap::new()),
         };
         {
             let mut log = core.event_log.lock().unwrap();
@@ -329,7 +330,7 @@ mod tests {
             shutdown: watch::channel(false).1,
             next_event: Arc::new(AtomicU64::new(0)),
             next_request: Arc::new(AtomicU64::new(0)),
-            write_lock: Arc::new(Mutex::new(())),
+            world_locks: Arc::new(DashMap::new()),
         };
         {
             let mut log = core.event_log.lock().unwrap();

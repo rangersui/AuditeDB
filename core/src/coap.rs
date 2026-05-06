@@ -501,13 +501,14 @@ mod tests {
         auth, store, Core, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
         DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
     };
+    use dashmap::DashMap;
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize},
         Arc, Mutex as StdMutex,
     };
-    use tokio::sync::{broadcast, watch, Mutex};
+    use tokio::sync::{broadcast, watch};
 
     fn packet(bytes: &[u8]) -> Packet<'_> {
         parse_packet(bytes).unwrap()
@@ -550,7 +551,7 @@ mod tests {
                 shutdown: watch::channel(false).1,
                 next_event: Arc::new(AtomicU64::new(0)),
                 next_request: Arc::new(AtomicU64::new(0)),
-                write_lock: Arc::new(Mutex::new(())),
+                world_locks: Arc::new(DashMap::new()),
             },
             dir,
         )
