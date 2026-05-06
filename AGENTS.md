@@ -126,15 +126,28 @@ auto-redirect cleanly.
 
 ### Grandfather clause
 
-Existing oversized files (`core/src/main.rs` in particular) are allowed
-only for:
+**Retires when both `core/src/main.rs` and `core/src/handler.rs`
+reach ≤ 500 production lines.** PR 4c brought main.rs from 1297
+to 847 and grew handler.rs from 306 to 803 production lines as the
+verb implementations moved out of main.rs into their proper home;
+neither qualifies yet. The clause stays in force until both meet
+the bar.
 
-- Safety fixes (P0/P1 concurrency, correctness, security)
-- Extraction PRs that move code OUT into new sub-500-line modules
+Until then, both files retain the existing exemption: only safety
+fixes (P0/P1 concurrency, correctness, security) and extraction
+PRs that move code OUT into new sub-500-line modules may touch
+them. Net-new feature code MUST land in a new sub-500-line module.
 
-Net-new feature code MUST land in a new sub-500-line module, even if the
-natural home would have been the legacy file. The clause retires when the
-FSM pipeline extraction (PR 4 of the v7 sequence) lands.
+Active reduction targets (in priority order):
+
+- `core/src/handler.rs` (803 production) — split `execute_delete`
+  and the DELETE-only blocking helpers
+  (`AuditAppendJob`, `world_exists_blocking`, `audit_append_blocking`,
+  `BlockingSqliteError`, `blocking_storage_error`) into
+  `core/src/handler/delete.rs`. PR followup to 4c.
+- `core/src/main.rs` (847 production) — provisional "PR 4d" splits
+  route table + middleware + env parsing + `Core::new`/`main()`
+  startup into `route.rs` / `middleware.rs` / `config.rs`.
 
 ### Pure-mv PRs
 
@@ -158,6 +171,50 @@ These are not preferences. They are the contract every change must keep.
   scopes, HMAC chain, change events, ETag/CAS, byte storage. Business logic
   (validation, transactional flows, schema evolution) lives in reactors and
   SDK code, not in core. Adding policy to core is a Phoenix violation.
+- **FSM pipeline is the contract for new verbs.** Every new HTTP verb on
+  `/<world>` is one `pub(crate) async fn execute_*` in `core/src/handler.rs`
+  returning either `Phase::ExecutedRead(Response)` (read verbs),
+  `Phase::CommittedWrite(Response)` (write verbs), or
+  `Phase::Error { resp, reason }`. The pipeline driver
+  (`pipeline::run`) handles authentication, path canonicalization,
+  validation, dispatch, error logging, and response return. Verb
+  handlers do everything else.
+- **Authentication vs authorization split.** The driver does
+  *authentication only* — parses the `Authorization` header into an
+  `auth::Tier` and stamps it onto `Phase::Authenticated`. The driver
+  does **not** check whether that tier is sufficient for the
+  requested verb + path. *Authorization* lives inside each
+  `execute_*` because the gate is verb-and-path-specific
+  (`PUT /home/` needs `Write`, `PUT /etc/` needs `WriteApprove`,
+  `GET` needs `Read`, `DELETE` needs `Delete`). Hardcoding all
+  permutations into a driver-side phase would either duplicate
+  `can_read` / `can_write` / `can_delete` logic or require a new
+  `Phase::Authorized` variant per verb — both worse than letting
+  the verb gate itself.
+- **Audit + notify ordering lives inside the verb handler**, not in
+  the driver. The lesson reviewer consensus extracted from DELETE's
+  intent / commit two-step. The FSM models the request envelope, not
+  the storage transaction inside it. `CommittedWrite` means "this
+  write is durably committed *and* its audit chain entry is signed
+  *and* notify has fired" — a single observable boundary instead of
+  three driver-level phases.
+- **`ErrorReason` vocabulary is closed.** New error kinds add a
+  variant to the `pipeline::ErrorReason` enum; arbitrary strings are
+  forbidden. The one exception, `PathInvalid(&'static str)`, carries
+  a closed set of reasons from `validate_world_name`. Strings as
+  error reasons turn into log soup; an enum forces a fixed
+  vocabulary the trace code, the metrics layer, and the SDK can all
+  match on.
+- **Cascade audit failures must be visible.** When an intent / commit
+  dance hits a double failure (commit append fails AND the
+  subsequent failure-event append also fails — e.g. persistent
+  DiskFull), trace must surface BOTH failures via aux lines, not
+  elide the second. PR 0's `delete_commit_failed` event closed the
+  chain ambiguity *when the event itself can be written*; the trace
+  closes the remaining ambiguity *when even the event-of-failure
+  cannot be written*. `eprintln!` warnings stay (PR 0 contract) so
+  operators reading stderr without trace enabled still see both
+  failures.
 
 ## Endpoint Change Checklist
 
