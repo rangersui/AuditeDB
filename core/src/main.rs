@@ -42,13 +42,16 @@ mod auth;
 mod coap;
 mod http_semantics;
 mod listen;
+mod path;
 mod response;
 mod store;
 mod world;
 
-// Re-export response constructors at the crate root so existing
-// `use crate::not_found;` etc. in sibling modules keep working
-// without import churn after the response.rs extraction.
+// Re-export the small pure-function modules at the crate root so
+// sibling modules keep referring to `crate::not_found` /
+// `crate::canonicalize_path` etc. without per-extraction import
+// churn. Each cascading PR adds one line here.
+pub(crate) use crate::path::*;
 pub(crate) use crate::response::*;
 
 use axum::{
@@ -959,88 +962,10 @@ async fn handle_world_method(
     }
 }
 
-/// Path prefix is policy: `/home/tmp/foo` must stay a durable home
-/// world, not silently become transient `/tmp/foo`. Bare `/foo` is the
-/// convenience spelling for `/home/foo`; explicit namespaces are kept.
-fn canonicalize_path(p: &str) -> String {
-    let stripped = p.trim_start_matches('/');
-    let first = stripped.split('/').next().unwrap_or("");
-    match first {
-        "home" | "tmp" | "dev" | "sys" | "proc" | "etc" | "lib" | "boot" | "usr" | "var" => {
-            stripped.to_owned()
-        }
-        _ => format!("home/{stripped}"),
-    }
-}
-
-fn valid_world_name(world_name: &str) -> bool {
-    validate_world_name(world_name).is_ok()
-}
-
-fn validate_world_name(world_name: &str) -> Result<(), &'static str> {
-    if world_name.is_empty() {
-        return Err("world path is empty");
-    }
-    if is_reserved_world_name(world_name) {
-        return Err("world path is a reserved namespace root");
-    }
-    if world_name.contains('\\') {
-        return Err("world path contains backslash");
-    }
-    if world_name.chars().any(char::is_control) {
-        return Err("world path contains control bytes");
-    }
-    for segment in world_name.split('/') {
-        if segment.is_empty() {
-            return Err("world path has empty segment");
-        }
-        if is_dot_segment(segment) {
-            return Err("world path contains dot or encoded-dot segment");
-        }
-    }
-    Ok(())
-}
-
-fn is_dot_segment(segment: &str) -> bool {
-    let Some(rest) = strip_dot_token(segment) else {
-        return false;
-    };
-    rest.is_empty()
-        || strip_dot_token(rest)
-            .map(|tail| tail.is_empty())
-            .unwrap_or(false)
-}
-
-fn strip_dot_token(segment: &str) -> Option<&str> {
-    if let Some(rest) = segment.strip_prefix('.') {
-        return Some(rest);
-    }
-    if segment
-        .as_bytes()
-        .get(..3)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"%2e"))
-    {
-        return Some(&segment[3..]);
-    }
-    None
-}
-
-fn is_reserved_world_name(world_name: &str) -> bool {
-    matches!(
-        world_name,
-        "home"
-            | "tmp"
-            | "dev"
-            | "sys"
-            | "proc"
-            | "etc"
-            | "lib"
-            | "boot"
-            | "usr"
-            | "var"
-            | "var/log"
-    ) || world_name.starts_with("proc/")
-}
+// Path validation and canonicalization (canonicalize_path,
+// valid_world_name, validate_world_name, is_dot_segment,
+// strip_dot_token, is_reserved_world_name) live in `path.rs` and
+// are re-exported at the crate root.
 
 // ─── handlers ───────────────────────────────────────────────────────
 
