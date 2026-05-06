@@ -943,6 +943,15 @@ def main() -> int:
             cli_env = os.environ.copy()
             cli_env["PYTHONPATH"] = str(SDK_SRC)
             cli_env["ELASTIK_NO_DOTENV"] = "1"
+            # CoAP CLI subprocess timeout is generous (5s, not 0.5s)
+            # because GHA Windows runners can take 1-2 seconds just to
+            # cold-start `python -m elastik` (process spawn + import +
+            # asyncio loop bring-up). The CoAP exchange itself is
+            # sub-millisecond on localhost, so 5s is comfortably above
+            # any reasonable variance while still bounding a genuinely
+            # hung CLI. Same class of flake as PR #103 (TrustedShellPool
+            # cold start, fixed by bumping timeout=2 to 15).
+            coap_cli_timeout = "5"
             cli_put = subprocess.run(
                 [
                     sys.executable,
@@ -957,7 +966,7 @@ def main() -> int:
                     "--token",
                     write_token,
                     "--timeout",
-                    "0.5",
+                    coap_cli_timeout,
                 ],
                 env=cli_env,
                 capture_output=True,
@@ -981,7 +990,7 @@ def main() -> int:
                     "--token",
                     read_token,
                     "--timeout",
-                    "0.5",
+                    coap_cli_timeout,
                 ],
                 env=cli_env,
                 capture_output=True,
@@ -1008,7 +1017,7 @@ def main() -> int:
                     "--content-type",
                     "image/png",
                     "--timeout",
-                    "0.5",
+                    coap_cli_timeout,
                 ],
                 env=cli_env,
                 capture_output=True,
