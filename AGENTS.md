@@ -1,23 +1,87 @@
 # Agent Instructions
 
+## 500-line hard limits
+
+PR economics inverted when AI became the reviewer:
+
+- **Human reviewer**: 10 small PRs = 10 context switches → prefers big PRs.
+- **AI reviewer**: 1 big PR > context window → prefers small PRs.
+
+This codebase optimizes for the AI reviewer. The 500-line ceiling is the
+forcing function that makes that work.
+
+Direct consequence: **each commit is a PR**. Continuous integration's
+real form when the reviewer is an AI is "every mergeable change ships
+on its own". 30 minutes of coding → commit → PR → AI review → merge →
+next. No batching. No save-up-for-Friday-review meeting. Human
+programmers find this annoying; AI co-authors thrive on it.
+
+### The two budgets
+
+- **No `.rs` source file exceeds 500 lines.**
+- **No PR diff exceeds 500 lines.**
+- Both limits derive from one constraint: AI co-authors (Codex,
+  Copilot, Claude) cannot reliably hold more than ~500 lines of context
+  at once. Past that they hallucinate, contradict prior parts of the
+  same file/PR, or silently skim.
+- **Slight overage is acceptable when the maintainer has read the
+  change in full and explicitly signed off.** The budget is "AI working
+  memory", not arithmetic — 510-550 lines with a human in the loop is
+  fine, 1500 lines is never fine. The hard ceiling is "an AI agent can
+  still hold the whole thing at once"; exact threshold is judgment.
+- Exceeding either limit without sign-off requires splitting before
+  review.
+
+### Diff-only review
+
+Reviewers see only the diff, never the surrounding file. This is the
+optimal use of an AI context window: don't reload context that didn't
+change.
+
+Concrete consequence: **cascading PRs are the natural form, not a
+workaround**. PR N's base branch is PR N-1, not master. Each PR's diff
+is one self-contained increment. The reviewer never sees PR 0's lock
+change while reviewing PR 4's pipeline extraction; only the pipeline
+extraction.
+
+```
+master
+└─ PR 0 (10 lines)
+    └─ PR 1 (300 lines, base = PR 0)
+        └─ PR 2 (150 lines, base = PR 1)
+            └─ PR 3 (300 lines, base = PR 2)
+                └─ PR 4 (500 lines, base = PR 3)
+```
+
+Without cascading, PR 4's diff = PR 0 + 1 + 2 + 3 + 4 = 1260 lines = AI
+loses the thread. With cascading each PR is an independent 500-line
+review.
+
+### Grandfather clause
+
+Existing oversized files (`core/src/main.rs` in particular) are allowed
+only for:
+
+- Safety fixes (P0/P1 concurrency, correctness, security)
+- Extraction PRs that move code OUT into new sub-500-line modules
+
+Net-new feature code MUST land in a new sub-500-line module, even if the
+natural home would have been the legacy file. The clause retires when the
+FSM pipeline extraction (PR 4 of the v7 sequence) lands.
+
+### Pure-mv PRs
+
+A PR that mechanically moves N lines from one file to another counts
+cognitive surface as **insertions**, not total churn. Deletions are
+byte-identical to insertions and verifiable by comparison; reviewers do
+not re-read them as new logic. PR description must declare "pure mv"
+explicitly so reviewers prioritize structural verification over
+line-count arithmetic.
+
 ## Architecture Invariants
 
 These are not preferences. They are the contract every change must keep.
 
-- **File size hard limit: 500 lines per `.rs` file** for new files. The reason
-  is not style: it is the working memory limit of coding agents. Past 500
-  lines, agents start contradicting themselves; past 1000, they cannot produce
-  reliable changes at all. File size is the working contract between
-  maintainer and AI co-author.
-  - **Grandfather clause:** existing oversized files (`core/src/main.rs` in
-    particular) are allowed only for safety fixes (P0/P1 concurrency,
-    correctness, security) and for extraction PRs that move code OUT into new
-    sub-500-line modules. Net-new feature code MUST land in a new
-    sub-500-line module, even if the natural place would have been in the
-    legacy file.
-  - The hinge PR that retires the grandfather clause is the FSM pipeline
-    extraction (PR 4 of the v7 sequence). After that lands, this exception
-    is removed.
 - **Per-world locking, not global.** Writes to different worlds run concurrently;
   writes to the same world serialize through `Core::acquire_world_lock(world)`.
   No new global write mutex. Counters touched on the write path
