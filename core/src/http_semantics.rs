@@ -6,7 +6,25 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::BTreeMap;
 
 use crate::world::Stage;
-use crate::{apply_meta_headers, precondition_failed, storage_error, to_header_map, world, Core};
+use crate::{precondition_failed, storage_error, to_header_map, world, Core};
+
+pub(crate) fn apply_meta_headers(
+    headers: &[(String, String)],
+    out: &mut Vec<(HeaderName, HeaderValue)>,
+) {
+    for (k, v) in headers {
+        if is_never_persisted_header(&k.to_ascii_lowercase()) {
+            continue;
+        }
+        let Ok(name) = HeaderName::from_bytes(k.as_bytes()) else {
+            continue;
+        };
+        let Ok(val) = HeaderValue::from_str(v) else {
+            continue;
+        };
+        out.push((name, val));
+    }
+}
 
 const URL_PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b' ')
