@@ -40,6 +40,7 @@
 mod audit;
 mod auth;
 mod coap;
+mod handler;
 mod http_semantics;
 mod listen;
 mod path;
@@ -51,14 +52,10 @@ mod world;
 
 // Re-export the small pure-function modules at the crate root so
 // sibling modules keep referring to `crate::not_found` /
-// `crate::canonicalize_path` / `crate::proc_version` etc. without
+// `crate::canonicalize_path` / `crate::Phase` etc. without
 // per-extraction import churn. Each cascading PR adds one line here.
-//
-// `pipeline::*` is intentionally NOT re-exported in 4a because no
-// sibling references its types yet. PR 4b adds the re-export when
-// `handler.rs` lands and needs `crate::Phase`, `crate::Verb`,
-// `crate::TraceCtx`, etc.
 pub(crate) use crate::path::*;
+pub(crate) use crate::pipeline::*;
 pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
 
@@ -156,7 +153,10 @@ impl Core {
         Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
     }
 
-    fn read_world_with_etag(&self, world: &str) -> rusqlite::Result<Option<(Stage, String)>> {
+    pub(crate) fn read_world_with_etag(
+        &self,
+        world: &str,
+    ) -> rusqlite::Result<Option<(Stage, String)>> {
         if store::is_memory_world(world) {
             Ok(self
                 .mem
@@ -706,6 +706,15 @@ async fn world_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // PR 4b: GET / HEAD now flow through the pipeline FSM
+    // (`pipeline::run` handles auth, path validation, dispatch, and
+    // delegates to `handler::execute_get` / `handler::execute_head`).
+    // PUT / POST / DELETE / OPTIONS / unsupported methods stay on
+    // the legacy direct path until PR 4c moves them too.
+    if matches!(method, Method::GET | Method::HEAD) {
+        return pipeline::run(method, path, headers, body, &core).await;
+    }
+
     let world_name = canonicalize_path(&path);
     if let Err(reason) = validate_world_name(&world_name) {
         return bad_request(reason);

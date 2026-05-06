@@ -50,7 +50,7 @@ use std::time::Instant;
 use axum::{
     body::Bytes,
     http::{header, HeaderMap, Method, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
 };
 
 use crate::{
@@ -126,10 +126,10 @@ pub(crate) enum Verb {
 /// and SDK error mapping all match against this enum. Strings as
 /// reasons turn into log soup; an enum forces a fixed vocabulary.
 ///
-/// `#[allow(dead_code)]` covers variants that no caller emits yet
-/// (4a only constructs `PathInvalid`, `MethodNotAllowed`, and
-/// `Auth(AuthGate::Read)` in tests). The allow comes off in 4c when
-/// verb handlers cover the rest.
+/// `#[allow(dead_code)]` covers variants that no caller emits yet.
+/// 4a / 4b emit a subset (Auth(Read), PathInvalid, MethodNotAllowed,
+/// NotFound, StorageRead, RangeNotSatisfiable). The allow comes off
+/// in 4c when verb handlers cover the rest.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum ErrorReason {
@@ -141,6 +141,12 @@ pub(crate) enum ErrorReason {
     MethodNotAllowed,
     NotFound,
     PreconditionFailed,
+    /// 416 — `Range` header asks for bytes outside the resource.
+    /// Read-path only; surfaced from `execute_get` / `execute_head`
+    /// when `hs::effective_range` returns `Err(())`. Distinct from
+    /// `PreconditionFailed` (412) because the wire status is
+    /// different and the operational meaning differs.
+    RangeNotSatisfiable,
     PayloadTooLarge,
     QuotaExceeded,
     InsufficientStorage,
@@ -453,24 +459,13 @@ pub(crate) async fn run(
                 world,
             } => dispatch(method, headers, body, tier, world),
 
-            Phase::Dispatched { verb, .. } => {
-                // PR 4a stub. PR 4b wires read verbs (Get / Head);
-                // PR 4c wires write verbs (Put / Post / Delete).
-                // Until then this synthetic 501 keeps the loop
-                // closed so end-to-end tests for the FSM up to
-                // Dispatched can run.
-                //
-                // The reason field below is a placeholder (no caller
-                // actually reaches this in production because no
-                // route invokes `run()` in 4a). 4b replaces the entire
-                // arm with `handler::execute(verb, ...).await`, so the
-                // mis-categorized `MethodNotAllowed` here disappears
-                // before any 4b code path observes it.
-                Phase::Error {
-                    resp: not_yet_wired_response(verb),
-                    reason: ErrorReason::MethodNotAllowed,
-                }
-            }
+            Phase::Dispatched {
+                verb,
+                headers,
+                body,
+                tier,
+                world,
+            } => crate::handler::execute(verb, headers, body, tier, world, core, &trace).await,
 
             Phase::ExecutedRead(resp) | Phase::CommittedWrite(resp) => Phase::Done(resp),
 
@@ -501,15 +496,9 @@ pub(crate) async fn run(
 // `method_not_allowed` for unsupported verbs uses the canonical helper
 // from `response.rs`, parameterized with the crate-root `WORLD_ALLOW`
 // constant — one source of truth for the Allow header string.
-
-fn not_yet_wired_response(verb: Verb) -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        format!("pipeline 4a: verb {verb:?} dispatch not yet wired (PR 4b/4c)\n"),
-    )
-        .into_response()
-}
+//
+// (4a's `not_yet_wired_response` was relocated to `handler.rs` in 4b
+// — it now only fires for write verbs not yet implemented there.)
 
 // ─── Tests ───────────────────────────────────────────────────────
 //
