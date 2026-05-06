@@ -1,10 +1,12 @@
 //! DELETE verb implementation + its blocking-SQLite helpers.
 //!
-//! Extracted from `handler.rs` (PR followup to 4c) to keep
-//! `handler.rs` under the 500-line ceiling. DELETE is the most
-//! involved verb — intent / commit / commit_failed two-step audit
-//! dance plus the blocking-spawn helpers — so it carries enough
-//! weight to deserve its own file.
+//! Extracted from `handler.rs` so DELETE's intent / commit /
+//! commit_failed two-step audit dance — and the blocking-spawn
+//! helpers it needs (`AuditAppendJob`, `world_exists_blocking`,
+//! `audit_append_blocking`) — live in their own file. This is the
+//! first of two post-PR-4c extractions that bring `handler.rs`
+//! back under the 500-line ceiling; the second
+//! (`crate::handler::post`) lands the same shape.
 //!
 //! `pub(crate) use` re-exports `execute_delete` from `handler.rs`
 //! so callers (`handler::execute(verb=Delete, ...)` and the

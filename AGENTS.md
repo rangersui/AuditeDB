@@ -126,28 +126,27 @@ auto-redirect cleanly.
 
 ### Grandfather clause
 
-**Retires when both `core/src/main.rs` and `core/src/handler.rs`
-reach ≤ 500 production lines.** PR 4c brought main.rs from 1297
-to 847 and grew handler.rs from 306 to 803 production lines as the
-verb implementations moved out of main.rs into their proper home;
-neither qualifies yet. The clause stays in force until both meet
-the bar.
+**Retires when `core/src/main.rs` reaches ≤ 500 production lines.**
+PR 4c brought main.rs from 1297 to 847 production lines as the
+verb implementations moved out into `handler.rs`; the post-4c
+extraction PRs (delete + post) brought handler.rs from 803 down to
+~395 production lines, so handler.rs already qualifies. main.rs is
+the sole remaining holdout.
 
-Until then, both files retain the existing exemption: only safety
-fixes (P0/P1 concurrency, correctness, security) and extraction
-PRs that move code OUT into new sub-500-line modules may touch
-them. Net-new feature code MUST land in a new sub-500-line module.
+Until main.rs hits the bar, it retains the existing exemption:
+only safety fixes (P0/P1 concurrency, correctness, security) and
+extraction PRs that move code OUT into new sub-500-line modules
+may touch it. Net-new feature code MUST land in a new sub-500-line
+module.
 
-Active reduction targets (in priority order):
+Active reduction target:
 
-- `core/src/handler.rs` (803 production) — split `execute_delete`
-  and the DELETE-only blocking helpers
-  (`AuditAppendJob`, `world_exists_blocking`, `audit_append_blocking`,
-  `BlockingSqliteError`, `blocking_storage_error`) into
-  `core/src/handler/delete.rs`. PR followup to 4c.
-- `core/src/main.rs` (847 production) — provisional "PR 4d" splits
-  route table + middleware + env parsing + `Core::new`/`main()`
-  startup into `route.rs` / `middleware.rs` / `config.rs`.
+- `core/src/main.rs` (~847 production) — provisional "PR 4d"
+  splits the route table + axum middleware (`add_core_response_headers`)
+  + env parsing helpers + `Core::new`/`main()` startup into
+  `route.rs` / `middleware.rs` / `config.rs`. Once that lands and
+  main.rs is ≤ 500 production lines, the grandfather clause
+  retires entirely and this section can be deleted from AGENTS.md.
 
 ### Pure-mv PRs
 
