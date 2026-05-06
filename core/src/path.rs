@@ -62,7 +62,11 @@ pub(crate) fn validate_world_name(world_name: &str) -> Result<(), &'static str> 
 /// `.%2e`, `%2E%2E`, etc. — anything an attacker might use to walk out
 /// of a namespace through URL encoding tricks. Decoded paths AND raw
 /// percent-encoded paths are both rejected.
-pub(crate) fn is_dot_segment(segment: &str) -> bool {
+///
+/// Module-private: only `validate_world_name` calls it. Keeping it
+/// out of `pub(crate) use crate::path::*;` prevents sibling modules
+/// from acquiring an accidental dependency on this internal helper.
+fn is_dot_segment(segment: &str) -> bool {
     let Some(rest) = strip_dot_token(segment) else {
         return false;
     };
@@ -74,8 +78,8 @@ pub(crate) fn is_dot_segment(segment: &str) -> bool {
 
 /// Strip a leading `.` or case-insensitive `%2e` from a segment.
 /// Helper for `is_dot_segment`; returns the remaining slice or None
-/// if the segment doesn't begin with a dot token.
-pub(crate) fn strip_dot_token(segment: &str) -> Option<&str> {
+/// if the segment doesn't begin with a dot token. Module-private.
+fn strip_dot_token(segment: &str) -> Option<&str> {
     if let Some(rest) = segment.strip_prefix('.') {
         return Some(rest);
     }
@@ -91,8 +95,9 @@ pub(crate) fn strip_dot_token(segment: &str) -> Option<&str> {
 
 /// Reserved namespace roots (no world named exactly `home`, `tmp`,
 /// etc.) and the entire `/proc/*` subtree (which is read-only
-/// introspection, not a world).
-pub(crate) fn is_reserved_world_name(world_name: &str) -> bool {
+/// introspection, not a world). Module-private: only
+/// `validate_world_name` calls it.
+fn is_reserved_world_name(world_name: &str) -> bool {
     matches!(
         world_name,
         "home"
