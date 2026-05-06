@@ -18,19 +18,43 @@ programmers find this annoying; AI co-authors thrive on it.
 
 ### The two budgets
 
-- **No `.rs` source file exceeds 500 lines.**
-- **No PR diff exceeds 500 lines.**
+- **No `.rs` source file exceeds 500 lines** of *production* code.
+- **No PR diff exceeds 500 lines** of *production* code.
 - Both limits derive from one constraint: AI co-authors (Codex,
   Copilot, Claude) cannot reliably hold more than ~500 lines of context
   at once. Past that they hallucinate, contradict prior parts of the
   same file/PR, or silently skim.
-- **Slight overage is acceptable when the maintainer has read the
-  change in full and explicitly signed off.** The budget is "AI working
-  memory", not arithmetic — 510-550 lines with a human in the loop is
-  fine, 1500 lines is never fine. The hard ceiling is "an AI agent can
-  still hold the whole thing at once"; exact threshold is judgment.
-- Exceeding either limit without sign-off requires splitting before
-  review.
+- **Test code does not count toward either budget.** `#[cfg(test)] mod
+  tests { ... }`, `#[tokio::test]` blocks, and integration tests under
+  `tests/` are stereotyped: each test is independently legible, and a
+  reviewer scans them top-to-bottom rather than holding the whole
+  module in working memory. A 200-line production module with 600
+  lines of tests is one self-contained reviewable unit, not a budget
+  violation. (Reference precedent in this codebase:
+  `sdk/tests/e2e_blackbox.py` is several thousand lines and reviewed
+  one assertion at a time without trouble.)
+- **Slight overage of the production budget is acceptable when the
+  maintainer has read the change in full and explicitly signed off.**
+  The budget is "AI working memory", not arithmetic — 510-550 lines
+  with a human in the loop is fine, 1500 lines is never fine. The
+  hard ceiling is "an AI agent can still hold the whole production
+  surface at once"; exact threshold is judgment.
+- Exceeding the production budget without sign-off requires splitting
+  before review.
+
+#### How to count
+
+For most files: total `wc -l` minus the `#[cfg(test)] mod tests { ... }`
+block. The block is contiguous and at the bottom of the file by
+convention, so a quick `grep -n '^#\[cfg(test)\]' core/src/foo.rs`
+gives the start line; the file's total minus that line number is
+the production count (off by one or two for the trailing brace —
+fine, the rule is judgment, not arithmetic).
+
+When the production count is non-obvious or close to the limit,
+paste it into the PR description so reviewers don't have to
+re-derive it. For files with both inline `#[cfg(test)]` snippets
+and a bottom `mod tests`, sum the production code by reading.
 
 ### Diff-only review
 
