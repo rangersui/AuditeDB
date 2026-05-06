@@ -139,7 +139,12 @@ jobs:
           node sdk-js/scripts/pack-platform.mjs "${{ matrix.npm-platform }}" "${{ matrix.npm-arch }}" "$binary" --version "$version"
           mkdir -p npm-packages
           npm pack "./sdk-js/core-${{ matrix.npm-platform }}-${{ matrix.npm-arch }}" --pack-destination npm-packages
-          tgz_path=$(ls npm-packages/*.tgz | head -n 1)
+          # Resolve to an absolute path so `npm publish` cannot interpret the
+          # tgz argument as a GitHub `user/repo` shorthand. npm 10 prefers
+          # the shorthand interpretation when the path starts with a
+          # directory name (no `./` or `/`), and tries to git-clone
+          # ssh://git@github.com/<dir>/<rest>.git, failing with exit 128.
+          tgz_path=$(realpath "$(ls npm-packages/*.tgz | head -n 1)")
           if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
             echo "${pkg_name}@${version} already published; skipping npm publish"
           else
@@ -357,7 +362,8 @@ jobs:
           pkg_name=$(node -e "const fs=require('node:fs'); console.log(JSON.parse(fs.readFileSync('package.json','utf8')).name)")
           mkdir -p ../npm-packages
           npm pack --pack-destination ../npm-packages
-          tgz_path=$(ls ../npm-packages/*.tgz | head -n 1)
+          # Absolute path; see the matching comment in build-core-assets above.
+          tgz_path=$(realpath "$(ls ../npm-packages/*.tgz | head -n 1)")
           if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
             echo "${pkg_name}@${version} already published; skipping npm publish"
           else
