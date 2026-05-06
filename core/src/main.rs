@@ -43,15 +43,17 @@ mod coap;
 mod http_semantics;
 mod listen;
 mod path;
+mod proc;
 mod response;
 mod store;
 mod world;
 
 // Re-export the small pure-function modules at the crate root so
 // sibling modules keep referring to `crate::not_found` /
-// `crate::canonicalize_path` etc. without per-extraction import
-// churn. Each cascading PR adds one line here.
+// `crate::canonicalize_path` / `crate::proc_version` etc. without
+// per-extraction import churn. Each cascading PR adds one line here.
 pub(crate) use crate::path::*;
+pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
 
 use axum::{
@@ -398,10 +400,10 @@ impl Core {
     }
 }
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-const ROOT_ALLOW: &str = "GET, HEAD, OPTIONS";
-const PROC_ALLOW: &str = "GET, HEAD, OPTIONS";
-const AUDIT_VERIFY_ALLOW: &str = "GET, HEAD, OPTIONS";
+// Re-exported to crate root for `proc.rs` (root_hint, proc_version)
+// and main()'s startup banner. The other namespace constants
+// (ROOT_ALLOW, PROC_ALLOW, AUDIT_VERIFY_ALLOW) live in proc.rs now.
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
@@ -680,248 +682,10 @@ async fn wait_for_shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-/// Bare `GET /` — not protocol, not UI. Just a courtesy text/plain
-/// signpost so a curious human doesn't white-screen. The protocol
-/// surface starts under `/home`, `/tmp`, `/dev`, `/sys`, `/proc`,
-/// `/etc`, `/lib`, `/var`. Browser shells are SDK-app territory; core
-/// never serves HTML, never sets CSP, never thinks about iframes.
-async fn root_hint(method: Method) -> Response {
-    let body = format!("elastik-core {VERSION} (rust)\ntry: curl /proc/worlds\n");
-    match method {
-        Method::GET => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            body,
-        )
-            .into_response(),
-        Method::HEAD => (
-            StatusCode::OK,
-            to_header_map(vec![
-                (
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/plain; charset=utf-8"),
-                ),
-                (
-                    header::CONTENT_LENGTH,
-                    HeaderValue::from_str(&body.len().to_string()).unwrap(),
-                ),
-            ]),
-            "",
-        )
-            .into_response(),
-        Method::OPTIONS => options_response(ROOT_ALLOW),
-        _ => method_not_allowed(ROOT_ALLOW),
-    }
-}
-
-// ─── /proc/version ──────────────────────────────────────────────────
-async fn proc_version(method: Method) -> Response {
-    let body = format!("elastik-core {VERSION} (rust)\n");
-    match method {
-        Method::GET => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            body,
-        )
-            .into_response(),
-        Method::HEAD => (
-            StatusCode::OK,
-            to_header_map(vec![
-                (
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/plain; charset=utf-8"),
-                ),
-                (
-                    header::CONTENT_LENGTH,
-                    HeaderValue::from_str(&body.len().to_string()).unwrap(),
-                ),
-            ]),
-            "",
-        )
-            .into_response(),
-        Method::OPTIONS => options_response(PROC_ALLOW),
-        _ => method_not_allowed(PROC_ALLOW),
-    }
-}
-
-// ─── /proc/worlds ───────────────────────────────────────────────────
-async fn proc_worlds(
-    State(core): State<Arc<Core>>,
-    method: Method,
-    headers: HeaderMap,
-) -> Response {
-    if method == Method::OPTIONS {
-        return options_response(PROC_ALLOW);
-    }
-    if method != Method::GET && method != Method::HEAD {
-        return method_not_allowed(PROC_ALLOW);
-    }
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
-    if !can_read(&core, tier) {
-        return unauthorized("read requires read token");
-    }
-    let data = core.data.clone();
-    let mut names = match tokio::task::spawn_blocking(move || world::list(&data)).await {
-        Ok(Ok(names)) => names,
-        Ok(Err(e)) => return storage_error("proc worlds", e),
-        Err(_) => return server_error("proc worlds worker failed".to_string()),
-    };
-    names.extend(core.mem.list());
-    names.sort();
-    names.dedup();
-    let body = world_list_body(&names);
-    let mut resp_headers = vec![(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/plain; charset=utf-8"),
-    )];
-    if method == Method::HEAD {
-        resp_headers.push((
-            header::CONTENT_LENGTH,
-            HeaderValue::from_str(&body.len().to_string()).unwrap(),
-        ));
-    }
-    (
-        StatusCode::OK,
-        to_header_map(resp_headers),
-        if method == Method::HEAD {
-            String::new()
-        } else {
-            body
-        },
-    )
-        .into_response()
-}
-
-// /proc/du is read-gated management introspection, intentionally unpaginated
-// like Unix du: one line per world. Durable scans run on the blocking pool; use
-// /proc/df for cheap polling instead of scraping this as hot-path telemetry.
-async fn proc_du(State(core): State<Arc<Core>>, method: Method, headers: HeaderMap) -> Response {
-    if method == Method::OPTIONS {
-        return options_response(PROC_ALLOW);
-    }
-    if method != Method::GET && method != Method::HEAD {
-        return method_not_allowed(PROC_ALLOW);
-    }
-    if let Err(resp) = require_read(&core, &headers) {
-        return *resp;
-    }
-    let data = core.data.clone();
-    let mut sizes = match tokio::task::spawn_blocking(move || world::sizes(&data)).await {
-        Ok(Ok(sizes)) => sizes,
-        Ok(Err(e)) => return storage_error("proc du", e),
-        Err(_) => return server_error("proc du worker failed".to_string()),
-    };
-    sizes.extend(core.mem.sizes());
-    sizes.sort_by(|a, b| a.0.cmp(&b.0));
-    sizes.dedup_by(|a, b| a.0 == b.0);
-    let body = du_body(&sizes);
-    proc_text_response(method, body)
-}
-
-async fn proc_df(State(core): State<Arc<Core>>, method: Method, headers: HeaderMap) -> Response {
-    if method == Method::OPTIONS {
-        return options_response(PROC_ALLOW);
-    }
-    if method != Method::GET && method != Method::HEAD {
-        return method_not_allowed(PROC_ALLOW);
-    }
-    if let Err(resp) = require_read(&core, &headers) {
-        return *resp;
-    }
-    let mem = core.mem.clone();
-    let (memory_used, memory_worlds) =
-        match tokio::task::spawn_blocking(move || (mem.total_bytes(), mem.list().len())).await {
-            Ok(counts) => counts,
-            Err(_) => return server_error("proc df worker failed".to_string()),
-        };
-    let storage_used = core.storage_body_bytes.load(Ordering::Relaxed);
-    let durable_worlds = core
-        .durable_world_count
-        .load(Ordering::Relaxed)
-        .saturating_sub(usize::from(
-            core.delete_ledger_created.load(Ordering::Relaxed),
-        ));
-    let worlds = durable_worlds + memory_worlds;
-    let body = df_body(
-        storage_used,
-        core.max_storage_bytes,
-        memory_used,
-        core.max_memory_bytes,
-        worlds,
-    );
-    proc_text_response(method, body)
-}
-
-// /proc/audit/{world}/verify
-async fn proc_audit_verify(
-    State(core): State<Arc<Core>>,
-    method: Method,
-    AxPath(audit_path): AxPath<String>,
-    headers: HeaderMap,
-) -> Response {
-    if method == Method::OPTIONS {
-        return options_response(AUDIT_VERIFY_ALLOW);
-    }
-    if method != Method::GET && method != Method::HEAD {
-        return method_not_allowed(AUDIT_VERIFY_ALLOW);
-    }
-
-    let Some(raw_world) = audit_path.strip_suffix("/verify") else {
-        return not_found();
-    };
-    let raw_world = raw_world.trim_end_matches('/');
-    if raw_world.is_empty() {
-        return bad_request("audit verify requires a world path");
-    }
-    let world_name = canonicalize_path(raw_world);
-    if let Err(reason) = validate_world_name(&world_name) {
-        return bad_request(reason);
-    }
-
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
-    if !can_read(&core, tier) {
-        return unauthorized("read requires read token");
-    }
-
-    if store::is_memory_world(&world_name) {
-        if !core.mem.contains(&world_name) {
-            return not_found();
-        }
-        return audit_not_applicable();
-    }
-
-    let data = core.data.clone();
-    let hmac_key = core.hmac_key.clone();
-    let verify_result = match tokio::task::spawn_blocking(move || {
-        audit::verify_chain(&data, &world_name, &hmac_key)
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => return server_error("audit verify worker failed".to_string()),
-    };
-
-    match verify_result {
-        Ok(Some(audit::VerifyReport::Valid(report))) => audit_valid(report),
-        Ok(Some(audit::VerifyReport::Broken(report))) => audit_broken(report),
-        Ok(None) => not_found(),
-        Err(e) => storage_error("audit verify", e),
-    }
-}
-
-async fn proc_reserved(method: Method) -> Response {
-    match method {
-        Method::OPTIONS => options_response(PROC_ALLOW),
-        Method::GET | Method::HEAD => not_found(),
-        _ => method_not_allowed(PROC_ALLOW),
-    }
-}
+// `/` and `/proc/*` route handlers (root_hint, proc_version, proc_worlds,
+// proc_du, proc_df, proc_audit_verify, proc_reserved) live in `proc.rs`
+// and are re-exported at the crate root, so the route table below and
+// the inline tests in this file reach them by short name.
 
 // ─── /<world> all five methods ──────────────────────────────────────
 async fn world_handler(
@@ -1431,17 +1195,8 @@ fn can_delete(tier: auth::Tier) -> bool {
 // gone. Quota is now enforced inside MemoryStore::write_with_quota /
 // append_with_quota, atomically with the write itself.)
 
-fn require_read(core: &Core, headers: &HeaderMap) -> Result<(), BoxedResponse> {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
-    if can_read(core, tier) {
-        Ok(())
-    } else {
-        Err(Box::new(unauthorized("read requires read token")))
-    }
-}
+// `require_read` (auth gate for proc handlers) lives in proc.rs now,
+// next to its only callers.
 
 // Response constructors (not_found, unauthorized, bad_request,
 // payload_too_large, insufficient_storage, storage_quota_exceeded,
@@ -1459,7 +1214,7 @@ fn exact_or_child(world_name: &str, prefix: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-fn can_read(core: &Core, tier: auth::Tier) -> bool {
+pub(crate) fn can_read(core: &Core, tier: auth::Tier) -> bool {
     !core.tokens.read_required()
         || matches!(
             tier,
