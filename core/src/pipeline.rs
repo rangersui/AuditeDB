@@ -53,7 +53,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{auth, canonicalize_path, method_not_allowed, validate_world_name, Core, WORLD_ALLOW};
+use crate::{
+    auth, bad_request, canonicalize_path, method_not_allowed, validate_world_name, Core,
+    WORLD_ALLOW,
+};
 
 // ─── Phase enum ──────────────────────────────────────────────────
 
@@ -343,7 +346,7 @@ fn validate_path(
     let world = canonicalize_path(&path);
     if let Err(reason) = validate_world_name(&world) {
         return Phase::Error {
-            resp: crate::bad_request(reason),
+            resp: bad_request(reason),
             reason: ErrorReason::PathInvalid(reason),
         };
     }
@@ -456,6 +459,13 @@ pub(crate) async fn run(
                 // Until then this synthetic 501 keeps the loop
                 // closed so end-to-end tests for the FSM up to
                 // Dispatched can run.
+                //
+                // The reason field below is a placeholder (no caller
+                // actually reaches this in production because no
+                // route invokes `run()` in 4a). 4b replaces the entire
+                // arm with `handler::execute(verb, ...).await`, so the
+                // mis-categorized `MethodNotAllowed` here disappears
+                // before any 4b code path observes it.
                 Phase::Error {
                     resp: not_yet_wired_response(verb),
                     reason: ErrorReason::MethodNotAllowed,
