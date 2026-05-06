@@ -161,12 +161,27 @@ pub struct AppendResult {
 
 pub struct WriteAuditResult {
     pub hmac: String,
+    /// Body length before this write. Populated for callers that may want
+    /// it (e.g. counter accounting). Currently unused by the production
+    /// code path because `Core::reserve_storage` reads `previous_len`
+    /// outside the SQLite transaction under the per-world lock.
+    #[allow(dead_code)]
     pub previous_len: usize,
+    /// Whether the world existed before this write. Same status as
+    /// `previous_len` -- kept for potential future callers; the active
+    /// path uses `world::body_len` outside the tx.
+    #[allow(dead_code)]
     pub existed: bool,
 }
 
 pub enum WriteAuditError {
     Sqlite(rusqlite::Error),
+    /// Returned only if the caller passes a `quota` argument to
+    /// `write_with_audit_checked`. The active path passes `None` and
+    /// enforces quota via `Core::reserve_storage` instead, so this variant
+    /// is currently unreachable in production. Kept for diagnostic clarity
+    /// and possible test fixtures.
+    #[allow(dead_code)]
     Quota {
         used: usize,
         quota: usize,
@@ -272,6 +287,11 @@ pub fn read_with_hmac(
     )))
 }
 
+/// Test-only seed primitive: write body + headers without touching the
+/// HMAC chain. Production durable writes go through
+/// `write_with_audit_checked` (which signs the chain). Kept for the
+/// fixtures used by `Core::write_world`.
+#[cfg(test)]
 pub fn write(
     data_root: &Path,
     world: &str,
@@ -387,9 +407,12 @@ pub fn write_with_audit_checked(
     })
 }
 
-/// Append bytes to an existing world's body. Returns Ok(None) if the
-/// world does not exist; caller responds 404. Does not touch headers
-/// (POST append never updates metadata; PUT owns metadata).
+/// Append bytes to an existing world's body without entering the HMAC
+/// chain. Production POST appends go through `append_with_audit`; this
+/// raw form is unused after the lock refactor and is preserved with
+/// `#[allow(dead_code)]` against future direct callers (e.g. log
+/// rotation tooling). Returns Ok(None) if the world does not exist.
+#[allow(dead_code)]
 pub fn append(
     data_root: &Path,
     world: &str,

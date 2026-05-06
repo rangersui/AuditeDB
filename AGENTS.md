@@ -1,5 +1,33 @@
 # Agent Instructions
 
+## Architecture Invariants
+
+These are not preferences. They are the contract every change must keep.
+
+- **File size hard limit: 500 lines per `.rs` file** for new files. The reason
+  is not style: it is the working memory limit of coding agents. Past 500
+  lines, agents start contradicting themselves; past 1000, they cannot produce
+  reliable changes at all. File size is the working contract between
+  maintainer and AI co-author.
+  - **Grandfather clause:** existing oversized files (`core/src/main.rs` in
+    particular) are allowed only for safety fixes (P0/P1 concurrency,
+    correctness, security) and for extraction PRs that move code OUT into new
+    sub-500-line modules. Net-new feature code MUST land in a new
+    sub-500-line module, even if the natural place would have been in the
+    legacy file.
+  - The hinge PR that retires the grandfather clause is the FSM pipeline
+    extraction (PR 4 of the v7 sequence). After that lands, this exception
+    is removed.
+- **Per-world locking, not global.** Writes to different worlds run concurrently;
+  writes to the same world serialize through `Core::acquire_world_lock(world)`.
+  No new global write mutex. Counters touched on the write path
+  (`storage_body_bytes`, `durable_world_count`) must use `fetch_update` /
+  `fetch_add` / `fetch_sub` so cross-world writers stay coherent.
+- **Mechanism, not policy.** Core provides primitives — token tiers, path
+  scopes, HMAC chain, change events, ETag/CAS, byte storage. Business logic
+  (validation, transactional flows, schema evolution) lives in reactors and
+  SDK code, not in core. Adding policy to core is a Phoenix violation.
+
 ## Endpoint Change Checklist
 
 Every new core route should pass the same small checklist before review:

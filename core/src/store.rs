@@ -42,11 +42,37 @@ pub struct MemoryStore {
     map: Mutex<HashMap<String, MemEntry>>,
 }
 
+/// Returned by `write_with_quota` / `append_with_quota` when the requested
+/// write would push the total memory store size past `max_total_bytes`.
+/// The check happens under the same mutex as the write so concurrent
+/// writers cannot both pass a stale snapshot and then both commit
+/// (mirror of the durable `WriteAuditError::Quota` path).
+pub struct MemoryQuotaError {
+    /// Pre-write total bytes across all memory worlds. Currently the
+    /// callers only need `quota` for the 413 response, but `used` and
+    /// `projected` are populated for diagnostic clarity.
+    #[allow(dead_code)]
+    pub used: usize,
+    pub quota: usize,
+    #[allow(dead_code)]
+    pub projected: usize,
+}
+
+/// Outcome of a successful `write_with_quota`.
+pub struct MemoryWriteOutcome {
+    /// True if the world existed before this write.
+    pub existed: bool,
+}
+
 impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Read body + metadata only, without the body hash. Currently unused
+    /// since `read_with_hash` covers all internal callers, but kept as a
+    /// convenience wrapper for future external SDK code.
+    #[allow(dead_code)]
     pub fn read(&self, world: &str) -> Option<Stage> {
         self.read_with_hash(world).map(|(stage, _)| stage)
     }
@@ -74,6 +100,11 @@ impl MemoryStore {
         self.map_guard().contains_key(world)
     }
 
+    /// Unconditional write without quota enforcement. Used only by the
+    /// test-only `Core::write_world` fixture; production goes through
+    /// `write_with_quota`. Kept as `#[allow(dead_code)]` so the test
+    /// helper survives future production-only clippy passes.
+    #[allow(dead_code)]
     pub fn write(
         &self,
         world: &str,
@@ -89,6 +120,11 @@ impl MemoryStore {
         e.headers = headers.to_vec();
     }
 
+    /// Append without quota enforcement. Replaced in production by
+    /// `append_with_quota`; kept available with `#[allow(dead_code)]`
+    /// for future tooling that wants the raw primitive (e.g. tests
+    /// asserting growth behavior).
+    #[allow(dead_code)]
     pub fn append(&self, world: &str, body: &[u8]) -> Option<AppendResult> {
         let mut map = self.map_guard();
         let e = map.get_mut(world)?;
@@ -98,6 +134,77 @@ impl MemoryStore {
         Some(AppendResult {
             body_sha256_after: after,
         })
+    }
+
+    /// Write a memory world with an atomic quota check. The HashMap mutex
+    /// is held across "compute current total -> compare against quota ->
+    /// insert", so two concurrent writes to different memory worlds
+    /// cannot both observe usage below the cap and both commit. Replaces
+    /// the previous read/check/write sequence in `put_bytes`, which was
+    /// race-prone after the global write_lock was removed.
+    ///
+    /// Returns `Ok(outcome)` with `existed` populated for the caller's
+    /// 200 vs 201 decision; `Err(MemoryQuotaError)` if accepting the
+    /// write would push the total memory store size past
+    /// `max_total_bytes`.
+    pub fn write_with_quota(
+        &self,
+        world: &str,
+        body: &[u8],
+        content_type: &str,
+        headers: &[(String, String)],
+        max_total_bytes: usize,
+    ) -> Result<MemoryWriteOutcome, MemoryQuotaError> {
+        let mut map = self.map_guard();
+        let used: usize = map.values().map(|entry| entry.body.len()).sum();
+        let prev_len = map.get(world).map(|entry| entry.body.len()).unwrap_or(0);
+        let projected = used.saturating_sub(prev_len).saturating_add(body.len());
+        if projected > max_total_bytes {
+            return Err(MemoryQuotaError {
+                used,
+                quota: max_total_bytes,
+                projected,
+            });
+        }
+        let existed = map.contains_key(world);
+        let e = map.entry(world.to_string()).or_default();
+        e.body = body.to_vec();
+        e.body_hash = world::sha256_hex(body);
+        e.content_type = content_type.to_string();
+        e.headers = headers.to_vec();
+        Ok(MemoryWriteOutcome { existed })
+    }
+
+    /// Append to a memory world with an atomic quota check. Returns
+    /// `Ok(None)` if the world does not exist (caller maps to 404).
+    /// `Err(MemoryQuotaError)` if accepting the append would push the
+    /// total memory store size past `max_total_bytes`. Otherwise
+    /// `Ok(Some(result))` with the post-append SHA-256 of the body.
+    pub fn append_with_quota(
+        &self,
+        world: &str,
+        body: &[u8],
+        max_total_bytes: usize,
+    ) -> Result<Option<AppendResult>, MemoryQuotaError> {
+        let mut map = self.map_guard();
+        let used: usize = map.values().map(|entry| entry.body.len()).sum();
+        let projected = used.saturating_add(body.len());
+        if projected > max_total_bytes {
+            return Err(MemoryQuotaError {
+                used,
+                quota: max_total_bytes,
+                projected,
+            });
+        }
+        let Some(entry) = map.get_mut(world) else {
+            return Ok(None);
+        };
+        entry.body.extend_from_slice(body);
+        let after = world::sha256_hex(&entry.body);
+        entry.body_hash = after.clone();
+        Ok(Some(AppendResult {
+            body_sha256_after: after,
+        }))
     }
 
     pub fn delete(&self, world: &str) -> bool {
