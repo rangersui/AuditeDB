@@ -67,7 +67,7 @@ use std::time::Instant;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
 use crate::http_semantics as hs;
-use crate::world::{AppendResult, Stage};
+use crate::world::Stage;
 
 type BoxedResponse = Box<Response>;
 
@@ -157,6 +157,13 @@ impl Core {
         }
     }
 
+    /// Test-only fixture: seed a world directly without going through
+    /// auth/preconditions/audit. Production writes go through `put_bytes`
+    /// (durable: `world::write_with_audit_checked` + `reserve_storage`;
+    /// memory: `MemoryStore::write_with_quota`). Kept for the existing
+    /// 80+ unit tests that build small fixture worlds before exercising
+    /// handler paths.
+    #[cfg(test)]
     fn write_world(
         &self,
         world: &str,
@@ -170,9 +177,6 @@ impl Core {
         } else {
             let current_len = world::body_len(&self.data, world)?;
             world::write(&self.data, world, body, content_type, headers)?;
-            // Atomic delta on the counter: with per-world locking, multiple
-            // worlds can land here concurrently. fetch_update keeps the
-            // counter coherent across writers in different worlds.
             let prev = current_len.unwrap_or(0);
             let _ = self.storage_body_bytes.fetch_update(
                 Ordering::Relaxed,
@@ -183,14 +187,6 @@ impl Core {
                 self.durable_world_count.fetch_add(1, Ordering::Relaxed);
             }
             Ok(())
-        }
-    }
-
-    fn append_world(&self, world: &str, body: &[u8]) -> rusqlite::Result<Option<AppendResult>> {
-        if store::is_memory_world(world) {
-            Ok(self.mem.append(world, body))
-        } else {
-            world::append(&self.data, world, body)
         }
     }
 
@@ -360,16 +356,25 @@ impl Core {
                 }
             }
         } else {
-            existed = self
-                .read_world(world_name)
-                .map_err(|e| storage_error("storage read", e))?
-                .is_some();
-            if memory_write_projected_bytes(self, world_name, body.len()) > self.max_memory_bytes {
-                return Err(payload_too_large(self.max_memory_bytes));
-            }
-            match self.write_world(world_name, body, content_type, headers) {
-                Ok(()) => hs::body_etag(body),
-                Err(e) => return Err(storage_error("storage", e)),
+            // Memory worlds: the existence check, the quota check, and the
+            // actual insert all happen under one MemoryStore HashMap mutex
+            // acquisition. That mutex was the implicit serializer the global
+            // write_lock used to provide; per-world locks alone don't help
+            // here because the budget is shared across all memory worlds.
+            match self.mem.write_with_quota(
+                world_name,
+                body,
+                content_type,
+                headers,
+                self.max_memory_bytes,
+            ) {
+                Ok(outcome) => {
+                    existed = outcome.existed;
+                    hs::body_etag(body)
+                }
+                Err(store::MemoryQuotaError { quota, .. }) => {
+                    return Err(payload_too_large(quota));
+                }
             }
         };
         self.notify("PUT", world_name, &new_etag);
@@ -1240,15 +1245,19 @@ async fn handle_post(
             }
         }
     } else {
-        if memory_append_projected_bytes(core, body.len()) > core.max_memory_bytes {
-            return payload_too_large(core.max_memory_bytes);
-        }
-        let result = match core.append_world(world_name, &body) {
-            Ok(Some(r)) => r,
+        // Memory append: same atomic-quota pattern as put_bytes' memory
+        // branch. The MemoryStore HashMap mutex is held across "compute
+        // current total -> compare against max -> append", so concurrent
+        // appends to different memory worlds cannot both pass a stale
+        // snapshot and overshoot ELASTIK_MAX_MEMORY_BYTES.
+        match core
+            .mem
+            .append_with_quota(world_name, &body, core.max_memory_bytes)
+        {
+            Ok(Some(result)) => format!("sha256-{}", result.body_sha256_after),
             Ok(None) => return not_found(),
-            Err(e) => return storage_error("storage", e),
-        };
-        format!("sha256-{}", result.body_sha256_after)
+            Err(store::MemoryQuotaError { quota, .. }) => return payload_too_large(quota),
+        }
     };
 
     let resp_headers = [(header::ETAG, hs::etag_header(&new_etag))];
@@ -1484,21 +1493,12 @@ fn can_delete(tier: auth::Tier) -> bool {
     matches!(tier, auth::Tier::Approve)
 }
 
-fn memory_write_projected_bytes(core: &Core, world_name: &str, new_len: usize) -> usize {
-    let current_len = core
-        .mem
-        .read(world_name)
-        .map(|stage| stage.body.len())
-        .unwrap_or(0);
-    core.mem
-        .total_bytes()
-        .saturating_sub(current_len)
-        .saturating_add(new_len)
-}
-
-fn memory_append_projected_bytes(core: &Core, add_len: usize) -> usize {
-    core.mem.total_bytes().saturating_add(add_len)
-}
+// (memory_write_projected_bytes / memory_append_projected_bytes were
+// removed: the snapshot-based projection they computed could be observed
+// by two concurrent writers before either had committed, letting them
+// both pass and overshoot max_memory_bytes once the global write_lock was
+// gone. Quota is now enforced inside MemoryStore::write_with_quota /
+// append_with_quota, atomically with the write itself.)
 
 fn require_read(core: &Core, headers: &HeaderMap) -> Result<(), BoxedResponse> {
     let auth_header = headers
@@ -2035,6 +2035,57 @@ mod tests {
         assert!(
             used <= quota,
             "counter must never exceed quota: {used} > {quota}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
+        // Mirror of concurrent_puts_to_distinct_worlds_do_not_overshoot_quota
+        // for memory worlds. Per-world locks let writes to /tmp/a and
+        // /tmp/b run concurrently; before this fix each one would read
+        // total_bytes() as a snapshot, both pass the budget check, and
+        // both commit -- overshooting ELASTIK_MAX_MEMORY_BYTES. With the
+        // check + write fused under the MemoryStore HashMap mutex inside
+        // write_with_quota, only the writes whose accept order keeps the
+        // running total under the cap can commit.
+        let (mut core, dir) = test_core("memory-quota-race");
+        let cap = 100;
+        core.max_memory_bytes = cap;
+        let core = Arc::new(core);
+
+        let workers = 16;
+        let body_len = 12; // 16 * 12 = 192 > cap: forced contention
+        let mut handles = Vec::with_capacity(workers);
+        for i in 0..workers {
+            let core = core.clone();
+            handles.push(tokio::spawn(async move {
+                let path = format!("tmp/race/{i}");
+                let body = Bytes::copy_from_slice(&vec![b'm'; body_len]);
+                handle_put(&core, &path, &HeaderMap::new(), body, auth::Tier::Write).await
+            }));
+        }
+
+        let mut accepted: usize = 0;
+        for handle in handles {
+            let resp = handle.await.unwrap();
+            match resp.status() {
+                StatusCode::CREATED | StatusCode::OK => accepted += 1,
+                StatusCode::PAYLOAD_TOO_LARGE => {}
+                other => panic!("unexpected status: {other}"),
+            }
+        }
+
+        let used = core.mem.total_bytes();
+        let counted = accepted * body_len;
+        assert_eq!(
+            used, counted,
+            "memory total must equal sum of accepted bodies"
+        );
+        assert!(
+            used <= cap,
+            "memory total must never exceed cap: {used} > {cap}"
         );
 
         let _ = std::fs::remove_dir_all(dir);

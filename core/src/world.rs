@@ -287,6 +287,11 @@ pub fn read_with_hmac(
     )))
 }
 
+/// Test-only seed primitive: write body + headers without touching the
+/// HMAC chain. Production durable writes go through
+/// `write_with_audit_checked` (which signs the chain). Kept for the
+/// fixtures used by `Core::write_world`.
+#[cfg(test)]
 pub fn write(
     data_root: &Path,
     world: &str,
@@ -402,9 +407,12 @@ pub fn write_with_audit_checked(
     })
 }
 
-/// Append bytes to an existing world's body. Returns Ok(None) if the
-/// world does not exist; caller responds 404. Does not touch headers
-/// (POST append never updates metadata; PUT owns metadata).
+/// Append bytes to an existing world's body without entering the HMAC
+/// chain. Production POST appends go through `append_with_audit`; this
+/// raw form is unused after the lock refactor and is preserved with
+/// `#[allow(dead_code)]` against future direct callers (e.g. log
+/// rotation tooling). Returns Ok(None) if the world does not exist.
+#[allow(dead_code)]
 pub fn append(
     data_root: &Path,
     world: &str,
