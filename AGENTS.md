@@ -126,21 +126,28 @@ auto-redirect cleanly.
 
 ### Grandfather clause
 
-**Retired by PR 4c (refactor/handler-write-path).** The 500-line
-ceiling now applies to every `.rs` file in `core/src/`, including
-`core/src/main.rs`. There is no longer a special exception.
+**Retires when both `core/src/main.rs` and `core/src/handler.rs`
+reach ≤ 500 production lines.** PR 4c brought main.rs from 1297
+to 847 and grew handler.rs from 306 to 803 production lines as the
+verb implementations moved out of main.rs into their proper home;
+neither qualifies yet. The clause stays in force until both meet
+the bar.
 
-`main.rs` after 4c sits at ~3000 lines of which ~600 are production
-and the rest are unit tests (covered by the test-budget exemption
-above). The remaining production weight is route-table wiring,
-middleware, env parsing, and `Core::new`/`main()` startup —
-distinct concerns that the next refactor pass (post-PR 4 sequence,
-provisional "PR 4d") will split into `route.rs` / `middleware.rs` /
-`config.rs`.
+Until then, both files retain the existing exemption: only safety
+fixes (P0/P1 concurrency, correctness, security) and extraction
+PRs that move code OUT into new sub-500-line modules may touch
+them. Net-new feature code MUST land in a new sub-500-line module.
 
-Until that split lands, no net-new feature code may go into
-`main.rs`; new modules are mandatory. Pure-mv extraction PRs that
-move code OUT of `main.rs` are explicitly welcome.
+Active reduction targets (in priority order):
+
+- `core/src/handler.rs` (803 production) — split `execute_delete`
+  and the DELETE-only blocking helpers
+  (`AuditAppendJob`, `world_exists_blocking`, `audit_append_blocking`,
+  `BlockingSqliteError`, `blocking_storage_error`) into
+  `core/src/handler/delete.rs`. PR followup to 4c.
+- `core/src/main.rs` (847 production) — provisional "PR 4d" splits
+  route table + middleware + env parsing + `Core::new`/`main()`
+  startup into `route.rs` / `middleware.rs` / `config.rs`.
 
 ### Pure-mv PRs
 
