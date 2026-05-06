@@ -43,6 +43,7 @@ mod coap;
 mod http_semantics;
 mod listen;
 mod path;
+mod pipeline;
 mod proc;
 mod response;
 mod store;
@@ -52,6 +53,11 @@ mod world;
 // sibling modules keep referring to `crate::not_found` /
 // `crate::canonicalize_path` / `crate::proc_version` etc. without
 // per-extraction import churn. Each cascading PR adds one line here.
+//
+// `pipeline::*` is intentionally NOT re-exported in 4a because no
+// sibling references its types yet. PR 4b adds the re-export when
+// `handler.rs` lands and needs `crate::Phase`, `crate::Verb`,
+// `crate::TraceCtx`, etc.
 pub(crate) use crate::path::*;
 pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
@@ -404,7 +410,7 @@ impl Core {
 // and main()'s startup banner. The other namespace constants
 // (ROOT_ALLOW, PROC_ALLOW, AUDIT_VERIFY_ALLOW) live in proc.rs now.
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
+pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;
@@ -413,6 +419,11 @@ const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
 
 #[tokio::main]
 async fn main() {
+    // Latch the pipeline-trace flag from ELASTIK_TRACE_PIPELINE before
+    // anything else looks at env. PR 4a adds the flag and TraceCtx
+    // plumbing; the flag is dormant until 4b/4c wire verb handlers.
+    pipeline::init_trace_from_env();
+
     let host = std::env::var("ELASTIK_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port: u16 = std::env::var("ELASTIK_PORT")
         .ok()
