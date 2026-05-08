@@ -234,6 +234,29 @@ pub(crate) fn is_never_persisted_header(name: &str) -> bool {
     name.starts_with("sec-")
         || name.starts_with("access-control-request-")
         || name.starts_with("want-")
+        // HTTP/2 and HTTP/3 pseudo-headers: `:method`, `:path`,
+        // `:scheme`, `:authority`, `:status`. These are wire-level
+        // metadata, never legitimate application headers; if axum
+        // ever surfaces one as a normal header (server bug or
+        // future spec change), it must not bleed into stored
+        // representation. Defense in depth.
+        || name.starts_with(":")
+        // Distributed tracing: Zipkin's multi-header propagation
+        // (`x-b3-traceid`, `x-b3-spanid`, `x-b3-sampled`, ...) is
+        // per-call link metadata, never a property of stored data.
+        // If APM auto-injection bleeds a header into a write, the
+        // next reader would see the writer's trace ID -- breaks
+        // every downstream tracing/correlation system.
+        || name.starts_with("x-b3-")
+        // AWS ALB / CloudFront / API Gateway runtime injections.
+        // `x-amzn-trace-id` (X-Ray), `x-amzn-requestid`,
+        // `x-amzn-mtls-clientcert`, etc.
+        || name.starts_with("x-amzn-")
+        // Cloudflare runtime injections. `cf-ray`, `cf-connecting-ip`,
+        // `cf-visitor`, `cf-ipcountry`, `cf-warp-tag-id`, etc. None
+        // describe stored representation; all describe the request's
+        // path through Cloudflare's edge.
+        || name.starts_with("cf-")
         || matches!(
             name,
             // Credentials and ambient identity must never come back as stored data.
@@ -327,6 +350,38 @@ pub(crate) fn is_never_persisted_header(name: &str) -> bool {
                 | "x-forwarded-for"
                 | "x-forwarded-host"
                 | "x-forwarded-proto"
+                | "x-real-ip"
+                // Other client-IP forwarding headers from
+                // load-balancers and CDNs. `true-client-ip` is
+                // Akamai and Cloudflare Enterprise; `client-ip` is
+                // the legacy form used by older proxies. Same data
+                // class as `x-forwarded-for`.
+                | "true-client-ip"
+                | "client-ip"
+                // Distributed tracing context: W3C Trace Context
+                // via `traceparent` / `tracestate`, W3C Baggage,
+                // and Zipkin's single-header b3 format. These
+                // describe the request's RPC link, not the stored
+                // representation. Auto-injected by every modern APM
+                // or OpenTelemetry agent; if persisted, the next
+                // reader replays the writer's trace ID and corrupts
+                // every downstream tracing system.
+                | "traceparent"
+                | "tracestate"
+                | "baggage"
+                | "b3"
+                // HTTP transport version markers. `http2-settings`
+                // is HTTP/1.1->HTTP/2 upgrade negotiation;
+                // `http3-settings` is its analog for QUIC. Either
+                // landing in stored data means the listener saw
+                // upgrade traffic and let it through. Defensive.
+                | "http3-settings"
+                // HTTP/1.0 cache-control control header. `Pragma:
+                // no-cache` is a per-request directive, not stored
+                // representation metadata. Living fossil from RFC
+                // 1945 -- denylisting it now closes the round-trip
+                // edge case where an old client tags a write.
+                | "pragma"
         )
 }
 

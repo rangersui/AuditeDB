@@ -48,6 +48,40 @@ REQUIRED_DENY = {
     "x-elapsed-ms",
     "x-content-type-options",
     "clear-site-data",
+    # Distributed tracing context. Auto-injected by APM /
+    # OpenTelemetry agents; persisting would replay the writer's
+    # trace ID into every subsequent read and corrupt downstream
+    # tracing systems.
+    "traceparent",
+    "tracestate",
+    "baggage",
+    "b3",
+    # Client-IP forwarding from load-balancers and CDNs (Akamai,
+    # legacy proxies). Same data class as `x-forwarded-for`.
+    "x-real-ip",
+    "true-client-ip",
+    "client-ip",
+    # Transport version markers + HTTP/1.0 living fossil.
+    "http3-settings",
+    "pragma",
+}
+
+# Required prefix denies. The drift radar fails CI if any of these
+# is missing from the Rust / Python policies. Closes the blind spot
+# where individual `x-b3-traceid` / `x-amzn-requestid` / `cf-ray`
+# names land in IANA / MDN registries one at a time and would have
+# to be hand-classified each. Prefix denies cover the vendor space
+# in one rule.
+REQUIRED_PREFIXES = {
+    # HTTP/2 + HTTP/3 pseudo-headers (`:method`, `:path`, `:scheme`,
+    # `:authority`, `:status`).
+    ":",
+    # Zipkin multi-header propagation.
+    "x-b3-",
+    # AWS ALB / CloudFront / API Gateway runtime injections.
+    "x-amzn-",
+    # Cloudflare runtime injections.
+    "cf-",
 }
 
 REQUEST_OR_STATE_HINTS = (
@@ -147,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     prefix_only_rust = sorted(rust_prefixes - python_prefixes)
     prefix_only_python = sorted(python_prefixes - rust_prefixes)
     missing_required = sorted(name for name in REQUIRED_DENY if name not in rust_deny)
+    missing_required_prefix = sorted(p for p in REQUIRED_PREFIXES if p not in rust_prefixes)
 
     report = build_report(
         sources=sources,
@@ -162,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         prefix_only_rust=prefix_only_rust,
         prefix_only_python=prefix_only_python,
         missing_required=missing_required,
+        missing_required_prefix=missing_required_prefix,
     )
 
     if args.report:
@@ -175,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         or prefix_only_rust
         or prefix_only_python
         or missing_required
+        or missing_required_prefix
     ):
         return 1
     return 0
@@ -239,10 +276,13 @@ def parse_rust_policy_from_text(
         normalize(name)
         for name in re.findall(r'"([A-Za-z0-9][A-Za-z0-9-]*)"', strip_rust_comments(matches_body))
     }
+    # Two prefix forms:
+    #   name.starts_with("x-b3-")  - alphanumeric+dash, trailing dash
+    #   name.starts_with(":")       - HTTP/2+3 pseudo-header marker
     prefixes = {
         normalize(prefix)
         for prefix in re.findall(
-            r'name\.starts_with\("([A-Za-z0-9-]+-)"\)',
+            r'name\.starts_with\("(:|[A-Za-z0-9-]+-)"\)',
             strip_rust_comments(fn),
         )
     }
@@ -269,7 +309,9 @@ def parse_python_policy_from_text(
     }
     prefixes = {
         normalize(prefix)
-        for prefix in re.findall(r'n\.startswith\("([A-Za-z0-9-]+-)"\)', fn)
+        # Mirror of the Rust regex: accept the `:` pseudo-header
+        # marker as well as the standard `x-foo-` prefix shape.
+        for prefix in re.findall(r'n\.startswith\("(:|[A-Za-z0-9-]+-)"\)', fn)
     }
     return deny, prefixes
 
@@ -460,6 +502,7 @@ def build_report(
     prefix_only_rust: list[str],
     prefix_only_python: list[str],
     missing_required: list[str],
+    missing_required_prefix: list[str],
 ) -> str:
     lines = [
         "# Header Policy Drift Report",
@@ -520,6 +563,13 @@ def build_report(
         lines.append("")
     else:
         lines.extend(["## Missing Required Deny Entries", "", "None.", ""])
+
+    if missing_required_prefix:
+        lines.extend(["## Missing Required Deny Prefixes", ""])
+        lines.extend(f"- `{prefix}`" for prefix in missing_required_prefix)
+        lines.append("")
+    else:
+        lines.extend(["## Missing Required Deny Prefixes", "", "None.", ""])
 
     lines.extend(
         [

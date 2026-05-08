@@ -147,6 +147,29 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
     "x-forwarded-for",
     "x-forwarded-host",
     "x-forwarded-proto",
+    "x-real-ip",
+    # Other client-IP forwarding headers from load-balancers / CDNs.
+    # true-client-ip = Akamai (also Cloudflare Enterprise);
+    # client-ip = legacy proxies. Same data class as x-forwarded-for.
+    "true-client-ip",
+    "client-ip",
+    # Distributed tracing context: W3C Trace Context, W3C Baggage,
+    # Zipkin single-header b3. Auto-injected by APM / OpenTelemetry
+    # SDKs; if persisted, the next reader replays the writer's
+    # trace ID and corrupts downstream tracing. The multi-header
+    # Zipkin propagation (x-b3-*) and cloud-provider injections
+    # (cf-*, x-amzn-*, ":") are handled by the prefix check in
+    # _should_persist_response_header.
+    "traceparent",
+    "tracestate",
+    "baggage",
+    "b3",
+    # HTTP transport version markers. http2-settings is
+    # HTTP/1.1 -> HTTP/2 upgrade negotiation; http3-settings is
+    # the QUIC analog. Living-fossil HTTP/1.0 Pragma: no-cache is
+    # a per-request directive, not stored representation.
+    "http3-settings",
+    "pragma",
 }
 _log = logging.getLogger("elastik")
 
@@ -1644,6 +1667,14 @@ def _should_persist_response_header(name: str) -> bool:
         and not n.startswith("sec-")
         and not n.startswith("access-control-request-")
         and not n.startswith("want-")
+        # HTTP/2 + HTTP/3 pseudo-headers; Zipkin multi-header
+        # propagation; AWS runtime injections; Cloudflare runtime
+        # injections. Mirror of the Rust core denylist in
+        # core/src/http_semantics.rs.
+        and not n.startswith(":")
+        and not n.startswith("x-b3-")
+        and not n.startswith("x-amzn-")
+        and not n.startswith("cf-")
         and n not in _NON_PERSISTED_RESPONSE_HEADERS
     )
 

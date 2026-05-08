@@ -1949,7 +1949,51 @@ mod tests {
         headers.insert("x-forwarded-for", HeaderValue::from_static("127.0.0.1"));
         headers.insert("x-forwarded-host", HeaderValue::from_static("example.com"));
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert("x-real-ip", HeaderValue::from_static("203.0.113.7"));
+        headers.insert("true-client-ip", HeaderValue::from_static("203.0.113.7"));
+        headers.insert("client-ip", HeaderValue::from_static("203.0.113.7"));
         headers.insert("clear-site-data", HeaderValue::from_static("\"cookies\""));
+        // Distributed tracing pollutants (W3C + Zipkin + AWS X-Ray).
+        // Auto-injected by APM agents; if persisted, next reader
+        // replays writer's trace ID and corrupts downstream tracing.
+        headers.insert(
+            "traceparent",
+            HeaderValue::from_static("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+        );
+        headers.insert(
+            "tracestate",
+            HeaderValue::from_static("rojo=00f067aa0ba902b7"),
+        );
+        headers.insert(
+            "baggage",
+            HeaderValue::from_static("userId=alice,serverNode=DF%2028"),
+        );
+        headers.insert(
+            "b3",
+            HeaderValue::from_static("80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1"),
+        );
+        headers.insert(
+            "x-b3-traceid",
+            HeaderValue::from_static("80f198ee56343ba864fe8b2a57d3eff7"),
+        );
+        headers.insert("x-b3-spanid", HeaderValue::from_static("e457b5a2e4d86bd1"));
+        headers.insert("x-b3-sampled", HeaderValue::from_static("1"));
+        headers.insert(
+            "x-amzn-trace-id",
+            HeaderValue::from_static("Root=1-5759e988-bd862e3fe1be46a994272793"),
+        );
+        headers.insert("cf-ray", HeaderValue::from_static("8f1234567abcdef0-IAD"));
+        headers.insert("cf-connecting-ip", HeaderValue::from_static("203.0.113.7"));
+        headers.insert(
+            "cf-visitor",
+            HeaderValue::from_static("{\"scheme\":\"https\"}"),
+        );
+        // HTTP transport version markers.
+        headers.insert(
+            "http3-settings",
+            HeaderValue::from_static("AAMAAABkAARAAgAAAAAEAIAAAAA"),
+        );
+        headers.insert("pragma", HeaderValue::from_static("no-cache"));
 
         let meta = hs::request_meta_headers(&headers);
         let has = |name: &str| meta.iter().any(|(n, _)| n == name);
@@ -2021,7 +2065,26 @@ mod tests {
             "x-forwarded-for",
             "x-forwarded-host",
             "x-forwarded-proto",
+            "x-real-ip",
+            "true-client-ip",
+            "client-ip",
             "clear-site-data",
+            // Distributed tracing pollutants.
+            "traceparent",
+            "tracestate",
+            "baggage",
+            "b3",
+            "x-b3-traceid",
+            "x-b3-spanid",
+            "x-b3-sampled",
+            // Cloud-provider runtime injections.
+            "x-amzn-trace-id",
+            "cf-ray",
+            "cf-connecting-ip",
+            "cf-visitor",
+            // Transport version markers + HTTP/1.0 living fossil.
+            "http3-settings",
+            "pragma",
         ] {
             assert!(!has(name), "{name} should not be persisted");
         }
