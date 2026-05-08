@@ -552,7 +552,10 @@ mod tests {
                 next_event: Arc::new(AtomicU64::new(0)),
                 next_request: Arc::new(AtomicU64::new(0)),
                 world_locks: Arc::new(DashMap::new()),
-                ledger_writer: Arc::new(StdMutex::new(None)),
+                ledger: Arc::new(crate::ledger::LedgerWriter::new()),
+                read_cache: Arc::new(crate::read_cache::ReadCache::new(
+                    crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
+                )),
             },
             dir,
         )

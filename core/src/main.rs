@@ -44,11 +44,13 @@ mod coap;
 mod config;
 mod handler;
 mod http_semantics;
+mod ledger;
 mod listen;
 mod middleware;
 mod path;
 mod pipeline;
 mod proc;
+mod read_cache;
 mod response;
 mod route;
 mod state;
@@ -145,7 +147,10 @@ async fn main() {
         next_event: Arc::new(AtomicU64::new(0)),
         next_request: Arc::new(AtomicU64::new(0)),
         world_locks: Arc::new(DashMap::new()),
-        ledger_writer: Arc::new(StdMutex::new(None)),
+        ledger: Arc::new(crate::ledger::LedgerWriter::new()),
+        read_cache: Arc::new(crate::read_cache::ReadCache::new(
+            crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
+        )),
     });
 
     let addr = listen_addr(&host, port);
@@ -2310,7 +2315,7 @@ mod tests {
         assert!(core.read_world("home/delete-cas").unwrap().is_none());
         assert!(core.read_world("var/log/deletes").unwrap().is_some());
         assert!(matches!(
-            audit::verify_chain(&core.data, "var/log/deletes", &core.hmac_key).unwrap(),
+            core.cached_verify_chain("var/log/deletes").unwrap(),
             Some(audit::VerifyReport::Valid(_))
         ));
         let ledger = world::open_existing(&core.data, "var/log/deletes")
@@ -2981,7 +2986,10 @@ mod tests {
                     next_event: Arc::new(AtomicU64::new(0)),
                     next_request: Arc::new(AtomicU64::new(0)),
                     world_locks: Arc::new(DashMap::new()),
-                    ledger_writer: Arc::new(StdMutex::new(None)),
+                    ledger: Arc::new(crate::ledger::LedgerWriter::new()),
+                    read_cache: Arc::new(crate::read_cache::ReadCache::new(
+                        crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
+                    )),
                 }
             },
             dir,

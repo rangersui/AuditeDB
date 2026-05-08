@@ -263,10 +263,14 @@ pub(crate) async fn proc_audit_verify(
         return audit_not_applicable();
     }
 
-    let data = core.data.clone();
-    let hmac_key = core.hmac_key.clone();
+    // Bug 58 fix: route through the read cache so DELETE on the same
+    // world drains in-flight verifies via the slot's write guard.
+    // The bare `audit::verify_chain(data, world, key)` path is gone
+    // -- it opened a fresh fd outside SlotState and would have
+    // re-introduced Bug 48 / Bug 54-shape races on this admin endpoint.
+    let core_clone = core.clone();
     let verify_result = match tokio::task::spawn_blocking(move || {
-        audit::verify_chain(&data, &world_name, &hmac_key)
+        core_clone.cached_verify_chain(&world_name)
     })
     .await
     {

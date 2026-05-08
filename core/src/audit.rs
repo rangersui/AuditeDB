@@ -6,9 +6,15 @@
 use hmac::{Hmac, Mac};
 use rusqlite::{Connection, Transaction};
 use sha2::{Digest, Sha256};
-use std::path::Path;
 
+// `#[cfg(test)]` items below (`latest_hmac`, the in-module tests) need
+// `Path` and `world::world_db`. Production code reaches the audit chain
+// only via `append_with_conn` and `verify_chain_via_conn`, which both
+// take a tracked Connection from the caller and never open one.
+#[cfg(test)]
 use crate::world;
+#[cfg(test)]
+use std::path::Path;
 
 /// Append a single row to the audit chain, reusing an already-open
 /// `Connection`. Cached writers (the ledger writer
@@ -140,15 +146,19 @@ struct EventHmacInput<'a> {
     meta_sha256: &'a str,
 }
 
-pub fn verify_chain(
-    data_root: &Path,
-    world_name: &str,
+/// Verify the audit chain through a `TrackedReadConnection` (the
+/// SlotState-tracked read path). Mirrors `world::read_with_hmac_via_conn`
+/// — the cache layer drives the slot-before-open dance and hands us
+/// the connection through the type gate. The bare per-request
+/// `verify_chain(data, world, key)` path is gone (Bug 58); admin
+/// `/proc/audit/{world}/verify` now goes through `Core::cached_verify_chain`,
+/// so DELETE on the same world drains in-flight verifies via the
+/// usual SlotState write guard.
+pub fn verify_chain_via_conn(
+    tracked: &mut crate::read_cache::TrackedReadConnection,
     key: &[u8],
-) -> rusqlite::Result<Option<VerifyReport>> {
-    let Some(c) = world::open_existing(data_root, world_name)? else {
-        return Ok(None);
-    };
-    verify_connection(&c, key).map(Some)
+) -> rusqlite::Result<VerifyReport> {
+    verify_connection(tracked.as_mut_conn(), key)
 }
 
 fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyReport> {

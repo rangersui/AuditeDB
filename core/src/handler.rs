@@ -8,7 +8,7 @@
 //!    `can_write` / `can_delete`). Authentication is the driver's
 //!    job; authorization lives next to the verb because the gate is
 //!    verb-and-path-specific.
-//! 2. Performs the verb's actual work — including, for write verbs,
+//! 2. Performs the verb's actual work -- including, for write verbs,
 //!    the lock acquire / preconditions / SQLite write+audit append /
 //!    counter update / notify sequence. The verb owns audit + notify
 //!    ordering; the FSM only models the request envelope.
@@ -22,7 +22,7 @@
 //! `notify_sent`. DELETE additionally emits the
 //! `audit_intent` / `audit_commit` / `audit_commit_failed[_event_failed]`
 //! sequence so an operator reading `grep req-N` can reconstruct the
-//! intent / commit dance — including the honest double-failure case
+//! intent / commit dance -- including the honest double-failure case
 //! where the commit append AND the subsequent failure-event append
 //! both fail (e.g. persistent DiskFull).
 //!
@@ -240,7 +240,7 @@ pub(crate) async fn execute_put(
     trace: &TraceCtx,
 ) -> Phase {
     // 1. Auth gate (verb-and-path-specific). Driver authenticated;
-    //    the verb authorizes — the gate kind drives the trace
+    //    the verb authorizes -- the gate kind drives the trace
     //    `Auth(Write)` vs `Auth(WriteApprove)` distinction so an
     //    operator sees which token tier was insufficient.
     if !can_write(&world, tier) {
@@ -254,7 +254,7 @@ pub(crate) async fn execute_put(
             reason: ErrorReason::Auth(gate),
         };
     }
-    // 2. Per-world body cap (413 — never confuse with quota / 507).
+    // 2. Per-world body cap (413 -- never confuse with quota / 507).
     if body.len() > core.max_world_bytes {
         return Phase::Error {
             resp: payload_too_large(core.max_world_bytes),
@@ -263,11 +263,22 @@ pub(crate) async fn execute_put(
     }
     let content_type = hs::request_content_type(&headers);
     let meta = hs::request_meta_headers(&headers);
-    // 3. Per-world write lock — serializes same-world writers so
+    // 3. Per-world write lock -- serializes same-world writers so
     //    preconditions and write are atomic w.r.t. concurrent PUTs
     //    on this world. Different worlds run concurrently.
     let _write_guard = core.acquire_world_lock(&world).await;
     trace.emit_aux("lock_acquired");
+    // 3b. Defence-in-depth tombstone clear (Bug 19). PUT/POST and
+    //     DELETE both serialize on the same per-world lock, so a
+    //     prior DELETE on this world has either succeeded (tombstone
+    //     already cleared by `clear_tombstone` after
+    //     `delete_world_blocking`) or panicked mid-flight. Calling
+    //     `clear_tombstone` here covers the panic case so a phantom
+    //     tombstone doesn't outlive the lock release. Position is
+    //     critical: clearing BEFORE `acquire_world_lock` would let
+    //     a concurrent in-flight DELETE re-open the v1 fd race via
+    //     a different trigger.
+    core.clear_tombstone(&world);
     // 4. If-Match / If-None-Match preconditions (412 on mismatch).
     //    Storage-error during precondition read maps to StorageRead
     //    (500); the 412 path is the optimistic-concurrency signal.
@@ -388,7 +399,7 @@ pub(crate) async fn execute_put(
 /// Visibility is `pub(in crate::handler)` so the sibling `post.rs`
 /// module can reuse it (PUT and POST both emit the same
 /// `sqlite_committed etag=...` aux line). Not visible outside
-/// `crate::handler` — etag presentation is a verb-handler concern,
+/// `crate::handler` -- etag presentation is a verb-handler concern,
 /// not a crate-wide utility.
 pub(in crate::handler) fn etag_preview(etag: &str) -> String {
     etag.chars().take(16).collect()

@@ -1,9 +1,9 @@
 //! DELETE verb implementation + its blocking-SQLite helpers.
 //!
 //! Extracted from `handler.rs` so DELETE's intent / commit /
-//! commit_failed two-step audit dance — and the blocking-spawn
+//! commit_failed two-step audit dance -- and the blocking-spawn
 //! helpers it needs (`AuditAppendJob`, `world_exists_blocking`,
-//! `audit_append_blocking`) — live in their own file. This is the
+//! `audit_append_blocking`) -- live in their own file. This is the
 //! first of two post-PR-4c extractions that bring `handler.rs`
 //! back under the 500-line ceiling; the second
 //! (`crate::handler::post`) lands the same shape.
@@ -32,7 +32,7 @@ pub(crate) async fn execute_delete(
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    // DELETE is approve-only across all paths — no harvard split.
+    // DELETE is approve-only across all paths -- no harvard split.
     if !can_delete(tier) {
         return Phase::Error {
             resp: unauthorized("delete requires token; system worlds need approve token"),
@@ -88,7 +88,7 @@ pub(crate) async fn execute_delete(
         .to_string();
     // The cached `ledger_writer` Mutex serializes ledger appends, so
     // the prior `acquire_world_lock("var/log/deletes")` calls are
-    // gone — this Mutex provides the same ordering guarantee with no
+    // gone -- this Mutex provides the same ordering guarantee with no
     // extra async hop. Ledger existence is tracked by
     // `delete_ledger_created` AtomicBool: initialized at startup from
     // `world::sizes`, and atomically swapped to true on the first
@@ -113,12 +113,12 @@ pub(crate) async fn execute_delete(
         };
     }
     trace.emit_aux("audit_intent");
-    // Bump the durable_world_count exactly once — the first append in
+    // Bump the durable_world_count exactly once -- the first append in
     // this process run that observes the flag still false is the one
     // that "created" the ledger world (or first observed it after
     // startup). `swap` returns the *prior* value, so `was_first` is
     // true only for that one caller; concurrent DELETEs racing on the
-    // same false→true edge are serialized by the ledger_writer Mutex
+    // same false->true edge are serialized by the ledger_writer Mutex
     // inside `append_to_ledger`, so the swap here always runs after
     // a successful append. AcqRel matches the load-on-startup pattern
     // in main.rs (Acquire) and keeps the durable_world_count bump
@@ -128,7 +128,25 @@ pub(crate) async fn execute_delete(
         core.durable_world_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    // Drain the read cache and install a tombstone BEFORE the
+    // physical delete. The drain waits for in-flight readers on
+    // this world to release, then `mem::replace` Tombstone closes
+    // the cached fd inside the slot's write-guard window. By the
+    // time `delete_world_blocking` runs, no fd is alive on the
+    // world's DB -- Windows file-in-use can't occur. New readers
+    // arriving in the evict->delete window see the tombstone via
+    // Phase 1 and short-circuit to 404. See
+    // `crate::read_cache::ReadCache::install_tombstone_blocking`
+    // and AGENTS.md section "No fallback to unguarded paths".
+    core.install_tombstone(&world).await;
+    trace.emit_aux("read_cache_drained");
+
     let ok = core.delete_world_blocking(&world).await;
+    // Clear the tombstone on BOTH success and failure (Bug 20). On
+    // failure, the world is still on disk; without this clear, GET
+    // would return a phantom 404 forever -- contract regression vs
+    // pre-cache behaviour where DELETE-fail kept the world readable.
+    core.clear_tombstone(&world);
     if !ok {
         return Phase::Error {
             resp: server_error("delete failed after audit intent".to_string()),
@@ -153,10 +171,10 @@ pub(crate) async fn execute_delete(
     core.notify("DELETE", &world, "");
     trace.emit_aux("notify_sent");
 
-    // commit / commit_failed appends — same `ledger_writer` Mutex
+    // commit / commit_failed appends -- same `ledger_writer` Mutex
     // serializes ordering of audit chain entries across concurrent
     // DELETEs on different target worlds. Intent and commit from the
-    // same DELETE may interleave with a different DELETE's intent —
+    // same DELETE may interleave with a different DELETE's intent --
     // intentional; the chain is HMAC-linked, not grouped by target
     // world.
     if let Err(commit_err) = core
@@ -173,8 +191,8 @@ pub(crate) async fn execute_delete(
         .await
     {
         // Honest cascade-failure trace. The world is already gone, so
-        // we still return 204 — the write side of the DELETE
-        // succeeded — but the audit chain is now in a degraded state
+        // we still return 204 -- the write side of the DELETE
+        // succeeded -- but the audit chain is now in a degraded state
         // and the operator MUST see exactly which kind. eprintln stays
         // (PR 0 contract): even with trace disabled, stderr carries
         // the failure.
@@ -205,7 +223,7 @@ pub(crate) async fn execute_delete(
                 // Sub-case B: BOTH appends failed (e.g. persistent
                 // DiskFull). Audit chain has only `delete_intent`,
                 // indistinguishable from "process crashed between
-                // intent and commit" by chain alone — but the trace
+                // intent and commit" by chain alone -- but the trace
                 // and the eprintln preserve the truth that the
                 // commit was attempted and failed twice.
                 eprintln!(
@@ -224,9 +242,9 @@ pub(crate) async fn execute_delete(
     Phase::CommittedWrite((StatusCode::NO_CONTENT, "").into_response())
 }
 
-// ─── DELETE blocking helpers ──────────────────────────────────────
+// --- DELETE blocking helpers --------------------------------------
 //
-// `AuditAppendJob` and `BlockingSqliteError` moved to `state.rs` —
+// `AuditAppendJob` and `BlockingSqliteError` moved to `state.rs` --
 // they're used by `Core::append_to_ledger` (the cached-writer entry
 // point that replaced the pre-cache `audit_append_blocking` here)
 // and re-exported via `pub(crate) use crate::state::*;` in `main.rs`.

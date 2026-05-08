@@ -1,4 +1,4 @@
-//! POST verb implementation — append to an existing world.
+//! POST verb implementation -- append to an existing world.
 //!
 //! Extracted from `handler.rs` so the four verb implementations
 //! (GET / HEAD / PUT / POST) plus the dispatcher fit comfortably
@@ -38,7 +38,7 @@ pub(crate) async fn execute_post(
     trace: &TraceCtx,
 ) -> Phase {
     // POST appends to an existing world. PUT is the create/replace
-    // path — POST returns 404 if the world is absent and never
+    // path -- POST returns 404 if the world is absent and never
     // updates X-Meta-* headers (which are PUT-only).
     if !can_write(&world, tier) {
         let gate = if needs_write_approve(&world) {
@@ -53,6 +53,9 @@ pub(crate) async fn execute_post(
     }
     let _write_guard = core.acquire_world_lock(&world).await;
     trace.emit_aux("lock_acquired");
+    // Defence-in-depth tombstone clear (Bug 19). Mirrors the same
+    // call in `execute_put`. See that doc-comment for rationale.
+    core.clear_tombstone(&world);
     if let Err(resp) = hs::check_write_preconditions(core, &world, &headers) {
         let reason = if resp.status() == StatusCode::PRECONDITION_FAILED {
             ErrorReason::PreconditionFailed

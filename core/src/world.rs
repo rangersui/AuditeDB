@@ -239,17 +239,21 @@ pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(String, usize)>> {
     Ok(out)
 }
 
-/// Read body/meta and latest audit hmac through one SQLite connection.
-/// This keeps GET/HEAD from pairing an old body with a newer ETag when
-/// a write lands between two independent reads.
-pub fn read_with_hmac(
-    data_root: &Path,
-    world: &str,
-) -> rusqlite::Result<Option<(Stage, Option<String>)>> {
-    let Some(mut c) = open_existing(data_root, world)? else {
-        return Ok(None);
-    };
-    let tx = c.transaction()?;
+/// Read body/meta and latest audit hmac via a `TrackedReadConnection`
+/// owned by the SlotState cache (`Core::read_cache`). Inputs are
+/// type-gated: the only way to obtain `&mut TrackedReadConnection` is
+/// through the slot-before-open dance in `crate::read_cache`. This is
+/// the v10 enforcement -- a future contributor opening a bare
+/// `Connection` and trying to read through it gets a type error.
+///
+/// One SQLite tx covers body, headers, and the latest audit hmac, so
+/// GET/HEAD never pair an old body with a newer ETag when a write
+/// lands between independent reads.
+pub fn read_with_hmac_via_conn(
+    tracked: &mut crate::read_cache::TrackedReadConnection,
+) -> rusqlite::Result<(Stage, Option<String>)> {
+    let conn = tracked.as_mut_conn();
+    let tx = conn.transaction()?;
     let (body, content_type) = {
         let mut stmt = tx.prepare("SELECT body, content_type FROM stage_meta WHERE id=1")?;
         stmt.query_row([], |r| {
@@ -277,14 +281,14 @@ pub fn read_with_hmac(
         }
     };
     tx.commit()?;
-    Ok(Some((
+    Ok((
         Stage {
             body,
             content_type,
             headers,
         },
         latest_hmac,
-    )))
+    ))
 }
 
 /// Test-only seed primitive: write body + headers without touching the
@@ -630,7 +634,17 @@ mod tests {
         assert!(body_len(&root, "home/plain").is_err());
         assert!(metadata(&root, "home/plain").is_err());
         assert!(sizes(&root).is_err());
-        assert!(read_with_hmac(&root, "home/plain").is_err());
+        // Read path goes through ReadCache now. Wrap the bare
+        // Connection via the test-only helper exported from
+        // `read_cache` and call `read_with_hmac_via_conn` on it.
+        // The helper is `#[cfg(test)] pub(crate) fn` -- production
+        // code cannot construct a `TrackedReadConnection` outside
+        // `OpeningTransition::promote`. v10 type gate intact.
+        {
+            let conn = open(&root, "home/plain").unwrap();
+            let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+            assert!(read_with_hmac_via_conn(&mut tracked).is_err());
+        }
         assert!(append(&root, "home/plain", b"!").is_err());
 
         write(
@@ -662,10 +676,10 @@ mod tests {
     //              sqlite_bench_sketch -- --ignored --nocapture
     //
     // Used to bench-gate the v7.1 read-cache PR. Decision criteria
-    // (from §10 / Appendix A of the design doc):
-    //   < 50 µs warm  -> drop read cache, ship ledger-only fallback
-    //   50-200 µs     -> ship full plan
-    //   > 200 µs      -> ship full plan with confidence
+    // (from section10 / Appendix A of the design doc):
+    //   < 50 us warm  -> drop read cache, ship ledger-only fallback
+    //   50-200 us     -> ship full plan
+    //   > 200 us      -> ship full plan with confidence
     mod sqlite_bench_sketch {
         use super::*;
         use std::time::Instant;
