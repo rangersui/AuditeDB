@@ -221,7 +221,7 @@ impl ReadCache {
     }
 
     /// Verify the audit chain through the cached read path (Bug 58).
-    /// Same SlotState protocol as `cached_read_with_hmac` — DELETE
+    /// Same SlotState protocol as `cached_read_with_hmac` -- DELETE
     /// drains in-flight verifies via the slot's write guard. Closes
     /// the v10 type-gate gap on the admin
     /// `/proc/audit/{world}/verify` endpoint.

@@ -247,6 +247,7 @@ Resource caps:
 | `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE connections. |
 | `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Number of recent change events kept for `Last-Event-ID` replay. |
 | `ELASTIK_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent SCoAP/UDP request handlers when CoAP is enabled. |
+| `ELASTIK_READ_CACHE_MAX_ENTRIES` | `5000` | Per-world SQLite read connection cache cap. Each cached entry pins ~250 KiB (PRAGMA `cache_size=-200`); default 5000 entries puts worst-case resident at ~1.25 GiB. At-cap reads still go through the slot protocol via a transient slot (the cap controls persistence, not safety). Zero or non-numeric values fall back to the default. Surface live cache state via `/proc/pool`. |
 
 The HTTP request body limit is 64 MiB. `POST` append also checks the projected
 final world size before writing. If a write would cross a cap, the core returns
@@ -315,8 +316,8 @@ the Python SDK warn so you can rename it.
 Policy is small:
 
 - `GET`, `HEAD`, `OPTIONS`, `/listen/*`, `/proc/worlds`, `/proc/du`,
-  `/proc/df`, and `/proc/audit/{path}/verify` require read only when
-  `ELASTIK_READ_TOKEN` is configured.
+  `/proc/df`, `/proc/pool`, and `/proc/audit/{path}/verify` require read only
+  when `ELASTIK_READ_TOKEN` is configured.
 - `PUT` and `POST` require `ELASTIK_WRITE_TOKEN` for ordinary worlds.
 - `/etc/*`, `/lib/*`, `/boot/*`, `/usr/*`, and `/var/log/*` writes require
   `ELASTIK_APPROVE_TOKEN`.
@@ -796,6 +797,33 @@ storage	5	unlimited	unlimited
 memory	4	268435456	268435452
 worlds	2	unlimited	unlimited
 ```
+
+`/proc/pool` reports the SQLite read connection cache and audit
+ledger writer state. Eight metrics, one per line, with a
+Prometheus-style `counter` (monotonic from process start) or
+`snapshot` (instantaneous gauge) label so a polling operator knows
+which to subtract vs read directly:
+
+```text
+read_cache_entries 7 snapshot
+read_cache_tombstones 0 snapshot
+read_cache_hits 1842 counter
+read_cache_misses 11 counter
+read_cache_capped 0 counter
+read_cache_open_fails 0 counter
+read_cache_max_entries 5000 snapshot
+ledger_writer_inits 1 counter
+```
+
+`read_cache_capped > 0` means the workload's hot working set
+exceeds `ELASTIK_READ_CACHE_MAX_ENTRIES`; at-cap reads still
+complete correctly via a transient slot but skip caching. Raise
+the cap if hit-rate drops. `ledger_writer_inits` should equal `1`
+in steady state (lazy-init on first DELETE); higher values surface
+re-init events that would otherwise be invisible. The DashMap walk
+runs inside `spawn_blocking` so polling does not stall the async
+runtime. Same auth gating as `/proc/df`: read token if
+`ELASTIK_READ_TOKEN` is set, otherwise public.
 
 ## SDKs
 

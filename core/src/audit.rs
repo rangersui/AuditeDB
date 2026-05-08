@@ -148,7 +148,7 @@ struct EventHmacInput<'a> {
 
 /// Verify the audit chain through a `TrackedReadConnection` (the
 /// SlotState-tracked read path). Mirrors `world::read_with_hmac_via_conn`
-/// — the cache layer drives the slot-before-open dance and hands us
+/// -- the cache layer drives the slot-before-open dance and hands us
 /// the connection through the type gate. The bare per-request
 /// `verify_chain(data, world, key)` path is gone (Bug 58); admin
 /// `/proc/audit/{world}/verify` now goes through `Core::cached_verify_chain`,

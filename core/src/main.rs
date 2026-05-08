@@ -1,4 +1,4 @@
-//! elastik-core — bedrock HTTP+SQLite+HMAC.
+//! elastik-core -- bedrock HTTP+SQLite+HMAC.
 //!
 //! The core has one semantic interface: method + path + representation bytes.
 //! HTTP is the first-class surface. SCoAP is a small UDP-curl surface because
@@ -7,24 +7,24 @@
 //!
 //! v5.0 grammar:
 //!
-//!   GET    /<world>                → body bytes with stored Content-Type
-//!   HEAD   /<world>                → metadata headers, no body
-//!   PUT    /<world>                → replace body, update meta, audit
-//!   POST   /<world>                → append to body, no meta change, audit
-//!   DELETE /<world>                → drop world (sqlite) or evict (memory)
-//!   GET    /proc/worlds            → text/plain, one world per line
-//!   GET    /proc/version           → "elastik-core <ver> (rust)\n"
+//!   GET    /<world>                -> body bytes with stored Content-Type
+//!   HEAD   /<world>                -> metadata headers, no body
+//!   PUT    /<world>                -> replace body, update meta, audit
+//!   POST   /<world>                -> append to body, no meta change, audit
+//!   DELETE /<world>                -> drop world (sqlite) or evict (memory)
+//!   GET    /proc/worlds            -> text/plain, one world per line
+//!   GET    /proc/version           -> "elastik-core <ver> (rust)\n"
 //!
 //! Path prefix decides backend (one core, one port, no two daemons):
 //!
-//!   /home/* /etc/* /lib/* /boot/* /usr/* /var/*  → SQLite, durable, audited
-//!   /tmp/*  /dev/*  /sys/*                       → memory, transient
+//!   /home/* /etc/* /lib/* /boot/* /usr/* /var/*  -> SQLite, durable, audited
+//!   /tmp/*  /dev/*  /sys/*                       -> memory, transient
 //!
 //! Out of scope (deliberately):
-//!   protocol bridges      → SDK clients / external endpoint apps
-//!   AI shaping/routing    → SDK clients / external endpoint apps
-//!   /lib/* code running   → never in core; /lib is inert storage
-//!   application behavior  → outside core, expressed as HTTP
+//!   protocol bridges      -> SDK clients / external endpoint apps
+//!   AI shaping/routing    -> SDK clients / external endpoint apps
+//!   /lib/* code running   -> never in core; /lib is inert storage
+//!   application behavior  -> outside core, expressed as HTTP
 //!
 //! Env:
 //!   ELASTIK_HOST           default 127.0.0.1
@@ -115,6 +115,10 @@ async fn main() {
         env_nonzero_usize("ELASTIK_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX);
     let coap_max_in_flight =
         env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT);
+    let read_cache_max_entries = env_nonzero_usize(
+        "ELASTIK_READ_CACHE_MAX_ENTRIES",
+        crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
+    );
     std::fs::create_dir_all(&data).expect("create data dir");
     let durable_sizes = world::sizes(&data).expect("read durable storage usage");
     let storage_body_bytes = durable_sizes.iter().map(|(_, size)| *size).sum();
@@ -148,9 +152,7 @@ async fn main() {
         next_request: Arc::new(AtomicU64::new(0)),
         world_locks: Arc::new(DashMap::new()),
         ledger: Arc::new(crate::ledger::LedgerWriter::new()),
-        read_cache: Arc::new(crate::read_cache::ReadCache::new(
-            crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
-        )),
+        read_cache: Arc::new(crate::read_cache::ReadCache::new(read_cache_max_entries)),
     });
 
     let addr = listen_addr(&host, port);
@@ -358,8 +360,8 @@ mod tests {
     use std::sync::{Mutex as TestMutex, OnceLock};
 
     /// PR 4c: 50 unit tests below were renamed mechanically from
-    /// `handle_*` (sync `&Core → Response`) to `execute_*` (async
-    /// `&Core, &TraceCtx → Phase`). The verb-handler entry point
+    /// `handle_*` (sync `&Core -> Response`) to `execute_*` (async
+    /// `&Core, &TraceCtx -> Phase`). The verb-handler entry point
     /// returns `Phase`, but the assertions all operate on the
     /// underlying `Response`. This helper unwraps the three terminal
     /// `Phase` variants `execute_*` can return so tests can keep
@@ -2507,12 +2509,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn proc_pool_emits_metrics_with_type_labels() {
+        // Warm the cache via a PUT + GET, then assert the metrics
+        // body has the right counter / snapshot labels and tracks
+        // hits + misses correctly. After a DELETE the
+        // `ledger_writer_inits` counter must bump from 0 to 1
+        // (lazy-init fired exactly once).
+        let (core, dir) = test_core("proc-pool-metrics");
+        let headers = HeaderMap::new();
+
+        let put = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"hello"),
+                auth::Tier::Write,
+                "home/m".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
+        assert_eq!(put.status(), StatusCode::CREATED);
+
+        // First GET = miss (Phase 3); second GET = hit (Phase 1).
+        for _ in 0..2 {
+            let get = unwrap_response(
+                execute_get(
+                    headers.clone(),
+                    auth::Tier::Read,
+                    "home/m".to_string(),
+                    &core,
+                    &TraceCtx::disabled(),
+                )
+                .await,
+            );
+            assert_eq!(get.status(), StatusCode::OK);
+        }
+
+        let state = Arc::new(core);
+        let resp = proc_pool(State(state.clone()), Method::GET, headers.clone()).await;
+        let body = response_text(resp).await;
+
+        assert!(body.contains("read_cache_entries 1 snapshot\n"));
+        assert!(body.contains("read_cache_tombstones 0 snapshot\n"));
+        assert!(body.contains("read_cache_hits 1 counter\n"));
+        assert!(body.contains("read_cache_misses 1 counter\n"));
+        assert!(body.contains("read_cache_capped 0 counter\n"));
+        assert!(body.contains("read_cache_open_fails 0 counter\n"));
+        assert!(body.contains("read_cache_max_entries "));
+        // No DELETE issued yet -- ledger writer never lazy-inited.
+        assert!(body.contains("ledger_writer_inits 0 counter\n"));
+
+        // After a DELETE, the lazy-init fires exactly once
+        // (Codex P3: counter not snapshot).
+        let _ = unwrap_response(
+            execute_delete(
+                headers.clone(),
+                auth::Tier::Approve,
+                "home/m".to_string(),
+                &state,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
+        let resp2 = proc_pool(State(state), Method::GET, headers).await;
+        let body2 = response_text(resp2).await;
+        assert!(
+            body2.contains("ledger_writer_inits 1 counter\n"),
+            "expected counter to bump to 1 after first DELETE; body=\n{body2}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_pool_requires_read_token_when_enabled() {
+        // Codex P3 sub-finding: /proc/pool exposes read-cache and
+        // ledger writer internals -- match the auth-deny coverage of
+        // /proc/du and /proc/df. With a read token configured, an
+        // unauthenticated GET must return 401, not leak metrics.
+        let (mut core, dir) = test_core("proc-pool-read-token");
+        core.tokens.read = Some(b"reader".to_vec());
+        let state = Arc::new(core);
+        let headers = HeaderMap::new();
+
+        let resp = proc_pool(State(state), Method::GET, headers).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_first_deletes_increment_world_count_exactly_once() {
         // Bug 16 race coverage. Three concurrent DELETEs on a fresh
         // Core (delete_ledger_created starts false). The ledger gets
         // created on the first DELETE that wins the
-        // `swap(true, AcqRel)` edge — exactly one of them sees
+        // `swap(true, AcqRel)` edge -- exactly one of them sees
         // was_first=true and bumps `durable_world_count`. The other
         // two see the swap-already-true and skip the bump.
         //
@@ -2525,7 +2618,7 @@ mod tests {
         // racing DELETEs would each independently observe
         // delete_ledger_created==false (via world_exists_blocking)
         // and each bump the counter, leading to drift. With the
-        // atomic swap, only the unique false→true transition bumps.
+        // atomic swap, only the unique false->true transition bumps.
         let (core, dir) = test_core("concurrent-first-deletes");
         let headers = HeaderMap::new();
         for w in ["home/a", "home/b", "home/c"] {
@@ -2583,10 +2676,10 @@ mod tests {
     //
     // The white-box tests above call `execute_get` / `execute_head`
     // / `execute_put` / `execute_post` / `execute_delete` directly
-    // (renamed mechanically from `handle_*` in PR 4c) — they cover
+    // (renamed mechanically from `handle_*` in PR 4c) -- they cover
     // verb-handler logic in isolation. The tests below call
     // `pipeline::run` with the same Core fixture, exercising the
-    // `world_handler → pipeline::run → handler::execute` route that
+    // `world_handler -> pipeline::run -> handler::execute` route that
     // every real request now takes. Without these, a bug in the
     // pipeline wiring (path canonicalization, auth threading,
     // dispatch, response construction in the handler) would not be
@@ -2718,7 +2811,7 @@ mod tests {
     /// (`State` + `Extension<RequestId>` + `Method` + `AxPath` +
     /// `HeaderMap` + `Bytes`) wires up correctly and `world_handler`
     /// routes GET to the pipeline. Goes through `tower::oneshot` so
-    /// the `add_core_response_headers` middleware fires too — that
+    /// the `add_core_response_headers` middleware fires too -- that
     /// way we can assert the unified `x-request-id` header lands on
     /// the response.
     #[tokio::test]
@@ -2752,7 +2845,7 @@ mod tests {
         // same id (`pipeline::run` reads RequestId from extensions
         // rather than allocating its own). The fact that this
         // header is present on the response is what the unification
-        // fix guarantees — without it, the bug would slip through
+        // fix guarantees -- without it, the bug would slip through
         // again silently.
         let req_id_header = resp
             .headers()

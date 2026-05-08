@@ -56,7 +56,7 @@ pub(crate) enum BlockingSqliteError {
 pub(crate) struct LedgerWriter {
     /// `None` until the first successful `world::open` in
     /// `append`. Subsequent appends reuse the cached connection.
-    /// Never invalidated — the ledger world is never deleted by
+    /// Never invalidated -- the ledger world is never deleted by
     /// user-facing DELETE (`var/log/*` is reserved).
     conn: StdMutex<Option<Connection>>,
     /// Counter; bumped after each `None -> Some` transition.
@@ -74,7 +74,7 @@ impl LedgerWriter {
     /// Append one row to `var/log/deletes` using the cached
     /// connection. Lazy-initializes via `world::open` on the first
     /// successful call. Increments `inits` only after `world::open`
-    /// succeeds — failed opens leave the slot as `None` and do not
+    /// succeeds -- failed opens leave the slot as `None` and do not
     /// count.
     ///
     /// Caller wraps this in `tokio::task::spawn_blocking` (see

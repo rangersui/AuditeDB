@@ -249,7 +249,7 @@ impl Core {
 
     /// Append one row to the `var/log/deletes` audit ledger using
     /// the cached `LedgerWriter`. Thin wrapper that runs the
-    /// blocking append on the spawn_blocking pool — the inner
+    /// blocking append on the spawn_blocking pool -- the inner
     /// StdMutex on `LedgerWriter::conn` serializes concurrent
     /// appends without holding a Tokio worker.
     pub(crate) async fn append_to_ledger(
