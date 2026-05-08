@@ -3,15 +3,179 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::world::Stage;
 use crate::{precondition_failed, storage_error, to_header_map, world, Core};
+
+/// User-configurable matcher used by both Layer 3 (user allow,
+/// `ELASTIK_PERSIST_HEADERS`) and Layer 1.5 (user deny,
+/// `ELASTIK_DENY_HEADERS`) of the four-layer persist policy. Same
+/// matcher type, two field instances on `Core`; the call site
+/// (`should_persist_for_storage`) decides allow-vs-deny semantics.
+/// Built once at startup; held on `Core`.
+///
+/// Entries are normalized to lowercase. A trailing `*` makes an
+/// entry a prefix match (e.g. `x-my-*` matches `x-my-anything`).
+/// Anything else is exact match.
+///
+/// The empty allowlist is fully valid and means "no custom headers
+/// beyond the built-in default allow set are persisted." Default
+/// `Core` construction in tests uses `HeaderAllowlist::empty()`.
+#[derive(Default, Clone)]
+pub(crate) struct HeaderAllowlist {
+    exact: HashSet<String>,
+    prefixes: Vec<String>,
+}
+
+impl HeaderAllowlist {
+    /// Empty allowlist (default-deny custom headers). Used by
+    /// test fixtures and as the inert state for `Core` constructors
+    /// that don't read environment. The production startup path
+    /// uses `config::header_allowlist_from_env()` instead, which
+    /// returns an `empty()` for an unset env var anyway.
+    #[allow(dead_code)]
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Parse a comma-separated list. Whitespace per entry is
+    /// trimmed; entries are lowercased. A trailing `*` denotes a
+    /// prefix match. Empty or `*`-only entries are skipped.
+    pub(crate) fn parse(raw: &str) -> Self {
+        let mut exact = HashSet::new();
+        let mut prefixes: Vec<String> = Vec::new();
+        for entry in raw.split(',') {
+            let entry = entry.trim().to_ascii_lowercase();
+            if entry.is_empty() {
+                continue;
+            }
+            if let Some(prefix) = entry.strip_suffix('*') {
+                if !prefix.is_empty() {
+                    prefixes.push(prefix.to_string());
+                }
+                continue;
+            }
+            exact.insert(entry);
+        }
+        Self { exact, prefixes }
+    }
+
+    pub(crate) fn matches(&self, name_lower: &str) -> bool {
+        self.exact.contains(name_lower) || self.prefixes.iter().any(|p| name_lower.starts_with(p))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.exact.is_empty() && self.prefixes.is_empty()
+    }
+}
+
+/// Layer 2 -- built-in default allow. Standard representation
+/// headers that "travel with the bytes" and that the vast majority
+/// of users want round-tripped without configuring anything.
+///
+/// Closed list, hardcoded. Update only when a header is reviewed
+/// as "describes the body, not the request or transport." Operators
+/// who want to drop one for their deployment use
+/// `ELASTIK_DENY_HEADERS` (Layer 1.5).
+const DEFAULT_PERSIST_HEADERS: &[&str] = &[
+    // Body representation: how the body is encoded/displayed/labeled.
+    "content-disposition",
+    "content-encoding",
+    "content-language",
+    "content-md5",
+    // `last-modified` is intentionally NOT here. Elastik uses the
+    // HMAC-chained `ETag` as the canonical version identifier;
+    // adding `Last-Modified` would invite clients to send
+    // `If-Modified-Since` and bypass the audit-chained
+    // `If-None-Match` flow. Don't re-add without revisiting that
+    // contract.
+    // Caching directives that travel with the body.
+    "cache-control",
+    "expires",
+    // CORS family. The full set is shipped because any subset would
+    // surprise an operator dropping bytes through a browser.
+    "access-control-allow-origin",
+    "access-control-allow-methods",
+    "access-control-allow-headers",
+    "access-control-allow-credentials",
+    "access-control-expose-headers",
+    "access-control-max-age",
+    // Browser security policies for HTML / JS / image bodies.
+    "content-security-policy",
+    "content-security-policy-report-only",
+    "x-frame-options",
+    "permissions-policy",
+    "cross-origin-resource-policy",
+    "cross-origin-opener-policy",
+    "cross-origin-embedder-policy",
+    // Browser response-policy hints that travel with the body but
+    // sit outside the CSP family.
+    "referrer-policy",
+    "x-robots-tag",
+];
+
+/// Layer 2 default-allow lookup. Caller contract identical to
+/// `is_never_persisted_header`: `name_lower` must already be
+/// ASCII-lowercased. The constant array entries are all lowercase.
+fn is_default_persisted_header(name_lower: &str) -> bool {
+    DEFAULT_PERSIST_HEADERS.contains(&name_lower)
+}
+
+/// Four-layer persist decision used by `request_meta_headers` and
+/// `apply_meta_headers`:
+///
+///   L1   (hard deny, hardcoded): security / transport / tracing /
+///        cloud / IP-leak / pseudo-header pollutants. Always wins.
+///   L1.5 (user deny, env-configured): operator's `ELASTIK_DENY_HEADERS`
+///        list. Lets an operator subtract from L2 defaults (e.g.
+///        "I don't want `cache-control` round-tripping for my
+///        deployment"). Same matcher shape as L3 (exact + `*`
+///        prefix). Beats L2 and L3 below.
+///   L2   (default allow, hardcoded): standard representation
+///        headers that travel with the body. Persisted unless L1
+///        or L1.5 blocks them.
+///   L3   (user allow, env-configured): operator's `ELASTIK_PERSIST_HEADERS`
+///        allowlist. Adds custom headers (`x-author`, `x-my-*`)
+///        on top of L2.
+///
+/// Anything not matched by L2 or L3 is dropped -- the model is
+/// default-deny for custom headers, default-allow for standard
+/// representation headers, with both knobs (L1.5 and L3) for
+/// operator-side fine-tuning.
+pub(crate) fn should_persist_for_storage(
+    name_lower: &str,
+    user_allow: &HeaderAllowlist,
+    user_deny: &HeaderAllowlist,
+) -> bool {
+    if is_never_persisted_header(name_lower) {
+        return false;
+    }
+    if user_deny.matches(name_lower) {
+        return false;
+    }
+    if is_default_persisted_header(name_lower) {
+        return true;
+    }
+    user_allow.matches(name_lower)
+}
 
 pub(crate) fn apply_meta_headers(
     headers: &[(String, String)],
     out: &mut Vec<(HeaderName, HeaderValue)>,
 ) {
+    // Read-side guard: `headers` is `Stage.headers` loaded from
+    // SQLite (already filtered by `request_meta_headers` at write
+    // time), so the L1 hard deny is the only check that matters
+    // here. We don't re-apply L1.5 / L2 / L3 on read -- if the
+    // operator changes either `ELASTIK_PERSIST_HEADERS` (L3) or
+    // `ELASTIK_DENY_HEADERS` (L1.5) after data is already written,
+    // the persisted bytes still round-trip. Operators wanting to
+    // scrub stored headers re-PUT the affected worlds. The hard
+    // deny (L1) stays in force so a write-time policy bug or a
+    // corrupted database row can never replay credentials or
+    // tracing context.
     for (k, v) in headers {
         if is_never_persisted_header(&k.to_ascii_lowercase()) {
             continue;
@@ -213,11 +377,15 @@ pub(crate) fn request_content_type(headers: &HeaderMap) -> String {
         .to_owned()
 }
 
-pub(crate) fn request_meta_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+pub(crate) fn request_meta_headers(
+    headers: &HeaderMap,
+    user_allow: &HeaderAllowlist,
+    user_deny: &HeaderAllowlist,
+) -> Vec<(String, String)> {
     let mut out = BTreeMap::new();
     for (k, v) in headers {
         let name = k.as_str().to_ascii_lowercase();
-        if is_persisted_representation_header_lowercase(&name) {
+        if should_persist_for_storage(&name, user_allow, user_deny) {
             if let Ok(val) = v.to_str() {
                 out.insert(name, val.to_string());
             }
@@ -226,11 +394,17 @@ pub(crate) fn request_meta_headers(headers: &HeaderMap) -> Vec<(String, String)>
     out.into_iter().collect()
 }
 
-fn is_persisted_representation_header_lowercase(name: &str) -> bool {
-    !is_never_persisted_header(name)
-}
-
-pub(crate) fn is_never_persisted_header(name: &str) -> bool {
+/// Layer 1 hard deny. **Caller contract: `name_lower` must already
+/// be ASCII-lowercased.** RFC 7230 makes header names case-
+/// insensitive; axum's `HeaderName::as_str()` returns the canonical
+/// lowercase form, so headers entering through axum's `HeaderMap`
+/// are already lowercase. Callers reading from non-axum sources
+/// (Stage.headers loaded from SQLite, env-var allowlists, test
+/// fixtures) must `.to_ascii_lowercase()` before calling this. The
+/// internal arms below match against lowercase string literals;
+/// passing mixed case yields a false negative.
+pub(crate) fn is_never_persisted_header(name_lower: &str) -> bool {
+    let name = name_lower;
     name.starts_with("sec-")
         || name.starts_with("access-control-request-")
         || name.starts_with("want-")

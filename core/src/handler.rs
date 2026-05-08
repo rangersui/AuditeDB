@@ -262,7 +262,11 @@ pub(crate) async fn execute_put(
         };
     }
     let content_type = hs::request_content_type(&headers);
-    let meta = hs::request_meta_headers(&headers);
+    let meta = hs::request_meta_headers(
+        &headers,
+        &core.persist_header_allowlist,
+        &core.persist_header_user_deny,
+    );
     // 3. Per-world write lock -- serializes same-world writers so
     //    preconditions and write are atomic w.r.t. concurrent PUTs
     //    on this world. Different worlds run concurrently.

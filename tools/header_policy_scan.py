@@ -302,7 +302,15 @@ def parse_python_policy_from_text(
     match = re.search(r"_NON_PERSISTED_RESPONSE_HEADERS\s*=\s*\{(?P<body>.*?)\n\}", text, re.S)
     if not match:
         raise SystemExit(f"could not find _NON_PERSISTED_RESPONSE_HEADERS in {path}")
-    fn = extract_python_function(text, "_should_persist_response_header")
+    # Prefix denies live in the L1 hard-deny helper after the
+    # 4-layer persist policy refactor; before that they were inline
+    # in `_should_persist_response_header`. Pick whichever defines
+    # `n.startswith(...)` calls. (Pre-check by string presence to
+    # avoid `extract_python_function`'s SystemExit on missing.)
+    if re.search(r"^def\s+_is_never_persisted_header\b", text, re.M):
+        fn = extract_python_function(text, "_is_never_persisted_header")
+    else:
+        fn = extract_python_function(text, "_should_persist_response_header")
     deny = {
         normalize(name)
         for name in re.findall(r'"([A-Za-z0-9][A-Za-z0-9-]*)"', match.group("body"))

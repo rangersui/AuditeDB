@@ -44,6 +44,29 @@ pub(crate) fn env_nonzero_usize(name: &str, default: usize) -> usize {
     }
 }
 
+/// Parse `ELASTIK_PERSIST_HEADERS` into the user-configured
+/// allowlist (Layer 3 of the persist policy). Comma-separated;
+/// trailing `*` = prefix match. See
+/// `crate::http_semantics::HeaderAllowlist` for the matching
+/// semantics. An unset, empty, or all-whitespace value yields
+/// `HeaderAllowlist::empty()`, which means "no custom headers
+/// beyond the built-in default-allow set."
+pub(crate) fn header_allowlist_from_env() -> crate::http_semantics::HeaderAllowlist {
+    let raw = std::env::var("ELASTIK_PERSIST_HEADERS").unwrap_or_default();
+    crate::http_semantics::HeaderAllowlist::parse(&raw)
+}
+
+/// Parse `ELASTIK_DENY_HEADERS` into the user-configured deny set
+/// (Layer 1.5 of the persist policy). Same matcher shape as
+/// `header_allowlist_from_env`; lets the operator subtract a
+/// header from the built-in `DEFAULT_PERSIST_HEADERS` allow set
+/// (e.g. "this deployment doesn't want `cache-control` round-tripping").
+/// L1 hard-deny still wins over this; this beats L2 default and L3 allow.
+pub(crate) fn header_user_deny_from_env() -> crate::http_semantics::HeaderAllowlist {
+    let raw = std::env::var("ELASTIK_DENY_HEADERS").unwrap_or_default();
+    crate::http_semantics::HeaderAllowlist::parse(&raw)
+}
+
 pub(crate) fn coap_bind_from_env() -> Option<(String, u16)> {
     let raw = std::env::var("ELASTIK_COAP_PORT").ok()?;
     let raw = raw.trim();

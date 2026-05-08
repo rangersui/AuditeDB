@@ -419,11 +419,24 @@ def main() -> int:
     saved_coap_env = {
         "ELASTIK_COAP_HOST": os.environ.get("ELASTIK_COAP_HOST"),
         "ELASTIK_COAP_PORT": os.environ.get("ELASTIK_COAP_PORT"),
+        "ELASTIK_PERSIST_HEADERS": os.environ.get("ELASTIK_PERSIST_HEADERS"),
     }
     with tempfile.TemporaryDirectory(prefix="elastik-sdk-e2e-") as data_dir:
         os.environ["ELASTIK_URL"] = base
         os.environ["ELASTIK_COAP_HOST"] = "127.0.0.1"
         os.environ["ELASTIK_COAP_PORT"] = str(coap_port)
+        # v7.2 flipped header persistence to default-deny for custom
+        # names. The standard representation headers in this fixture
+        # (content-disposition / content-language / cache-control)
+        # round-trip via the built-in L2 allow set without
+        # configuration; the SDK's `author=` kwarg becomes
+        # `X-Meta-Author`, which is custom and must be opted in.
+        # Set the env var BEFORE elastik.start() so the spawned core
+        # picks it up. The Rust unit test
+        # `request_meta_headers_persist_default_representation_headers_only`
+        # covers the default-deny path; this fixture covers the
+        # operator opt-in path end-to-end.
+        os.environ["ELASTIK_PERSIST_HEADERS"] = "x-meta-*"
         e = elastik.start(
             port=port,
             key=key,
@@ -627,9 +640,16 @@ def main() -> int:
                 "content-security-policy is stored",
             )
             check(policy_head["x-frame-options"] == "DENY", "x-frame-options is stored")
+            # v7.2 contract: unknown custom headers default-deny.
+            # The fixture's L3 allowlist is `x-meta-*`, which does NOT
+            # match `x-future-http-thing`. The pre-v7.2 contract was
+            # "everything not denied travels with the bytes"; the
+            # post-v7.2 contract is "default allow only the curated L2
+            # set, custom requires opt-in." Operators that need
+            # arbitrary forward-compat must opt in explicitly.
             check(
-                policy_head["x-future-http-thing"] == "ok",
-                "future safe response header is stored",
+                "x-future-http-thing" not in policy_head,
+                "v7.2: unknown custom header default-denies without ELASTIK_PERSIST_HEADERS",
             )
             for request_only in [
                 "device-memory",

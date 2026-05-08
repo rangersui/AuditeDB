@@ -11,6 +11,7 @@ from typing import Any
 
 from elastik.sdk import (
     Elastik,
+    HeaderAllowlist,
     NotFound,
     Response,
     WorldMeta,
@@ -23,11 +24,35 @@ from elastik.sdk import (
 
 
 class FakeElastik(Elastik):
-    """In-memory SDK-compatible fake for handler/unit tests."""
+    """In-memory SDK-compatible fake for handler/unit tests.
 
-    def __init__(self):
+    Mirrors the Rust core's four-layer header persistence policy
+    (L1 hard deny, L1.5 user deny, L2 default allow, L3 user allow).
+    By default reads `ELASTIK_PERSIST_HEADERS` and `ELASTIK_DENY_HEADERS`
+    from the environment so SDK unit tests behave the same way the
+    real core does under the same env. Pass
+    `persist_allow=` / `persist_deny=` to override per fixture
+    without touching the environment.
+    """
+
+    def __init__(
+        self,
+        *,
+        persist_allow: HeaderAllowlist | None = None,
+        persist_deny: HeaderAllowlist | None = None,
+    ):
         super().__init__("fake://elastik", bearer_token="fake")
         self._store: dict[str, tuple[bytes, WorldMeta]] = {}
+        self._persist_allow = (
+            persist_allow
+            if persist_allow is not None
+            else HeaderAllowlist.from_env("ELASTIK_PERSIST_HEADERS")
+        )
+        self._persist_deny = (
+            persist_deny
+            if persist_deny is not None
+            else HeaderAllowlist.from_env("ELASTIK_DENY_HEADERS")
+        )
 
     def __repr__(self) -> str:
         return f"<FakeElastik {len(self._store)} paths>"
@@ -72,10 +97,23 @@ class FakeElastik(Elastik):
         _set_if(headers, "content-disposition", content_disposition)
         _set_if(headers, "cache-control", cache_control)
         for key, value in wire_headers.items():
-            if _should_persist_response_header(key):
+            if _should_persist_response_header(
+                key, self._persist_allow, self._persist_deny
+            ):
                 headers[key] = value  # type: ignore[literal-required]
+        # `**meta` becomes X-Meta-* headers. Under the v7.2 default-deny
+        # policy these are also custom representation headers and need
+        # to pass the same filter; otherwise FakeElastik would lie
+        # about production behavior. Operators using FakeElastik in
+        # tests must export `ELASTIK_PERSIST_HEADERS=x-meta-*` to
+        # mirror the production opt-in (or pass `persist_allow=` to
+        # the constructor).
         for key, value in meta.items():
-            headers[f"x-meta-{key.replace('_', '-').lower()}"] = str(value)  # type: ignore[literal-required]
+            meta_key = f"x-meta-{key.replace('_', '-').lower()}"
+            if _should_persist_response_header(
+                meta_key, self._persist_allow, self._persist_deny
+            ):
+                headers[meta_key] = str(value)  # type: ignore[literal-required]
         self._store[world] = (body, headers)
         self._etag_cache[world] = (headers["etag"], body)
         return {"status": 201, "etag": headers["etag"]}

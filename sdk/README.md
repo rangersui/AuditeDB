@@ -252,12 +252,13 @@ Extra keyword arguments become plain `X-Meta-*` headers:
 
 ```python
 e.put("note", "hello", project="demo")
+# X-Meta-Project is sent on the wire. Whether it round-trips depends on
+# the core's persist policy (see below). On a default v7.2+ core the
+# next line raises KeyError unless you start the core with
+# ELASTIK_PERSIST_HEADERS=x-meta-* (or pass persist_allow=... to a
+# FakeElastik fixture).
 assert e.head("note")["x-meta-project"] == "demo"
 ```
-
-Those `X-Meta-*` fields are user metadata. They do not drive auth or routing by
-themselves, but durable worlds include persisted metadata in audit metadata
-(`meta_sha256`) and `event_headers`.
 
 Any safe response header that does not have a named argument can be sent through
 `headers=`:
@@ -269,18 +270,41 @@ e.put(
     content_type="image/png",
     headers={"Access-Control-Allow-Origin": "*"},
 )
+# CORS family is in the built-in default-allow set; no env config needed.
 assert e.head("logo.png")["access-control-allow-origin"] == "*"
 ```
 
-The core blacklists credentials, hop-by-hop transport state, request controls,
-and core-generated headers such as `ETag`, `Content-Length`, `Link`, `Allow`,
-`X-Request-Id`, and `X-Elapsed-Us`. Everything else is stored and replayed
-without the SDK needing to understand it.
+### Persist policy (v7.2+)
 
-`Content-Type` is special: it is stored as the representation media type, not as
-a generic persisted metadata header. `X-Meta-*` is user metadata with no
-built-in auth or routing behavior, but durable worlds audit it as persisted
-representation metadata.
+The core's persist decision is four layers:
+
+1. **Hard deny** (hardcoded): credentials, hop-by-hop, distributed-tracing
+   context (`traceparent` / `x-b3-*` / `x-amzn-*` / `cf-*`), IP-leak
+   headers, HTTP/2+3 pseudo-headers, and core-owned response headers
+   (`ETag`, `Content-Length`, `Link`, `Allow`, `X-Request-Id`, ...).
+   Operators cannot turn this off.
+2. **User deny** (`ELASTIK_DENY_HEADERS`): operator subtracts from the
+   allow layers below — beats both layer 3 (default allow) and layer 4
+   (user allow). Affects future writes only; already-persisted headers
+   round-trip until the world is re-`PUT`.
+3. **Default allow** (hardcoded): standard representation headers
+   (`Content-Disposition` / `Content-Encoding` / `Content-Language` /
+   `Content-MD5` / `Cache-Control` / `Expires` / full CORS family /
+   CSP / `X-Frame-Options` / `Permissions-Policy` / COEP/COOP/CORP /
+   `Referrer-Policy` / `X-Robots-Tag`).
+4. **User allow** (`ELASTIK_PERSIST_HEADERS`): operator opts in custom
+   names like `X-Author` or `X-Meta-*`.
+
+Default empty layer 4 means **no custom headers round-trip without
+configuration**. To restore the v7.1 default for `X-Meta-*`:
+
+```bash
+export ELASTIK_PERSIST_HEADERS=x-meta-*
+```
+
+`Content-Type` is special: stored as the representation media type, not as
+generic persisted metadata. When `X-Meta-*` is allowlisted, durable worlds
+audit it as persisted representation metadata (`meta_sha256` / `event_headers`).
 
 The SDK also refuses wire-level headers that `urllib` must compute itself:
 `Content-Length`, `Transfer-Encoding`, `Host`, `Connection`, `Keep-Alive`,

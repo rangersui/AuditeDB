@@ -685,26 +685,57 @@ mod tests {
 
         // Spawn 4 concurrent readers all targeting world C. Whoever
         // wins the Entry race owns the transient slot and runs the
-        // drain-before-remove cleanup; the others either cache-hit
-        // the same Arc (Phase 1) or arrive after cleanup (cache miss
-        // -> install fresh transient). All must succeed without
-        // returning a torn / partial body.
+        // drain-before-remove cleanup. Other readers can land on
+        // any of three branches:
+        //   - Phase 1 cache hit BEFORE the owner's drain begins:
+        //     gets `Ok(Some(body))` from the still-Ready slot.
+        //   - Phase 1 cache hit AFTER the owner's `mem::replace
+        //     Tombstone` but BEFORE the owner's `remove_if`: read
+        //     guard sees Tombstone -> returns `Ok(None)`. This is
+        //     the documented v9 "spurious-404 micro-window" trade
+        //     -- accepted because the alternative is an fd-vs-DELETE
+        //     race that's strictly worse than a transient 404.
+        //     `std::sync::RwLock` is reader-preferring on Linux,
+        //     so the window is wide enough to hit reliably under
+        //     concurrent load (Windows happens to be writer-fair,
+        //     which is why this test passed locally before CI on
+        //     Linux surfaced it).
+        //   - Cache miss after the slot is removed: installs a
+        //     fresh transient and reads through it.
+        //
+        // Test contract: every reader returns either a correct body
+        // or a clean `Ok(None)` (never a torn body, never an Err,
+        // never a panic). The transient owner is guaranteed to
+        // succeed (it took the read guard before its own drain).
+        // After all readers complete, the slot is removed (cap
+        // honored) and the persistent A / B slots are preserved.
         let mut handles = Vec::new();
         for _ in 0..4 {
             let cache = cache.clone();
             let dir = dir.clone();
             handles.push(thread::spawn(move || {
-                cache
-                    .cached_read_with_hmac(&dir, "home/c")
-                    .expect("read")
-                    .expect("body")
+                cache.cached_read_with_hmac(&dir, "home/c").expect("read")
             }));
         }
+        let mut bodies = 0usize;
+        let mut spurious_404s = 0usize;
         for h in handles {
-            let (stage, _hmac) = h.join().expect("thread");
-            assert_eq!(stage.body, b"hello world");
-            assert_eq!(stage.content_type, "text/plain");
+            match h.join().expect("thread") {
+                Some((stage, _hmac)) => {
+                    assert_eq!(stage.body, b"hello world", "body must not be torn");
+                    assert_eq!(stage.content_type, "text/plain");
+                    bodies += 1;
+                }
+                None => spurious_404s += 1,
+            }
         }
+        // The transient owner is guaranteed to read its own slot
+        // before initiating drain, so at least one body is required.
+        assert!(
+            bodies >= 1,
+            "transient slot owner must read body before drain; \
+             got {bodies} body / {spurious_404s} Ok(None)"
+        );
 
         // After all readers complete, the transient slot should be
         // gone (cleanup ran). A and B remain (persistent slots).

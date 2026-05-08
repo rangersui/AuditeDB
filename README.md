@@ -239,15 +239,17 @@ Empty token variables are treated as unset.
 
 Resource caps:
 
-| Variable | Default | Meaning |
-|---|---:|---|
-| `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum stored size of one world after `PUT` or `POST`. |
-| `ELASTIK_MAX_STORAGE_BYTES` | unlimited | Optional durable storage quota across SQLite-backed world body bytes. |
-| `ELASTIK_MAX_MEMORY_BYTES` | `268435456` | Maximum total bytes in memory-backed worlds (`/tmp`, `/dev`, `/sys`). |
-| `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE connections. |
-| `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Number of recent change events kept for `Last-Event-ID` replay. |
-| `ELASTIK_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent SCoAP/UDP request handlers when CoAP is enabled. |
-| `ELASTIK_READ_CACHE_MAX_ENTRIES` | `5000` | Per-world SQLite read connection cache cap. Each cached entry pins ~250 KiB (PRAGMA `cache_size=-200`); default 5000 entries puts worst-case resident at ~1.25 GiB. At-cap reads still go through the slot protocol via a transient slot (the cap controls persistence, not safety). Zero or non-numeric values fall back to the default. Surface live cache state via `/proc/pool`. |
+| Variable                           |       Default | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------- | ------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ELASTIK_MAX_WORLD_BYTES`        |  `67108864` | Maximum stored size of one world after `PUT` or `POST`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `ELASTIK_MAX_STORAGE_BYTES`      |     unlimited | Optional durable storage quota across SQLite-backed world body bytes.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `ELASTIK_MAX_MEMORY_BYTES`       | `268435456` | Maximum total bytes in memory-backed worlds (`/tmp`, `/dev`, `/sys`).                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `ELASTIK_MAX_LISTEN_CONNECTIONS` |      `1024` | Maximum concurrent `/listen/*` SSE connections.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `ELASTIK_LISTEN_REPLAY_MAX`      |      `1024` | Number of recent change events kept for `Last-Event-ID` replay.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `ELASTIK_COAP_MAX_IN_FLIGHT`     |      `1024` | Maximum concurrent SCoAP/UDP request handlers when CoAP is enabled.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `ELASTIK_READ_CACHE_MAX_ENTRIES` |      `5000` | Per-world SQLite read connection cache cap. Each cached entry pins ~250 KiB (PRAGMA `cache_size=-200`); default 5000 entries puts worst-case resident at ~1.25 GiB. At-cap reads still go through the slot protocol via a transient slot (the cap controls persistence, not safety). Zero or non-numeric values fall back to the default. Surface live cache state via `/proc/pool`.                                                                                                                                          |
+| `ELASTIK_PERSIST_HEADERS`        |     _empty_ | Custom representation headers to round-trip with the body, on top of the built-in default-allow set (Layer 3 of the persist policy). Comma-separated; trailing `*` = prefix match (`x-my-*`). Default empty means "only the built-in standard reps round-trip; no custom headers." Example: `ELASTIK_PERSIST_HEADERS=x-author,x-version,x-my-*`.                                                                                                                                                                            |
+| `ELASTIK_DENY_HEADERS`           |     _empty_ | Subtract entries from the built-in default-allow set (Layer 1.5). Use to drop a specific standard header your deployment doesn't want round-tripping (e.g.`cache-control`). Same matcher shape as `ELASTIK_PERSIST_HEADERS`. Hardcoded security deny (Layer 1: tracing / cloud / IP-leak / credentials / transport) always wins over this. **Affects future writes only** -- already-persisted headers still round-trip until the affected worlds are re-`PUT`. Default empty means "no built-in entries subtracted." |
 
 The HTTP request body limit is 64 MiB. `POST` append also checks the projected
 final world size before writing. If a write would cross a cap, the core returns
@@ -282,15 +284,15 @@ indented `aux` lines for sub-steps inside a verb handler:
 ```
 
 `grep req-42` reconstructs one full request lifecycle. `GET` and `HEAD` emit
-one `body_size` aux line but no lock / audit / notify aux — reads don't
+one `body_size` aux line but no lock / audit / notify aux  reads don't
 lock, don't write, don't fire change events. `DELETE` adds
 `audit_intent` / `audit_commit` / `audit_commit_failed[_event_failed]` so
-the intent / commit two-step is legible — including the honest
+the intent / commit two-step is legible, including the honest
 double-failure case where the commit append AND the subsequent
 failure-event append both fail.
 
 Cost when disabled is one atomic-bool load per phase (≈1 ns). Cost when
-enabled is ≈1 µs per stderr line — a typical write request emits 6
+enabled is ≈1 µs per stderr line, a typical write request emits 6
 lifecycle lines (`Received` → `Authenticated` → `PathValidated` →
 `Dispatched` → `CommittedWrite` → `Done`) plus the verb aux lines shown
 in the sample.
@@ -303,11 +305,11 @@ roadmap.
 
 There are three token levels:
 
-| Tier | Variable | Meaning |
-|---|---|---|
-| Read | `ELASTIK_READ_TOKEN` | Optional read gate. If empty, reads are public. |
-| Write | `ELASTIK_WRITE_TOKEN` | Write ordinary worlds. Includes read. |
-| Approve | `ELASTIK_APPROVE_TOKEN` | Write system worlds and delete. Includes read. |
+| Tier    | Variable                  | Meaning                                         |
+| ------- | ------------------------- | ----------------------------------------------- |
+| Read    | `ELASTIK_READ_TOKEN`    | Optional read gate. If empty, reads are public. |
+| Write   | `ELASTIK_WRITE_TOKEN`   | Write ordinary worlds. Includes read.           |
+| Approve | `ELASTIK_APPROVE_TOKEN` | Write system worlds and delete. Includes read.  |
 
 Migration note: `ELASTIK_TOKEN` was the old write-token name. It still works
 as a temporary fallback when `ELASTIK_WRITE_TOKEN` is unset, but startup and
@@ -353,17 +355,17 @@ curl.exe -X PUT http://127.0.0.1:3105/home/x `
 One port is enough. The path chooses the backend.
 
 | Path prefix | Backend | Persistence | Audit |
-|---|---|---|---|
-| `/home/*` | SQLite | durable | yes |
-| `/etc/*` | SQLite | durable | yes |
-| `/lib/*` | SQLite | durable | yes |
-| `/boot/*` | SQLite | durable | yes |
-| `/usr/*` | SQLite | durable | yes |
-| `/var/*` | SQLite | durable | yes |
-| `/tmp/*` | memory | transient | no |
-| `/dev/*` | memory | transient | no |
-| `/sys/*` | memory | transient | no |
-| `/proc/*` | virtual | generated | no |
+| ----------- | ------- | ----------- | ----- |
+| `/home/*` | SQLite  | durable     | yes   |
+| `/etc/*`  | SQLite  | durable     | yes   |
+| `/lib/*`  | SQLite  | durable     | yes   |
+| `/boot/*` | SQLite  | durable     | yes   |
+| `/usr/*`  | SQLite  | durable     | yes   |
+| `/var/*`  | SQLite  | durable     | yes   |
+| `/tmp/*`  | memory  | transient   | no    |
+| `/dev/*`  | memory  | transient   | no    |
+| `/sys/*`  | memory  | transient   | no    |
+| `/proc/*` | virtual | generated   | no    |
 
 Bare paths are convenience spelling for `/home`:
 
@@ -485,27 +487,48 @@ It is also rejected from the generic persisted-header path: `Content-Type` has
 a dedicated media-type slot rather than ordinary persisted response-header
 storage.
 
-Other safe response headers from `PUT` are persisted and replayed on read. This
-is blacklist-based: core refuses credentials, hop-by-hop transport state,
-request controls, and headers it computes itself. Everything else travels with
-the bytes.
+Other safe response headers from `PUT` are persisted and replayed on read.
+The decision is made by a four-layer policy:
 
-- `Content-Encoding`
-- `Content-Language`
-- `Content-Disposition`
-- `Cache-Control`
-- `Access-Control-Allow-Origin`
-- `Content-Security-Policy`
-- `X-Frame-Options`
-- `Permissions-Policy`
-- future response headers the core does not understand
-- `X-Meta-*`
+1. **Hard deny** (hardcoded). Credentials, hop-by-hop transport state,
+   request controls, distributed-tracing context, cloud-provider
+   injections, IP-leak headers, HTTP/2+3 pseudo-headers, and core-owned
+   response headers are never persisted. Operators cannot turn this off.
+2. **User deny** (`ELASTIK_DENY_HEADERS`). Operator subtraction from the
+   built-in default-allow set in step 3. Affects future writes only --
+   already-persisted bytes still round-trip until the world is re-PUT.
+3. **Default allow** (hardcoded). Standard representation headers that
+   travel with the body without configuration -- all are response-only
+   headers describing browser policy or body identity, not request or
+   transport state:
+   - `Content-Disposition`, `Content-Encoding`, `Content-Language`,
+     `Content-MD5`
+   - `Cache-Control`, `Expires`
+   - Full `Access-Control-Allow-*` family + `Access-Control-Expose-Headers`
+     + `Access-Control-Max-Age`
+   - `Content-Security-Policy`, `Content-Security-Policy-Report-Only`,
+     `X-Frame-Options`, `Permissions-Policy`, `Cross-Origin-Resource-Policy`,
+     `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`,
+     `Referrer-Policy`, `X-Robots-Tag`
+4. **User allow** (`ELASTIK_PERSIST_HEADERS`). Operator opts in custom
+   headers (`X-Author`, `X-Tag`, `X-Meta-*`, etc.) on top of step 3.
+   Default empty: nothing custom round-trips.
 
-`X-Meta-*` is an SDK/user metadata convention. It has no built-in auth or
-routing behavior, but it is still persisted as representation metadata. On
-durable worlds, that metadata is included in the audit metadata hash
-(`meta_sha256`) and recorded in `event_headers`, so changing `X-Meta-*` changes
-the audited representation state.
+`Last-Modified` is intentionally **not** in the default-allow set. Elastik
+uses the HMAC-chained `ETag` as the canonical version identifier;
+`Last-Modified` would invite clients to send `If-Modified-Since` and bypass
+the audit-chained `If-None-Match` flow.
+
+`X-Meta-*` is an SDK/user metadata convention but is **not** persisted by
+default in v7.2 and later. To restore the v7.1-and-prior behavior:
+
+```env
+ELASTIK_PERSIST_HEADERS=x-meta-*
+```
+
+When `X-Meta-*` is allowlisted and persisted on durable worlds, it enters
+the audit metadata hash (`meta_sha256`) and `event_headers`, so changing
+`X-Meta-*` changes the audited representation state.
 
 Each successful durable write advances the audit chain, so two `PUT`s with the
 same body and metadata still produce different ETags. ETags identify a specific
@@ -589,8 +612,7 @@ the resource carry its own policy:
 - Or store response-policy headers such as `Content-Security-Policy`,
   `Access-Control-Allow-Origin`, `X-Frame-Options`, and
   `Permissions-Policy` with the resource on `PUT`.
-- Or make the HTML world carry its own browser policy with `<meta
-  http-equiv="Content-Security-Policy" ...>`. HTML is already a web app; the
+- Or make the HTML world carry its own browser policy with `<meta http-equiv="Content-Security-Policy" ...>`. HTML is already a web app; the
   policy can travel with the bytes that define the app.
 - Use escaping or text rendering when displaying untrusted worlds in
   `index.html`.
@@ -830,12 +852,12 @@ runtime. Same auth gating as `/proc/df`: read token if
 The core is still just HTTP. SDKs are convenience layers around the same six
 verbs; they do not add a second protocol or object model.
 
-| SDK | Status | Why |
-|---|---|---|
-| Python | primary local glue | Best for local agents, CLI wrappers, tests, `@listen`, debug sinks, and small automation. |
-| JavaScript | shipped as `@elastikjs/client` | Browser and Node fetch client. In Node, `Elastik.start()` can spawn the bundled Rust core through platform npm packages. |
-| Go | roadmap | Good for single-binary sidecars and distribution. |
-| Rust | roadmap | Good for embedding close to the core once the ABI stops moving. |
+| SDK        | Status                           | Why                                                                                                                       |
+| ---------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Python     | primary local glue               | Best for local agents, CLI wrappers, tests,`@listen`, debug sinks, and small automation.                                |
+| JavaScript | shipped as `@elastikjs/client` | Browser and Node fetch client. In Node,`Elastik.start()` can spawn the bundled Rust core through platform npm packages. |
+| Go         | roadmap                          | Good for single-binary sidecars and distribution.                                                                         |
+| Rust       | roadmap                          | Good for embedding close to the core once the ABI stops moving.                                                           |
 
 ### Browser Is Already The SDK
 

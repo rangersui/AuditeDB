@@ -153,6 +153,8 @@ async fn main() {
         world_locks: Arc::new(DashMap::new()),
         ledger: Arc::new(crate::ledger::LedgerWriter::new()),
         read_cache: Arc::new(crate::read_cache::ReadCache::new(read_cache_max_entries)),
+        persist_header_allowlist: Arc::new(crate::config::header_allowlist_from_env()),
+        persist_header_user_deny: Arc::new(crate::config::header_user_deny_from_env()),
     });
 
     let addr = listen_addr(&host, port);
@@ -1839,7 +1841,14 @@ mod tests {
     }
 
     #[test]
-    fn request_meta_headers_persist_safe_response_headers() {
+    fn request_meta_headers_persist_default_representation_headers_only() {
+        // L2 (DEFAULT_PERSIST_HEADERS) covers standard representation
+        // headers that round-trip with the body without the operator
+        // configuring anything. Custom headers (x-author,
+        // x-future-http-thing, x-meta-*) are NOT persisted under the
+        // empty allowlist -- the operator must opt in via
+        // ELASTIK_PERSIST_HEADERS. Layer 1 hard-deny stays in force
+        // either way.
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
         headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
@@ -1995,7 +2004,9 @@ mod tests {
         );
         headers.insert("pragma", HeaderValue::from_static("no-cache"));
 
-        let meta = hs::request_meta_headers(&headers);
+        let allowlist = hs::HeaderAllowlist::empty();
+        let user_deny = hs::HeaderAllowlist::empty();
+        let meta = hs::request_meta_headers(&headers, &allowlist, &user_deny);
         let has = |name: &str| meta.iter().any(|(n, _)| n == name);
 
         assert!(meta.contains(&("content-encoding".to_string(), "gzip".to_string())));
@@ -2005,7 +2016,6 @@ mod tests {
             "attachment; filename=\"report.pdf\"".to_string()
         )));
         assert!(meta.contains(&("cache-control".to_string(), "max-age=60".to_string())));
-        assert!(meta.contains(&("x-meta-author".to_string(), "ranger".to_string())));
         assert!(meta.contains(&("access-control-allow-origin".to_string(), "*".to_string())));
         assert!(meta.contains(&(
             "content-security-policy".to_string(),
@@ -2013,7 +2023,20 @@ mod tests {
         )));
         assert!(meta.contains(&("x-frame-options".to_string(), "DENY".to_string())));
         assert!(meta.contains(&("permissions-policy".to_string(), "camera=()".to_string())));
-        assert!(meta.contains(&("x-future-http-thing".to_string(), "ok".to_string())));
+        assert!(meta.contains(&(
+            "cross-origin-resource-policy".to_string(),
+            "same-origin".to_string()
+        )));
+        // Custom headers (no `x-` shortcut, no auto-allowlist for
+        // x-meta-*) MUST NOT persist under the empty allowlist.
+        assert!(
+            !has("x-meta-author"),
+            "x-meta-* is opt-in via ELASTIK_PERSIST_HEADERS"
+        );
+        assert!(
+            !has("x-future-http-thing"),
+            "unknown x- headers default-deny"
+        );
 
         for name in [
             "authorization",
@@ -2096,9 +2119,162 @@ mod tests {
         headers.append("x-meta-author", HeaderValue::from_static("alice"));
         headers.append("x-meta-author", HeaderValue::from_static("bob"));
 
-        let meta = hs::request_meta_headers(&headers);
+        // Allowlist x-meta-* so the dedup behaviour is observable;
+        // the empty allowlist would correctly drop both entries.
+        let allowlist = hs::HeaderAllowlist::parse("x-meta-*");
+        let user_deny = hs::HeaderAllowlist::empty();
+        let meta = hs::request_meta_headers(&headers, &allowlist, &user_deny);
 
         assert_eq!(meta, vec![("x-meta-author".to_string(), "bob".to_string())]);
+    }
+
+    #[test]
+    fn request_meta_headers_user_allowlist_persists_custom_headers() {
+        // Layer 3 (user allowlist) opens custom-header round-trip
+        // on top of the default-allow set. Exact match and prefix
+        // match (`x-my-*`) both work.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-author", HeaderValue::from_static("ranger"));
+        headers.insert("x-version", HeaderValue::from_static("7.1.0"));
+        headers.insert("x-my-tag", HeaderValue::from_static("custom"));
+        headers.insert("x-my-region", HeaderValue::from_static("ap-east-1"));
+        headers.insert("x-other", HeaderValue::from_static("not-allowlisted"));
+        // L1 hard deny -- must lose to user allowlist below.
+        headers.insert(
+            "traceparent",
+            HeaderValue::from_static("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+        );
+        // L2 default-allow stays on top of L3.
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("max-age=60"),
+        );
+
+        let allowlist = hs::HeaderAllowlist::parse("x-author,x-version,x-my-*,traceparent");
+        let user_deny = hs::HeaderAllowlist::empty();
+        let meta = hs::request_meta_headers(&headers, &allowlist, &user_deny);
+        let has = |name: &str| meta.iter().any(|(n, _)| n == name);
+
+        // L3 named exact: persisted.
+        assert!(has("x-author"));
+        assert!(has("x-version"));
+        // L3 prefix wildcard: persisted.
+        assert!(has("x-my-tag"));
+        assert!(has("x-my-region"));
+        // Not allowlisted -> default-deny (L3 didn't match, L2 doesn't cover).
+        assert!(!has("x-other"));
+        // L1 hard deny ALWAYS wins -- even if traceparent is in the
+        // user allowlist, it never persists.
+        assert!(
+            !has("traceparent"),
+            "L1 hard deny must override user allowlist; tracing context never persists"
+        );
+        // L2 default-allow still applies alongside L3.
+        assert!(has("cache-control"));
+    }
+
+    #[test]
+    fn request_meta_headers_user_deny_subtracts_from_default_allow() {
+        // Layer 1.5 (user deny / ELASTIK_DENY_HEADERS) lets an
+        // operator subtract a header from the built-in
+        // DEFAULT_PERSIST_HEADERS without recompiling. Order:
+        //   L1 hard deny > L1.5 user deny > L2 default > L3 user allow.
+        let mut headers = HeaderMap::new();
+        // L2 defaults that should normally persist:
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("max-age=60"),
+        );
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        headers.insert("permissions-policy", HeaderValue::from_static("camera=()"));
+        // L3-allowlisted custom that user_deny should also win over:
+        headers.insert("x-author", HeaderValue::from_static("ranger"));
+
+        // Operator says: drop cache-control + permissions-policy
+        // from defaults; also kill any allowlisted x-author (user
+        // deny beats user allow).
+        let allowlist = hs::HeaderAllowlist::parse("x-author");
+        let user_deny = hs::HeaderAllowlist::parse("cache-control,permissions-policy,x-author");
+        let meta = hs::request_meta_headers(&headers, &allowlist, &user_deny);
+        let has = |name: &str| meta.iter().any(|(n, _)| n == name);
+
+        // L2 defaults the operator denied -> dropped.
+        assert!(
+            !has("cache-control"),
+            "user-deny must subtract from L2 default-allow"
+        );
+        assert!(!has("permissions-policy"));
+        // L2 default not in user_deny -> still persisted.
+        assert!(has("content-encoding"));
+        // L3 allowlisted but also user_denied -> deny wins.
+        assert!(
+            !has("x-author"),
+            "user-deny must override user-allow when both match"
+        );
+    }
+
+    #[test]
+    fn request_meta_headers_is_case_insensitive_per_rfc_7230() {
+        // RFC 7230: HTTP header field names are case-insensitive.
+        // axum's HeaderMap canonicalizes incoming names to
+        // lowercase via `HeaderName::as_str`; this test pins that
+        // axum-side normalization PLUS verifies that the
+        // env-var-side parser lowercases its input.
+        let mut headers = HeaderMap::new();
+        // Insert with mixed case -- axum stores keys in lowercase
+        // canonical form, so the iteration in
+        // `request_meta_headers` sees lowercase.
+        headers.insert("X-Author", HeaderValue::from_static("ranger"));
+        headers.insert("CACHE-CONTROL", HeaderValue::from_static("max-age=60"));
+        headers.insert("Traceparent", HeaderValue::from_static("00-...-01"));
+        headers.insert("X-Forwarded-For", HeaderValue::from_static("203.0.113.7"));
+
+        // Operator wrote ELASTIK_PERSIST_HEADERS with mixed case --
+        // parser lowercases.
+        let allowlist = hs::HeaderAllowlist::parse("X-AUTHOR, X-Version");
+        let user_deny = hs::HeaderAllowlist::empty();
+        let meta = hs::request_meta_headers(&headers, &allowlist, &user_deny);
+        let has = |name: &str| meta.iter().any(|(n, _)| n == name);
+
+        // Mixed-case allowlist entry persists the (lowercase-stored)
+        // input header.
+        assert!(has("x-author"), "X-Author allowlisted as X-AUTHOR persists");
+        // L2 default catches CACHE-CONTROL regardless of input case.
+        assert!(has("cache-control"));
+        // L1 hard-deny still blocks tracing context regardless of
+        // input case.
+        assert!(!has("traceparent"));
+        assert!(!has("x-forwarded-for"));
+
+        // Stored header names are always lowercase canonical form.
+        for (name, _) in &meta {
+            assert_eq!(
+                name,
+                &name.to_ascii_lowercase(),
+                "stored meta keys must be lowercase"
+            );
+        }
+    }
+
+    #[test]
+    fn header_allowlist_parser_handles_whitespace_dedup_and_wildcards() {
+        // Whitespace per entry trimmed; case folded; duplicates de-duped;
+        // empty / all-* entries skipped.
+        let allow = hs::HeaderAllowlist::parse(
+            "  X-Author , x-version, x-my-*, x-version, , *, x-my-* , x-AUTHOR",
+        );
+        assert!(allow.matches("x-author"));
+        assert!(allow.matches("x-version"));
+        assert!(allow.matches("x-my-tag"));
+        assert!(allow.matches("x-my-region"));
+        assert!(!allow.matches("x-other"));
+        assert!(!allow.matches(""));
+        // A bare `*` in the env doesn't open the floodgates.
+        assert!(!allow.matches("anything-else"));
+
+        // Empty input == empty allowlist.
+        assert!(hs::HeaderAllowlist::parse("").is_empty());
+        assert!(hs::HeaderAllowlist::parse("   ,  ,").is_empty());
     }
 
     #[tokio::test]
@@ -3146,6 +3322,12 @@ mod tests {
                     read_cache: Arc::new(crate::read_cache::ReadCache::new(
                         crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
                     )),
+                    persist_header_allowlist: Arc::new(
+                        crate::http_semantics::HeaderAllowlist::empty(),
+                    ),
+                    persist_header_user_deny: Arc::new(
+                        crate::http_semantics::HeaderAllowlist::empty(),
+                    ),
                 }
             },
             dir,

@@ -405,14 +405,47 @@ eq(await e.get(`sdk-test/sensor/${sensor}`), "23.5", "template string path round
 await eApprove.delete(`sdk-test/sensor/${sensor}`);
 
 // ─── Test 19: headers passthrough on PUT ────────────────────
+//
+// v7.2 flipped to default-deny for custom representation headers.
+// `Cache-Control` is in the built-in L2 default-allow set and
+// always round-trips. `X-Meta-*` is custom -- only round-trips if
+// the core is started with ELASTIK_PERSIST_HEADERS that allows it.
+// Detect via env so this test passes both with and without the
+// allowlist, instead of forcing operators to set env to run JS
+// tests.
 console.log("\n=== headers passthrough ===");
+const xMetaAllowed = (() => {
+    // Mirror of HeaderAllowlist::parse / matches in the Rust core
+    // (core/src/http_semantics.rs). Specifically: a bare `*` entry
+    // is rejected by the Rust parser (length-1 prefix gets dropped),
+    // so this checker must reject it too -- otherwise a
+    // pathological env value would make the JS test expect a
+    // round-trip the Rust core wouldn't deliver.
+    const v = (process.env.ELASTIK_PERSIST_HEADERS || "").toLowerCase();
+    return v.split(",").some((entry) => {
+        const e = entry.trim();
+        if (!e) return false;
+        if (e.endsWith("*")) {
+            const prefix = e.slice(0, -1);
+            return prefix.length > 0 && "x-meta-author".startsWith(prefix);
+        }
+        return e === "x-meta-author";
+    });
+})();
 await e.put("sdk-test/withmeta", "x", {
     contentType: "text/plain",
     headers: { "X-Meta-Author": "ranger", "Cache-Control": "max-age=3600" },
 });
 const metaHead = await e.head("sdk-test/withmeta");
-eq(metaHead.headers["x-meta-author"], "ranger", "X-Meta-* persisted via headers option");
-eq(metaHead.headers["cache-control"], "max-age=3600", "Cache-Control persisted via headers option");
+if (xMetaAllowed) {
+    eq(metaHead.headers["x-meta-author"], "ranger", "X-Meta-* persisted via headers option (env-allowed)");
+} else {
+    check(
+        !("x-meta-author" in metaHead.headers),
+        "X-Meta-* default-denies without ELASTIK_PERSIST_HEADERS opt-in",
+    );
+}
+eq(metaHead.headers["cache-control"], "max-age=3600", "Cache-Control persisted via headers option (L2 default)");
 await eApprove.delete("sdk-test/withmeta");
 
 // ─── Test 20: auto Content-Type from path extension ────────

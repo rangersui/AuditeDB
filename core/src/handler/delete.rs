@@ -80,7 +80,11 @@ pub(crate) async fn execute_delete(
     // If we crash after intent and before commit, recovery sees an
     // explicit intent that needs reconciliation rather than a
     // vanished world with no causal record.
-    let delete_meta = hs::request_meta_headers(&headers);
+    let delete_meta = hs::request_meta_headers(
+        &headers,
+        &core.persist_header_allowlist,
+        &core.persist_header_user_deny,
+    );
     let delete_content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())

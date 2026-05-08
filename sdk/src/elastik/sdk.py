@@ -159,7 +159,8 @@ _NON_PERSISTED_RESPONSE_HEADERS = {
     # trace ID and corrupts downstream tracing. The multi-header
     # Zipkin propagation (x-b3-*) and cloud-provider injections
     # (cf-*, x-amzn-*, ":") are handled by the prefix check in
-    # _should_persist_response_header.
+    # _is_never_persisted_header (which _should_persist_response_header
+    # delegates to as Layer 1).
     "traceparent",
     "tracestate",
     "baggage",
@@ -577,11 +578,19 @@ class Elastik(MutableMapping[str, bytes]):
         """PUT body to path, replacing any existing body.
 
         `content_type` is stored as the representation media type and
-        returned as Content-Type. Other standard representation kwargs are
-        persisted as safe response headers and returned by GET and HEAD.
-        Extra kwargs become X-Meta-* headers. They do not drive auth or
-        routing, but durable worlds include them in audited representation
-        metadata.
+        returned as Content-Type. Other standard representation kwargs
+        (Content-Encoding, Content-Language, Content-Disposition,
+        Cache-Control, etc.) are in the core's built-in default-allow
+        set and round-trip without configuration.
+
+        Extra kwargs become `X-Meta-*` headers on the wire. **Whether
+        they round-trip depends on the core's persist policy.** Under
+        v7.2 default-deny, custom headers (including `X-Meta-*`) are
+        only stored and audited when the operator opts in via
+        `ELASTIK_PERSIST_HEADERS=x-meta-*`. With that allowlist set,
+        durable worlds include them in audited representation
+        metadata; without it, GET/HEAD will not echo them and the
+        audit chain does not record them.
 
         `create_only=True` sends `If-None-Match: *`.
         `if_none_match="etag"` sends a quoted ETag validator.
@@ -1660,23 +1669,138 @@ def _reject_wire_headers(headers: dict[str, str]) -> None:
         )
 
 
-def _should_persist_response_header(name: str) -> bool:
-    n = name.strip().lower()
+# Layer 2: built-in default allow. Mirrors DEFAULT_PERSIST_HEADERS
+# in core/src/http_semantics.rs. Standard representation headers
+# that "travel with the bytes" -- shipped on so users get sensible
+# round-trip without configuring anything.
+_DEFAULT_PERSIST_HEADERS = frozenset(
+    {
+        "content-disposition",
+        "content-encoding",
+        "content-language",
+        "content-md5",
+        # `last-modified` intentionally NOT here -- ETag (HMAC-chained)
+        # is the canonical version identifier; Last-Modified would
+        # invite If-Modified-Since clients to bypass the audit-chained
+        # If-None-Match flow. Mirror of the comment in
+        # core/src/http_semantics.rs DEFAULT_PERSIST_HEADERS.
+        "cache-control",
+        "expires",
+        "access-control-allow-origin",
+        "access-control-allow-methods",
+        "access-control-allow-headers",
+        "access-control-allow-credentials",
+        "access-control-expose-headers",
+        "access-control-max-age",
+        "content-security-policy",
+        "content-security-policy-report-only",
+        "x-frame-options",
+        "permissions-policy",
+        "cross-origin-resource-policy",
+        "cross-origin-opener-policy",
+        "cross-origin-embedder-policy",
+        # Browser response-policy hints outside the CSP family.
+        "referrer-policy",
+        "x-robots-tag",
+    }
+)
+
+
+def _is_never_persisted_header(n: str) -> bool:
+    """Layer 1: hard deny -- never persist regardless of allowlist.
+    Mirrors `is_never_persisted_header` in core/src/http_semantics.rs."""
     return (
-        bool(n)
-        and not n.startswith("sec-")
-        and not n.startswith("access-control-request-")
-        and not n.startswith("want-")
+        n.startswith("sec-")
+        or n.startswith("access-control-request-")
+        or n.startswith("want-")
         # HTTP/2 + HTTP/3 pseudo-headers; Zipkin multi-header
         # propagation; AWS runtime injections; Cloudflare runtime
-        # injections. Mirror of the Rust core denylist in
-        # core/src/http_semantics.rs.
-        and not n.startswith(":")
-        and not n.startswith("x-b3-")
-        and not n.startswith("x-amzn-")
-        and not n.startswith("cf-")
-        and n not in _NON_PERSISTED_RESPONSE_HEADERS
+        # injections.
+        or n.startswith(":")
+        or n.startswith("x-b3-")
+        or n.startswith("x-amzn-")
+        or n.startswith("cf-")
+        or n in _NON_PERSISTED_RESPONSE_HEADERS
     )
+
+
+def _should_persist_response_header(
+    name: str,
+    user_allow: "HeaderAllowlist | None" = None,
+    user_deny: "HeaderAllowlist | None" = None,
+) -> bool:
+    """Four-layer persist decision matching the Rust core:
+
+      L1   (hard deny):    is_never_persisted_header -> False
+      L1.5 (user deny):    matches user_deny          -> False
+      L2   (default allow): DEFAULT_PERSIST_HEADERS    -> True
+      L3   (user allow):    matches user_allow         -> True
+      otherwise:                                          False
+
+    Both `user_allow` and `user_deny` default to `None`, which
+    skips that layer. The operator-side env vars are
+    `ELASTIK_PERSIST_HEADERS` (allow) and `ELASTIK_DENY_HEADERS`
+    (deny); see `HeaderAllowlist.from_env`.
+    """
+    n = name.strip().lower()
+    if not n:
+        return False
+    if _is_never_persisted_header(n):
+        return False
+    if user_deny is not None and user_deny.matches(n):
+        return False
+    if n in _DEFAULT_PERSIST_HEADERS:
+        return True
+    if user_allow is not None and user_allow.matches(n):
+        return True
+    return False
+
+
+class HeaderAllowlist:
+    """User-configured allowlist for custom representation headers.
+    Mirrors `crate::http_semantics::HeaderAllowlist` in the Rust core.
+
+    Entries are normalized to lowercase. A trailing `*` makes an
+    entry a prefix match (e.g. `x-my-*` matches `x-my-anything`).
+    """
+
+    __slots__ = ("_exact", "_prefixes")
+
+    def __init__(self, exact: frozenset[str], prefixes: tuple[str, ...]) -> None:
+        self._exact = exact
+        self._prefixes = prefixes
+
+    @classmethod
+    def empty(cls) -> "HeaderAllowlist":
+        return cls(frozenset(), ())
+
+    @classmethod
+    def parse(cls, raw: str) -> "HeaderAllowlist":
+        exact: set[str] = set()
+        prefixes: list[str] = []
+        for entry in raw.split(","):
+            entry = entry.strip().lower()
+            if not entry:
+                continue
+            if entry.endswith("*"):
+                prefix = entry[:-1]
+                if prefix:
+                    prefixes.append(prefix)
+                continue
+            exact.add(entry)
+        return cls(frozenset(exact), tuple(prefixes))
+
+    @classmethod
+    def from_env(cls, env_var: str = "ELASTIK_PERSIST_HEADERS") -> "HeaderAllowlist":
+        return cls.parse(os.environ.get(env_var, ""))
+
+    def matches(self, name_lower: str) -> bool:
+        return name_lower in self._exact or any(
+            name_lower.startswith(p) for p in self._prefixes
+        )
+
+    def is_empty(self) -> bool:
+        return not self._exact and not self._prefixes
 
 
 def _body_bytes(data: bytes | str, method: str) -> bytes:
