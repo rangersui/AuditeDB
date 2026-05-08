@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "elastik-core"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "axum",
  "base64",
