@@ -94,7 +94,7 @@ The core is deliberately boring. That is the point.
 Start the Rust core:
 
 ```powershell
-cd C:\Users\chenh\Elastik-franchise\Elastik-playground\core
+cd path/to/elastik/core
 $env:ELASTIK_KEY = "dev-hmac-key"
 $env:ELASTIK_READ_TOKEN = "read-token"
 $env:ELASTIK_WRITE_TOKEN = "write-token"
