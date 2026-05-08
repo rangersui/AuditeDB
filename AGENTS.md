@@ -197,6 +197,254 @@ These are not preferences. They are the contract every change must keep.
   operators reading stderr without trace enabled still see both
   failures.
 
+## No fallback to unguarded paths
+
+When a code path exists to enforce a safety invariant
+(e.g., SlotState tracking fd lifetime, tombstone protocol,
+HMAC audit chain), never add a fallback that bypasses it.
+
+If the guarded path cannot run (cap reached, resource
+exhausted, timeout), the correct responses are:
+
+1. Run the guarded path with reduced retention (e.g.,
+   track the fd but don't cache the connection)
+2. Return an error (500, 503, 429)
+3. Queue and retry
+
+Never:
+
+- Fall back to the pre-guard behavior ("today's code path")
+- Skip the guard for "graceful degradation"
+- Add a fast path that avoids the safety mechanism
+
+The pre-guard behavior is the bug the guard was built to fix.
+Falling back to it reintroduces the bug under a different
+trigger condition.
+
+### Drain before remove
+
+For Arc-backed resources, map removal is not cleanup. A map entry is
+only the rendezvous point. Any task that already cloned the Arc can
+still hold a guard, a file descriptor, a SQLite snapshot, or some other
+live resource outside the map.
+
+The order is mandatory:
+
+```
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+drain -> close fd -> remove
+```
+
+No exceptions. The rule applies to every cleanup path:
+
+- DELETE removing a world
+- transient slot cleanup after an at-cap read
+- LRU eviction of an old read slot
+- shutdown closing cached connections
+- any future map-backed resource with Arc clones
+
+Never remove first and trust that "this path is temporary" or "this is
+just a cap fallback" or "LRU is different." Arc does not care why the
+reference exists. If someone holds it, someone holds it. Their fd does
+not disappear because the map entry did.
+
+Correct cleanup:
+
+```
+1. Drain every active guard on the shared resource.
+2. Close/drop the fd or equivalent live resource while the drain still holds.
+3. Remove the map entry only after no cloned handle can keep the resource alive.
+```
+
+### LOTO is the precedent
+
+Industrial safety has run this exact play for decades: Lockout /
+Tagout (LOTO).
+
+```
+LOTO                    elastik
+---------------------------------------------
+high-voltage line   =   the world's .db file
+energizing the line =   DELETE removing the file
+maintenance worker  =   reader holding a Connection
+worker's lock       =   Opening slot (with my Arc as the key)
+direct tool use     =   Ready (cached connection reused)
+"DO NOT ENERGIZE"   =   Tombstone
+wait for all locks  =   drain via inner.write().await
+                        before delete_world_blocking runs
+
+LOTO rule:
+-> one worker, one lock, with the worker's name on it
+-> only that worker can remove their lock
+-> the line stays dead until every lock is removed
+-> NEVER enter the equipment without locking it out
+
+= SlotState protocol
+```
+
+The LOTO rules are written in blood. Each line maps directly to a
+fallback anti-pattern:
+
+```
+"no time to lock out"              -> killed
+"just a quick look, skip the lock" -> killed
+"ran out of locks, share one"      -> killed
+"fall back to no-lock mode"        -> killed
+
+no lock available? wait. get a temporary lock. report up.
+never enter unguarded equipment.
+```
+
+The "ran out of locks" case is the cap fallthrough exactly. The v6 /
+v7 cap fallback was the equivalent of "we ran out of LOTO padlocks, so
+this maintenance team just won't lock out for the next shift." The fix
+isn't fewer locks; it's a temporary lock from the supply room: install
+it, work, return it. SlotState is the lock; the cap controls how many
+persist in the rack, not whether you carry one onto the equipment.
+v8's transient slot is the temporary-lock checkout.
+
+### Origin
+
+sqlite-connection-pool v6 Bug 42. A cache cap fell back to
+`world::read_with_hmac` (the pre-SlotState path), reintroducing
+the v1 fd race that five rounds of review had closed. Seven
+rounds to learn: safety mechanisms don't have off switches.
+
+LOTO took the industry decades and a body count. elastik took seven
+review rounds and 47 bugs. Same lesson, smaller blast radius, but the
+same reason this rule has its own section in the agent manual: every
+"just this once, fall back" is the bug that re-energizes the line.
+
+## Physics, not policy
+
+The rules above ("No fallback to unguarded paths", "Drain before
+remove") are policy. Policy depends on every future contributor —
+human or AI — reading the rule, remembering it, and applying it
+correctly. Policy fails probabilistically: the larger the codebase,
+the more contributors, the more bugs slip through review.
+
+Type-system enforcement is physics. The compiler refuses to build
+the bug. The wall has no window; nobody climbs through.
+
+When you can prevent a class of bug by making that bug uncompilable,
+do that instead of writing a rule. The rules become unnecessary and
+review becomes redundant — both are net wins.
+
+### The pattern
+
+When an invariant says "X must always go through Y first", make Y
+the only constructor of the type X consumes.
+
+Example (sqlite read path, v10):
+
+```rust
+// Only OpeningTransition::promote can build this.
+// No public ::new(), no public ::from_raw().
+pub(crate) struct TrackedReadConnection(rusqlite::Connection);
+
+mod opening {
+    use super::*;
+    impl TrackedReadConnection {
+        // Visible only inside this module. The only call site is
+        // OpeningTransition::promote below.
+        pub(super) fn from_raw(conn: rusqlite::Connection) -> Self {
+            TrackedReadConnection(conn)
+        }
+    }
+
+    impl OpeningTransition<'_> {
+        pub fn promote(self, conn: rusqlite::Connection) {
+            let tracked = TrackedReadConnection::from_raw(conn);
+            // ... mem::replace SlotState::Ready(StdMutex::new(tracked)) ...
+        }
+    }
+}
+
+// Every read function takes the tracked type:
+pub(crate) fn read_with_hmac_via_conn(
+    conn: &mut TrackedReadConnection,
+) -> rusqlite::Result<...> { ... }
+
+// world::read_with_hmac (the bare per-request open + SQL bypass)
+// IS DELETED. There is no public read entry point that takes a
+// raw rusqlite::Connection.
+```
+
+A future contributor (or AI co-author) wanting to "just open the
+file directly" gets a `rusqlite::Connection` from
+`Connection::open_with_flags`. Every read function in `world.rs`
+demands `&mut TrackedReadConnection`. The contributor cannot
+construct one without going through `OpeningTransition`, which is
+only reachable from inside the slot-before-open dance, which only
+runs inside the SlotState protocol.
+
+The bypass code does not compile. AGENTS.md does not need to forbid
+it. Reviewers do not need to catch it. It is physically unwritable.
+
+### When to encode an invariant in types
+
+- **The invariant has been re-discovered via review three or more
+  times.** That's the signal: the rule is non-obvious enough that
+  policy alone keeps failing. SlotState gating was re-discovered in
+  v6 (Bug 42), v7 (cap-fallthrough closure), v8 (transient slot),
+  and v9 (drain before remove). Four rounds of "we forgot this
+  layer." Type encoding turns the rule into the only writable shape.
+- **The invariant is structural, not workload-dependent.** "Reads
+  must hold the slot's read guard" is structural — types can express
+  it. "Don't call this more than 100 times per second" is
+  workload-dependent — types can't express rates.
+- **The cost is one newtype + a couple of constrained signatures.**
+  Type encoding pays for itself when it removes a class of bugs and
+  costs <50 lines of plumbing.
+
+### When not to bother
+
+- The invariant only matters in one place. A `debug_assert!` or a
+  100-line review of one function is cheaper than a newtype that
+  ripples through downstream signatures.
+- The invariant leaks lifetimes everywhere. Self-referential structs,
+  unwieldy `<'a>` parameters propagating through the codebase, or
+  `unsafe` workarounds — the ergonomic cost outweighs the safety
+  win. Use a `RefCell`-like runtime guard instead.
+- The invariant is for one release and the surface is moving fast.
+  Type encoding is best for invariants that are *contracts*, not
+  scaffolding.
+
+### Industrial precedent
+
+Manufacturing calls this **poka-yoke** (mistake-proofing): plug
+shapes that only fit the right socket; nuclear control rods that
+can't be inserted backwards; medical IV connectors that physically
+cannot connect to the wrong tubing. The principle is the same —
+make the wrong action geometrically impossible, not just procedurally
+forbidden.
+
+LOTO is policy: workers must lock out before entering. Poka-yoke is
+physics: the equipment has no openable panel until power is killed
+upstream. Both have their place; physics is stronger when you can
+afford the geometry.
+
+### Origin
+
+sqlite-connection-pool v9 → v10. Nine review rounds wrote the rule
+"no bypass to unguarded paths." v10 made the rule
+unenforceable-by-policy by removing the policy layer entirely: the
+bypass code does not compile. Review caught the rule violations;
+types prevent the rule violations from existing.
+
+The graduation from runtime guards to compile-time guards is the
+last fence on this chase. Future Arc-backed resources (plugin
+worlds, sidecar caches, FastCGI connection pools) get the same
+treatment up front.
+
 ## Endpoint Change Checklist
 
 Every new core route should pass the same small checklist before review:

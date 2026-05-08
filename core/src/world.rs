@@ -654,4 +654,89 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(root);
     }
+
+    // ---------------- bench sketch (sqlite-connection-pool.md Appendix A)
+    //
+    // Run via:
+    //   cargo test --release --manifest-path core/Cargo.toml \
+    //              sqlite_bench_sketch -- --ignored --nocapture
+    //
+    // Used to bench-gate the v7.1 read-cache PR. Decision criteria
+    // (from §10 / Appendix A of the design doc):
+    //   < 50 µs warm  -> drop read cache, ship ledger-only fallback
+    //   50-200 µs     -> ship full plan
+    //   > 200 µs      -> ship full plan with confidence
+    mod sqlite_bench_sketch {
+        use super::*;
+        use std::time::Instant;
+
+        fn scratch_dir(label: &str) -> PathBuf {
+            let mut d = std::env::temp_dir();
+            d.push(format!(
+                "elastik-bench-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        #[test]
+        #[ignore]
+        fn bench_open_existing_warm() {
+            let dir = scratch_dir("open-existing-warm");
+            let world = "home/bench";
+            let _c = open(&dir, world).unwrap();
+            write(&dir, world, b"hello world", "text/plain", &[]).unwrap();
+
+            let n = 10_000;
+            let start = Instant::now();
+            for _ in 0..n {
+                let conn = open_existing(&dir, world).unwrap().unwrap();
+                let _len: usize = conn
+                    .query_row("SELECT length(body) FROM stage_meta WHERE id=1", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+            }
+            let elapsed = start.elapsed();
+            eprintln!(
+                "open_existing_warm: {:.1} us/iter ({} iters in {:?})",
+                elapsed.as_secs_f64() * 1e6 / n as f64,
+                n,
+                elapsed
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        #[ignore]
+        fn bench_open_full_warm() {
+            // Full open() with all PRAGMAs + CREATE TABLE IF NOT EXISTS.
+            // Bounds the cost the cache eliminates on cold-path reads
+            // (open_existing skips the schema CREATEs but still pays
+            // the open + busy_timeout + WAL discovery).
+            let dir = scratch_dir("open-full-warm");
+            let world = "home/bench";
+            let _c = open(&dir, world).unwrap();
+            write(&dir, world, b"hello world", "text/plain", &[]).unwrap();
+
+            let n = 10_000;
+            let start = Instant::now();
+            for _ in 0..n {
+                let _conn = open(&dir, world).unwrap();
+            }
+            let elapsed = start.elapsed();
+            eprintln!(
+                "open_full_warm: {:.1} us/iter ({} iters in {:?})",
+                elapsed.as_secs_f64() * 1e6 / n as f64,
+                n,
+                elapsed
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }
