@@ -245,6 +245,7 @@ mod tests {
             next_event: Arc::new(AtomicU64::new(0)),
             next_request: Arc::new(AtomicU64::new(0)),
             world_locks: Arc::new(DashMap::new()),
+            ledger_writer: Arc::new(StdMutex::new(None)),
         });
 
         let resp = handler(
@@ -284,6 +285,7 @@ mod tests {
             next_event: Arc::new(AtomicU64::new(0)),
             next_request: Arc::new(AtomicU64::new(0)),
             world_locks: Arc::new(DashMap::new()),
+            ledger_writer: Arc::new(StdMutex::new(None)),
         };
         {
             let mut log = core.event_log.lock().unwrap();
@@ -331,6 +333,7 @@ mod tests {
             next_event: Arc::new(AtomicU64::new(0)),
             next_request: Arc::new(AtomicU64::new(0)),
             world_locks: Arc::new(DashMap::new()),
+            ledger_writer: Arc::new(StdMutex::new(None)),
         };
         {
             let mut log = core.event_log.lock().unwrap();

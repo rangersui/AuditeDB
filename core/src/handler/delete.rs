@@ -20,8 +20,9 @@ use axum::{
 };
 
 use crate::{
-    audit, auth, can_delete, http_semantics as hs, not_found, server_error, storage_error, store,
-    unauthorized, world, AuthGate, Core, ErrorReason, Phase, TraceCtx,
+    auth, can_delete, http_semantics as hs, not_found, server_error, storage_error, store,
+    unauthorized, world, AuditAppendJob, AuthGate, BlockingSqliteError, Core, ErrorReason, Phase,
+    TraceCtx,
 };
 
 pub(crate) async fn execute_delete(
@@ -85,51 +86,46 @@ pub(crate) async fn execute_delete(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    // Acquire the ledger lock briefly around the existence check +
-    // intent append so two concurrent DELETEs don't double-count
-    // ledger creation. Lock ordering: target world FIRST (already
-    // held), then ledger lock. See Core::acquire_world_lock docs.
-    let intent_outcome = {
-        let _ledger_guard = core.acquire_world_lock("var/log/deletes").await;
-        trace.emit_aux("ledger_lock_acquired");
-        let existed = match world_exists_blocking(core.data.clone(), "var/log/deletes").await {
-            Ok(existed) => existed,
-            Err(e) => {
-                trace.emit_aux("ledger_lock_released");
-                return Phase::Error {
-                    resp: blocking_storage_error("delete audit intent", e),
-                    reason: ErrorReason::StorageWriteAudit,
-                };
-            }
-        };
-        if let Err(e) = audit_append_blocking(
-            core.data.clone(),
-            AuditAppendJob {
-                ledger_world: "var/log/deletes",
-                event_type: "delete_intent",
-                target: world.clone(),
-                body_sha256: body_sha256_before.clone(),
-                size: 0,
-                content_type: delete_content_type.clone(),
-                headers: delete_meta.clone(),
-                key: core.hmac_key.clone(),
-            },
-        )
+    // The cached `ledger_writer` Mutex serializes ledger appends, so
+    // the prior `acquire_world_lock("var/log/deletes")` calls are
+    // gone — this Mutex provides the same ordering guarantee with no
+    // extra async hop. Ledger existence is tracked by
+    // `delete_ledger_created` AtomicBool: initialized at startup from
+    // `world::sizes`, and atomically swapped to true on the first
+    // successful append in this process run. The previous
+    // `world_exists_blocking` RO open per DELETE is gone.
+    if let Err(e) = core
+        .append_to_ledger(AuditAppendJob {
+            ledger_world: "var/log/deletes",
+            event_type: "delete_intent",
+            target: world.clone(),
+            body_sha256: body_sha256_before.clone(),
+            size: 0,
+            content_type: delete_content_type.clone(),
+            headers: delete_meta.clone(),
+            key: core.hmac_key.clone(),
+        })
         .await
-        {
-            trace.emit_aux("ledger_lock_released");
-            return Phase::Error {
-                resp: blocking_storage_error("delete audit intent", e),
-                reason: ErrorReason::StorageWriteAudit,
-            };
-        }
-        trace.emit_aux("audit_intent");
-        trace.emit_aux("ledger_lock_released");
-        existed
-    };
-    if !intent_outcome {
+    {
+        return Phase::Error {
+            resp: blocking_storage_error("delete audit intent", e),
+            reason: ErrorReason::StorageWriteAudit,
+        };
+    }
+    trace.emit_aux("audit_intent");
+    // Bump the durable_world_count exactly once — the first append in
+    // this process run that observes the flag still false is the one
+    // that "created" the ledger world (or first observed it after
+    // startup). `swap` returns the *prior* value, so `was_first` is
+    // true only for that one caller; concurrent DELETEs racing on the
+    // same false→true edge are serialized by the ledger_writer Mutex
+    // inside `append_to_ledger`, so the swap here always runs after
+    // a successful append. AcqRel matches the load-on-startup pattern
+    // in main.rs (Acquire) and keeps the durable_world_count bump
+    // visible to subsequent observers.
+    let was_first = !core.delete_ledger_created.swap(true, Ordering::AcqRel);
+    if was_first {
         core.durable_world_count.fetch_add(1, Ordering::Relaxed);
-        core.delete_ledger_created.store(true, Ordering::Relaxed);
     }
 
     let ok = core.delete_world_blocking(&world).await;
@@ -157,17 +153,14 @@ pub(crate) async fn execute_delete(
     core.notify("DELETE", &world, "");
     trace.emit_aux("notify_sent");
 
-    // Re-acquire the ledger lock for the commit / commit_failed
-    // appends. Each append is one SQLite tx; the lock serializes
-    // ordering of *audit chain entries* across concurrent DELETEs on
-    // different target worlds. Intent and commit from the same DELETE
-    // may interleave with a different DELETE's intent — intentional;
-    // the chain is HMAC-linked, not grouped by target world.
-    let _ledger_guard = core.acquire_world_lock("var/log/deletes").await;
-    trace.emit_aux("ledger_lock_acquired");
-    if let Err(commit_err) = audit_append_blocking(
-        core.data.clone(),
-        AuditAppendJob {
+    // commit / commit_failed appends — same `ledger_writer` Mutex
+    // serializes ordering of audit chain entries across concurrent
+    // DELETEs on different target worlds. Intent and commit from the
+    // same DELETE may interleave with a different DELETE's intent —
+    // intentional; the chain is HMAC-linked, not grouped by target
+    // world.
+    if let Err(commit_err) = core
+        .append_to_ledger(AuditAppendJob {
             ledger_world: "var/log/deletes",
             event_type: "delete_commit",
             target: world.clone(),
@@ -176,9 +169,8 @@ pub(crate) async fn execute_delete(
             content_type: delete_content_type.clone(),
             headers: delete_meta.clone(),
             key: core.hmac_key.clone(),
-        },
-    )
-    .await
+        })
+        .await
     {
         // Honest cascade-failure trace. The world is already gone, so
         // we still return 204 — the write side of the DELETE
@@ -188,9 +180,8 @@ pub(crate) async fn execute_delete(
         // the failure.
         eprintln!("  WARNING: delete_commit audit append failed for {world}: {commit_err:?}");
         trace.emit_aux_kv("audit_commit_failed", &format!("err={commit_err:?}"));
-        match audit_append_blocking(
-            core.data.clone(),
-            AuditAppendJob {
+        match core
+            .append_to_ledger(AuditAppendJob {
                 ledger_world: "var/log/deletes",
                 event_type: "delete_commit_failed",
                 target: world.clone(),
@@ -199,9 +190,8 @@ pub(crate) async fn execute_delete(
                 content_type: delete_content_type,
                 headers: delete_meta,
                 key: core.hmac_key.clone(),
-            },
-        )
-        .await
+            })
+            .await
         {
             Ok(_) => {
                 // Sub-case A: commit failed but the failure event
@@ -230,79 +220,23 @@ pub(crate) async fn execute_delete(
     } else {
         trace.emit_aux("audit_commit");
     }
-    trace.emit_aux("ledger_lock_released");
 
     Phase::CommittedWrite((StatusCode::NO_CONTENT, "").into_response())
 }
 
 // ─── DELETE blocking helpers ──────────────────────────────────────
 //
-// These wrap `audit::append` and `world::open_existing` in
-// `tokio::task::spawn_blocking` so a slow SQLite call cannot stall
-// the runtime. They live next to `execute_delete` (their only
-// caller) rather than on `Core`, to keep Core's API surface
-// orthogonal to verb-internal sequencing.
-
-#[derive(Debug)]
-enum BlockingSqliteError {
-    Sqlite(rusqlite::Error),
-    Worker,
-}
-
-struct AuditAppendJob {
-    ledger_world: &'static str,
-    event_type: &'static str,
-    target: String,
-    body_sha256: String,
-    size: i64,
-    content_type: String,
-    headers: Vec<(String, String)>,
-    key: Vec<u8>,
-}
+// `AuditAppendJob` and `BlockingSqliteError` moved to `state.rs` —
+// they're used by `Core::append_to_ledger` (the cached-writer entry
+// point that replaced the pre-cache `audit_append_blocking` here)
+// and re-exported via `pub(crate) use crate::state::*;` in `main.rs`.
+// `world_exists_blocking` is gone too: ledger existence is tracked
+// by the `delete_ledger_created` AtomicBool, swapped to true on the
+// first successful append in this process.
 
 fn blocking_storage_error(scope: &str, err: BlockingSqliteError) -> Response {
     match err {
         BlockingSqliteError::Sqlite(err) => storage_error(scope, err),
         BlockingSqliteError::Worker => server_error(format!("{scope} worker failed")),
-    }
-}
-
-async fn world_exists_blocking(
-    data: std::path::PathBuf,
-    world_name: &'static str,
-) -> Result<bool, BlockingSqliteError> {
-    match tokio::task::spawn_blocking(move || {
-        world::open_existing(&data, world_name).map(|existing| existing.is_some())
-    })
-    .await
-    {
-        Ok(Ok(existed)) => Ok(existed),
-        Ok(Err(err)) => Err(BlockingSqliteError::Sqlite(err)),
-        Err(_) => Err(BlockingSqliteError::Worker),
-    }
-}
-
-async fn audit_append_blocking(
-    data: std::path::PathBuf,
-    job: AuditAppendJob,
-) -> Result<String, BlockingSqliteError> {
-    match tokio::task::spawn_blocking(move || {
-        audit::append(
-            &data,
-            job.ledger_world,
-            job.event_type,
-            &job.target,
-            &job.body_sha256,
-            job.size,
-            &job.content_type,
-            &job.headers,
-            &job.key,
-        )
-    })
-    .await
-    {
-        Ok(Ok(h)) => Ok(h),
-        Ok(Err(err)) => Err(BlockingSqliteError::Sqlite(err)),
-        Err(_) => Err(BlockingSqliteError::Worker),
     }
 }

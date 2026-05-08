@@ -552,6 +552,7 @@ mod tests {
                 next_event: Arc::new(AtomicU64::new(0)),
                 next_request: Arc::new(AtomicU64::new(0)),
                 world_locks: Arc::new(DashMap::new()),
+                ledger_writer: Arc::new(StdMutex::new(None)),
             },
             dir,
         )

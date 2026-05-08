@@ -10,10 +10,15 @@ use std::path::Path;
 
 use crate::world;
 
+/// Append a single row to the audit chain, reusing an already-open
+/// `Connection`. Cached writers (the ledger writer
+/// `Mutex<Option<Connection>>` on `Core`) call this directly so the
+/// hot DELETE path doesn't re-open `var/log/deletes` 2-3 times per
+/// request. Per-write paths that don't cache a connection compose
+/// `world::open` + `append_with_conn` directly.
 #[allow(clippy::too_many_arguments)]
-pub fn append(
-    data_root: &Path,
-    world_name: &str,
+pub fn append_with_conn(
+    conn: &mut Connection,
     event_type: &str,
     target: &str,
     body_sha256: &str,
@@ -22,8 +27,7 @@ pub fn append(
     headers: &[(String, String)],
     key: &[u8],
 ) -> rusqlite::Result<String> {
-    let mut c = world::open(data_root, world_name)?;
-    let tx = c.transaction()?;
+    let tx = conn.transaction()?;
     let h = append_tx(
         &tx,
         event_type,

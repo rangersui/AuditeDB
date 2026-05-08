@@ -145,6 +145,7 @@ async fn main() {
         next_event: Arc::new(AtomicU64::new(0)),
         next_request: Arc::new(AtomicU64::new(0)),
         world_locks: Arc::new(DashMap::new()),
+        ledger_writer: Arc::new(StdMutex::new(None)),
     });
 
     let addr = listen_addr(&host, port);
@@ -1779,9 +1780,9 @@ mod tests {
         let (core, dir) = test_core("if-match-hmac");
         core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
             .unwrap();
-        let h = audit::append(
-            &core.data,
-            "home/cas",
+        let mut conn = world::open(&core.data, "home/cas").unwrap();
+        let h = audit::append_with_conn(
+            &mut conn,
             "put",
             "home/cas",
             &world::sha256_hex(b"one"),
@@ -1791,6 +1792,7 @@ mod tests {
             &core.hmac_key,
         )
         .unwrap();
+        drop(conn);
         let etag = format!("\"{}\"", hs::hmac_etag(&h));
 
         let mut good = HeaderMap::new();
@@ -2500,6 +2502,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_first_deletes_increment_world_count_exactly_once() {
+        // Bug 16 race coverage. Three concurrent DELETEs on a fresh
+        // Core (delete_ledger_created starts false). The ledger gets
+        // created on the first DELETE that wins the
+        // `swap(true, AcqRel)` edge — exactly one of them sees
+        // was_first=true and bumps `durable_world_count`. The other
+        // two see the swap-already-true and skip the bump.
+        //
+        // Setup: PUT three distinct worlds (durable_world_count = 3).
+        // Then run three concurrent DELETEs in parallel.
+        // Final state: durable_world_count = 3 + 1[ledger creation,
+        // exactly once] - 3[three deletes succeed] = 1.
+        //
+        // Without Bug 16's `swap` ordering, two or all three of the
+        // racing DELETEs would each independently observe
+        // delete_ledger_created==false (via world_exists_blocking)
+        // and each bump the counter, leading to drift. With the
+        // atomic swap, only the unique false→true transition bumps.
+        let (core, dir) = test_core("concurrent-first-deletes");
+        let headers = HeaderMap::new();
+        for w in ["home/a", "home/b", "home/c"] {
+            let put = unwrap_response(
+                execute_put(
+                    headers.clone(),
+                    Bytes::from_static(b"x"),
+                    auth::Tier::Write,
+                    w.to_string(),
+                    &core,
+                    &TraceCtx::disabled(),
+                )
+                .await,
+            );
+            assert_eq!(put.status(), StatusCode::CREATED);
+        }
+        assert_eq!(core.durable_world_count.load(Ordering::Relaxed), 3);
+        assert!(!core.delete_ledger_created.load(Ordering::Relaxed));
+
+        let state = Arc::new(core);
+        let s1 = state.clone();
+        let s2 = state.clone();
+        let s3 = state.clone();
+        let h1 = headers.clone();
+        let h2 = headers.clone();
+        let h3 = headers.clone();
+        let trace1 = TraceCtx::disabled();
+        let trace2 = TraceCtx::disabled();
+        let trace3 = TraceCtx::disabled();
+        let (r1, r2, r3) = tokio::join!(
+            execute_delete(h1, auth::Tier::Approve, "home/a".to_string(), &s1, &trace1),
+            execute_delete(h2, auth::Tier::Approve, "home/b".to_string(), &s2, &trace2),
+            execute_delete(h3, auth::Tier::Approve, "home/c".to_string(), &s3, &trace3),
+        );
+        assert_eq!(unwrap_response(r1).status(), StatusCode::NO_CONTENT);
+        assert_eq!(unwrap_response(r2).status(), StatusCode::NO_CONTENT);
+        assert_eq!(unwrap_response(r3).status(), StatusCode::NO_CONTENT);
+
+        // 3 (original) + 1 (ledger creation, exactly once) - 3 (three
+        // deletes) = 1.
+        assert_eq!(state.durable_world_count.load(Ordering::Relaxed), 1);
+        assert!(state.delete_ledger_created.load(Ordering::Relaxed));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     async fn response_text(resp: Response) -> String {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -2914,6 +2981,7 @@ mod tests {
                     next_event: Arc::new(AtomicU64::new(0)),
                     next_request: Arc::new(AtomicU64::new(0)),
                     world_locks: Arc::new(DashMap::new()),
+                    ledger_writer: Arc::new(StdMutex::new(None)),
                 }
             },
             dir,

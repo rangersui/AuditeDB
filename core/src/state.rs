@@ -32,7 +32,7 @@ use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 use crate::http_semantics as hs;
 use crate::world::Stage;
 use crate::{
-    auth, can_write, listen, payload_too_large, server_error, storage_error,
+    audit, auth, can_write, listen, payload_too_large, server_error, storage_error,
     storage_quota_exceeded, store, unauthorized, world,
 };
 
@@ -78,6 +78,46 @@ pub(crate) struct Core {
     /// unsafe when waiters hold a clone of the Arc). DashMap shards
     /// reads, so lookup is mostly lock-free.
     pub(crate) world_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Cached writer for the `var/log/deletes` audit ledger. The
+    /// ledger is the hottest open() in the codebase — every DELETE
+    /// opens it 2-3 times under the pre-cache flow (existence
+    /// check, intent append, commit append). One cached connection
+    /// covers all of them.
+    ///
+    /// The inner `StdMutex<Option<Connection>>` is the SOLE
+    /// serializer for ledger appends. Earlier drafts of `Core`
+    /// also held the per-world lock at `var/log/deletes` for the
+    /// same purpose; that lock is removed by this PR as redundant
+    /// with this Mutex. Don't re-add it.
+    ///
+    /// Lazy init: `None` until the first `append_to_ledger`
+    /// succeeds; from then on, every append reuses the cached
+    /// connection. Never invalidated (the ledger world is never
+    /// deleted by user-facing DELETE — `var/log/*` is reserved).
+    pub(crate) ledger_writer: Arc<StdMutex<Option<rusqlite::Connection>>>,
+}
+
+/// Result of an audit append run inside `spawn_blocking`. Shared
+/// between `Core::append_to_ledger` (this module) and
+/// `handler::delete::execute_delete` (which is the only caller in
+/// the FSM today).
+#[derive(Debug)]
+pub(crate) enum BlockingSqliteError {
+    Sqlite(rusqlite::Error),
+    Worker,
+}
+
+/// One audit append's input. Owns its strings/buffers because the
+/// `spawn_blocking` closure that runs the SQL must be `'static`.
+pub(crate) struct AuditAppendJob {
+    pub(crate) ledger_world: &'static str,
+    pub(crate) event_type: &'static str,
+    pub(crate) target: String,
+    pub(crate) body_sha256: String,
+    pub(crate) size: i64,
+    pub(crate) content_type: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) key: Vec<u8>,
 }
 
 impl Core {
@@ -176,6 +216,51 @@ impl Core {
             Ok(self.mem.metadata(world))
         } else {
             world::metadata(&self.data, world)
+        }
+    }
+
+    /// Append one row to the `var/log/deletes` audit ledger using the
+    /// cached `ledger_writer` connection. Lazy-initializes the
+    /// connection on first call (`world::open` creates the schema if
+    /// needed; idempotent on subsequent restarts because of
+    /// `CREATE TABLE IF NOT EXISTS`).
+    ///
+    /// Replaces the prior pattern of `world::open` per append (2-3
+    /// opens per DELETE today). The inner `StdMutex` serializes
+    /// concurrent appends — appends happen inside a blocking task,
+    /// so this parks an OS thread when contended; the surrounding
+    /// per-world write lock at `var/log/deletes` is gone, traded for
+    /// this single mutex.
+    pub(crate) async fn append_to_ledger(
+        &self,
+        job: AuditAppendJob,
+    ) -> Result<String, BlockingSqliteError> {
+        let data = self.data.clone();
+        let writer = self.ledger_writer.clone();
+        let result = tokio::task::spawn_blocking(move || -> rusqlite::Result<String> {
+            let mut guard = writer.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.is_none() {
+                // Lazy init. `world::open` creates the schema; safe to
+                // call whether or not the ledger DB exists on disk.
+                *guard = Some(world::open(&data, job.ledger_world)?);
+            }
+            let conn = guard.as_mut().expect("ledger_writer initialized above");
+            audit::append_with_conn(
+                conn,
+                job.event_type,
+                &job.target,
+                &job.body_sha256,
+                job.size,
+                &job.content_type,
+                &job.headers,
+                &job.key,
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(h)) => Ok(h),
+            Ok(Err(err)) => Err(BlockingSqliteError::Sqlite(err)),
+            Err(_) => Err(BlockingSqliteError::Worker),
         }
     }
 
