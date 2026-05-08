@@ -30,9 +30,12 @@ use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
 use crate::http_semantics as hs;
+use crate::ledger::LedgerWriter;
+pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
+use crate::read_cache::ReadCache;
 use crate::world::Stage;
 use crate::{
-    auth, can_write, listen, payload_too_large, server_error, storage_error,
+    audit, auth, can_write, listen, payload_too_large, server_error, storage_error,
     storage_quota_exceeded, store, unauthorized, world,
 };
 
@@ -78,6 +81,20 @@ pub(crate) struct Core {
     /// unsafe when waiters hold a clone of the Arc). DashMap shards
     /// reads, so lookup is mostly lock-free.
     pub(crate) world_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Cached writer + init counter for the `var/log/deletes` audit
+    /// ledger. See `crate::ledger::LedgerWriter` for the semantics
+    /// (lazy init, `inits` counter, no `acquire_world_lock` needed
+    /// because the inner StdMutex is the sole serializer).
+    pub(crate) ledger: Arc<LedgerWriter>,
+    /// Per-world read connection cache. Implements the slot-before-open,
+    /// tombstone, and drain-before-remove protocols. See
+    /// `crate::read_cache` for the full design and the v7.1 design
+    /// doc for the ten-round review history. All read paths route
+    /// through `Core::read_world_with_etag`, which delegates to
+    /// `read_cache.cached_read_with_hmac`. DELETE installs a tombstone
+    /// before `delete_world_blocking` and clears it on both success
+    /// and failure paths.
+    pub(crate) read_cache: Arc<ReadCache>,
 }
 
 impl Core {
@@ -114,6 +131,11 @@ impl Core {
         Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
     }
 
+    /// Read body + meta + ETag. Routes durable worlds through the
+    /// `read_cache` (slot-before-open, tombstone-aware) so GET / HEAD
+    /// don't pay `Connection::open_with_flags` per request. Memory
+    /// worlds bypass the cache. Synchronous: the cache uses
+    /// `std::sync::RwLock`, matching the existing handler call shape.
     pub(crate) fn read_world_with_etag(
         &self,
         world: &str,
@@ -124,15 +146,61 @@ impl Core {
                 .read_with_hash(world)
                 .map(|(stage, hash)| (stage, format!("sha256-{hash}"))))
         } else {
-            Ok(
-                world::read_with_hmac(&self.data, world)?.map(|(stage, hmac)| {
+            Ok(self
+                .read_cache
+                .cached_read_with_hmac(&self.data, world)?
+                .map(|(stage, hmac)| {
                     let etag = hmac
                         .map(|h| hs::hmac_etag(&h))
                         .unwrap_or_else(|| hs::body_etag(&stage.body));
                     (stage, etag)
-                }),
-            )
+                }))
         }
+    }
+
+    /// DELETE-side: drain in-flight readers, close the cached
+    /// connection inside the slot's write guard window, install a
+    /// tombstone slot. After this returns, no fd is alive on
+    /// `world`'s DB -- `delete_world_blocking` is safe to call.
+    /// Memory worlds: no-op. The blocking drain runs inside
+    /// `spawn_blocking` so it doesn't stall a Tokio worker.
+    pub(crate) async fn install_tombstone(&self, world: &str) {
+        if store::is_memory_world(world) {
+            return;
+        }
+        let cache = self.read_cache.clone();
+        let world = world.to_string();
+        let _ = tokio::task::spawn_blocking(move || cache.install_tombstone_blocking(&world)).await;
+    }
+
+    /// Remove the tombstone after `delete_world_blocking` returns.
+    /// Called on BOTH success and failure (Bug 20): on failure the
+    /// world is still on disk, and the next read must lazy-init a
+    /// fresh slot rather than seeing a phantom 404.
+    pub(crate) fn clear_tombstone(&self, world: &str) {
+        if store::is_memory_world(world) {
+            return;
+        }
+        self.read_cache.clear_tombstone(world);
+    }
+
+    /// Verify the audit chain through the read-cache SlotState
+    /// protocol (Bug 58). Closes the gap that the bare
+    /// `audit::verify_chain` path left: DELETE on the same world
+    /// drains in-flight verifies via the slot's write guard, just
+    /// like a regular GET. Memory worlds have no audit chain;
+    /// callers (proc_audit_verify) filter those before reaching
+    /// here.
+    pub(crate) fn cached_verify_chain(
+        &self,
+        world: &str,
+    ) -> rusqlite::Result<Option<audit::VerifyReport>> {
+        debug_assert!(
+            !store::is_memory_world(world),
+            "cached_verify_chain only applies to durable worlds"
+        );
+        self.read_cache
+            .cached_verify_chain(&self.data, world, &self.hmac_key)
     }
 
     /// Test-only fixture: seed a world directly without going through
@@ -176,6 +244,23 @@ impl Core {
             Ok(self.mem.metadata(world))
         } else {
             world::metadata(&self.data, world)
+        }
+    }
+
+    /// Append one row to the `var/log/deletes` audit ledger using
+    /// the cached `LedgerWriter`. Thin wrapper that runs the
+    /// blocking append on the spawn_blocking pool -- the inner
+    /// StdMutex on `LedgerWriter::conn` serializes concurrent
+    /// appends without holding a Tokio worker.
+    pub(crate) async fn append_to_ledger(
+        &self,
+        job: AuditAppendJob,
+    ) -> Result<String, BlockingSqliteError> {
+        let data = self.data.clone();
+        let ledger = self.ledger.clone();
+        match tokio::task::spawn_blocking(move || ledger.append(&data, job)).await {
+            Ok(result) => result,
+            Err(_) => Err(BlockingSqliteError::Worker),
         }
     }
 
@@ -297,6 +382,12 @@ impl Core {
             return Err(payload_too_large(self.max_world_bytes));
         }
         let _write_guard = self.acquire_world_lock(world_name).await;
+        // Defence-in-depth tombstone clear (Bug 19). Same rationale
+        // as `handler::execute_put`'s clear: PUT/POST and DELETE
+        // serialize on the same per-world lock, so a prior DELETE
+        // either cleared its own tombstone (success/failure path)
+        // or panicked. This call covers the panic case.
+        self.clear_tombstone(world_name);
         if let Some(req_headers) = preconditions {
             hs::check_write_preconditions(self, world_name, req_headers)?;
         }

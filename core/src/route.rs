@@ -20,8 +20,8 @@ use axum::{
 };
 
 use crate::{
-    listen, options_response, pipeline, proc_audit_verify, proc_df, proc_du, proc_reserved,
-    proc_version, proc_worlds, root_hint, Core, WORLD_ALLOW,
+    listen, options_response, pipeline, proc_audit_verify, proc_df, proc_du, proc_pool,
+    proc_reserved, proc_version, proc_worlds, root_hint, Core, WORLD_ALLOW,
 };
 
 pub(crate) fn build_app(state: Arc<Core>, max_world_bytes: usize) -> Router {
@@ -32,6 +32,7 @@ pub(crate) fn build_app(state: Arc<Core>, max_world_bytes: usize) -> Router {
         .route("/proc/worlds", any(proc_worlds))
         .route("/proc/du", any(proc_du))
         .route("/proc/df", any(proc_df))
+        .route("/proc/pool", any(proc_pool))
         .route("/proc/audit/*audit_path", any(proc_audit_verify))
         .route("/proc", any(proc_reserved))
         .route("/proc/*reserved", any(proc_reserved))

@@ -222,6 +222,83 @@ pub(crate) async fn proc_df(
     proc_text_response(method, body)
 }
 
+// /proc/pool -- read connection cache + ledger writer metrics.
+//
+// One line per metric, mirroring /proc/df's text shape. Each line
+// has a `counter` or `snapshot` type label so an operator polling
+// the endpoint can tell monotonic-from-startup deltas (counter)
+// from instantaneous gauges (snapshot). Mirrors Prometheus's
+// counter/gauge convention.
+//
+// The DashMap walk for `read_cache_tombstones` (O(N) in cache size,
+// cap=5000 default) and the snapshot of `read_cache_entries` both
+// run inside `spawn_blocking`. Atomic counter loads stay on the
+// async task -- they don't block. Same pattern as `proc_du` and
+// `proc_df`. (Codex P2.)
+pub(crate) async fn proc_pool(
+    State(core): State<Arc<Core>>,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    if method == Method::OPTIONS {
+        return options_response(PROC_ALLOW);
+    }
+    if method != Method::GET && method != Method::HEAD {
+        return method_not_allowed(PROC_ALLOW);
+    }
+    if let Err(resp) = require_read(&core, &headers) {
+        return *resp;
+    }
+
+    let hits = core
+        .read_cache
+        .metrics
+        .read_cache_hits
+        .load(Ordering::Relaxed);
+    let misses = core
+        .read_cache
+        .metrics
+        .read_cache_misses
+        .load(Ordering::Relaxed);
+    let capped = core
+        .read_cache
+        .metrics
+        .read_cache_capped
+        .load(Ordering::Relaxed);
+    let open_fails = core
+        .read_cache
+        .metrics
+        .read_cache_open_fails
+        .load(Ordering::Relaxed);
+    let ledger_inits = core.ledger.inits.load(Ordering::Relaxed);
+    let max_entries = core.read_cache.max_entries;
+
+    let read_cache = core.read_cache.clone();
+    let snapshot = match tokio::task::spawn_blocking(move || {
+        let entries = read_cache.snapshot_entries();
+        let tombstones = read_cache.snapshot_tombstones();
+        (entries, tombstones)
+    })
+    .await
+    {
+        Ok(snap) => snap,
+        Err(_) => return server_error("proc pool worker failed".to_string()),
+    };
+    let (entries, tombstones) = snapshot;
+
+    let body = format!(
+        "read_cache_entries {entries} snapshot\n\
+         read_cache_tombstones {tombstones} snapshot\n\
+         read_cache_hits {hits} counter\n\
+         read_cache_misses {misses} counter\n\
+         read_cache_capped {capped} counter\n\
+         read_cache_open_fails {open_fails} counter\n\
+         read_cache_max_entries {max_entries} snapshot\n\
+         ledger_writer_inits {ledger_inits} counter\n"
+    );
+    proc_text_response(method, body)
+}
+
 // /proc/audit/{world}/verify
 pub(crate) async fn proc_audit_verify(
     State(core): State<Arc<Core>>,
@@ -263,10 +340,14 @@ pub(crate) async fn proc_audit_verify(
         return audit_not_applicable();
     }
 
-    let data = core.data.clone();
-    let hmac_key = core.hmac_key.clone();
+    // Bug 58 fix: route through the read cache so DELETE on the same
+    // world drains in-flight verifies via the slot's write guard.
+    // The bare `audit::verify_chain(data, world, key)` path is gone
+    // -- it opened a fresh fd outside SlotState and would have
+    // re-introduced Bug 48 / Bug 54-shape races on this admin endpoint.
+    let core_clone = core.clone();
     let verify_result = match tokio::task::spawn_blocking(move || {
-        audit::verify_chain(&data, &world_name, &hmac_key)
+        core_clone.cached_verify_chain(&world_name)
     })
     .await
     {
