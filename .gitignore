@@ -77,3 +77,12 @@ sdk-rs/README.md
 # Python SDK embedded binaries are local build artifacts for now.
 sdk/src/elastik/_bin/
 **/build/
+
+# CurlBench run artifacts. Harness writes raw per-model JSON via
+# --out cb-*.json. The prompt YAML, design doc, results tables, and
+# harness ARE tracked; raw run JSON is transient. gh-models may also
+# leave 0-byte locked files on Windows.
+cb-*.json
+prompts/*.iter*.eval.*
+prompts/*.eval.json
+prompts/*.eval.stderr.txt
