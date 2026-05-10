@@ -847,6 +847,24 @@ runs inside `spawn_blocking` so polling does not stall the async
 runtime. Same auth gating as `/proc/df`: read token if
 `ELASTIK_READ_TOKEN` is set, otherwise public.
 
+## CurlBench
+
+Elastik ships with CurlBench, a tool-use benchmark where the grader is
+elastik itself. Models generate curl commands; the harness runs them against a
+real elastik instance and grades executable rows by HTTP status code -- not
+similarity, not LLM-as-judge.
+
+```powershell
+python tools/curlbench.py prompts/elastik-agent-tool.prompt.yml `
+  --model openai/gpt-4o-mini
+```
+
+Some rows are advisory rather than executable: for example, warning about the
+64 MiB default world-size cap or the v7.2 custom-header persistence policy.
+Those rows use fixed string anchors. The benchmark still stays mechanical:
+elastik grades protocol behavior, and the harness checks closed strings for
+operator advice that HTTP status cannot express.
+
 ## SDKs
 
 The core is still just HTTP. SDKs are convenience layers around the same six
