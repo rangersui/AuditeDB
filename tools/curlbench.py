@@ -37,12 +37,26 @@ from pathlib import Path
 import yaml
 
 NULL_DEV = os.devnull  # "NUL" on Windows, "/dev/null" elsewhere
-# Resolve bash via shutil.which so subprocess.run doesn't accidentally
-# route to WSL on Windows (which lives at C:\Windows\System32\bash.exe
-# and ranks ahead of Git Bash in some PATH configurations). shutil.which
-# respects PATHEXT and finds Git Bash; subprocess.run with bare "bash"
-# uses CreateProcess resolution which can pick WSL.
-BASH = shutil.which("bash") or "bash"
+
+
+def find_bash() -> str:
+    """Prefer Git Bash; Windows' System32 bash.exe is a WSL relay."""
+    git_bash_candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+    ]
+    for candidate in git_bash_candidates:
+        if Path(candidate).exists():
+            return candidate
+    found = shutil.which("bash")
+    if found and "System32" not in found:
+        return found
+    return "bash"
+
+
+BASH = find_bash()
 
 ELASTIK_HOST = "http://127.0.0.1:3105"
 # Resolved at startup from --write-token / --approve-token, or env, or
@@ -135,8 +149,33 @@ def health_check() -> bool:
     return r.returncode == 0 and r.stdout.strip() == "200"
 
 
-def run_setup(setup: list[str]) -> None:
-    for cmd in setup:
+def parse_setup(value: object) -> list[str]:
+    """Decode GitHub-Models-compatible string metadata into commands."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [line.strip() for line in str(value).splitlines() if line.strip()]
+
+
+def parse_int_list(value: object) -> list[int]:
+    """Decode `expected_status`, stored as a comma string in prompt YAML."""
+    if isinstance(value, list):
+        return [int(v) for v in value]
+    return [int(part.strip()) for part in str(value).split(",") if part.strip()]
+
+
+def parse_anchor_list(value: object) -> list[str]:
+    """Decode pipe-separated anchor strings, keeping old list support."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if str(v)]
+    return [part.strip() for part in str(value).split("|") if part.strip()]
+
+
+def run_setup(setup: object) -> None:
+    for cmd in parse_setup(setup):
         subprocess.run([BASH, "-c", substitute_tokens(cmd)],
                        capture_output=True, timeout=15)
 
@@ -247,6 +286,8 @@ def extract_curl(response: str) -> str | None:
 def is_safe_curl(curl: str) -> tuple[bool, str]:
     if "127.0.0.1:3105" not in curl:
         return False, "off-host (URL not localhost:3105)"
+    if "@/path/" in curl or "@path/" in curl:
+        return False, "placeholder file path"
     return True, ""
 
 
@@ -286,15 +327,14 @@ def grade_executable(row: dict, response: str) -> dict:
     if shell_exit != 0:
         return {"score": -1.0, "reason": f"shell exit {shell_exit}",
                 "shell_exit": shell_exit, "curl": curl[:200]}
-    expected = row["expected_status"]
-    expected_set = expected if isinstance(expected, list) else [expected]
+    expected_set = parse_int_list(row["expected_status"])
     if status in expected_set:
         return {"score": 1.0, "reason": f"ok ({status})", "status": status}
     if status in (412, 416):
         return {"score": 0.5, "reason": f"half-pass ({status})", "status": status}
     if status == 503 and "/listen" in curl:
         return {"score": 0.0, "reason": "listen connection cap", "status": status}
-    return {"score": 0.0, "reason": f"got {status} expected {expected}",
+    return {"score": 0.0, "reason": f"got {status} expected one of {expected_set}",
             "status": status, "curl": curl[:200]}
 
 
@@ -302,9 +342,9 @@ def grade_advisory(row: dict, response: str) -> dict:
     if response.startswith("[GH_MODELS_ERROR"):
         return {"score": -1.0, "reason": "gh models error"}
     resp = response.lower()
-    required = [a.lower() for a in row.get("required_anchors", [])]
-    any_a = [a.lower() for a in row.get("any_anchors", [])]
-    anti = [a.lower() for a in row.get("anti_anchors", [])]
+    required = [a.lower() for a in parse_anchor_list(row.get("required_anchors"))]
+    any_a = [a.lower() for a in parse_anchor_list(row.get("any_anchors"))]
+    anti = [a.lower() for a in parse_anchor_list(row.get("anti_anchors"))]
     missing_required = [a for a in required if a not in resp]
     if missing_required:
         return {"score": 0.0, "reason": f"missing required: {missing_required}"}

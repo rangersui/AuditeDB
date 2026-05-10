@@ -86,45 +86,41 @@ messages:
 # Per-row CurlBench metadata (consumed by tools/curlbench.py; unknown to
 # gh models eval, which only reads `input` + `expected`):
 #   grader:            executable | advisory
-#   expected_status:   HTTP code that signals full-pass for executable
-#   required_anchors:  ALL must appear in response (case-insensitive)
-#   any_anchors:       at least ONE must appear
-#   anti_anchors:      NONE may appear
-#   setup:             bash commands run before the model is invoked.
-#                      Setup commands MUST include their own auth header
-#                      because the harness assumes ELASTIK_WRITE_TOKEN +
-#                      ELASTIK_APPROVE_TOKEN are configured on the test
-#                      server (see tools/curlbench.py header).
+# GitHub Models requires every testData property value to be a string.
+# CurlBench therefore encodes harness metadata as strings:
+#   expected_status:   comma-separated HTTP codes, e.g. "200,201"
+#   required_anchors:  pipe-separated AND anchors, e.g. "If-Match|hmac-"
+#   any_anchors:       pipe-separated OR anchors
+#   anti_anchors:      pipe-separated forbidden anchors
+#   setup:             newline-separated bash commands, or "" for none.
+#                      Setup commands MUST include their own auth header.
 testData:
   - input: Store the string 'hello' at /home/note with write-token.
     expected: "Use curl with PUT /home/note, Authorization: Bearer write-token, and body hello."
     grader: executable
     # PUT can create (201) or replace existing (200); both are success.
-    expected_status: [200, 201]
-    setup: []
+    expected_status: "200,201"
+    setup: ""
   - input: Read /home/note.
     expected: "Use GET /home/note, for example curl http://127.0.0.1:3105/home/note."
     grader: executable
-    expected_status: 200
-    setup:
-      - "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'hello' http://127.0.0.1:3105/home/note"
+    expected_status: "200"
+    setup: "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'hello' http://127.0.0.1:3105/home/note"
   - input: Append ' more' to /home/log.
     expected: "Use POST /home/log with --data-binary \" more\"."
     grader: executable
-    expected_status: 200
-    setup:
-      - "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'initial' http://127.0.0.1:3105/home/log"
+    expected_status: "200"
+    setup: "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'initial' http://127.0.0.1:3105/home/log"
   - input: Delete /home/old. You have approve-token.
     expected: "Use DELETE /home/old with Authorization: Bearer approve-token."
     grader: executable
-    expected_status: 204
-    setup:
-      - "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'doomed' http://127.0.0.1:3105/home/old"
+    expected_status: "204"
+    setup: "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'doomed' http://127.0.0.1:3105/home/old"
   - input: Store this scratch value somewhere it'll vanish on restart.
     expected: "Use a path under /tmp/*, because /tmp is memory/transient and vanishes on restart."
     grader: executable
-    expected_status: [200, 201]
-    setup: []
+    expected_status: "200,201"
+    setup: ""
   - input: Update /home/config only if its current ETag is hmac-9f3a8b2c0e1d4756a89f3c1e2d5b7c4a6f8e0d2c4b6a8c0e2f4d6b8a0c2e4f6.
     expected: "Use PUT /home/config with If-Match: \"hmac-9f3a8b2c0e1d4756a89f3c1e2d5b7c4a6f8e0d2c4b6a8c0e2f4d6b8a0c2e4f6\"."
     # Advisory: HMAC ETag is server-derived; can't pre-create a world with
@@ -132,59 +128,52 @@ testData:
     # ETag substring? "If-Match" alone is too weak (every CAS-aware model
     # emits it).
     grader: advisory
-    required_anchors:
-      - "hmac-9f3a8b2c0e1d4756"
-    setup: []
+    required_anchors: "If-Match|hmac-9f3a8b2c0e1d4756"
+    setup: ""
   - input: Lock-create /home/lock/build. Fail if it exists.
     expected: "Use PUT /home/lock/build with If-None-Match: *."
     grader: executable
-    expected_status: 201
-    setup:
-      # Ensure the lock world does NOT exist; cleanup uses approve-token.
-      - "curl -X DELETE -H 'Authorization: Bearer approve-token' http://127.0.0.1:3105/home/lock/build || true"
+    expected_status: "201"
+    # Ensure the lock world does NOT exist; cleanup uses approve-token.
+    setup: "curl -X DELETE -H 'Authorization: Bearer approve-token' http://127.0.0.1:3105/home/lock/build || true"
   - input: Read bytes 0-1023 of /home/big.bin.
     expected: "Use GET /home/big.bin with Range: bytes=0-1023 and expect 206 Partial Content when satisfiable."
     grader: executable
-    expected_status: 206
-    setup:
-      # Portable: printf '%2048s' emits 2048 spaces; elastik doesn't care
-      # about body content, only length, for Range satisfiability.
-      - "printf '%2048s' '' | curl -X PUT -H 'Authorization: Bearer write-token' --data-binary @- http://127.0.0.1:3105/home/big.bin"
+    expected_status: "206"
+    # Portable: printf '%2048s' emits 2048 spaces; elastik doesn't care
+    # about body content, only length, for Range satisfiability.
+    setup: "printf '%2048s' '' | curl -X PUT -H 'Authorization: Bearer write-token' --data-binary @- http://127.0.0.1:3105/home/big.bin"
   - input: Watch every change under /home/task/.
     expected: "Use curl -N http://127.0.0.1:3105/listen/home/task/*."
     # Listen is SSE; harness wraps with --max-time 2 to capture opening
     # status then close. expected 200 is the SSE handshake response.
     grader: executable
-    expected_status: 200
-    setup: []
+    expected_status: "200"
+    setup: ""
   - input: Verify the audit chain for /home/note.
     expected: "Use HEAD /proc/audit/home/note/verify, for example curl -I http://127.0.0.1:3105/proc/audit/home/note/verify."
     grader: executable
-    expected_status: 200
-    setup:
-      - "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'hello' http://127.0.0.1:3105/home/note"
+    expected_status: "200"
+    setup: "curl -X PUT -H 'Authorization: Bearer write-token' --data-binary 'hello' http://127.0.0.1:3105/home/note"
   - input: List all worlds.
     expected: "Use GET /proc/worlds. MUST mention that the response is plain text (one world per line), not JSON, so downstream callers don't pipe through jq."
     # Advisory: the curl works for any model; the discriminator is the
     # prose hint about response format. Case-insensitive match in harness.
     grader: advisory
-    any_anchors:
-      - "plain text"
-      - "not json"
-    setup: []
+    any_anchors: "plain text|not json"
+    setup: ""
   - input: Store /home/page.html with CORS open and frame DENY.
     expected: "Use PUT /home/page.html with Access-Control-Allow-Origin: * and X-Frame-Options: DENY headers."
     grader: executable
-    expected_status: [200, 201]
-    setup: []
+    expected_status: "200,201"
+    setup: ""
   - input: Store /home/data with x-author=ranger metadata.
     expected: "Use PUT /home/data with x-author: ranger and warn that ELASTIK_PERSIST_HEADERS=x-author is required for that custom header to round-trip in v7.2."
     # Advisory: server returns 201 regardless of v7.2 caveat awareness;
     # the prose IS the discriminator.
     grader: advisory
-    required_anchors:
-      - "ELASTIK_PERSIST_HEADERS"
-    setup: []
+    required_anchors: "ELASTIK_PERSIST_HEADERS"
+    setup: ""
   - input: Cache-validate /home/config. ETag is known; want 304 if same.
     expected: "Use GET /home/config with If-None-Match: \"<etag>\". A matching ETag returns 304 Not Modified."
     # Advisory: the discriminator is whether the model picks the
@@ -192,47 +181,39 @@ testData:
     # to-have but in v2 prompt some models emit pure-curl responses
     # without prose; that's still a correct answer.
     grader: advisory
-    required_anchors:
-      - "If-None-Match"
-    setup: []
+    required_anchors: "If-None-Match"
+    setup: ""
   - input: Store /home/big.bin from a local 8 GB file.
     expected: "Warn that ELASTIK_MAX_WORLD_BYTES defaults to 64 MiB and the upload will return 413 unless the cap is raised."
     # Advisory: harness MUST NOT pipe an 8 GB upload to bash. Discriminator
     # is the warning. AND-match: must name the env var AND mention the
     # status code, otherwise it's a generic "this is too big" non-answer.
     grader: advisory
-    required_anchors:
-      - "ELASTIK_MAX_WORLD_BYTES"
-      - "413"
-    setup: []
+    required_anchors: "ELASTIK_MAX_WORLD_BYTES|413"
+    setup: ""
   # Rows 16-18 pack prior context and task into one input string. GitHub
   # Models multi-variable testData syntax is not verified for v1 (Q9).
   - input: "[CONTEXT: no prior Python SDK imports] [TASK: give me a curl to PUT /home/x with body 'data']"
     expected: "Default to curl and use curl -X PUT /home/x with --data-binary data."
     # Routing row: model should emit curl, not Python.
     grader: executable
-    expected_status: [200, 201]
-    setup: []
+    expected_status: "200,201"
+    setup: ""
   - input: "[CONTEXT: I'm in Python and import elastik is already done; e = Elastik('http://127.0.0.1:3105') exists] [TASK: PUT /home/x with body data]"
     expected: "Use the existing Python SDK object e and call e.put with path /home/x and data. Do not re-import or construct a new client."
     # Advisory: model emits Python (e.put), not curl. Executable rule 1
     # fails by construction. anti_anchors block re-import behavior.
     grader: advisory
-    required_anchors:
-      - "e.put("
-    anti_anchors:
-      - "from elastik import"
-      - "Elastik("
-    setup: []
+    required_anchors: "e.put("
+    anti_anchors: "from elastik import|Elastik("
+    setup: ""
   - input: "[CONTEXT: user explicitly asks in Python; no prior SDK object exists] [TASK: PUT a local file to /home/x]"
     expected: "Show Python SDK code with from elastik import Elastik, construct Elastik(...), then call e.put('/home/x', file bytes or equivalent)."
     # Advisory: model emits Python (full SDK setup). All three anchors
     # required: import, constructor, call.
     grader: advisory
-    required_anchors:
-      - "from elastik import"
-      - "e.put("
-    setup: []
+    required_anchors: "from elastik import|Elastik(|e.put("
+    setup: ""
 evaluators:
   - name: Similarity
     uses: github/similarity
