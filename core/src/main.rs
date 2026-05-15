@@ -69,11 +69,12 @@ pub(crate) use crate::state::*;
 
 use std::collections::VecDeque;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize},
     Arc, Mutex as StdMutex,
 };
+use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Semaphore};
@@ -120,15 +121,17 @@ async fn main() {
         crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
     );
     std::fs::create_dir_all(&data).expect("create data dir");
+    let data_lock = acquire_data_root_writer_lock(&data).expect("acquire data-root writer lock");
+    let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
+        "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
+    );
+    audit::verify_all_worlds(&data, &hmac_key).expect("verify audit chains at startup");
     let durable_sizes = world::sizes(&data).expect("read durable storage usage");
     let storage_body_bytes = durable_sizes.iter().map(|(_, size)| *size).sum();
     let durable_world_count = durable_sizes.len();
     let delete_ledger_created = durable_sizes
         .iter()
         .any(|(world_name, _)| world_name == "var/log/deletes");
-    let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
-        "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
-    );
 
     let (events, _) = broadcast::channel(listen_replay_max);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -175,10 +178,32 @@ async fn main() {
     }
     let app = route::build_app(state, max_world_bytes);
 
-    axum::serve(listener, app)
+    let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
-        .await
-        .unwrap();
+        .await;
+    drop(data_lock);
+    serve_result.unwrap();
+}
+
+fn acquire_data_root_writer_lock(data: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    let c = rusqlite::Connection::open(data.join(".elastik-writer-lock.sqlite3"))?;
+    c.busy_timeout(Duration::from_millis(0))?;
+    c.execute_batch(
+        r#"
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS writer_lock(
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            holder TEXT NOT NULL DEFAULT ''
+        );
+        INSERT OR IGNORE INTO writer_lock(id, holder) VALUES(1, '');
+        BEGIN IMMEDIATE;
+        "#,
+    )?;
+    c.execute(
+        "UPDATE writer_lock SET holder=?1 WHERE id=1",
+        [std::process::id().to_string()],
+    )?;
+    Ok(c)
 }
 
 fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
@@ -455,6 +480,22 @@ mod tests {
         std::env::set_var(&key, "10GB");
         assert!(std::panic::catch_unwind(|| env_optional_usize(&key)).is_err());
         std::env::remove_var(&key);
+    }
+
+    #[test]
+    fn data_root_writer_lock_is_exclusive() {
+        let dir =
+            std::env::temp_dir().join(format!("elastik-data-lock-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let first = acquire_data_root_writer_lock(&dir).unwrap();
+        assert!(acquire_data_root_writer_lock(&dir).is_err());
+        drop(first);
+        let second = acquire_data_root_writer_lock(&dir).unwrap();
+        drop(second);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1790,7 +1831,7 @@ mod tests {
         core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
             .unwrap();
         let mut conn = world::open(&core.data, "home/cas").unwrap();
-        let h = audit::append_with_conn(
+        let h = audit::append_with_conn_existing(
             &mut conn,
             "put",
             "home/cas",

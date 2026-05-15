@@ -240,7 +240,14 @@ impl Core {
             Ok(())
         } else {
             let current_len = world::body_len(&self.data, world)?;
-            world::write(&self.data, world, body, content_type, headers)?;
+            world::write_with_audit(
+                &self.data,
+                world,
+                body,
+                content_type,
+                headers,
+                &self.hmac_key,
+            )?;
             let prev = current_len.unwrap_or(0);
             let _ = self.storage_body_bytes.fetch_update(
                 Ordering::Relaxed,
