@@ -4,7 +4,7 @@
 //! the HTTP write.
 
 use hmac::{Hmac, Mac};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
 // `#[cfg(test)]` items below (`latest_hmac`, the in-module tests) need
@@ -61,12 +61,13 @@ pub fn append_tx(
 ) -> rusqlite::Result<String> {
     let canonical = canonical_headers(headers);
     let meta_sha256 = meta_sha256_canonical(content_type, &canonical);
-    let prev: String = tx
+    let prev = tx
         .query_row(
             "SELECT hmac FROM events ORDER BY id DESC LIMIT 1",
             [],
             |r| r.get::<_, String>(0),
         )
+        .optional()?
         .unwrap_or_default();
     let h = event_hmac(
         key,
@@ -426,6 +427,47 @@ mod tests {
                 latest: format!("hmac-{h2}"),
             })
         );
+    }
+
+    #[test]
+    fn append_tx_propagates_prev_hmac_read_errors() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            r#"
+            CREATE TABLE events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                target TEXT NOT NULL,
+                body_sha256 TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                content_type TEXT NOT NULL,
+                meta_sha256 TEXT NOT NULL,
+                hmac BLOB NOT NULL,
+                prev_hmac TEXT NOT NULL
+            );
+            CREATE TABLE event_headers(
+                event_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL
+            );
+            INSERT INTO events(timestamp, event_type, target, body_sha256, size,
+                               content_type, meta_sha256, hmac, prev_hmac)
+            VALUES(datetime('now'), 'put', 'home/a', 'abc', 3,
+                   'text/plain', 'meta', x'ff', '');
+            "#,
+        )
+        .unwrap();
+
+        let tx = c.transaction().unwrap();
+        let err = append_tx(&tx, "append", "home/a", "def", 6, "text/plain", &[], b"key")
+            .expect_err("corrupt latest hmac must not be treated as an empty chain");
+
+        assert!(matches!(err, rusqlite::Error::InvalidColumnType(..)));
+        let count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
