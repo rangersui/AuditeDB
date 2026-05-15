@@ -25,7 +25,7 @@
 
 use crate::audit;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use rusqlite::{ffi, params, Connection, OpenFlags};
+use rusqlite::{ffi, params, Connection, OpenFlags, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -74,12 +74,21 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     let dir = world_dir(data_root, world);
     std::fs::create_dir_all(&dir).map_err(create_dir_error)?;
-    let c = Connection::open(world_db(data_root, world))?;
+    let db = world_db(data_root, world);
+    let db_existed = db.exists();
+    let c = Connection::open(db)?;
     c.busy_timeout(Duration::from_millis(5000))?;
     c.execute_batch(
         r#"
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=FULL;
+        "#,
+    )?;
+    if db_existed {
+        verify_schema(&c)?;
+    } else {
+        c.execute_batch(
+            r#"
         CREATE TABLE IF NOT EXISTS stage_meta(
             id INTEGER PRIMARY KEY CHECK(id=1),
             body BLOB DEFAULT x'',
@@ -109,8 +118,30 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
             value TEXT NOT NULL
         );
         "#,
-    )?;
+        )?;
+    }
     Ok(c)
+}
+
+fn verify_schema(c: &Connection) -> rusqlite::Result<()> {
+    for table in ["stage_meta", "meta_headers", "events", "event_headers"] {
+        let exists = c
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(schema_error(format!("missing required table: {table}")));
+        }
+    }
+    Ok(())
+}
+
+fn schema_error(msg: String) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CORRUPT), Some(msg))
 }
 
 fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
@@ -379,6 +410,7 @@ pub fn write_with_audit_checked(
             });
         }
     }
+    let audit_tx = verify_appendable_world_tx(&tx, key, existed)?;
     tx.execute(
         r#"UPDATE stage_meta
            SET body=?,
@@ -394,7 +426,7 @@ pub fn write_with_audit_checked(
         }
     }
     let h = audit::append_tx(
-        &tx,
+        &audit_tx,
         "put",
         world,
         &sha256_hex(body),
@@ -460,6 +492,7 @@ pub fn append_with_audit(
     }
     let mut c = open(data_root, world)?;
     let tx = c.transaction()?;
+    let audit_tx = verify_appendable_world_tx(&tx, key, true)?;
     let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
         r.get::<_, Vec<u8>>(0)
     })?;
@@ -474,7 +507,7 @@ pub fn append_with_audit(
         params![new_body],
     )?;
     let h = audit::append_tx(
-        &tx,
+        &audit_tx,
         "append",
         world,
         &after,
@@ -490,6 +523,31 @@ pub fn append_with_audit(
         },
         h,
     )))
+}
+
+fn verify_appendable_world_tx<'tx, 'conn>(
+    tx: &'tx Transaction<'conn>,
+    key: &[u8],
+    existed_before_open: bool,
+) -> rusqlite::Result<audit::VerifiedAuditTx<'tx, 'conn>> {
+    if !existed_before_open || is_empty_bootstrap_tx(tx)? {
+        audit::verify_appendable_tx_genesis(tx, key)
+    } else {
+        audit::verify_appendable_tx_existing(tx, key)
+    }
+}
+
+fn is_empty_bootstrap_tx(tx: &Transaction<'_>) -> rusqlite::Result<bool> {
+    let events: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
+    let event_headers: i64 =
+        tx.query_row("SELECT COUNT(*) FROM event_headers", [], |r| r.get(0))?;
+    let meta_headers: i64 = tx.query_row("SELECT COUNT(*) FROM meta_headers", [], |r| r.get(0))?;
+    let body_len: i64 = tx.query_row(
+        "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) ELSE -1 END FROM stage_meta WHERE id=1",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(events == 0 && event_headers == 0 && meta_headers == 0 && body_len == 0)
 }
 
 pub fn delete(data_root: &Path, world: &str) -> bool {
@@ -666,6 +724,77 @@ mod tests {
         )
         .is_err());
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audited_write_rejects_tampered_existing_chain() {
+        let root = test_root("tampered-audit-chain");
+        let _ = std::fs::remove_dir_all(&root);
+        write_with_audit(&root, "home/tamper", b"one", "text/plain", &[], b"key").unwrap();
+        {
+            let c = Connection::open(world_db(&root, "home/tamper")).unwrap();
+            c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
+                .unwrap();
+        }
+
+        assert!(
+            write_with_audit(&root, "home/tamper", b"two", "text/plain", &[], b"key",).is_err()
+        );
+
+        let c = Connection::open(world_db(&root, "home/tamper")).unwrap();
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audited_write_recovers_empty_bootstrap_db() {
+        let root = test_root("empty-bootstrap-db");
+        let _ = std::fs::remove_dir_all(&root);
+        drop(open(&root, "home/retry").unwrap());
+
+        write_with_audit(&root, "home/retry", b"one", "text/plain", &[], b"key").unwrap();
+
+        let c = Connection::open(world_db(&root, "home/retry")).unwrap();
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audited_write_rejects_empty_chain_with_body() {
+        let root = test_root("empty-chain-with-body");
+        let _ = std::fs::remove_dir_all(&root);
+        {
+            let c = open(&root, "home/orphan").unwrap();
+            c.execute("UPDATE stage_meta SET body=x'6f727068616e' WHERE id=1", [])
+                .unwrap();
+        }
+
+        assert!(write_with_audit(&root, "home/orphan", b"two", "text/plain", &[], b"key").is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn existing_world_missing_audit_table_is_not_recreated() {
+        let root = test_root("missing-audit-table");
+        let _ = std::fs::remove_dir_all(&root);
+        write_with_audit(&root, "home/drop-events", b"one", "text/plain", &[], b"key").unwrap();
+        {
+            let c = Connection::open(world_db(&root, "home/drop-events")).unwrap();
+            c.execute("DROP TABLE events", []).unwrap();
+        }
+
+        assert!(open(&root, "home/drop-events").is_err());
+        assert!(
+            write_with_audit(&root, "home/drop-events", b"two", "text/plain", &[], b"key",)
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

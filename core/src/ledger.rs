@@ -86,15 +86,22 @@ impl LedgerWriter {
         job: AuditAppendJob,
     ) -> Result<String, BlockingSqliteError> {
         let mut guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let mut created_ledger = false;
         if guard.is_none() {
             // Lazy init. `world::open` creates the schema; safe to
             // call whether or not the ledger DB exists on disk.
+            created_ledger = !world::world_db(data, job.ledger_world).exists();
             let conn = world::open(data, job.ledger_world).map_err(BlockingSqliteError::Sqlite)?;
             *guard = Some(conn);
             self.inits.fetch_add(1, Ordering::Relaxed);
         }
         let conn = guard.as_mut().expect("ledger connection initialized above");
-        audit::append_with_conn(
+        let append = if created_ledger {
+            audit::append_with_conn_genesis
+        } else {
+            audit::append_with_conn_existing
+        };
+        append(
             conn,
             job.event_type,
             &job.target,

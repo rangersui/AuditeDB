@@ -146,6 +146,13 @@ These are not preferences. They are the contract every change must keep.
   scopes, HMAC chain, change events, ETag/CAS, byte storage. Business logic
   (validation, transactional flows, schema evolution) lives in reactors and
   SDK code, not in core. Adding policy to core is a Phoenix violation.
+- **Audit chains fail loud before write.** Durable writes must verify the
+  existing HMAC chain before mutating bytes or appending an event. A missing
+  audit table, unreadable previous HMAC, broken HMAC, dropped row, schema
+  mismatch, or startup verification failure is a stop condition, never a
+  reason to recreate tables or begin a fresh chain. Enforce this as
+  mechanism: production append paths take a verified audit transaction type,
+  not a raw SQLite transaction.
 - **FSM pipeline is the contract for new verbs.** Every new HTTP verb on
   `/<world>` is one `pub(crate) async fn execute_*` exported from
   `core/src/handler.rs`. Implementations live in `handler.rs`
