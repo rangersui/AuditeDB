@@ -195,11 +195,11 @@ pub(crate) async fn execute_delete(
         .await
     {
         // Honest cascade-failure trace. The world is already gone, so
-        // we still return 204 -- the write side of the DELETE
-        // succeeded -- but the audit chain is now in a degraded state
-        // and the operator MUST see exactly which kind. eprintln stays
-        // (PR 0 contract): even with trace disabled, stderr carries
-        // the failure.
+        // do not report a clean 204. Even if the underlying storage
+        // error is transient, retrying this DELETE would now observe
+        // a missing world rather than completing the same operation.
+        // eprintln stays (PR 0 contract): even with trace disabled,
+        // stderr carries the failure.
         eprintln!("  WARNING: delete_commit audit append failed for {world}: {commit_err:?}");
         trace.emit_aux_kv("audit_commit_failed", &format!("err={commit_err:?}"));
         match core
@@ -239,6 +239,10 @@ pub(crate) async fn execute_delete(
                 );
             }
         }
+        return Phase::Error {
+            resp: server_error("delete succeeded but audit commit failed".to_string()),
+            reason: ErrorReason::StorageWriteAudit,
+        };
     } else {
         trace.emit_aux("audit_commit");
     }

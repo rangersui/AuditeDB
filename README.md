@@ -253,11 +253,13 @@ Resource caps:
 
 The HTTP request body limit is 64 MiB. `POST` append also checks the projected
 final world size before writing. If a write would cross a cap, the core returns
-`413 Payload Too Large`. If `/listen/*` is full, the core returns
-`503 Service Unavailable`. If SCoAP/UDP in-flight work is full, the core
-returns CoAP `5.03 Service Unavailable`. If durable storage quota is exhausted,
-or the underlying filesystem / SQLite reports storage exhaustion, the core
-returns `507 Insufficient Storage`.
+`413 Payload Too Large`. If `/listen/*` is full, if SQLite reports transient
+`BUSY` / `LOCKED` contention, or if SCoAP/UDP in-flight work is full, the core
+returns `503 Service Unavailable`; the SQLite contention response includes
+`Retry-After: 1`. SCoAP reports the same condition as CoAP `5.03 Service
+Unavailable`. If durable storage quota is exhausted, or the underlying
+filesystem / SQLite reports storage exhaustion, the core returns
+`507 Insufficient Storage`.
 
 `ELASTIK_MAX_STORAGE_BYTES` counts durable body bytes, not SQLite or audit-log
 file overhead. `/proc/df` reports the same body-byte accounting; physical disk

@@ -120,6 +120,18 @@ pub(crate) fn insufficient_storage() -> Response {
         .into_response()
 }
 
+pub(crate) fn storage_temporarily_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::RETRY_AFTER, "1"),
+        ],
+        "storage temporarily unavailable: database busy\n",
+    )
+        .into_response()
+}
+
 pub(crate) fn storage_quota_exceeded(used: usize, quota: usize, projected: usize) -> Response {
     let needed = projected.saturating_sub(quota);
     (
@@ -153,9 +165,22 @@ pub(crate) fn storage_error(scope: &str, err: rusqlite::Error) -> Response {
     eprintln!("elastik-core internal {scope}: {err}");
     if is_insufficient_storage_error(&err) {
         insufficient_storage()
+    } else if is_transient_storage_error(&err) {
+        storage_temporarily_unavailable()
     } else {
         server_error("storage failure".to_string())
     }
+}
+
+pub(crate) fn is_transient_storage_error(err: &rusqlite::Error) -> bool {
+    if matches!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ffi::ErrorCode::DatabaseBusy | rusqlite::ffi::ErrorCode::DatabaseLocked)
+    ) {
+        return true;
+    }
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("database is locked") || msg.contains("database table is locked")
 }
 
 pub(crate) fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {

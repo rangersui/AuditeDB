@@ -35,7 +35,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
 use crate::{
-    auth, can_read, canonicalize_path, is_insufficient_storage_error, valid_world_name, Core,
+    auth, can_read, canonicalize_path, is_insufficient_storage_error, is_transient_storage_error,
+    valid_world_name, Core,
 };
 
 const MAX_DATAGRAM: usize = 1152;
@@ -219,6 +220,9 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                 Ok(None) => encode_response(request, 132, Some(0), b"not found\n"),
                 Err(e) if is_insufficient_storage_error(&e) => {
                     encode_response(request, 167, Some(0), b"insufficient storage\n")
+                }
+                Err(e) if is_transient_storage_error(&e) => {
+                    encode_response(request, 163, Some(0), b"storage busy\n")
                 }
                 Err(_) => encode_response(request, 160, Some(0), b"storage error\n"),
             }
@@ -488,6 +492,7 @@ fn status_to_coap(status: StatusCode) -> u8 {
         412 => 140,
         413 => 141,
         415 => 143,
+        503 => 163,
         507 => 167,
         500..=599 => 160,
         _ => 128,
@@ -621,6 +626,11 @@ mod tests {
     }
 
     #[test]
+    fn http_503_maps_to_coap_service_unavailable() {
+        assert_eq!(status_to_coap(StatusCode::SERVICE_UNAVAILABLE), 163);
+    }
+
+    #[test]
     fn extended_option_overflow_is_rejected() {
         let err = read_ext(14, &[0xff, 0xff]).unwrap_err();
         assert_eq!(err, "extended option overflow");
@@ -725,6 +735,33 @@ mod tests {
         assert_eq!(response[6], 0xff);
         assert_eq!(&response[7..], b"world too large for coap\n");
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn coap_get_storage_busy_maps_to_service_unavailable() {
+        let (core, dir) = test_core("busy-get");
+        core.write_world("home/busy", b"ok", "text/plain; charset=utf-8", &[])
+            .unwrap();
+        let db = crate::world::world_db(&core.data, "home/busy");
+        let holder = rusqlite::Connection::open(db).unwrap();
+        holder
+            .pragma_update(None, "locking_mode", "EXCLUSIVE")
+            .unwrap();
+        holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+        let response = handle(
+            &core,
+            &packet(&coap_get_packet(&[b"home", b"busy"], Some(b"reader"))),
+        )
+        .await;
+
+        assert_eq!(response[1], 163); // 5.03 Service Unavailable
+        assert_eq!(response[5], 0xc0); // Content-Format: text/plain
+        assert_eq!(response[6], 0xff);
+        assert_eq!(&response[7..], b"storage busy\n");
+
+        drop(holder);
         let _ = std::fs::remove_dir_all(dir);
     }
 
