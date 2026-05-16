@@ -350,8 +350,9 @@ pub(crate) fn can_delete(tier: auth::Tier) -> bool {
 // payload_too_large, insufficient_storage, storage_quota_exceeded,
 // options_response, method_not_allowed, precondition_failed,
 // server_error, storage_error, is_insufficient_storage_error,
-// audit_valid, audit_broken, audit_header_value, audit_not_applicable,
-// proc_text_response, du_body, df_body, world_list_body,
+// is_transient_storage_error, audit_valid, audit_broken,
+// audit_header_value, audit_not_applicable, proc_text_response,
+// du_body, df_body, world_list_body,
 // to_header_map) live in `response.rs` and are re-exported at the
 // crate root. Helpers below use them through that re-export.
 
@@ -508,6 +509,23 @@ mod tests {
 
         let resp = storage_error("test", err);
         assert_eq!(resp.status(), StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    #[test]
+    fn sqlite_busy_and_locked_map_to_503_retry_after() {
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+            let err = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            assert!(is_transient_storage_error(&err));
+
+            let resp = storage_error("test", err);
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                resp.headers()
+                    .get(header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok()),
+                Some("1")
+            );
+        }
     }
 
     #[test]
@@ -2612,6 +2630,65 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(events, vec!["delete_intent", "delete_commit"]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn delete_returns_500_when_commit_audit_fails_after_physical_delete() {
+        let (core, dir) = test_core("delete-commit-audit-fail");
+        core.write_world("home/delete-degraded", b"alive", "text/plain", &[])
+            .unwrap();
+        world::write_with_audit(
+            &core.data,
+            "var/log/deletes",
+            b"ledger",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        core.delete_ledger_created.store(true, Ordering::Relaxed);
+        {
+            let c =
+                rusqlite::Connection::open(world::world_db(&core.data, "var/log/deletes")).unwrap();
+            c.execute_batch(
+                r#"
+                CREATE TRIGGER fail_delete_commit
+                BEFORE INSERT ON events
+                WHEN NEW.event_type='delete_commit'
+                BEGIN
+                    SELECT RAISE(FAIL, 'delete_commit blocked');
+                END;
+                "#,
+            )
+            .unwrap();
+        }
+
+        let resp = unwrap_response(
+            execute_delete(
+                HeaderMap::new(),
+                auth::Tier::Approve,
+                "home/delete-degraded".to_string(),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(core.read_world("home/delete-degraded").unwrap().is_none());
+        let ledger = world::open_existing(&core.data, "var/log/deletes")
+            .unwrap()
+            .unwrap();
+        let events = ledger
+            .prepare("SELECT event_type FROM events ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(events, vec!["put", "delete_intent", "delete_commit_failed"]);
 
         let _ = std::fs::remove_dir_all(dir);
     }

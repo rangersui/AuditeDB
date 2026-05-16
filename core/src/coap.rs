@@ -35,7 +35,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
 use crate::{
-    auth, can_read, canonicalize_path, is_insufficient_storage_error, valid_world_name, Core,
+    auth, can_read, canonicalize_path, is_insufficient_storage_error, is_transient_storage_error,
+    valid_world_name, Core,
 };
 
 const MAX_DATAGRAM: usize = 1152;
@@ -219,6 +220,9 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                 Ok(None) => encode_response(request, 132, Some(0), b"not found\n"),
                 Err(e) if is_insufficient_storage_error(&e) => {
                     encode_response(request, 167, Some(0), b"insufficient storage\n")
+                }
+                Err(e) if is_transient_storage_error(&e) => {
+                    encode_response(request, 163, Some(0), b"storage busy\n")
                 }
                 Err(_) => encode_response(request, 160, Some(0), b"storage error\n"),
             }
@@ -488,6 +492,7 @@ fn status_to_coap(status: StatusCode) -> u8 {
         412 => 140,
         413 => 141,
         415 => 143,
+        503 => 163,
         507 => 167,
         500..=599 => 160,
         _ => 128,
@@ -618,6 +623,11 @@ mod tests {
     #[test]
     fn http_507_maps_to_coap_insufficient_storage() {
         assert_eq!(status_to_coap(StatusCode::INSUFFICIENT_STORAGE), 167);
+    }
+
+    #[test]
+    fn http_503_maps_to_coap_service_unavailable() {
+        assert_eq!(status_to_coap(StatusCode::SERVICE_UNAVAILABLE), 163);
     }
 
     #[test]
