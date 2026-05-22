@@ -14,6 +14,7 @@ pub(crate) const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;
 pub(crate) const DEFAULT_MAX_LISTEN_CONNECTIONS: usize = 1024;
+#[cfg(feature = "coap")]
 pub(crate) const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
 
 pub(crate) fn env_usize(name: &str, default: usize) -> usize {
@@ -67,6 +68,7 @@ pub(crate) fn header_user_deny_from_env() -> crate::http_semantics::HeaderAllowl
     crate::http_semantics::HeaderAllowlist::parse(&raw)
 }
 
+#[cfg(feature = "coap")]
 pub(crate) fn coap_bind_from_env() -> Option<(String, u16)> {
     let raw = std::env::var("ELASTIK_COAP_PORT").ok()?;
     let raw = raw.trim();

@@ -26,6 +26,7 @@ pub(crate) fn canonicalize_path(p: &str) -> String {
 /// surface, top-level reject path). Prefer `validate_world_name` when
 /// the rejection reason matters — the bool form is documented to elide
 /// the reason and a 400 with a generic message.
+#[cfg(any(feature = "coap", test))]
 pub(crate) fn valid_world_name(world_name: &str) -> bool {
     validate_world_name(world_name).is_ok()
 }

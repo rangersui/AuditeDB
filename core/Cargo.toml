@@ -9,16 +9,22 @@ homepage = "https://github.com/rangersui/Elastik"
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "net", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", default-features = false }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 percent-encoding = "2"
 dashmap = "6"
+
+[features]
+default = ["bundled-sqlite", "coap", "multi-thread"]
+bundled-sqlite = ["rusqlite/bundled"]
+coap = []
+multi-thread = ["tokio/rt-multi-thread"]
 
 [dev-dependencies]
 # `tower::util::ServiceExt::oneshot` is the standard axum testing
@@ -30,6 +36,14 @@ tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.rut241]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"

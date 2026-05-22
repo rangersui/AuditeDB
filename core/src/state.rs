@@ -18,14 +18,16 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex as StdMutex,
 };
 
-use axum::{
-    http::{HeaderMap, StatusCode},
-    response::Response,
-};
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+
+#[cfg(feature = "coap")]
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
@@ -35,13 +37,47 @@ use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
 use crate::read_cache::ReadCache;
 use crate::world::Stage;
-use crate::{
-    audit, auth, can_write, listen, payload_too_large, server_error, storage_error,
-    storage_quota_exceeded, store, unauthorized, world,
-};
+use crate::{audit, auth, listen, storage_quota_exceeded, store, world};
+#[cfg(feature = "coap")]
+use crate::{can_write, payload_too_large, server_error, storage_error, unauthorized};
 
 pub(crate) type BoxedResponse = Box<Response>;
 
+#[cfg(target_has_atomic = "64")]
+pub(crate) type EventCounter = AtomicU64;
+
+#[cfg(not(target_has_atomic = "64"))]
+pub(crate) type EventCounter = StdMutex<u64>;
+
+#[inline]
+pub(crate) fn new_event_counter() -> Arc<EventCounter> {
+    #[cfg(target_has_atomic = "64")]
+    {
+        Arc::new(AtomicU64::new(0))
+    }
+    #[cfg(not(target_has_atomic = "64"))]
+    {
+        Arc::new(StdMutex::new(0))
+    }
+}
+
+#[cfg(target_has_atomic = "64")]
+#[inline]
+fn next_event_id(counter: &EventCounter) -> u64 {
+    counter.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+#[cfg(not(target_has_atomic = "64"))]
+#[inline]
+fn next_event_id(counter: &EventCounter) -> u64 {
+    let mut next = counter
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *next = next.saturating_add(1);
+    *next
+}
+
+#[cfg(feature = "coap")]
 pub(crate) struct WriteOutcome {
     pub status: StatusCode,
     /// Etag is part of `put_bytes`'s contract for any future caller
@@ -71,8 +107,13 @@ pub(crate) struct Core {
     pub(crate) listen_replay_max: usize,
     pub(crate) event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
     pub(crate) shutdown: watch::Receiver<bool>,
-    pub(crate) next_event: Arc<AtomicU64>,
-    pub(crate) next_request: Arc<AtomicU64>,
+    /// Listen ids stay u64-monotonic because replay uses `>` comparisons
+    /// against Last-Event-ID. 64-bit targets use `AtomicU64`; 32-bit targets
+    /// fall back to a tiny mutex because they lack native 64-bit atomics.
+    pub(crate) next_event: Arc<EventCounter>,
+    /// Request ids are diagnostic only; `AtomicUsize` keeps 32-bit targets on
+    /// native atomics.
+    pub(crate) next_request: Arc<AtomicUsize>,
     /// Per-world async write lock. Replaces the previous global
     /// write_lock. Writes to different worlds run concurrently;
     /// writes to the same world serialize (preserving
@@ -302,7 +343,7 @@ impl Core {
     }
 
     pub(crate) fn notify(&self, method: &'static str, world: &str, etag: &str) {
-        let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = next_event_id(&self.next_event);
         let change = listen::ChangeEvent {
             id,
             method,
@@ -389,6 +430,7 @@ impl Core {
     /// produce the same audit chain entry and the same notify event.
     /// PR 7+ migrates CoAP onto the FSM and retires `put_bytes` +
     /// `WriteOutcome` together.
+    #[cfg(feature = "coap")]
     pub(crate) async fn put_bytes(
         &self,
         world_name: &str,

@@ -144,7 +144,8 @@ ELASTIK_HOST=127.0.0.1
 ELASTIK_PORT=3105
 ELASTIK_DATA=./data
 
-# Optional SCoAP/UDP surface. Disabled unless ELASTIK_COAP_PORT is set.
+# Optional SCoAP/UDP surface. Requires a binary built with the `coap` feature
+# (default builds include it) and stays disabled unless ELASTIK_COAP_PORT is set.
 # ELASTIK_COAP_HOST=127.0.0.1
 # ELASTIK_COAP_PORT=5683
 
@@ -171,7 +172,9 @@ interface without `ELASTIK_READ_TOKEN`, the core prints a startup warning:
 you have deliberately exposed public reads and should decide whether that is
 the surface you want.
 
-The SCoAP/UDP surface is opt-in. The core does not open UDP by default; set
+The SCoAP/UDP surface is compile-time and runtime opt-in. Default builds include
+the `coap` feature, but `--no-default-features` builds omit it entirely. In a
+binary built with `coap`, the core still does not open UDP by default; set
 `ELASTIK_COAP_PORT=5683` to enable the UDP-curl adapter. `ELASTIK_COAP_HOST`
 defaults to `127.0.0.1` when CoAP is enabled.
 
@@ -1231,6 +1234,32 @@ cargo fmt --check
 cargo clippy -- -D warnings
 cargo test
 ```
+
+OpenWrt / router builds:
+
+```powershell
+cd core
+cargo build --profile rut241 --no-default-features --features bundled-sqlite
+```
+
+For real OpenWrt targets, use the SDK/Docker matrix helper instead of ad-hoc
+cross compilers:
+
+```bash
+bash tools/openwrt-build-matrix.sh
+```
+
+The matrix builds the core through OpenWrt SDK Docker images for common router
+targets such as `ramips-mt76x8`, `ramips-mt7621`, `ath79-generic`,
+`mediatek-filogic`, `bcm27xx-bcm2711`, and `x86-64`. Outputs go under
+`target/openwrt-matrix/` and are not committed.
+
+The `rut241` profile is a size-optimized embedded profile: `opt-level = "z"`,
+fat LTO, stripped symbols, `panic = "abort"`, and one codegen unit. It is not
+a runtime special case for any router vendor. The same build shape has been
+smoke-tested on a resource-constrained OpenWrt RTU/router target, but
+portability comes from disabling optional surfaces such as CoAP and
+multi-thread Tokio when they are not needed.
 
 Black-box SDK test:
 

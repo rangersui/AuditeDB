@@ -30,6 +30,7 @@
 //!   ELASTIK_HOST           default 127.0.0.1
 //!   ELASTIK_PORT           default 3105
 //!   ELASTIK_COAP_PORT      optional; enables SCoAP/UDP when set
+//!                          (requires binary built with `coap` feature)
 //!   ELASTIK_COAP_HOST      default 127.0.0.1 when CoAP is enabled
 //!   ELASTIK_DATA           default ./data
 //!   ELASTIK_READ_TOKEN     T1 token  (optional read gate)
@@ -40,6 +41,7 @@
 //!   ELASTIK_TRACE_PIPELINE optional; "1" enables the FSM trace on stderr
 mod audit;
 mod auth;
+#[cfg(feature = "coap")]
 mod coap;
 mod config;
 mod handler;
@@ -71,7 +73,7 @@ use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicUsize},
+    atomic::{AtomicBool, AtomicUsize},
     Arc, Mutex as StdMutex,
 };
 use std::time::Duration;
@@ -79,10 +81,12 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Semaphore};
 
+#[cfg(feature = "coap")]
+use crate::config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
 use crate::config::{
-    coap_bind_from_env, env_nonzero_usize, env_optional_usize, env_usize, hmac_key_from_env_value,
-    listen_addr, should_warn_public_read, DEFAULT_COAP_MAX_IN_FLIGHT, DEFAULT_LISTEN_REPLAY_MAX,
-    DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
+    env_nonzero_usize, env_optional_usize, env_usize, hmac_key_from_env_value, listen_addr,
+    should_warn_public_read, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
+    DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
 };
 
 // Re-exported to crate root for `proc.rs` (root_hint, proc_version)
@@ -91,7 +95,8 @@ use crate::config::{
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 
-#[tokio::main]
+#[cfg_attr(feature = "multi-thread", tokio::main)]
+#[cfg_attr(not(feature = "multi-thread"), tokio::main(flavor = "current_thread"))]
 async fn main() {
     // Latch the pipeline-trace flag from ELASTIK_TRACE_PIPELINE before
     // anything else looks at env. PR 4a adds the flag and TraceCtx
@@ -103,6 +108,7 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3105);
+    #[cfg(feature = "coap")]
     let coap_bind = coap_bind_from_env();
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
@@ -114,6 +120,7 @@ async fn main() {
     );
     let listen_replay_max =
         env_nonzero_usize("ELASTIK_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX);
+    #[cfg(feature = "coap")]
     let coap_max_in_flight =
         env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT);
     let read_cache_max_entries = env_nonzero_usize(
@@ -151,8 +158,8 @@ async fn main() {
         listen_replay_max,
         event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(listen_replay_max))),
         shutdown: shutdown_rx.clone(),
-        next_event: Arc::new(AtomicU64::new(0)),
-        next_request: Arc::new(AtomicU64::new(0)),
+        next_event: crate::state::new_event_counter(),
+        next_request: Arc::new(AtomicUsize::new(0)),
         world_locks: Arc::new(DashMap::new()),
         ledger: Arc::new(crate::ledger::LedgerWriter::new()),
         read_cache: Arc::new(crate::read_cache::ReadCache::new(read_cache_max_entries)),
@@ -168,6 +175,7 @@ async fn main() {
         .unwrap_or_else(|_| IpAddr::from([127, 0, 0, 1]));
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
     print_auth_summary(&state.tokens, bind_ip);
+    #[cfg(feature = "coap")]
     if let Some((coap_host, coap_port)) = coap_bind {
         let coap_addr = listen_addr(&coap_host, coap_port);
         let coap_state = state.clone();
@@ -416,11 +424,13 @@ mod tests {
         LOCK.get_or_init(|| TestMutex::new(()))
     }
 
+    #[cfg(feature = "coap")]
     struct CoapEnvGuard {
         host: Option<String>,
         port: Option<String>,
     }
 
+    #[cfg(feature = "coap")]
     impl CoapEnvGuard {
         fn capture() -> Self {
             Self {
@@ -430,6 +440,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "coap")]
     impl Drop for CoapEnvGuard {
         fn drop(&mut self) {
             match &self.host {
@@ -747,6 +758,7 @@ mod tests {
         assert_eq!(listen_addr("localhost", 3105), "localhost:3105");
     }
 
+    #[cfg(feature = "coap")]
     #[test]
     fn coap_bind_is_opt_in_by_port_env() {
         let _lock = env_lock().lock().unwrap();
@@ -2958,6 +2970,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(feature = "multi-thread")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_first_deletes_increment_world_count_exactly_once() {
         // Bug 16 race coverage. Three concurrent DELETEs on a fresh
@@ -3434,8 +3447,8 @@ mod tests {
                         DEFAULT_LISTEN_REPLAY_MAX,
                     ))),
                     shutdown: watch::channel(false).1,
-                    next_event: Arc::new(AtomicU64::new(0)),
-                    next_request: Arc::new(AtomicU64::new(0)),
+                    next_event: crate::state::new_event_counter(),
+                    next_request: Arc::new(AtomicUsize::new(0)),
                     world_locks: Arc::new(DashMap::new()),
                     ledger: Arc::new(crate::ledger::LedgerWriter::new()),
                     read_cache: Arc::new(crate::read_cache::ReadCache::new(

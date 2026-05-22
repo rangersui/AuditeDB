@@ -510,7 +510,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize},
+        atomic::{AtomicBool, AtomicUsize},
         Arc, Mutex as StdMutex,
     };
     use tokio::sync::{broadcast, watch};
@@ -554,8 +554,8 @@ mod tests {
                     DEFAULT_LISTEN_REPLAY_MAX,
                 ))),
                 shutdown: watch::channel(false).1,
-                next_event: Arc::new(AtomicU64::new(0)),
-                next_request: Arc::new(AtomicU64::new(0)),
+                next_event: crate::state::new_event_counter(),
+                next_request: Arc::new(AtomicUsize::new(0)),
                 world_locks: Arc::new(DashMap::new()),
                 ledger: Arc::new(crate::ledger::LedgerWriter::new()),
                 read_cache: Arc::new(crate::read_cache::ReadCache::new(

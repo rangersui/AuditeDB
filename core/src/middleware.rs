@@ -33,7 +33,7 @@ pub(crate) async fn add_core_response_headers(
     mut req: axum::http::Request<Body>,
     next: Next,
 ) -> Response {
-    let request_id = core.next_request.fetch_add(1, Ordering::Relaxed) + 1;
+    let request_id = (core.next_request.fetch_add(1, Ordering::Relaxed) + 1) as u64;
     // Stash on request extensions so the FSM driver
     // (`pipeline::run`) reads the SAME id we'll stamp on the
     // response. Without this, the middleware and `pipeline::run`
