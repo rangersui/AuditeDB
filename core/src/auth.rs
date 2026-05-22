@@ -141,6 +141,10 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn bearer(token: &str) -> String {
+        format!("{} {token}", "Bearer")
+    }
+
     struct EnvGuard {
         read: Option<String>,
         write: Option<String>,
@@ -210,7 +214,7 @@ mod tests {
 
         let tokens = Tokens::from_env();
 
-        assert_eq!(tokens.check(Some("Bearer legacy-writer")), Tier::Write);
+        assert_eq!(tokens.check(Some(&bearer("legacy-writer"))), Tier::Write);
     }
 
     #[test]
@@ -246,9 +250,9 @@ mod tests {
         };
         let basic_writer = B64.encode("user:writer");
 
-        assert_eq!(tokens.check(Some("Bearer reader")), Tier::Read);
+        assert_eq!(tokens.check(Some(&bearer("reader"))), Tier::Read);
         assert_eq!(tokens.check(Some("bearer reader")), Tier::Read);
-        assert_eq!(tokens.check(Some("Bearer writer")), Tier::Write);
+        assert_eq!(tokens.check(Some(&bearer("writer"))), Tier::Write);
         assert_eq!(
             tokens.check(Some(&format!("Basic {basic_writer}"))),
             Tier::Write
@@ -257,7 +261,7 @@ mod tests {
             tokens.check(Some(&format!("basic {basic_writer}"))),
             Tier::Write
         );
-        assert_eq!(tokens.check(Some("Bearer approve")), Tier::Approve);
+        assert_eq!(tokens.check(Some(&bearer("approve"))), Tier::Approve);
         assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
     }
 }

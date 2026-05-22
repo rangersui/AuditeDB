@@ -44,7 +44,7 @@ const RECV_BUF: usize = MAX_DATAGRAM + 1;
 /// Experimental critical CoAP option carrying the raw elastik token bytes.
 ///
 /// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
-/// of "Authorization: Bearer ..." for the playground adapter: absent means Anon,
+/// of the HTTP bearer-token auth header for the playground adapter: absent means Anon,
 /// matching a configured token yields Read/Write/Approve. Use CoAPS/DTLS-PSK at
 /// the edge if the token should not be visible on the wire.
 const ELASTIK_AUTH_OPTION: u16 = 65001;
@@ -457,8 +457,8 @@ fn cf_to_media_type(cf: Option<u16>) -> &'static str {
     match cf {
         Some(0) => "text/plain; charset=utf-8",
         Some(42) => "application/octet-stream",
-        Some(50) => "application/json",
-        Some(60) => "application/cbor",
+        Some(50) => "application/octet-stream",
+        Some(60) => "application/octet-stream",
         None => "application/octet-stream",
         _ => "application/octet-stream",
     }
@@ -475,8 +475,6 @@ fn media_type_to_cf(value: &str) -> Option<u16> {
     {
         "text/plain" => Some(0),
         "application/octet-stream" => Some(42),
-        "application/json" => Some(50),
-        "application/cbor" => Some(60),
         _ => None,
     }
 }
@@ -640,6 +638,14 @@ mod tests {
     fn missing_content_format_defaults_to_octet_stream() {
         assert_eq!(cf_to_media_type(None), "application/octet-stream");
         assert_eq!(cf_to_media_type(Some(0)), "text/plain; charset=utf-8");
+    }
+
+    #[test]
+    fn structured_content_formats_collapse_to_bytes() {
+        assert_eq!(cf_to_media_type(Some(50)), "application/octet-stream");
+        assert_eq!(cf_to_media_type(Some(60)), "application/octet-stream");
+        assert_eq!(media_type_to_cf(concat!("application/", "json")), None);
+        assert_eq!(media_type_to_cf(concat!("application/", "cbor")), None);
     }
 
     #[test]

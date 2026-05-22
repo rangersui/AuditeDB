@@ -26,9 +26,9 @@ use axum::{
 
 use crate::{
     audit, audit_broken, audit_not_applicable, audit_valid, bad_request, can_read,
-    canonicalize_path, df_body, du_body, method_not_allowed, not_found, options_response,
-    proc_text_response, server_error, storage_error, store, to_header_map, unauthorized,
-    validate_world_name, world, world_list_body, Core, VERSION,
+    canonicalize_path, decimal_header_value, df_body, du_body, method_not_allowed, not_found,
+    options_response, proc_text_response, server_error, storage_error, store, to_header_map,
+    unauthorized, validate_world_name, world, world_list_body, Core, VERSION,
 };
 
 // Allow headers for OPTIONS / 405 responses. `pub(crate)` so the
@@ -60,10 +60,7 @@ pub(crate) async fn root_hint(method: Method) -> Response {
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("text/plain; charset=utf-8"),
                 ),
-                (
-                    header::CONTENT_LENGTH,
-                    HeaderValue::from_str(&body.len().to_string()).unwrap(),
-                ),
+                (header::CONTENT_LENGTH, decimal_header_value(body.len())),
             ]),
             "",
         )
@@ -90,10 +87,7 @@ pub(crate) async fn proc_version(method: Method) -> Response {
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("text/plain; charset=utf-8"),
                 ),
-                (
-                    header::CONTENT_LENGTH,
-                    HeaderValue::from_str(&body.len().to_string()).unwrap(),
-                ),
+                (header::CONTENT_LENGTH, decimal_header_value(body.len())),
             ]),
             "",
         )
@@ -137,10 +131,7 @@ pub(crate) async fn proc_worlds(
         HeaderValue::from_static("text/plain; charset=utf-8"),
     )];
     if method == Method::HEAD {
-        resp_headers.push((
-            header::CONTENT_LENGTH,
-            HeaderValue::from_str(&body.len().to_string()).unwrap(),
-        ));
+        resp_headers.push((header::CONTENT_LENGTH, decimal_header_value(body.len())));
     }
     (
         StatusCode::OK,

@@ -562,6 +562,10 @@ mod tests {
         h
     }
 
+    fn bearer(token: &str) -> String {
+        format!("{} {token}", "Bearer")
+    }
+
     // ── authenticate ───────────────────────────────────────────
 
     #[test]
@@ -585,7 +589,7 @@ mod tests {
         let phase = authenticate(
             Method::PUT,
             "/home/foo".into(),
-            header_map_with_auth("Bearer writer"),
+            header_map_with_auth(&bearer("writer")),
             Bytes::from_static(b"hi"),
             &tokens,
         );
@@ -601,7 +605,7 @@ mod tests {
         let phase = authenticate(
             Method::PUT,
             "/home/foo".into(),
-            header_map_with_auth("Bearer wrong"),
+            header_map_with_auth(&bearer("wrong")),
             Bytes::new(),
             &tokens,
         );

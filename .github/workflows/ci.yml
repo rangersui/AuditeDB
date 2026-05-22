@@ -18,9 +18,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: format
         working-directory: core
         run: cargo fmt --check
+      - name: core no structured data
+        run: python core/no_json.py core/src
+      - name: core contraband
+        run: >
+          python core/contraband.py
+          --only no_yaml
+          --only no_toml_parse
+          --only no_last_modified
+          --only no_hardcoded_secrets
+          core/src
+      - name: core production clippy doctrine lint
+        working-directory: core
+        run: cargo clippy --bin elastik-core -- -D clippy::unwrap_used -D clippy::print_stdout
+      - name: core production clippy doctrine lint minimal
+        working-directory: core
+        run: cargo clippy --bin elastik-core --no-default-features --features bundled-sqlite -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: clippy
         working-directory: core
         run: cargo clippy -- -D warnings

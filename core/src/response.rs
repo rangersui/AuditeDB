@@ -29,6 +29,23 @@ pub(crate) fn to_header_map(pairs: Vec<(HeaderName, HeaderValue)>) -> HeaderMap 
     hm
 }
 
+#[inline]
+pub(crate) fn decimal_header_value(value: usize) -> HeaderValue {
+    HeaderValue::from(value as u64)
+}
+
+#[inline]
+pub(crate) fn content_range_value(start: usize, end: usize, len: usize) -> HeaderValue {
+    HeaderValue::from_str(&format!("bytes {start}-{end}/{len}"))
+        .expect("Content-Range format uses only visible ASCII bytes")
+}
+
+#[inline]
+pub(crate) fn unsatisfied_range_value(len: usize) -> HeaderValue {
+    HeaderValue::from_str(&format!("bytes */{len}"))
+        .expect("Content-Range format uses only visible ASCII bytes")
+}
+
 // ─── basic error responses ──────────────────────────────────────────
 
 pub(crate) fn not_found() -> Response {
@@ -143,15 +160,15 @@ pub(crate) fn storage_quota_exceeded(used: usize, quota: usize, projected: usize
             ),
             (
                 HeaderName::from_static("x-storage-usage"),
-                HeaderValue::from_str(&used.to_string()).unwrap(),
+                decimal_header_value(used),
             ),
             (
                 HeaderName::from_static("x-storage-quota"),
-                HeaderValue::from_str(&quota.to_string()).unwrap(),
+                decimal_header_value(quota),
             ),
             (
                 HeaderName::from_static("x-storage-needed"),
-                HeaderValue::from_str(&needed.to_string()).unwrap(),
+                decimal_header_value(needed),
             ),
         ]),
         format!(
@@ -209,7 +226,7 @@ pub(crate) fn audit_valid(report: audit::VerifyOk) -> Response {
             ),
             (
                 HeaderName::from_static("x-audit-events"),
-                HeaderValue::from_str(&report.events.to_string()).unwrap(),
+                decimal_header_value(report.events),
             ),
             (
                 HeaderName::from_static("x-audit-genesis"),
@@ -236,7 +253,7 @@ pub(crate) fn audit_broken(report: audit::VerifyBreak) -> Response {
             ),
             (
                 HeaderName::from_static("x-audit-break-at"),
-                HeaderValue::from_str(&report.break_at.to_string()).unwrap(),
+                decimal_header_value(report.break_at),
             ),
             (
                 HeaderName::from_static("x-audit-expected"),
@@ -288,10 +305,7 @@ pub(crate) fn proc_text_response(method: Method, body: String) -> Response {
         HeaderValue::from_static("text/plain; charset=utf-8"),
     )];
     if method == Method::HEAD {
-        resp_headers.push((
-            header::CONTENT_LENGTH,
-            HeaderValue::from_str(&body.len().to_string()).unwrap(),
-        ));
+        resp_headers.push((header::CONTENT_LENGTH, decimal_header_value(body.len())));
     }
     (
         StatusCode::OK,

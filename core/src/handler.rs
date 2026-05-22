@@ -48,9 +48,10 @@ use axum::{
 };
 
 use crate::{
-    auth, can_read, can_write, http_semantics as hs, is_insufficient_storage_error,
-    needs_write_approve, not_found, payload_too_large, server_error, storage_error, store,
-    to_header_map, unauthorized, world, AuthGate, Core, ErrorReason, Phase, TraceCtx, Verb,
+    auth, can_read, can_write, content_range_value, decimal_header_value, http_semantics as hs,
+    is_insufficient_storage_error, needs_write_approve, not_found, payload_too_large, server_error,
+    storage_error, store, to_header_map, unauthorized, world, AuthGate, Core, ErrorReason, Phase,
+    TraceCtx, Verb,
 };
 
 /// Dispatch from `Phase::Dispatched` to the verb-specific handler.
@@ -120,14 +121,10 @@ pub(crate) async fn execute_get(
     match hs::effective_range(&headers, stage.body.len(), &etag) {
         Ok(Some((start, end))) => {
             let chunk = stage.body[start..=end].to_vec();
-            resp_headers.push((
-                header::CONTENT_LENGTH,
-                HeaderValue::from_str(&chunk.len().to_string()).unwrap(),
-            ));
+            resp_headers.push((header::CONTENT_LENGTH, decimal_header_value(chunk.len())));
             resp_headers.push((
                 header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {start}-{end}/{}", stage.body.len()))
-                    .unwrap(),
+                content_range_value(start, end, stage.body.len()),
             ));
             trace.emit_aux_kv("body_size", &chunk.len().to_string());
             Phase::ExecutedRead(
@@ -142,7 +139,7 @@ pub(crate) async fn execute_get(
         Ok(None) => {
             resp_headers.push((
                 header::CONTENT_LENGTH,
-                HeaderValue::from_str(&stage.body.len().to_string()).unwrap(),
+                decimal_header_value(stage.body.len()),
             ));
             trace.emit_aux_kv("body_size", &stage.body.len().to_string());
             Phase::ExecutedRead(
@@ -195,7 +192,7 @@ pub(crate) async fn execute_head(
         ),
         (
             header::CONTENT_LENGTH,
-            HeaderValue::from_str(&stage.body.len().to_string()).unwrap(),
+            decimal_header_value(stage.body.len()),
         ),
         (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
         (header::ETAG, hs::etag_header(&etag)),
@@ -206,14 +203,10 @@ pub(crate) async fn execute_head(
         Ok(Some((start, end))) => {
             resp_headers.retain(|(name, _)| name != header::CONTENT_LENGTH);
             let chunk_len = end - start + 1;
-            resp_headers.push((
-                header::CONTENT_LENGTH,
-                HeaderValue::from_str(&chunk_len.to_string()).unwrap(),
-            ));
+            resp_headers.push((header::CONTENT_LENGTH, decimal_header_value(chunk_len)));
             resp_headers.push((
                 header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {start}-{end}/{}", stage.body.len()))
-                    .unwrap(),
+                content_range_value(start, end, stage.body.len()),
             ));
             trace.emit_aux_kv("body_size", &chunk_len.to_string());
             Phase::ExecutedRead(

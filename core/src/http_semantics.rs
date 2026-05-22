@@ -6,7 +6,9 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::{BTreeMap, HashSet};
 
 use crate::world::Stage;
-use crate::{precondition_failed, storage_error, to_header_map, world, Core};
+use crate::{
+    precondition_failed, storage_error, to_header_map, unsatisfied_range_value, world, Core,
+};
 
 /// User-configurable matcher used by both Layer 3 (user allow,
 /// `ELASTIK_PERSIST_HEADERS`) and Layer 1.5 (user deny,
@@ -581,10 +583,7 @@ pub(crate) fn range_not_satisfiable(len: usize) -> Response {
             HeaderValue::from_static("text/plain; charset=utf-8"),
         ),
         (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
-        (
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes */{len}")).unwrap(),
-        ),
+        (header::CONTENT_RANGE, unsatisfied_range_value(len)),
     ];
     (
         StatusCode::RANGE_NOT_SATISFIABLE,

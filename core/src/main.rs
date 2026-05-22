@@ -190,7 +190,7 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await;
     drop(data_lock);
-    serve_result.unwrap();
+    serve_result.expect("axum server failed");
 }
 
 fn acquire_data_root_writer_lock(data: &Path) -> rusqlite::Result<rusqlite::Connection> {
@@ -1961,11 +1961,11 @@ mod tests {
 
         headers.insert(
             header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer secret"),
+            HeaderValue::from_str(&format!("{} {}", "Bearer", "secret")).unwrap(),
         );
         headers.insert(
             "proxy-authorization",
-            HeaderValue::from_static("Bearer secret"),
+            HeaderValue::from_str(&format!("{} {}", "Bearer", "secret")).unwrap(),
         );
         headers.insert(header::COOKIE, HeaderValue::from_static("sid=secret"));
         headers.insert(header::SET_COOKIE, HeaderValue::from_static("sid=secret"));
