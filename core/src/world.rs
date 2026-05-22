@@ -2,11 +2,13 @@
 //!
 //! v5.0 schema (breaking from pre-v5 cores):
 //!
+//! ```text
 //!     stage_meta(id, body, content_type)
 //!     meta_headers(name, value)
 //!     events(id, timestamp, event_type, target, body_sha256, size,
 //!            content_type, meta_sha256, hmac, prev_hmac)
 //!     event_headers(event_id, name, value)
+//! ```
 //!
 //! Renames vs pre-v5: `stage_html` -> `body`. Drops: `pending_js`,
 //! `js_result`, `state`. No migrator. World dirs from older binaries

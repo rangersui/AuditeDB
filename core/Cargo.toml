@@ -7,6 +7,10 @@ license = "MIT"
 repository = "https://github.com/rangersui/Elastik"
 homepage = "https://github.com/rangersui/Elastik"
 
+[lib]
+name = "elastik_core"
+path = "src/lib.rs"
+
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
 bytes = "1"

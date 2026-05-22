@@ -1,7 +1,10 @@
 //! Store routing — one core, one port, prefix decides the backend.
 //!
-//!     /home/* /etc/* /lib/* /boot/* /usr/*  → SQLite (durable)
-//!     /tmp/*  /dev/*  /sys/*                → memory (transient)
+//! ```text
+//!     /home/* /etc/* /lib/* /boot/* /usr/* /var/*  → SQLite (durable)
+//!     /tmp/*  /dev/*  /sys/*                       → memory (transient)
+//!
+//! ```
 //!
 //! `MemoryStore` is a small Redis-shaped substrate that keeps the
 //! elastik shape: same port, same HTTP, only the path prefix changes

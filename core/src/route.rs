@@ -2,7 +2,7 @@
 //!
 //! `build_app(state, max_world_bytes)` returns the fully wired
 //! `Router` that `main()` serves. The route table itself is short
-//! (root, listen, proc/*, /<world>) and adding a new top-level
+//! (root, listen, proc/*, `/<world>`) and adding a new top-level
 //! route happens here. Per-verb logic lives in `crate::handler`;
 //! `world_handler` only routes OPTIONS to a static response and
 //! every other method into `pipeline::run`.

@@ -36,13 +36,16 @@ jobs:
           core/src
       - name: core production clippy doctrine lint
         working-directory: core
-        run: cargo clippy --bin elastik-core -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --lib --bin elastik-core -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: core production clippy doctrine lint minimal
         working-directory: core
-        run: cargo clippy --bin elastik-core --no-default-features --features bundled-sqlite -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --lib --bin elastik-core --no-default-features --features bundled-sqlite -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: clippy
         working-directory: core
         run: cargo clippy -- -D warnings
+      - name: rustdoc warnings
+        working-directory: core
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
       - name: unit tests
         working-directory: core
         run: cargo test
