@@ -17,7 +17,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::audit;
+use crate::{
+    audit,
+    storage_class::{is_insufficient_storage_error, is_transient_storage_error},
+};
 
 // ─── header utility ─────────────────────────────────────────────────
 
@@ -187,31 +190,6 @@ pub(crate) fn storage_error(scope: &str, err: rusqlite::Error) -> Response {
     } else {
         server_error("storage failure".to_string())
     }
-}
-
-pub(crate) fn is_transient_storage_error(err: &rusqlite::Error) -> bool {
-    if matches!(
-        err.sqlite_error_code(),
-        Some(rusqlite::ffi::ErrorCode::DatabaseBusy | rusqlite::ffi::ErrorCode::DatabaseLocked)
-    ) {
-        return true;
-    }
-    let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("database is locked") || msg.contains("database table is locked")
-}
-
-pub(crate) fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {
-    if matches!(
-        err.sqlite_error_code(),
-        Some(rusqlite::ffi::ErrorCode::DiskFull)
-    ) {
-        return true;
-    }
-    let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("database or disk is full")
-        || msg.contains("disk is full")
-        || msg.contains("no space left")
-        || msg.contains("not enough space")
 }
 
 // ─── audit verify responses ────────────────────────────────────────

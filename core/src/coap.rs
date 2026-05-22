@@ -1,42 +1,17 @@
 //! Native SCoAP/UDP surface for elastik-core.
 //!
-//! This is not a general CoAP stack. It is "UDP curl": a deliberately small
-//! adapter that parses enough CoAP-shaped wire truth to derive method, path,
-//! payload and content type, then calls the same Core storage operations as
-//! HTTP. TCP and UDP become two doors into the same world store.
-//!
-//! CoAP is allowed inside core because it has semantic zero distance from HTTP:
-//! method code is method, Uri-Path is path, Content-Format is Content-Type,
-//! response code is status, payload is body. That is why this file can stay
-//! small. It is not translating a foreign object model; it is putting HTTP
-//! semantics in a UDP envelope.
-//!
-//! Other protocols must stop at the edge unless they first collapse into that
-//! tuple. MQTT topics, AMQP exchanges, Modbus registers, SMTP transactions,
-//! FTP sessions, gRPC method calls and WebDAV file-system politics are useful
-//! adapter material, not core material. They can knock after an SDK/sidecar has
-//! turned them into method + path + representation bytes + content type.
-//!
-//! In elastik terms, core owns protocol truth, not protocol politics:
-//!
-//! - Truth we keep here: v1 header, method code, Uri-Path, Content-Format,
-//!   payload marker, token echo, response code, CON->ACK / NON->NON, and the
-//!   minimal identity signal needed to map a packet to an elastik auth tier.
-//! - Politics we intentionally do not keep here: retransmission, dedup cache,
-//!   block-wise transfer, DTLS/OSCORE, Observe, .well-known/core, Max-Age,
-//!   multicast discovery, congestion knobs, and strict critical-option lawyering.
-//!
-//! Need reliability or large bodies? Use HTTP or retry at the client. Need
-//! crypto/discovery/strict RFC behavior? Put a CoAP runtime gateway at the edge.
-//! The core stays a disk-shaped bus: packet in, core op, packet out.
+//! This is not a general CoAP stack. It is "UDP curl": parse method, path,
+//! payload, content type, and auth token, then call the same protocol-neutral
+//! world operations as HTTP. CoAP stays in core because its wire shape has
+//! near-zero semantic distance from HTTP; richer protocol politics belong in
+//! edge adapters.
 
-use axum::http::StatusCode;
+use bytes::Bytes;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
 use crate::{
-    auth, can_read, canonicalize_path, is_insufficient_storage_error, is_transient_storage_error,
-    valid_world_name, Core,
+    auth, canonicalize_path, coap_errors, http_semantics as hs, valid_world_name, world_ops, Core,
 };
 
 const MAX_DATAGRAM: usize = 1152;
@@ -192,11 +167,19 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
         .unwrap_or(auth::Tier::Anon);
     match method {
         Method::Get => {
-            if !can_read(core, tier) {
-                return encode_response(request, 129, Some(0), b"unauthorized\n");
-            }
-            match core.read_world(&world_name) {
-                Ok(Some(stage)) => {
+            let permit = match world_ops::authorize_read(core, &world_name, tier) {
+                Ok(permit) => permit,
+                Err(err) => {
+                    return encode_response(
+                        request,
+                        coap_errors::read_error_to_coap(&err),
+                        Some(0),
+                        coap_errors::read_error_body(&err),
+                    );
+                }
+            };
+            match world_ops::read_world_for(core, &permit, &world_name) {
+                Ok(world_ops::ReadOutcome::Found { stage, .. }) => {
                     if encoded_len(
                         request,
                         media_type_to_cf(&stage.content_type),
@@ -217,33 +200,51 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                         &stage.body,
                     )
                 }
-                Ok(None) => encode_response(request, 132, Some(0), b"not found\n"),
-                Err(e) if is_insufficient_storage_error(&e) => {
-                    encode_response(request, 167, Some(0), b"insufficient storage\n")
+                Ok(world_ops::ReadOutcome::Missing) => {
+                    encode_response(request, 132, Some(0), b"not found\n")
                 }
-                Err(e) if is_transient_storage_error(&e) => {
-                    encode_response(request, 163, Some(0), b"storage busy\n")
-                }
-                Err(_) => encode_response(request, 160, Some(0), b"storage error\n"),
+                Err(err) => encode_response(
+                    request,
+                    coap_errors::read_error_to_coap(&err),
+                    Some(0),
+                    coap_errors::read_error_body(&err),
+                ),
             }
         }
         Method::Put => {
             let content_type = cf_to_media_type(request.content_format);
-            match core
-                .put_bytes(&world_name, request.payload, content_type, &[], tier, None)
-                .await
-            {
+            let permit = match world_ops::authorize_write(&world_name, tier) {
+                Ok(permit) => permit,
+                Err(err) => {
+                    return encode_response(
+                        request,
+                        coap_errors::write_error_to_coap(&err),
+                        Some(0),
+                        b"error\n",
+                    );
+                }
+            };
+            let req = world_ops::ReplaceRequest {
+                world: world_name,
+                body: Bytes::copy_from_slice(request.payload),
+                content_type: content_type.to_owned(),
+                headers: Vec::new(),
+                preconditions: hs::Preconditions::default(),
+            };
+            match world_ops::replace_write(core, &permit, req, &world_ops::NoopWriteTrace).await {
                 Ok(outcome) => {
-                    let code = if outcome.status == StatusCode::CREATED {
-                        65
-                    } else {
-                        68
+                    let code = match outcome.status_kind {
+                        world_ops::WriteStatusKind::Created => 65,
+                        world_ops::WriteStatusKind::Updated => 68,
                     };
                     encode_response(request, code, None, b"")
                 }
-                Err(resp) => {
-                    encode_response(request, status_to_coap(resp.status()), Some(0), b"error\n")
-                }
+                Err(err) => encode_response(
+                    request,
+                    coap_errors::write_error_to_coap(&err),
+                    Some(0),
+                    b"error\n",
+                ),
             }
         }
         Method::Post => encode_response(
@@ -479,36 +480,20 @@ fn media_type_to_cf(value: &str) -> Option<u16> {
     }
 }
 
-fn status_to_coap(status: StatusCode) -> u8 {
-    match status.as_u16() {
-        400 => 128,
-        401 => 129,
-        403 => 131,
-        404 => 132,
-        405 => 133,
-        409 => 137,
-        412 => 140,
-        413 => 141,
-        415 => 143,
-        503 => 163,
-        507 => 167,
-        500..=599 => 160,
-        _ => 128,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        auth, store, Core, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
-        DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
+        audit, auth, handler, store, Core, Phase, TraceCtx, DEFAULT_LISTEN_REPLAY_MAX,
+        DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
     };
+    use axum::body::Bytes;
+    use axum::http::{HeaderMap, StatusCode};
     use dashmap::DashMap;
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     };
     use tokio::sync::{broadcast, watch};
@@ -619,13 +604,23 @@ mod tests {
     }
 
     #[test]
-    fn http_507_maps_to_coap_insufficient_storage() {
-        assert_eq!(status_to_coap(StatusCode::INSUFFICIENT_STORAGE), 167);
+    fn write_quota_maps_to_coap_insufficient_storage() {
+        assert_eq!(
+            coap_errors::write_error_to_coap(&world_ops::WriteError::QuotaExceeded {
+                used: 9,
+                quota: 10,
+                projected: 11,
+            }),
+            167
+        );
     }
 
     #[test]
-    fn http_503_maps_to_coap_service_unavailable() {
-        assert_eq!(status_to_coap(StatusCode::SERVICE_UNAVAILABLE), 163);
+    fn write_payload_too_large_maps_to_coap_request_entity_too_large() {
+        assert_eq!(
+            coap_errors::write_error_to_coap(&world_ops::WriteError::PayloadTooLarge { max: 1024 }),
+            141
+        );
     }
 
     #[test]
@@ -797,6 +792,70 @@ mod tests {
         assert_eq!(get_response[1], 69); // 2.05 Content
         assert_eq!(get_response[6], 0xff);
         assert_eq!(&get_response[7..], b"23.5");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn http_put_and_coap_put_share_world_ops_semantics() {
+        let (core, dir) = test_core("cross-protocol");
+        let mut events = core.events.subscribe();
+
+        let mut http_headers = HeaderMap::new();
+        http_headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8".parse().unwrap(),
+        );
+        let http_phase = handler::execute_put(
+            http_headers,
+            Bytes::from_static(b"23.5"),
+            auth::Tier::Write,
+            "home/http-temp".to_owned(),
+            &core,
+            &TraceCtx::disabled(),
+        )
+        .await;
+        let http_response = match http_phase {
+            Phase::CommittedWrite(resp) => resp,
+            _ => panic!("HTTP PUT did not commit"),
+        };
+        assert_eq!(http_response.status(), StatusCode::CREATED);
+        let http_event = events.recv().await.unwrap();
+        assert_eq!(http_event.method, "PUT");
+        assert_eq!(http_event.path, "/home/http-temp");
+
+        let coap_put_bytes =
+            coap_put_packet(&[b"home", b"coap", b"temp"], b"23.5", Some(b"writer"));
+        let coap_put = packet(&coap_put_bytes);
+        let coap_response = handle(&core, &coap_put).await;
+        assert_eq!(coap_response[1], 65); // 2.01 Created
+        let coap_event = events.recv().await.unwrap();
+        assert_eq!(coap_event.method, "PUT");
+        assert_eq!(coap_event.path, "/home/coap/temp");
+
+        let (http_stage, http_etag) = core
+            .read_world_with_etag("home/http-temp")
+            .unwrap()
+            .unwrap();
+        let (coap_stage, coap_etag) = core
+            .read_world_with_etag("home/coap/temp")
+            .unwrap()
+            .unwrap();
+        assert_eq!(http_stage.body, coap_stage.body);
+        assert_eq!(http_stage.content_type, coap_stage.content_type);
+        assert!(http_etag.starts_with("hmac-"));
+        assert!(coap_etag.starts_with("hmac-"));
+        assert_eq!(http_event.etag, http_etag);
+        assert_eq!(coap_event.etag, coap_etag);
+        assert_eq!(core.durable_world_count.load(Ordering::Relaxed), 2);
+        assert!(matches!(
+            core.cached_verify_chain("home/http-temp").unwrap().unwrap(),
+            audit::VerifyReport::Valid(_)
+        ));
+        assert!(matches!(
+            core.cached_verify_chain("home/coap/temp").unwrap().unwrap(),
+            audit::VerifyReport::Valid(_)
+        ));
 
         let _ = std::fs::remove_dir_all(dir);
     }

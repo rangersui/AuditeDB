@@ -20,6 +20,14 @@ pub enum Tier {
     Approve,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum AuthGate {
+    Read,
+    Write,
+    WriteApprove,
+    Delete,
+}
+
 #[derive(Clone)]
 pub struct Tokens {
     pub read: Option<Vec<u8>>,

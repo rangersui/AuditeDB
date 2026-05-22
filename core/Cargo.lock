@@ -180,6 +180,7 @@ version = "7.2.0"
 dependencies = [
  "axum",
  "base64",
+ "bytes",
  "dashmap",
  "futures-util",
  "hex",

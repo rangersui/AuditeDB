@@ -28,18 +28,15 @@
 //!
 //! ## CoAP coexistence
 //!
-//! `Core::put_bytes` is kept around because `coap.rs` still calls it
-//! for CoAP `Method::Put`. CoAP requests do not flow through the FSM
-//! pipeline (they have their own protocol), so they never reach
-//! `execute_put`. PR 7+ migrates CoAP onto the FSM and `put_bytes`
-//! can be removed at that point.
+//! HTTP and CoAP do not share the request lifecycle, but they do share
+//! disk transitions through `world_ops`. That keeps auth, locks,
+//! preconditions, quota, audit, and notify in one place while each
+//! adapter owns its wire rendering.
 
 mod delete;
 mod post;
 pub(crate) use delete::execute_delete;
 pub(crate) use post::execute_post;
-
-use std::sync::atomic::Ordering;
 
 use axum::{
     body::Bytes,
@@ -48,10 +45,9 @@ use axum::{
 };
 
 use crate::{
-    auth, can_read, can_write, content_range_value, decimal_header_value, http_semantics as hs,
-    is_insufficient_storage_error, needs_write_approve, not_found, payload_too_large, server_error,
-    storage_error, store, to_header_map, unauthorized, world, AuthGate, Core, ErrorReason, Phase,
-    TraceCtx, Verb,
+    auth, content_range_value, decimal_header_value, http_semantics as hs, not_found,
+    payload_too_large, precondition_failed, server_error, storage_error, storage_quota_exceeded,
+    to_header_map, unauthorized, world_ops, Core, ErrorReason, Phase, TraceCtx, Verb,
 };
 
 /// Dispatch from `Phase::Dispatched` to the verb-specific handler.
@@ -81,25 +77,19 @@ pub(crate) async fn execute_get(
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    if !can_read(core, tier) {
-        return Phase::Error {
-            resp: unauthorized("read requires read token"),
-            reason: ErrorReason::Auth(AuthGate::Read),
-        };
-    }
-    let Some((stage, etag)) = (match core.read_world_with_etag(&world) {
-        Ok(current) => current,
-        Err(e) => {
+    let permit = match world_ops::authorize_read(core, &world, tier) {
+        Ok(permit) => permit,
+        Err(err) => return read_error_phase(err),
+    };
+    let (stage, etag) = match world_ops::read_world(core, &permit) {
+        Ok(world_ops::ReadOutcome::Found { stage, etag }) => (stage, etag),
+        Ok(world_ops::ReadOutcome::Missing) => {
             return Phase::Error {
-                resp: storage_error("storage read", e),
-                reason: ErrorReason::StorageRead,
+                resp: not_found(),
+                reason: ErrorReason::NotFound,
             };
         }
-    }) else {
-        return Phase::Error {
-            resp: not_found(),
-            reason: ErrorReason::NotFound,
-        };
+        Err(err) => return read_error_phase(err),
     };
     if hs::read_not_modified(&headers, &etag) {
         // 304: no body, but emit body_size for diagnostic clarity
@@ -160,25 +150,19 @@ pub(crate) async fn execute_head(
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    if !can_read(core, tier) {
-        return Phase::Error {
-            resp: unauthorized("read requires read token"),
-            reason: ErrorReason::Auth(AuthGate::Read),
-        };
-    }
-    let Some((stage, etag)) = (match core.read_world_with_etag(&world) {
-        Ok(current) => current,
-        Err(e) => {
+    let permit = match world_ops::authorize_read(core, &world, tier) {
+        Ok(permit) => permit,
+        Err(err) => return read_error_phase(err),
+    };
+    let (stage, etag) = match world_ops::read_world(core, &permit) {
+        Ok(world_ops::ReadOutcome::Found { stage, etag }) => (stage, etag),
+        Ok(world_ops::ReadOutcome::Missing) => {
             return Phase::Error {
-                resp: storage_error("storage read", e),
-                reason: ErrorReason::StorageRead,
+                resp: not_found(),
+                reason: ErrorReason::NotFound,
             };
         }
-    }) else {
-        return Phase::Error {
-            resp: not_found(),
-            reason: ErrorReason::NotFound,
-        };
+        Err(err) => return read_error_phase(err),
     };
     if hs::read_not_modified(&headers, &etag) {
         trace.emit_aux_kv("body_size", &stage.body.len().to_string());
@@ -232,157 +216,37 @@ pub(crate) async fn execute_put(
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    // 1. Auth gate (verb-and-path-specific). Driver authenticated;
-    //    the verb authorizes -- the gate kind drives the trace
-    //    `Auth(Write)` vs `Auth(WriteApprove)` distinction so an
-    //    operator sees which token tier was insufficient.
-    if !can_write(&world, tier) {
-        let gate = if needs_write_approve(&world) {
-            AuthGate::WriteApprove
-        } else {
-            AuthGate::Write
-        };
-        return Phase::Error {
-            resp: unauthorized("write requires token; system worlds need approve token"),
-            reason: ErrorReason::Auth(gate),
-        };
-    }
-    // 2. Per-world body cap (413 -- never confuse with quota / 507).
-    if body.len() > core.max_world_bytes {
-        return Phase::Error {
-            resp: payload_too_large(core.max_world_bytes),
-            reason: ErrorReason::PayloadTooLarge,
-        };
-    }
+    let permit = match world_ops::authorize_write(&world, tier) {
+        Ok(permit) => permit,
+        Err(err) => return write_error_phase(err),
+    };
     let content_type = hs::request_content_type(&headers);
     let meta = hs::request_meta_headers(
         &headers,
         &core.persist_header_allowlist,
         &core.persist_header_user_deny,
     );
-    // 3. Per-world write lock -- serializes same-world writers so
-    //    preconditions and write are atomic w.r.t. concurrent PUTs
-    //    on this world. Different worlds run concurrently.
-    let _write_guard = core.acquire_world_lock(&world).await;
-    trace.emit_aux("lock_acquired");
-    // 3b. Defence-in-depth tombstone clear (Bug 19). PUT/POST and
-    //     DELETE both serialize on the same per-world lock, so a
-    //     prior DELETE on this world has either succeeded (tombstone
-    //     already cleared by `clear_tombstone` after
-    //     `delete_world_blocking`) or panicked mid-flight. Calling
-    //     `clear_tombstone` here covers the panic case so a phantom
-    //     tombstone doesn't outlive the lock release. Position is
-    //     critical: clearing BEFORE `acquire_world_lock` would let
-    //     a concurrent in-flight DELETE re-open the v1 fd race via
-    //     a different trigger.
-    core.clear_tombstone(&world);
-    // 4. If-Match / If-None-Match preconditions (412 on mismatch).
-    //    Storage-error during precondition read maps to StorageRead
-    //    (500); the 412 path is the optimistic-concurrency signal.
-    if let Err(resp) = hs::check_write_preconditions(core, &world, &headers) {
-        let reason = if resp.status() == StatusCode::PRECONDITION_FAILED {
-            ErrorReason::PreconditionFailed
-        } else {
-            ErrorReason::StorageRead
-        };
-        return Phase::Error { resp, reason };
-    }
-    // 5. Write + audit (durable vs memory branch).
-    let (existed, etag) = if store::is_persistent(&world) {
-        // Read prev_len under the per-world lock so the value cannot
-        // change before reservation.
-        let prev_len_opt = match world::body_len(&core.data, &world) {
-            Ok(v) => v,
-            Err(e) => {
-                return Phase::Error {
-                    resp: storage_error("storage metadata", e),
-                    reason: ErrorReason::StorageRead,
-                };
-            }
-        };
-        let existed = prev_len_opt.is_some();
-        let prev_len = prev_len_opt.unwrap_or(0);
-        if let Some(quota) = core.max_storage_bytes {
-            let used = core.storage_body_bytes.load(Ordering::Relaxed);
-            trace.emit_aux_kv("quota_check", &format!("used={used} quota={quota}"));
-        }
-        // Atomic CAS reservation; rolled back on write failure below.
-        if let Err(boxed) = core.reserve_storage(prev_len, body.len()) {
-            return Phase::Error {
-                resp: *boxed,
-                reason: ErrorReason::QuotaExceeded,
-            };
-        }
-        match world::write_with_audit_checked(
-            &core.data,
-            &world,
-            &body,
-            &content_type,
-            &meta,
-            &core.hmac_key,
-            None,
-        ) {
-            Ok(result) => {
-                if !existed {
-                    core.durable_world_count.fetch_add(1, Ordering::Relaxed);
-                }
-                let etag = hs::hmac_etag(&result.hmac);
-                trace.emit_aux_kv("sqlite_committed", &format!("etag={}", etag_preview(&etag)));
-                (existed, etag)
-            }
-            Err(world::WriteAuditError::Quota { .. }) => {
-                // Unreachable: quota=None passed above. Defensive.
-                core.rollback_storage_reservation(prev_len, body.len());
-                return Phase::Error {
-                    resp: server_error("unexpected quota error".to_string()),
-                    reason: ErrorReason::StorageWriteAudit,
-                };
-            }
-            Err(world::WriteAuditError::Sqlite(e)) => {
-                core.rollback_storage_reservation(prev_len, body.len());
-                let reason = if is_insufficient_storage_error(&e) {
-                    ErrorReason::InsufficientStorage
-                } else {
-                    ErrorReason::StorageWriteAudit
-                };
-                return Phase::Error {
-                    resp: storage_error("storage/audit", e),
-                    reason,
-                };
-            }
-        }
-    } else {
-        match core
-            .mem
-            .write_with_quota(&world, &body, &content_type, &meta, core.max_memory_bytes)
-        {
-            Ok(outcome) => {
-                let etag = hs::body_etag(&body);
-                trace.emit_aux_kv("sqlite_committed", &format!("etag={}", etag_preview(&etag)));
-                (outcome.existed, etag)
-            }
-            Err(store::MemoryQuotaError { quota, .. }) => {
-                return Phase::Error {
-                    resp: payload_too_large(quota),
-                    reason: ErrorReason::PayloadTooLarge,
-                };
-            }
-        }
+    let req = world_ops::ReplaceRequest {
+        world,
+        body,
+        content_type,
+        headers: meta,
+        preconditions: hs::request_preconditions(&headers),
     };
-    // 6. Notify reactors (best-effort, never blocks the response).
-    core.notify("PUT", &world, &etag);
-    trace.emit_aux("notify_sent");
-    // 7. Build response.
-    let status = if existed {
-        StatusCode::OK
-    } else {
-        StatusCode::CREATED
+    let outcome =
+        match world_ops::replace_write(core, &permit, req, &HttpWriteTrace { trace }).await {
+            Ok(outcome) => outcome,
+            Err(err) => return write_error_phase(err),
+        };
+    let status = match outcome.status_kind {
+        world_ops::WriteStatusKind::Created => StatusCode::CREATED,
+        world_ops::WriteStatusKind::Updated => StatusCode::OK,
     };
-    let mut resp_headers = vec![(header::ETAG, hs::etag_header(&etag))];
+    let mut resp_headers = vec![(header::ETAG, hs::etag_header(&outcome.etag))];
     if status == StatusCode::CREATED {
         resp_headers.push((
             header::LOCATION,
-            HeaderValue::from_str(&hs::world_url(&world))
+            HeaderValue::from_str(&hs::world_url(permit.world()))
                 .unwrap_or_else(|_| HeaderValue::from_static("/")),
         ));
     }
@@ -400,4 +264,110 @@ pub(crate) async fn execute_put(
 /// not a crate-wide utility.
 pub(in crate::handler) fn etag_preview(etag: &str) -> String {
     etag.chars().take(16).collect()
+}
+
+pub(in crate::handler) struct HttpWriteTrace<'a> {
+    pub(in crate::handler) trace: &'a TraceCtx,
+}
+
+impl world_ops::WriteTraceHooks for HttpWriteTrace<'_> {
+    fn lock_acquired(&self) {
+        self.trace.emit_aux("lock_acquired");
+    }
+
+    fn quota_check(&self, used: usize, quota: usize) {
+        self.trace
+            .emit_aux_kv("quota_check", &format!("used={used} quota={quota}"));
+    }
+
+    fn sqlite_committed(&self, etag: &str) {
+        self.trace
+            .emit_aux_kv("sqlite_committed", &format!("etag={}", etag_preview(etag)));
+    }
+
+    fn notify_sent(&self) {
+        self.trace.emit_aux("notify_sent");
+    }
+}
+
+fn read_error_phase(err: world_ops::ReadError) -> Phase {
+    match err {
+        world_ops::ReadError::Auth(gate) => Phase::Error {
+            resp: unauthorized("read requires read token"),
+            reason: ErrorReason::Auth(gate),
+        },
+        world_ops::ReadError::TransientStorage { scope, err }
+        | world_ops::ReadError::InsufficientStorage { scope, err }
+        | world_ops::ReadError::StorageRead { scope, err } => Phase::Error {
+            resp: storage_error(scope, err),
+            reason: ErrorReason::StorageRead,
+        },
+        world_ops::ReadError::PermitWorldMismatch => Phase::Error {
+            resp: server_error("read permit world mismatch".to_string()),
+            reason: ErrorReason::StorageRead,
+        },
+    }
+}
+
+pub(in crate::handler) fn write_error_phase(err: world_ops::WriteError) -> Phase {
+    match err {
+        world_ops::WriteError::Auth(gate) => Phase::Error {
+            resp: unauthorized("write requires token; system worlds need approve token"),
+            reason: ErrorReason::Auth(gate),
+        },
+        world_ops::WriteError::PayloadTooLarge { max } => Phase::Error {
+            resp: payload_too_large(max),
+            reason: ErrorReason::PayloadTooLarge,
+        },
+        world_ops::WriteError::PreconditionFailed { message } => Phase::Error {
+            resp: precondition_failed(message),
+            reason: ErrorReason::PreconditionFailed,
+        },
+        world_ops::WriteError::NotFound => Phase::Error {
+            resp: not_found(),
+            reason: ErrorReason::NotFound,
+        },
+        world_ops::WriteError::QuotaExceeded {
+            used,
+            quota,
+            projected,
+        } => Phase::Error {
+            resp: storage_quota_exceeded(used, quota, projected),
+            reason: ErrorReason::QuotaExceeded,
+        },
+        world_ops::WriteError::TransientStorage { scope, err, op } => Phase::Error {
+            resp: storage_error(scope, err),
+            reason: transient_storage_reason(op),
+        },
+        world_ops::WriteError::InsufficientStorage { scope, err, op } => Phase::Error {
+            resp: storage_error(scope, err),
+            reason: match op {
+                world_ops::StorageOp::Read => ErrorReason::StorageRead,
+                world_ops::StorageOp::WriteAudit => ErrorReason::InsufficientStorage,
+            },
+        },
+        world_ops::WriteError::StorageRead { scope, err } => Phase::Error {
+            resp: storage_error(scope, err),
+            reason: ErrorReason::StorageRead,
+        },
+        world_ops::WriteError::StorageWriteAudit { scope, err } => Phase::Error {
+            resp: storage_error(scope, err),
+            reason: ErrorReason::StorageWriteAudit,
+        },
+        world_ops::WriteError::Internal(message) => Phase::Error {
+            resp: server_error(message.to_string()),
+            reason: ErrorReason::StorageWriteAudit,
+        },
+        world_ops::WriteError::PermitWorldMismatch => Phase::Error {
+            resp: server_error("write permit world mismatch".to_string()),
+            reason: ErrorReason::StorageWriteAudit,
+        },
+    }
+}
+
+fn transient_storage_reason(op: world_ops::StorageOp) -> ErrorReason {
+    match op {
+        world_ops::StorageOp::Read => ErrorReason::StorageRead,
+        world_ops::StorageOp::WriteAudit => ErrorReason::StorageWriteAudit,
+    }
 }

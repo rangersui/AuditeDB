@@ -9,6 +9,7 @@ homepage = "https://github.com/rangersui/Elastik"
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+bytes = "1"
 tokio = { version = "1", features = ["macros", "rt", "net", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"

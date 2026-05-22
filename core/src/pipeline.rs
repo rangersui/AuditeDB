@@ -54,7 +54,7 @@ use axum::{
 };
 
 use crate::{
-    auth, bad_request, canonicalize_path, method_not_allowed, validate_world_name, Core,
+    auth, bad_request, canonicalize_path, method_not_allowed, validate_world_name, AuthGate, Core,
     WORLD_ALLOW,
 };
 
@@ -181,14 +181,6 @@ pub(crate) enum ErrorReason {
     /// when the proc surface migrates onto the pipeline.
     #[allow(dead_code)]
     AuditChainBroken,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum AuthGate {
-    Read,
-    Write,
-    WriteApprove,
-    Delete,
 }
 
 // ─── Trace ───────────────────────────────────────────────────────

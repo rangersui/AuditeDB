@@ -140,8 +140,8 @@ impl MemoryStore {
     /// is held across "compute current total -> compare against quota ->
     /// insert", so two concurrent writes to different memory worlds
     /// cannot both observe usage below the cap and both commit. Replaces
-    /// the previous read/check/write sequence in `put_bytes`, which was
-    /// race-prone after the global write_lock was removed.
+    /// the old split read/check/write sequence, which was race-prone
+    /// after the global write_lock was removed.
     ///
     /// Returns `Ok(outcome)` with `existed` populated for the caller's
     /// 200 vs 201 decision; `Err(MemoryQuotaError)` if accepting the

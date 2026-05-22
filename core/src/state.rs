@@ -12,8 +12,8 @@
 //! All fields are `pub(crate)` so siblings can read and (in tests)
 //! mutate them. The struct itself is `pub(crate)` and re-exported
 //! at the crate root via `pub(crate) use crate::state::*;` in
-//! `main.rs`, so existing callers keep using `crate::Core` /
-//! `crate::WriteOutcome` without per-extraction import churn.
+//! `main.rs`, so existing callers keep using `crate::Core`
+//! without per-extraction import churn.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -25,23 +25,15 @@ use std::sync::{
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
 
-#[cfg(feature = "coap")]
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
-use crate::http_semantics as hs;
-use crate::http_semantics::HeaderAllowlist;
+use crate::http_semantics::{self as hs, HeaderAllowlist};
 use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
 use crate::read_cache::ReadCache;
 use crate::world::Stage;
-use crate::{audit, auth, listen, storage_quota_exceeded, store, world};
-#[cfg(feature = "coap")]
-use crate::{can_write, payload_too_large, server_error, storage_error, unauthorized};
-
-pub(crate) type BoxedResponse = Box<Response>;
+use crate::{audit, auth, listen, store, world};
 
 #[cfg(target_has_atomic = "64")]
 pub(crate) type EventCounter = AtomicU64;
@@ -77,17 +69,10 @@ fn next_event_id(counter: &EventCounter) -> u64 {
     *next
 }
 
-#[cfg(feature = "coap")]
-pub(crate) struct WriteOutcome {
-    pub status: StatusCode,
-    /// Etag is part of `put_bytes`'s contract for any future caller
-    /// that wants to include it in a response. The current CoAP
-    /// caller in `coap.rs` only reads `status`; HTTP writes flow
-    /// through `handler::execute_put` (which does not call
-    /// `put_bytes`). Allow until CoAP migrates to the FSM (PR 7+),
-    /// at which point `put_bytes` and `WriteOutcome` can be retired.
-    #[allow(dead_code)]
-    pub etag: String,
+pub(crate) struct StorageReservationError {
+    pub(crate) used: usize,
+    pub(crate) quota: usize,
+    pub(crate) projected: usize,
 }
 
 #[derive(Clone)]
@@ -263,7 +248,7 @@ impl Core {
     }
 
     /// Test-only fixture: seed a world directly without going through
-    /// auth/preconditions/audit. Production writes go through `put_bytes`
+    /// auth/preconditions/audit. Production writes go through `world_ops`
     /// (durable: `world::write_with_audit_checked` + `reserve_storage`;
     /// memory: `MemoryStore::write_with_quota`). Kept for the existing
     /// 80+ unit tests that build small fixture worlds before exercising
@@ -299,17 +284,6 @@ impl Core {
                 self.durable_world_count.fetch_add(1, Ordering::Relaxed);
             }
             Ok(())
-        }
-    }
-
-    pub(crate) fn world_metadata(
-        &self,
-        world: &str,
-    ) -> rusqlite::Result<Option<world::WorldMetadata>> {
-        if store::is_memory_world(world) {
-            Ok(self.mem.metadata(world))
-        } else {
-            world::metadata(&self.data, world)
         }
     }
 
@@ -382,7 +356,7 @@ impl Core {
         &self,
         prev_len: usize,
         new_len: usize,
-    ) -> Result<(), BoxedResponse> {
+    ) -> Result<(), StorageReservationError> {
         if let Some(quota) = self.max_storage_bytes {
             let result = self.storage_body_bytes.fetch_update(
                 Ordering::Relaxed,
@@ -400,7 +374,11 @@ impl Core {
                 Ok(_) => Ok(()),
                 Err(used) => {
                     let projected = used.saturating_sub(prev_len).saturating_add(new_len);
-                    Err(Box::new(storage_quota_exceeded(used, quota, projected)))
+                    Err(StorageReservationError {
+                        used,
+                        quota,
+                        projected,
+                    })
                 }
             }
         } else {
@@ -422,114 +400,5 @@ impl Core {
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                     Some(used.saturating_sub(new_len).saturating_add(prev_len))
                 });
-    }
-
-    /// CoAP-only write entry point. The HTTP path goes through
-    /// `handler::execute_put` (which inlines this logic plus the FSM
-    /// trace lines and structured `ErrorReason` mapping). Both paths
-    /// produce the same audit chain entry and the same notify event.
-    /// PR 7+ migrates CoAP onto the FSM and retires `put_bytes` +
-    /// `WriteOutcome` together.
-    #[cfg(feature = "coap")]
-    pub(crate) async fn put_bytes(
-        &self,
-        world_name: &str,
-        body: &[u8],
-        content_type: &str,
-        headers: &[(String, String)],
-        tier: auth::Tier,
-        preconditions: Option<&HeaderMap>,
-    ) -> Result<WriteOutcome, Response> {
-        if !can_write(world_name, tier) {
-            return Err(unauthorized(
-                "write requires token; system worlds need approve token",
-            ));
-        }
-        if body.len() > self.max_world_bytes {
-            return Err(payload_too_large(self.max_world_bytes));
-        }
-        let _write_guard = self.acquire_world_lock(world_name).await;
-        // Defence-in-depth tombstone clear (Bug 19). Same rationale
-        // as `handler::execute_put`'s clear: PUT/POST and DELETE
-        // serialize on the same per-world lock, so a prior DELETE
-        // either cleared its own tombstone (success/failure path)
-        // or panicked. This call covers the panic case.
-        self.clear_tombstone(world_name);
-        if let Some(req_headers) = preconditions {
-            hs::check_write_preconditions(self, world_name, req_headers)?;
-        }
-        let existed;
-        let new_etag = if store::is_persistent(world_name) {
-            // Read previous body length under the per-world lock; cannot
-            // change while we hold the guard. None means new world.
-            let prev_len_opt = world::body_len(&self.data, world_name)
-                .map_err(|e| storage_error("storage metadata", e))?;
-            existed = prev_len_opt.is_some();
-            let prev_len = prev_len_opt.unwrap_or(0);
-
-            // Atomic CAS quota reservation. Race-free across worlds: two
-            // writes on different worlds cannot both observe usage below
-            // quota and then push it past, because the CAS sees the latest
-            // counter value. On reservation failure no write happens.
-            self.reserve_storage(prev_len, body.len()).map_err(|b| *b)?;
-
-            // Quota already enforced by reservation; pass None to skip the
-            // (now redundant and racy) snapshot check inside world.rs.
-            match world::write_with_audit_checked(
-                &self.data,
-                world_name,
-                body,
-                content_type,
-                headers,
-                &self.hmac_key,
-                None,
-            ) {
-                Ok(result) => {
-                    if !existed {
-                        self.durable_world_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    hs::hmac_etag(&result.hmac)
-                }
-                Err(world::WriteAuditError::Quota { .. }) => {
-                    // Unreachable: we passed quota=None above.
-                    self.rollback_storage_reservation(prev_len, body.len());
-                    return Err(server_error("unexpected quota error".to_string()));
-                }
-                Err(world::WriteAuditError::Sqlite(e)) => {
-                    self.rollback_storage_reservation(prev_len, body.len());
-                    return Err(storage_error("storage/audit", e));
-                }
-            }
-        } else {
-            // Memory worlds: the existence check, the quota check, and the
-            // actual insert all happen under one MemoryStore HashMap mutex
-            // acquisition. That mutex was the implicit serializer the global
-            // write_lock used to provide; per-world locks alone don't help
-            // here because the budget is shared across all memory worlds.
-            match self.mem.write_with_quota(
-                world_name,
-                body,
-                content_type,
-                headers,
-                self.max_memory_bytes,
-            ) {
-                Ok(outcome) => {
-                    existed = outcome.existed;
-                    hs::body_etag(body)
-                }
-                Err(store::MemoryQuotaError { quota, .. }) => {
-                    return Err(payload_too_large(quota));
-                }
-            }
-        };
-        self.notify("PUT", world_name, &new_etag);
-        Ok(WriteOutcome {
-            status: if existed {
-                StatusCode::OK
-            } else {
-                StatusCode::CREATED
-            },
-            etag: new_etag,
-        })
     }
 }

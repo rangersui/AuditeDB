@@ -43,6 +43,8 @@ mod audit;
 mod auth;
 #[cfg(feature = "coap")]
 mod coap;
+#[cfg(feature = "coap")]
+mod coap_errors;
 mod config;
 mod handler;
 mod http_semantics;
@@ -56,8 +58,10 @@ mod read_cache;
 mod response;
 mod route;
 mod state;
+mod storage_class;
 mod store;
 mod world;
+mod world_ops;
 
 // Re-export the small pure-function modules at the crate root so
 // sibling modules keep referring to `crate::not_found` /
@@ -68,6 +72,8 @@ pub(crate) use crate::pipeline::*;
 pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
 pub(crate) use crate::state::*;
+pub(crate) use crate::storage_class::*;
+pub(crate) use auth::AuthGate;
 
 use std::collections::VecDeque;
 use std::net::IpAddr;
@@ -3464,5 +3470,34 @@ mod tests {
             },
             dir,
         )
+    }
+
+    #[tokio::test]
+    async fn write_permit_is_bound_to_one_world() {
+        struct NoopTrace;
+        impl crate::world_ops::WriteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("permit-bound");
+        let permit = crate::world_ops::authorize_write("home/permit-a", auth::Tier::Write)
+            .expect("write token tier should authorize home writes");
+        let req = crate::world_ops::ReplaceRequest {
+            world: "home/permit-b".to_owned(),
+            body: Bytes::from_static(b"wrong-door"),
+            content_type: "text/plain; charset=utf-8".to_owned(),
+            headers: Vec::new(),
+            preconditions: hs::Preconditions::default(),
+        };
+
+        let err = crate::world_ops::replace_write(&core, &permit, req, &NoopTrace)
+            .await
+            .expect_err("permit for one world must not write a different world");
+
+        assert!(matches!(
+            err,
+            crate::world_ops::WriteError::PermitWorldMismatch
+        ));
+        assert!(core.read_world("home/permit-b").unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
