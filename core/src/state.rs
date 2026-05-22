@@ -28,7 +28,7 @@ use std::sync::atomic::AtomicU64;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
-use crate::http_semantics::{self as hs, HeaderAllowlist};
+use crate::http_semantics::HeaderAllowlist;
 use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
 use crate::read_cache::ReadCache;
@@ -195,8 +195,8 @@ impl Core {
                 .cached_read_with_hmac(&self.data, world)?
                 .map(|(stage, hmac)| {
                     let etag = hmac
-                        .map(|h| hs::hmac_etag(&h))
-                        .unwrap_or_else(|| hs::body_etag(&stage.body));
+                        .map(|h| crate::etag::hmac_etag(&h))
+                        .unwrap_or_else(|| crate::etag::body_etag(&stage.body));
                     (stage, etag)
                 }))
         }

@@ -10,9 +10,7 @@ use bytes::Bytes;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
-use crate::{
-    auth, canonicalize_path, coap_errors, http_semantics as hs, valid_world_name, world_ops, Core,
-};
+use crate::{auth, canonicalize_path, coap_errors, etag, valid_world_name, world_ops, Core};
 
 const MAX_DATAGRAM: usize = 1152;
 const RECV_BUF: usize = MAX_DATAGRAM + 1;
@@ -229,7 +227,7 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                 body: Bytes::copy_from_slice(request.payload),
                 content_type: content_type.to_owned(),
                 headers: Vec::new(),
-                preconditions: hs::Preconditions::default(),
+                preconditions: etag::Preconditions::default(),
             };
             match world_ops::replace_write(core, &permit, req, &world_ops::NoopWriteTrace).await {
                 Ok(outcome) => {

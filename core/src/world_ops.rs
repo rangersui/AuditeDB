@@ -15,9 +15,8 @@ use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 
-use crate::http_semantics as hs;
 use crate::{
-    auth, can_read, can_write, is_insufficient_storage_error, is_transient_storage_error,
+    auth, can_read, can_write, etag, is_insufficient_storage_error, is_transient_storage_error,
     needs_write_approve, store, world, AuthGate, Core,
 };
 
@@ -67,14 +66,14 @@ pub(crate) struct ReplaceRequest {
     pub(crate) body: Bytes,
     pub(crate) content_type: String,
     pub(crate) headers: Vec<(String, String)>,
-    pub(crate) preconditions: hs::Preconditions,
+    pub(crate) preconditions: etag::Preconditions,
 }
 
 #[derive(Debug)]
 pub(crate) struct AppendRequest {
     pub(crate) world: String,
     pub(crate) body: Bytes,
-    pub(crate) preconditions: hs::Preconditions,
+    pub(crate) preconditions: etag::Preconditions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,7 +241,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
                 if !existed {
                     core.durable_world_count.fetch_add(1, Ordering::Relaxed);
                 }
-                (existed, hs::hmac_etag(&result.hmac))
+                (existed, etag::hmac_etag(&result.hmac))
             }
             Err(world::WriteAuditError::Quota { .. }) => {
                 core.rollback_storage_reservation(prev_len, req.body.len());
@@ -265,7 +264,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
             &req.headers,
             core.max_memory_bytes,
         ) {
-            Ok(outcome) => (outcome.existed, hs::body_etag(&req.body)),
+            Ok(outcome) => (outcome.existed, etag::body_etag(&req.body)),
             Err(store::MemoryQuotaError { quota, .. }) => {
                 return Err(WriteError::PayloadTooLarge { max: quota });
             }
@@ -335,7 +334,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
             &stored_headers,
             &core.hmac_key,
         ) {
-            Ok(Some((_result, h))) => hs::hmac_etag(&h),
+            Ok(Some((_result, h))) => etag::hmac_etag(&h),
             Ok(None) => {
                 core.rollback_storage_reservation(0, req.body.len());
                 return Err(WriteError::NotFound);
@@ -389,7 +388,7 @@ fn ensure_write_permit(permit: &WritePermit, world: &str) -> Result<(), WriteErr
 fn check_write_preconditions(
     core: &Core,
     world: &str,
-    preconditions: &hs::Preconditions,
+    preconditions: &etag::Preconditions,
 ) -> Result<(), WriteError> {
     if preconditions.is_empty() {
         return Ok(());
@@ -398,7 +397,7 @@ fn check_write_preconditions(
         .read_world_with_etag(world)
         .map_err(|err| classify_write_storage_error("precondition read", err, StorageOp::Read))?;
     let current_tag = current.as_ref().map(|(_, etag)| etag.as_str());
-    hs::check_preconditions(preconditions, current_tag)
+    etag::check_preconditions(preconditions, current_tag)
         .map_err(|message| WriteError::PreconditionFailed { message })
 }
 

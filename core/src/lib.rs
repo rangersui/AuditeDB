@@ -55,6 +55,7 @@ mod coap;
 #[cfg(feature = "coap")]
 mod coap_errors;
 mod config;
+mod etag;
 mod handler;
 mod http_semantics;
 mod ledger;
@@ -397,6 +398,7 @@ pub(crate) fn can_read(core: &Core, tier: auth::Tier) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::etag as et;
     use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
     use crate::http_semantics as hs;
     use crate::middleware::{add_core_response_headers, stamp_core_response_headers};
@@ -1348,7 +1350,7 @@ mod tests {
             &core.hmac_key,
         )
         .unwrap();
-        let etag = format!("\"{}\"", hs::hmac_etag(&h));
+        let etag = format!("\"{}\"", et::hmac_etag(&h));
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
 
@@ -1781,16 +1783,16 @@ mod tests {
 
     #[test]
     fn etag_lists_match_http_strong_and_weak_rules() {
-        assert!(hs::etag_list_strong_matches("\"hmac-abc\"", "hmac-abc"));
-        assert!(hs::etag_list_strong_matches(
+        assert!(et::etag_list_strong_matches("\"hmac-abc\"", "hmac-abc"));
+        assert!(et::etag_list_strong_matches(
             "\"other\", \"hmac-abc\"",
             "hmac-abc"
         ));
-        assert!(hs::etag_list_strong_matches("*", "hmac-abc"));
-        assert!(!hs::etag_list_strong_matches("W/\"hmac-abc\"", "hmac-abc"));
-        assert!(!hs::etag_list_strong_matches("\"other\"", "hmac-abc"));
+        assert!(et::etag_list_strong_matches("*", "hmac-abc"));
+        assert!(!et::etag_list_strong_matches("W/\"hmac-abc\"", "hmac-abc"));
+        assert!(!et::etag_list_strong_matches("\"other\"", "hmac-abc"));
 
-        assert!(hs::etag_list_weak_matches("W/\"hmac-abc\"", "hmac-abc"));
+        assert!(et::etag_list_weak_matches("W/\"hmac-abc\"", "hmac-abc"));
     }
 
     #[test]
@@ -1852,7 +1854,7 @@ mod tests {
         let mut good = HeaderMap::new();
         good.insert(
             header::IF_MATCH,
-            HeaderValue::from_str(&format!("\"{}\"", hs::hmac_etag(&h))).unwrap(),
+            HeaderValue::from_str(&format!("\"{}\"", et::hmac_etag(&h))).unwrap(),
         );
         let post = unwrap_response(
             execute_post(
@@ -1888,7 +1890,7 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        let etag = format!("\"{}\"", hs::hmac_etag(&h));
+        let etag = format!("\"{}\"", et::hmac_etag(&h));
 
         let mut good = HeaderMap::new();
         good.insert(header::IF_MATCH, HeaderValue::from_str(&etag).unwrap());
@@ -2626,7 +2628,7 @@ mod tests {
         let mut good = HeaderMap::new();
         good.insert(
             header::IF_MATCH,
-            HeaderValue::from_str(&format!("\"{}\"", hs::hmac_etag(&h))).unwrap(),
+            HeaderValue::from_str(&format!("\"{}\"", et::hmac_etag(&h))).unwrap(),
         );
         let resp = unwrap_response(
             execute_delete(
@@ -3493,7 +3495,7 @@ mod tests {
             body: Bytes::from_static(b"wrong-door"),
             content_type: "text/plain; charset=utf-8".to_owned(),
             headers: Vec::new(),
-            preconditions: hs::Preconditions::default(),
+            preconditions: et::Preconditions::default(),
         };
 
         let err = crate::world_ops::replace_write(&core, &permit, req, &NoopTrace)
