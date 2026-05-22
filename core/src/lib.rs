@@ -55,6 +55,7 @@ mod coap;
 #[cfg(feature = "coap")]
 mod coap_errors;
 mod config;
+mod engine;
 mod etag;
 mod handler;
 mod http_semantics;
@@ -83,7 +84,16 @@ pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
 pub(crate) use crate::state::*;
 pub(crate) use crate::storage_class::*;
+#[cfg(feature = "unstable-engine")]
+pub use auth::AuthGate;
+#[cfg(not(feature = "unstable-engine"))]
 pub(crate) use auth::AuthGate;
+#[cfg(feature = "unstable-engine")]
+pub use engine::{
+    AccessTier, ChangeEvent, EmptyKeyError, Engine, EngineBuildError, EngineBuilder, EngineError,
+    EngineSubscription, EtagMatcher, Preconditions, ReadResult, Representation, SecretBytes,
+    SubscriptionRecvError, WriteKind, WriteResult,
+};
 
 use std::collections::VecDeque;
 use std::net::IpAddr;
@@ -814,7 +824,7 @@ mod tests {
             &tokens
         ));
 
-        tokens.read = Some(b"reader".to_vec());
+        tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
         assert!(!should_warn_public_read(
             "0.0.0.0".parse::<IpAddr>().unwrap(),
             &tokens
@@ -938,7 +948,7 @@ mod tests {
         let (mut core, dir) = test_core("read-token");
         assert!(can_read(&core, auth::Tier::Anon));
 
-        core.tokens.read = Some(b"reader".to_vec());
+        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
         assert!(!can_read(&core, auth::Tier::Anon));
         assert!(can_read(&core, auth::Tier::Read));
         assert!(can_read(&core, auth::Tier::Write));
@@ -952,7 +962,7 @@ mod tests {
         let (mut core, dir) = test_core("read-token-handlers");
         core.write_world("home/private", b"secret", "text/plain", &[])
             .unwrap();
-        core.tokens.read = Some(b"reader".to_vec());
+        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
 
         let headers = HeaderMap::new();
         let get_anon = unwrap_response(
@@ -2838,7 +2848,7 @@ mod tests {
     #[tokio::test]
     async fn proc_du_and_df_require_read_token_when_enabled() {
         let (mut core, dir) = test_core("proc-du-df-read-token");
-        core.tokens.read = Some(b"reader".to_vec());
+        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
         let state = Arc::new(core);
         let headers = HeaderMap::new();
 
@@ -2976,7 +2986,7 @@ mod tests {
         // /proc/du and /proc/df. With a read token configured, an
         // unauthenticated GET must return 401, not leak metrics.
         let (mut core, dir) = test_core("proc-pool-read-token");
-        core.tokens.read = Some(b"reader".to_vec());
+        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
         let state = Arc::new(core);
         let headers = HeaderMap::new();
 
@@ -3174,7 +3184,7 @@ mod tests {
     #[tokio::test]
     async fn pipeline_get_with_read_token_required_rejects_anon() {
         let (mut core, dir) = test_core("pipeline-get-401");
-        core.tokens.read = Some(b"reader".to_vec());
+        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
         core.write_world("home/secret", b"shhh", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);

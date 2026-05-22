@@ -516,9 +516,9 @@ mod tests {
             Core {
                 data: dir.clone(),
                 tokens: auth::Tokens {
-                    read: Some(b"reader".to_vec()),
-                    write: Some(b"writer".to_vec()),
-                    approve: Some(b"approve".to_vec()),
+                    read: auth::NonEmptyBytes::new(b"reader".to_vec()),
+                    write: auth::NonEmptyBytes::new(b"writer".to_vec()),
+                    approve: auth::NonEmptyBytes::new(b"approve".to_vec()),
                 },
                 hmac_key: b"test-key".to_vec(),
                 mem: Arc::new(store::MemoryStore::new()),

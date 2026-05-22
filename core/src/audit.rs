@@ -16,6 +16,7 @@ const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256
            FROM events e
            LEFT JOIN event_headers h ON h.event_id=e.id
            ORDER BY e.id ASC, h.name ASC, h.value ASC"#;
+pub(crate) const AUDIT_CHAIN_BROKEN_PREFIX: &str = "audit chain broken at event ";
 
 pub struct VerifiedAuditTx<'tx, 'conn> {
     tx: &'tx Transaction<'conn>,
@@ -352,9 +353,22 @@ fn audit_chain_broken_error(break_report: &VerifyBreak) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(
         ffi::Error::new(ffi::SQLITE_CORRUPT),
         Some(format!(
-            "audit chain broken at event {}: expected {}, actual {}",
+            "{AUDIT_CHAIN_BROKEN_PREFIX}{}: expected {}, actual {}",
             break_report.break_at, break_report.expected, break_report.actual
         )),
+    )
+}
+
+pub(crate) fn is_audit_chain_broken_error(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(
+            ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseCorrupt,
+                ..
+            },
+            Some(message),
+        ) if message.starts_with(AUDIT_CHAIN_BROKEN_PREFIX)
     )
 }
 
@@ -649,6 +663,17 @@ mod tests {
                 ..
             }) if actual == "hmac-bad"
         ));
+    }
+
+    #[test]
+    fn chain_broken_error_predicate_matches_generated_error() {
+        let err = audit_chain_broken_error(&VerifyBreak {
+            break_at: 7,
+            expected: "hmac-expected".to_owned(),
+            actual: "hmac-actual".to_owned(),
+        });
+
+        assert!(is_audit_chain_broken_error(&err));
     }
 
     #[test]

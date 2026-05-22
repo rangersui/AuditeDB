@@ -7,6 +7,10 @@ license = "MIT"
 repository = "https://github.com/rangersui/Elastik"
 homepage = "https://github.com/rangersui/Elastik"
 
+[package.metadata.docs.rs]
+features = ["unstable-engine"]
+all-features = false
+
 [lib]
 name = "elastik_core"
 path = "src/lib.rs"
@@ -24,12 +28,14 @@ hex = "0.4"
 base64 = "0.22"
 percent-encoding = "2"
 dashmap = "6"
+tracing = { version = "0.1", optional = true }
 
 [features]
 default = ["bundled-sqlite", "coap", "multi-thread"]
 bundled-sqlite = ["rusqlite/bundled"]
 coap = []
 multi-thread = ["tokio/rt-multi-thread"]
+unstable-engine = ["dep:tracing"]
 
 [dev-dependencies]
 # `tower::util::ServiceExt::oneshot` is the standard axum testing

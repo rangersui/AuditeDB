@@ -543,7 +543,7 @@ mod tests {
     fn tokens_with_write(write: &[u8]) -> Tokens {
         Tokens {
             read: None,
-            write: Some(write.to_vec()),
+            write: crate::auth::NonEmptyBytes::new(write.to_vec()),
             approve: None,
         }
     }

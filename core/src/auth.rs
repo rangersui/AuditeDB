@@ -8,6 +8,11 @@
 //! don't crash, and the core does not depend on any SDK/runtime language
 //! to make auth decisions.
 
+use std::{
+    fmt, ptr,
+    sync::atomic::{fence, Ordering},
+};
+
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
 const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
@@ -21,7 +26,8 @@ pub enum Tier {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum AuthGate {
+#[non_exhaustive]
+pub enum AuthGate {
     Read,
     Write,
     WriteApprove,
@@ -30,9 +36,64 @@ pub(crate) enum AuthGate {
 
 #[derive(Clone)]
 pub struct Tokens {
-    pub read: Option<Vec<u8>>,
-    pub write: Option<Vec<u8>>,
-    pub approve: Option<Vec<u8>>,
+    pub(crate) read: Option<NonEmptyBytes>,
+    pub(crate) write: Option<NonEmptyBytes>,
+    pub(crate) approve: Option<NonEmptyBytes>,
+}
+
+/// Byte credential proof: empty and whitespace-only values cannot exist.
+///
+/// The constructor is the only way to mint this type. Callers can compare or
+/// transfer the bytes, but cannot construct a value with a struct literal.
+#[derive(Clone)]
+pub(crate) struct NonEmptyBytes(Vec<u8>);
+
+impl NonEmptyBytes {
+    pub(crate) fn new(bytes: impl Into<Vec<u8>>) -> Option<Self> {
+        let bytes = bytes.into();
+        Self::is_valid(&bytes).then_some(Self(bytes))
+    }
+
+    pub(crate) fn is_valid(bytes: &[u8]) -> bool {
+        !bytes.is_empty()
+            && std::str::from_utf8(bytes)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(true)
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub(crate) fn into_vec(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for NonEmptyBytes {
+    fn drop(&mut self) {
+        wipe_vec_allocation(&mut self.0);
+    }
+}
+
+impl fmt::Debug for NonEmptyBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("NonEmptyBytes(..)")
+    }
+}
+
+fn wipe_vec_allocation(bytes: &mut Vec<u8>) {
+    // These bytes are credentials. Wipe the full allocation, not only len(),
+    // because callers can hand us a Vec whose spare capacity still contains
+    // prior credential bytes after truncate/reuse. Volatile writes plus a
+    // fence make the best-effort wipe physically observable before free.
+    let ptr = bytes.as_mut_ptr();
+    for index in 0..bytes.capacity() {
+        unsafe {
+            ptr::write_volatile(ptr.add(index), 0);
+        }
+    }
+    fence(Ordering::SeqCst);
 }
 
 impl Tokens {
@@ -80,26 +141,24 @@ impl Tokens {
     }
 
     pub(crate) fn check_token_bytes(&self, candidate: &[u8]) -> Tier {
-        // Defense in depth: even if a configured token is somehow
-        // empty (config drift, test fixture, future cap-token bug),
-        // never let a zero-length candidate match. The empty string
-        // is not a credential.
-        if candidate.is_empty() {
+        // Candidate credentials go through the same byte validity gate as
+        // configured tokens. Invalid values are physically unable to match.
+        if !NonEmptyBytes::is_valid(candidate) {
             return Tier::Anon;
         }
         // Approve first — wins ties because it's the wider tier.
         if let Some(t) = &self.approve {
-            if ct_eq(candidate, t) {
+            if ct_eq(candidate, t.as_slice()) {
                 return Tier::Approve;
             }
         }
         if let Some(t) = &self.write {
-            if ct_eq(candidate, t) {
+            if ct_eq(candidate, t.as_slice()) {
                 return Tier::Write;
             }
         }
         if let Some(t) = &self.read {
-            if ct_eq(candidate, t) {
+            if ct_eq(candidate, t.as_slice()) {
                 return Tier::Read;
             }
         }
@@ -107,9 +166,9 @@ impl Tokens {
     }
 }
 
-fn nonempty_env(name: &str) -> Option<Vec<u8>> {
+fn nonempty_env(name: &str) -> Option<NonEmptyBytes> {
     match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => Some(s.into_bytes()),
+        Ok(s) => NonEmptyBytes::new(s.into_bytes()),
         _ => None,
     }
 }
@@ -151,6 +210,10 @@ mod tests {
 
     fn bearer(token: &str) -> String {
         format!("{} {token}", "Bearer")
+    }
+
+    fn token(bytes: &[u8]) -> NonEmptyBytes {
+        NonEmptyBytes::new(bytes.to_vec()).unwrap()
     }
 
     struct EnvGuard {
@@ -199,13 +262,13 @@ mod tests {
         std::env::set_var("ELASTIK_READ_TOKEN", " ");
         std::env::set_var("ELASTIK_WRITE_TOKEN", "");
         std::env::remove_var("ELASTIK_TOKEN");
-        std::env::set_var("ELASTIK_APPROVE_TOKEN", "   ");
+        std::env::set_var("ELASTIK_APPROVE_TOKEN", "\u{2003}\n");
 
         let tokens = Tokens::from_env();
 
-        assert_eq!(tokens.read, None);
-        assert_eq!(tokens.write, None);
-        assert_eq!(tokens.approve, None);
+        assert!(tokens.read.is_none());
+        assert!(tokens.write.is_none());
+        assert!(tokens.approve.is_none());
         assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
         assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
         assert!(env_set_but_empty("ELASTIK_READ_TOKEN"));
@@ -226,23 +289,45 @@ mod tests {
     }
 
     #[test]
-    fn empty_authorization_candidate_never_matches() {
+    fn invalid_authorization_candidates_never_match() {
         let tokens = Tokens {
-            read: Some(Vec::new()),
-            write: Some(Vec::new()),
-            approve: Some(Vec::new()),
+            read: Some(token(b"reader")),
+            write: Some(token(b"writer")),
+            approve: Some(token(b"approve")),
         };
 
         assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
+        assert_eq!(tokens.check(Some("Bearer \t\r\n")), Tier::Anon);
+        assert_eq!(tokens.check(Some(&bearer("\u{2003}"))), Tier::Anon);
         assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
+    }
+
+    #[test]
+    fn wipe_vec_allocation_clears_spare_capacity() {
+        let mut bytes = Vec::with_capacity(8);
+        bytes.extend_from_slice(b"key");
+        let ptr = bytes.as_mut_ptr();
+        let cap = bytes.capacity();
+        unsafe {
+            for index in bytes.len()..cap {
+                ptr.add(index).write(b'x');
+            }
+        }
+
+        wipe_vec_allocation(&mut bytes);
+
+        unsafe {
+            bytes.set_len(cap);
+        }
+        assert!(bytes.iter().all(|byte| *byte == 0));
     }
 
     #[test]
     fn oversized_authorization_header_is_anon() {
         let tokens = Tokens {
-            read: Some(b"reader".to_vec()),
-            write: Some(b"writer".to_vec()),
-            approve: Some(b"approve".to_vec()),
+            read: Some(token(b"reader")),
+            write: Some(token(b"writer")),
+            approve: Some(token(b"approve")),
         };
         let header = format!("Bearer {}", "x".repeat(MAX_AUTHORIZATION_BYTES));
 
@@ -252,9 +337,9 @@ mod tests {
     #[test]
     fn nonempty_tokens_still_authenticate() {
         let tokens = Tokens {
-            read: Some(b"reader".to_vec()),
-            write: Some(b"writer".to_vec()),
-            approve: Some(b"approve".to_vec()),
+            read: Some(token(b"reader")),
+            write: Some(token(b"writer")),
+            approve: Some(token(b"approve")),
         };
         let basic_writer = B64.encode("user:writer");
 
