@@ -4,13 +4,14 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
 };
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use crate::{
     engine::EngineError,
-    engine_ops::EngineOps,
     engine_types::{ChangeEvent as EngineChangeEvent, SubscribePattern, SubscriptionRecvError},
-    method_not_allowed, options_response, server_error, unauthorized, Core,
+    method_not_allowed, options_response,
+    server::ServerState,
+    server_error, unauthorized,
 };
 
 pub(crate) const ALLOW: &str = "GET, OPTIONS";
@@ -30,7 +31,7 @@ pub(crate) struct ChangeEvent {
 // never embeds the world's body, so stored Content-Type semantics stay
 // entirely on GET/HEAD.
 pub(crate) async fn handler(
-    State(core): State<Arc<Core>>,
+    State(state): State<ServerState>,
     method: Method,
     headers: HeaderMap,
     AxPath(raw_pattern): AxPath<String>,
@@ -41,16 +42,13 @@ pub(crate) async fn handler(
     if method != Method::GET {
         return method_not_allowed(ALLOW);
     }
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
+    let tier = state.access_tier_from_headers(&headers);
     let pattern = SubscribePattern::new(&raw_pattern);
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok());
-    let subscription = match EngineOps::new(&core).subscribe(&pattern, tier, last_event_id) {
+    let subscription = match state.engine().subscribe(&pattern, tier, last_event_id) {
         Ok(subscription) => subscription,
         Err(EngineError::Auth(_)) => return unauthorized("listen requires read token"),
         Err(EngineError::SubscriptionLimit) => {
@@ -139,7 +137,7 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{auth, store, Core};
+    use crate::{auth, server::ServerState, store, Core};
     use dashmap::DashMap;
     use std::{
         collections::VecDeque,
@@ -215,7 +213,7 @@ mod tests {
         });
 
         let resp = handler(
-            State(core),
+            State(ServerState::from_core_for_tests(core, 1024)),
             Method::GET,
             HeaderMap::new(),
             AxPath("home/task/*".to_string()),
