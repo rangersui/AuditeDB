@@ -68,7 +68,7 @@ pub(crate) async fn execute_delete(
 
 struct HttpDeleteTrace<'a> {
     trace: &'a TraceCtx,
-    last_step: AtomicU8,
+    last_step: DeleteStepCell,
 }
 
 /// HTTP DELETE stage tracking via the trace-hook side channel.
@@ -94,10 +94,6 @@ enum DeleteStep {
 }
 
 impl DeleteStep {
-    fn store_in(self, slot: &AtomicU8) {
-        slot.store(self as u8, Ordering::Relaxed);
-    }
-
     fn from_u8(value: u8) -> Self {
         match value {
             value if value == Self::None as u8 => Self::None,
@@ -105,8 +101,29 @@ impl DeleteStep {
             value if value == Self::Intent as u8 => Self::Intent,
             value if value == Self::PhysicalDeleted as u8 => Self::PhysicalDeleted,
             value if value == Self::NotifySent as u8 => Self::NotifySent,
-            _ => panic!("invalid HTTP DELETE trace step {value}"),
+            _ => unreachable!("DeleteStepCell only stores DeleteStep discriminants"),
         }
+    }
+}
+
+/// Sealed transport cell for DELETE trace stages.
+///
+/// All writes must go through `DeleteStepCell::store`, which accepts only the
+/// typed `DeleteStep` enum. The raw `AtomicU8` is a private implementation
+/// detail, not an adapter-facing integer slot.
+struct DeleteStepCell(AtomicU8);
+
+impl DeleteStepCell {
+    fn new(step: DeleteStep) -> Self {
+        Self(AtomicU8::new(step as u8))
+    }
+
+    fn store(&self, step: DeleteStep) {
+        self.0.store(step as u8, Ordering::Relaxed);
+    }
+
+    fn load(&self) -> DeleteStep {
+        DeleteStep::from_u8(self.0.load(Ordering::Relaxed))
     }
 }
 
@@ -114,12 +131,12 @@ impl<'a> HttpDeleteTrace<'a> {
     fn new(trace: &'a TraceCtx) -> Self {
         Self {
             trace,
-            last_step: AtomicU8::new(DeleteStep::None as u8),
+            last_step: DeleteStepCell::new(DeleteStep::None),
         }
     }
 
     fn last_step(&self) -> DeleteStep {
-        DeleteStep::from_u8(self.last_step.load(Ordering::Relaxed))
+        self.last_step.load()
     }
 }
 
@@ -130,12 +147,12 @@ impl EngineDeleteTraceHooks for HttpDeleteTrace<'_> {
     }
 
     fn audit_intent(&self) {
-        DeleteStep::Intent.store_in(&self.last_step);
+        self.last_step.store(DeleteStep::Intent);
         self.trace.emit_aux("audit_intent");
     }
 
     fn audit_intent_failed(&self, err: &str) {
-        DeleteStep::AuditIntentFailed.store_in(&self.last_step);
+        self.last_step.store(DeleteStep::AuditIntentFailed);
         self.trace
             .emit_aux_kv("audit_intent_failed", &format!("err={err}"));
     }
@@ -145,7 +162,7 @@ impl EngineDeleteTraceHooks for HttpDeleteTrace<'_> {
     }
 
     fn physical_deleted(&self) {
-        DeleteStep::PhysicalDeleted.store_in(&self.last_step);
+        self.last_step.store(DeleteStep::PhysicalDeleted);
         self.trace.emit_aux("physical_deleted");
     }
 
@@ -154,7 +171,7 @@ impl EngineDeleteTraceHooks for HttpDeleteTrace<'_> {
     }
 
     fn notify_sent(&self) {
-        DeleteStep::NotifySent.store_in(&self.last_step);
+        self.last_step.store(DeleteStep::NotifySent);
         self.trace.emit_aux("notify_sent");
     }
 

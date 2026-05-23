@@ -1,8 +1,8 @@
 //! Binary/server runtime assembly.
 //!
 //! During PR5 this module is still compiled by the library, but startup now
-//! constructs the protocol-neutral `Engine` first and only hands legacy routes
-//! a `Core` bridge until the adapters cross the crate boundary.
+//! constructs the protocol-neutral `Engine` first and keeps HTTP adapter state
+//! beside it in `ServerState`.
 
 mod state;
 pub(crate) use state::ServerState;
@@ -61,8 +61,6 @@ pub(crate) async fn run_from_env() {
         data,
         hmac_key,
         &tokens,
-        persist_header_allowlist.clone(),
-        persist_header_user_deny.clone(),
         EngineLimits {
             max_world_bytes,
             max_memory_bytes,
@@ -118,8 +116,6 @@ fn build_engine_from_env(
     data: PathBuf,
     hmac_key: Vec<u8>,
     tokens: &auth::Tokens,
-    persist_header_allowlist: crate::http_semantics::HeaderAllowlist,
-    persist_header_user_deny: crate::http_semantics::HeaderAllowlist,
     limits: EngineLimits,
 ) -> Engine {
     let key = SecretBytes::new(hmac_key).expect("ELASTIK_KEY validated before Engine build");
@@ -131,9 +127,7 @@ fn build_engine_from_env(
         .max_storage_bytes(limits.max_storage_bytes)
         .max_listen_connections(limits.max_listen_connections)
         .listen_replay_max(limits.listen_replay_max)
-        .read_cache_max_entries(limits.read_cache_max_entries)
-        .persist_header_allowlist(persist_header_allowlist)
-        .persist_header_user_deny(persist_header_user_deny);
+        .read_cache_max_entries(limits.read_cache_max_entries);
     configure_tokens(builder, tokens)
         .build()
         .unwrap_or_else(|err| panic!("build Engine failed: {err:?}"))

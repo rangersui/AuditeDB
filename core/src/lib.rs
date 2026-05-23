@@ -3416,12 +3416,6 @@ mod tests {
                     read_cache: Arc::new(crate::read_cache::ReadCache::new(
                         crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
                     )),
-                    persist_header_allowlist: Arc::new(
-                        crate::http_semantics::HeaderAllowlist::empty(),
-                    ),
-                    persist_header_user_deny: Arc::new(
-                        crate::http_semantics::HeaderAllowlist::empty(),
-                    ),
                 }
             },
             dir,

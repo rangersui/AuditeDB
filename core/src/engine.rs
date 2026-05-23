@@ -28,7 +28,6 @@ use crate::{
         DEFAULT_MAX_WORLD_BYTES,
     },
     engine_types::{AccessTier, SecretBytes},
-    http_semantics::HeaderAllowlist,
     read_cache::{ReadCache, DEFAULT_READ_CACHE_MAX_ENTRIES},
     state::{new_event_counter, Core},
     storage_class, store, world,
@@ -63,8 +62,6 @@ pub struct EngineBuilder {
     max_listen_connections: usize,
     listen_replay_max: usize,
     read_cache_max_entries: usize,
-    persist_header_allowlist: HeaderAllowlist,
-    persist_header_user_deny: HeaderAllowlist,
 }
 
 /// Errors that can occur while constructing an `Engine`.
@@ -135,8 +132,6 @@ impl Default for EngineBuilder {
             max_listen_connections: DEFAULT_MAX_LISTEN_CONNECTIONS,
             listen_replay_max: DEFAULT_LISTEN_REPLAY_MAX,
             read_cache_max_entries: DEFAULT_READ_CACHE_MAX_ENTRIES,
-            persist_header_allowlist: HeaderAllowlist::empty(),
-            persist_header_user_deny: HeaderAllowlist::empty(),
         }
     }
 }
@@ -197,26 +192,6 @@ impl EngineBuilder {
         self
     }
 
-    /// Temporary PR5 bridge for HTTP adapter-owned persisted-header policy.
-    ///
-    /// Persisted HTTP header filtering is adapter state, not Engine physics.
-    /// This remains crate-private until the server adapter crosses the crate
-    /// boundary and can own the policy directly.
-    pub(crate) fn persist_header_allowlist(mut self, value: HeaderAllowlist) -> Self {
-        self.persist_header_allowlist = value;
-        self
-    }
-
-    /// Temporary PR5 bridge for HTTP adapter-owned persisted-header policy.
-    ///
-    /// Persisted HTTP header filtering is adapter state, not Engine physics.
-    /// This remains crate-private until the server adapter crosses the crate
-    /// boundary and can own the policy directly.
-    pub(crate) fn persist_header_user_deny(mut self, value: HeaderAllowlist) -> Self {
-        self.persist_header_user_deny = value;
-        self
-    }
-
     pub fn build(self) -> Result<Engine, EngineBuildError> {
         std::fs::create_dir_all(&self.data_root).map_err(EngineBuildError::DataRootIo)?;
         let data_lock = crate::acquire_data_root_writer_lock(&self.data_root)
@@ -266,8 +241,6 @@ impl EngineBuilder {
             world_locks: Arc::new(DashMap::new()),
             ledger: Arc::new(crate::ledger::LedgerWriter::new()),
             read_cache: Arc::new(ReadCache::new(self.read_cache_max_entries)),
-            persist_header_allowlist: Arc::new(self.persist_header_allowlist),
-            persist_header_user_deny: Arc::new(self.persist_header_user_deny),
         });
 
         Ok(Engine {

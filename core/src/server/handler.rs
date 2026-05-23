@@ -87,11 +87,13 @@ impl HandlerEngineState for &Arc<Core> {
     }
 
     fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
-        self.persist_header_allowlist.clone()
+        // Legacy white-box tests that pass Core directly use the default HTTP
+        // adapter policy. Tests for custom policy should construct ServerState.
+        Arc::new(HeaderAllowlist::empty())
     }
 
     fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
-        self.persist_header_user_deny.clone()
+        Arc::new(HeaderAllowlist::empty())
     }
 }
 
@@ -102,11 +104,13 @@ impl HandlerEngineState for &Core {
     }
 
     fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
-        self.persist_header_allowlist.clone()
+        // Legacy white-box tests that pass Core directly use the default HTTP
+        // adapter policy. Tests for custom policy should construct ServerState.
+        Arc::new(HeaderAllowlist::empty())
     }
 
     fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
-        self.persist_header_user_deny.clone()
+        Arc::new(HeaderAllowlist::empty())
     }
 }
 

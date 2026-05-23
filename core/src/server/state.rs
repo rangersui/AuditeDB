@@ -48,10 +48,10 @@ impl ServerState {
     /// `Engine::from_core_for_tests`. See its doc for bypass details.
     pub(crate) fn from_core_for_tests(core: Arc<Core>, max_world_bytes: usize) -> Self {
         Self::new(
-            Engine::from_core_for_tests(core.clone()),
+            Engine::from_core_for_tests(core),
             max_world_bytes,
-            (*core.persist_header_allowlist).clone(),
-            (*core.persist_header_user_deny).clone(),
+            HeaderAllowlist::empty(),
+            HeaderAllowlist::empty(),
         )
     }
 

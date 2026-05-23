@@ -3,17 +3,15 @@
 //! Holds tokens, the per-world lock map, the in-memory store handle,
 //! storage counters, the SSE broadcast channel, the shutdown
 //! receiver, and the durable-data path. Construction lives in
-//! `main.rs` (one struct-literal initializer in `main()`); this
-//! module owns the type definition + the small set of primitive
-//! methods (`acquire_world_lock`, `read_world`, `notify`,
-//! `reserve_storage`, ...) that verb handlers and other modules
-//! call through.
+//! `EngineBuilder`; this module owns the type definition + the small set of
+//! primitive methods (`acquire_world_lock`, `read_world`, `notify`,
+//! `reserve_storage`, ...) that storage-facing modules call through.
 //!
 //! All fields are `pub(crate)` so siblings can read and (in tests)
 //! mutate them. The struct itself is `pub(crate)` and re-exported
 //! at the crate root via `pub(crate) use crate::state::*;` in
-//! `main.rs`, so existing callers keep using `crate::Core`
-//! without per-extraction import churn.
+//! the crate root, so existing callers keep using `crate::Core` without
+//! per-extraction import churn.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -29,7 +27,6 @@ use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
 use crate::engine_types::ValidatedWorldPath;
-use crate::http_semantics::HeaderAllowlist;
 use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
 use crate::read_cache::ReadCache;
@@ -120,29 +117,6 @@ pub(crate) struct Core {
     /// before `delete_world_blocking` and clears it on both success
     /// and failure paths.
     pub(crate) read_cache: Arc<ReadCache>,
-    /// User-configured allowlist for custom representation
-    /// headers. Layer 3 of the four-layer persist policy:
-    /// L1 hard deny > L1.5 user deny > L2 default allow > L3 user
-    /// allow. Built once at startup from `ELASTIK_PERSIST_HEADERS`;
-    /// default empty means "only the built-in
-    /// `DEFAULT_PERSIST_HEADERS` round-trip; nothing custom unless
-    /// the operator opts in." See
-    /// `crate::http_semantics::HeaderAllowlist`.
-    // PR5 transition: HTTP header persistence policy is moving into
-    // `ServerState`; Core still carries these for legacy tests and bridges.
-    #[allow(dead_code)]
-    pub(crate) persist_header_allowlist: Arc<HeaderAllowlist>,
-    /// User-configured deny set that subtracts from the built-in
-    /// `DEFAULT_PERSIST_HEADERS` (Layer 1.5). Lets an operator say
-    /// "I don't want `cache-control` to round-trip in my
-    /// deployment" without recompiling. Built once at startup from
-    /// `ELASTIK_DENY_HEADERS`; default empty means "no L2 entries
-    /// are subtracted." Same matcher shape as the allowlist; L1
-    /// hard deny still wins over this.
-    // PR5 transition: HTTP header persistence policy is moving into
-    // `ServerState`; Core still carries these for legacy tests and bridges.
-    #[allow(dead_code)]
-    pub(crate) persist_header_user_deny: Arc<HeaderAllowlist>,
 }
 
 impl Core {
