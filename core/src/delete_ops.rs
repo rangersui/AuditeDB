@@ -8,8 +8,10 @@
 use std::sync::atomic::Ordering;
 
 use crate::{
-    auth, can_delete, engine::EngineError, engine_types::Preconditions, etag,
-    is_insufficient_storage_error, is_transient_storage_error, store, world, AuditAppendJob,
+    auth, can_delete,
+    engine::EngineError,
+    engine_types::{Preconditions, ValidatedWorldPath},
+    etag, is_insufficient_storage_error, is_transient_storage_error, store, world, AuditAppendJob,
     AuthGate, BlockingSqliteError, Core,
 };
 
@@ -35,16 +37,19 @@ pub(crate) enum DeleteError {
     TransientStorage {
         #[allow(dead_code)]
         scope: &'static str,
+        world: ValidatedWorldPath,
         err: rusqlite::Error,
     },
     InsufficientStorage {
         #[allow(dead_code)]
         scope: &'static str,
+        world: ValidatedWorldPath,
         err: rusqlite::Error,
     },
     StorageRead {
         #[allow(dead_code)]
         scope: &'static str,
+        world: ValidatedWorldPath,
         err: rusqlite::Error,
     },
     AuditIntent {
@@ -94,11 +99,11 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     let world_name = permit.world.as_str();
     let _write_guard = core.acquire_world_lock(world_name).await;
     hooks.lock_acquired(world_name);
-    check_preconditions(core, world_name, &req.preconditions.into())?;
+    check_preconditions(core, &permit.world, &req.preconditions.into())?;
 
     let Some(stage) = core
         .read_world(world_name)
-        .map_err(|err| classify_storage_error("storage read", err))?
+        .map_err(|err| classify_storage_error("storage read", &permit.world, err))?
     else {
         return Err(DeleteError::NotFound);
     };
@@ -207,27 +212,43 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
 
 fn check_preconditions(
     core: &Core,
-    world: &str,
+    world: &ValidatedWorldPath,
     preconditions: &etag::Preconditions,
 ) -> Result<(), DeleteError> {
     if preconditions.is_empty() {
         return Ok(());
     }
     let current = core
-        .read_world_with_etag(world)
-        .map_err(|err| classify_storage_error("precondition read", err))?;
+        .read_world_with_etag(world.as_str())
+        .map_err(|err| classify_storage_error("precondition read", world, err))?;
     let current_tag = current.as_ref().map(|(_, etag)| etag.as_str());
     etag::check_preconditions(preconditions, current_tag)
         .map_err(|message| DeleteError::PreconditionFailed { message })
 }
 
-fn classify_storage_error(scope: &'static str, err: rusqlite::Error) -> DeleteError {
+fn classify_storage_error(
+    scope: &'static str,
+    world: &ValidatedWorldPath,
+    err: rusqlite::Error,
+) -> DeleteError {
     if is_insufficient_storage_error(&err) {
-        DeleteError::InsufficientStorage { scope, err }
+        DeleteError::InsufficientStorage {
+            scope,
+            world: world.clone(),
+            err,
+        }
     } else if is_transient_storage_error(&err) {
-        DeleteError::TransientStorage { scope, err }
+        DeleteError::TransientStorage {
+            scope,
+            world: world.clone(),
+            err,
+        }
     } else {
-        DeleteError::StorageRead { scope, err }
+        DeleteError::StorageRead {
+            scope,
+            world: world.clone(),
+            err,
+        }
     }
 }
 
@@ -266,20 +287,20 @@ impl From<DeleteError> for EngineError {
             DeleteError::AppendOnlyLedger => Self::Auth(AuthGate::Delete),
             DeleteError::PreconditionFailed { message } => Self::PreconditionFailed { message },
             DeleteError::NotFound => Self::NotFound,
-            DeleteError::TransientStorage { scope, err } => {
-                crate::engine_ops::log_storage_error(scope, &err, "delete", None);
+            DeleteError::TransientStorage { scope, world, err } => {
+                crate::engine_ops::log_storage_error(scope, &err, "delete", Some(world.as_str()));
                 Self::TransientStorage {
                     sqlite_code: crate::engine::sqlite_code(&err),
                 }
             }
-            DeleteError::InsufficientStorage { scope, err } => {
-                crate::engine_ops::log_storage_error(scope, &err, "delete", None);
+            DeleteError::InsufficientStorage { scope, world, err } => {
+                crate::engine_ops::log_storage_error(scope, &err, "delete", Some(world.as_str()));
                 Self::InsufficientStorage {
                     sqlite_code: crate::engine::sqlite_code(&err),
                 }
             }
-            DeleteError::StorageRead { scope, err } => {
-                crate::engine_ops::log_storage_error(scope, &err, "delete", None);
+            DeleteError::StorageRead { scope, world, err } => {
+                crate::engine_ops::log_storage_error(scope, &err, "delete", Some(world.as_str()));
                 Self::Storage {
                     sqlite_code: crate::engine::sqlite_code(&err),
                 }

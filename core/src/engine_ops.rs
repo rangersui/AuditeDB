@@ -36,13 +36,19 @@ impl<'a> EngineOps<'a> {
         Self { core }
     }
 
+    pub(crate) fn core(&self) -> &'a Core {
+        self.core
+    }
+
     pub(crate) fn read(
         &self,
         world: &ValidatedWorldPath,
         tier: auth::Tier,
     ) -> Result<Option<ReadResult>, EngineError> {
         let permit = world_ops::authorize_read(self.core, world, tier)?;
-        match world_ops::read_world(self.core, &permit)? {
+        match world_ops::read_world(self.core, &permit)
+            .map_err(|err| read_error_to_engine(err, Some(world.as_str())))?
+        {
             world_ops::ReadOutcome::Found { stage, etag } => Ok(Some(ReadResult {
                 representation: Representation {
                     body: Bytes::from(stage.body),
@@ -75,7 +81,8 @@ impl<'a> EngineOps<'a> {
             },
             hooks,
         )
-        .await?;
+        .await
+        .map_err(|err| write_error_to_engine(err, Some(world.as_str())))?;
         Ok(outcome.into())
     }
 
@@ -97,7 +104,8 @@ impl<'a> EngineOps<'a> {
             },
             hooks,
         )
-        .await?;
+        .await
+        .map_err(|err| write_error_to_engine(err, Some(world.as_str())))?;
         Ok(outcome.into())
     }
 
@@ -340,77 +348,13 @@ impl From<AccessTier> for auth::Tier {
 
 impl From<world_ops::ReadError> for EngineError {
     fn from(value: world_ops::ReadError) -> Self {
-        match value {
-            world_ops::ReadError::Auth(gate) => Self::Auth(gate),
-            world_ops::ReadError::TransientStorage { scope, err } => {
-                log_storage_error(scope, &err, "read", None);
-                Self::TransientStorage {
-                    sqlite_code: engine::sqlite_code(&err),
-                }
-            }
-            world_ops::ReadError::InsufficientStorage { scope, err } => {
-                log_storage_error(scope, &err, "read", None);
-                Self::InsufficientStorage {
-                    sqlite_code: engine::sqlite_code(&err),
-                }
-            }
-            world_ops::ReadError::StorageRead { scope, err } => {
-                log_storage_error(scope, &err, "read", None);
-                Self::Storage {
-                    sqlite_code: engine::sqlite_code(&err),
-                }
-            }
-            world_ops::ReadError::PermitWorldMismatch => {
-                Self::InternalInvariant("read permit world mismatch")
-            }
-        }
+        read_error_to_engine(value, None)
     }
 }
 
 impl From<world_ops::WriteError> for EngineError {
     fn from(value: world_ops::WriteError) -> Self {
-        match value {
-            world_ops::WriteError::Auth(gate) => Self::Auth(gate),
-            world_ops::WriteError::PayloadTooLarge { max } => Self::PayloadTooLarge { max },
-            world_ops::WriteError::PreconditionFailed { message } => {
-                Self::PreconditionFailed { message }
-            }
-            world_ops::WriteError::NotFound => Self::NotFound,
-            world_ops::WriteError::QuotaExceeded {
-                used,
-                quota,
-                projected,
-            } => Self::QuotaExceeded {
-                used,
-                quota,
-                projected,
-            },
-            world_ops::WriteError::TransientStorage { scope, err, op } => {
-                log_storage_error(scope, &err, storage_op_label(op), None);
-                Self::TransientStorage {
-                    sqlite_code: engine::sqlite_code(&err),
-                }
-            }
-            world_ops::WriteError::InsufficientStorage { scope, err, op } => {
-                log_storage_error(scope, &err, storage_op_label(op), None);
-                Self::InsufficientStorage {
-                    sqlite_code: engine::sqlite_code(&err),
-                }
-            }
-            world_ops::WriteError::StorageRead { scope, err } => {
-                log_storage_error(scope, &err, "read", None);
-                Self::Storage {
-                    sqlite_code: engine::sqlite_code(&err),
-                }
-            }
-            world_ops::WriteError::StorageWriteAudit { scope, err } => {
-                log_storage_error(scope, &err, "write_audit", None);
-                Self::Storage {
-                    sqlite_code: engine::sqlite_code(&err),
-                }
-            }
-            world_ops::WriteError::Internal(message) => Self::InternalInvariant(message),
-        }
+        write_error_to_engine(value, None)
     }
 }
 
@@ -418,6 +362,78 @@ fn storage_op_label(op: world_ops::StorageOp) -> &'static str {
     match op {
         world_ops::StorageOp::Read => "read",
         world_ops::StorageOp::WriteAudit => "write_audit",
+    }
+}
+
+fn read_error_to_engine(value: world_ops::ReadError, world: Option<&str>) -> EngineError {
+    match value {
+        world_ops::ReadError::Auth(gate) => EngineError::Auth(gate),
+        world_ops::ReadError::TransientStorage { scope, err } => {
+            log_storage_error(scope, &err, "read", world);
+            EngineError::TransientStorage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
+        }
+        world_ops::ReadError::InsufficientStorage { scope, err } => {
+            log_storage_error(scope, &err, "read", world);
+            EngineError::InsufficientStorage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
+        }
+        world_ops::ReadError::StorageRead { scope, err } => {
+            log_storage_error(scope, &err, "read", world);
+            EngineError::Storage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
+        }
+        world_ops::ReadError::PermitWorldMismatch => {
+            EngineError::InternalInvariant("read permit world mismatch")
+        }
+    }
+}
+
+fn write_error_to_engine(value: world_ops::WriteError, world: Option<&str>) -> EngineError {
+    match value {
+        world_ops::WriteError::Auth(gate) => EngineError::Auth(gate),
+        world_ops::WriteError::PayloadTooLarge { max } => EngineError::PayloadTooLarge { max },
+        world_ops::WriteError::PreconditionFailed { message } => {
+            EngineError::PreconditionFailed { message }
+        }
+        world_ops::WriteError::NotFound => EngineError::NotFound,
+        world_ops::WriteError::QuotaExceeded {
+            used,
+            quota,
+            projected,
+        } => EngineError::QuotaExceeded {
+            used,
+            quota,
+            projected,
+        },
+        world_ops::WriteError::TransientStorage { scope, err, op } => {
+            log_storage_error(scope, &err, storage_op_label(op), world);
+            EngineError::TransientStorage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
+        }
+        world_ops::WriteError::InsufficientStorage { scope, err, op } => {
+            log_storage_error(scope, &err, storage_op_label(op), world);
+            EngineError::InsufficientStorage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
+        }
+        world_ops::WriteError::StorageRead { scope, err } => {
+            log_storage_error(scope, &err, "read", world);
+            EngineError::Storage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
+        }
+        world_ops::WriteError::StorageWriteAudit { scope, err } => {
+            log_storage_error(scope, &err, "write_audit", world);
+            EngineError::Storage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
+        }
+        world_ops::WriteError::Internal(message) => EngineError::InternalInvariant(message),
     }
 }
 

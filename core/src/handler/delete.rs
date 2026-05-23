@@ -129,13 +129,12 @@ fn delete_error_phase(err: DeleteError) -> Phase {
             resp: not_found(),
             reason: ErrorReason::NotFound,
         },
-        DeleteError::TransientStorage { scope, err } | DeleteError::StorageRead { scope, err } => {
-            Phase::Error {
-                resp: storage_error(scope, err),
-                reason: ErrorReason::StorageRead,
-            }
-        }
-        DeleteError::InsufficientStorage { scope, err } => Phase::Error {
+        DeleteError::TransientStorage { scope, err, .. }
+        | DeleteError::StorageRead { scope, err, .. } => Phase::Error {
+            resp: storage_error(scope, err),
+            reason: ErrorReason::StorageRead,
+        },
+        DeleteError::InsufficientStorage { scope, err, .. } => Phase::Error {
             resp: storage_error(scope, err),
             reason: ErrorReason::InsufficientStorage,
         },

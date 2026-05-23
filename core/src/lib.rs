@@ -57,6 +57,7 @@ mod coap_errors;
 mod config;
 mod delete_ops;
 mod engine;
+mod engine_introspection;
 mod engine_ops;
 mod engine_types;
 mod etag;
@@ -94,6 +95,11 @@ pub use auth::AuthGate;
 pub(crate) use auth::AuthGate;
 #[cfg(feature = "unstable-engine")]
 pub use engine::{Engine, EngineBuildError, EngineBuilder, EngineError};
+#[cfg(feature = "unstable-engine")]
+pub use engine_introspection::{
+    AuditBroken, AuditValid, AuditVerify, DfSnapshot, InvalidProcPath, PoolSnapshot, ProcEndpoint,
+    ValidatedProcPath, WorldUsage,
+};
 #[cfg(feature = "unstable-engine")]
 pub use engine_types::{
     AccessTier, ChangeEvent, EmptyKeyError, EngineSubscription, EtagMatcher, InvalidWorldPath,
