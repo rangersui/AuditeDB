@@ -31,17 +31,27 @@ pub trait EngineDeleteTraceHooks {
     fn physical_deleted(&self) {}
     fn counter_decremented(&self) {}
     fn notify_sent(&self) {}
+    /// Diagnostic-only debug rendering of the internal blocking storage error.
+    ///
+    /// Do not parse this string programmatically; use `EngineError` categories
+    /// and `sqlite_code()` for stable decisions.
     fn audit_commit_failed(&self, _err: &str) {}
     fn audit_commit_failed_event_logged(&self) {}
+    /// Diagnostic-only debug rendering of the internal blocking storage error.
+    ///
+    /// Do not parse this string programmatically; use `EngineError` categories
+    /// and `sqlite_code()` for stable decisions.
     fn audit_commit_failed_event_failed(&self, _err: &str) {}
     fn audit_commit(&self) {}
 }
 
 /// Metadata recorded with a DELETE audit intent.
-#[derive(Default)]
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct DeleteMetadata {
+    /// Content type recorded in the DELETE audit intent.
     pub content_type: String,
+    /// Representation headers recorded in the DELETE audit intent.
     pub headers: Vec<(String, String)>,
 }
 

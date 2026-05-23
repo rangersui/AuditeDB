@@ -213,6 +213,11 @@ impl Engine {
             .await
     }
 
+    /// Deletes a world with default, empty audit metadata.
+    ///
+    /// HTTP adapters that need to preserve DELETE audit metadata should call
+    /// `delete_traced` with `DeleteMetadata`; this convenience method records
+    /// empty metadata by design.
     pub async fn delete(
         &self,
         world: &ValidatedWorldPath,

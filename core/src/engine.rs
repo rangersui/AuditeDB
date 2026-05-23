@@ -196,6 +196,26 @@ impl EngineBuilder {
         self
     }
 
+    /// Temporary PR5 bridge for HTTP adapter-owned persisted-header policy.
+    ///
+    /// Persisted HTTP header filtering is adapter state, not Engine physics.
+    /// This remains crate-private until the server adapter crosses the crate
+    /// boundary and can own the policy directly.
+    pub(crate) fn persist_header_allowlist(mut self, value: HeaderAllowlist) -> Self {
+        self.persist_header_allowlist = value;
+        self
+    }
+
+    /// Temporary PR5 bridge for HTTP adapter-owned persisted-header policy.
+    ///
+    /// Persisted HTTP header filtering is adapter state, not Engine physics.
+    /// This remains crate-private until the server adapter crosses the crate
+    /// boundary and can own the policy directly.
+    pub(crate) fn persist_header_user_deny(mut self, value: HeaderAllowlist) -> Self {
+        self.persist_header_user_deny = value;
+        self
+    }
+
     pub fn build(self) -> Result<Engine, EngineBuildError> {
         std::fs::create_dir_all(&self.data_root).map_err(EngineBuildError::DataRootIo)?;
         let data_lock = crate::acquire_data_root_writer_lock(&self.data_root)
@@ -267,6 +287,14 @@ impl Engine {
 
     pub(crate) fn core(&self) -> &Core {
         self.inner.core.as_ref()
+    }
+
+    /// Temporary PR5 bridge for legacy server modules that still require Core.
+    ///
+    /// New adapter code should use Engine methods. This escape hatch exists only
+    /// until the remaining HTTP/CoAP modules stop extracting `Arc<Core>`.
+    pub(crate) fn core_arc(&self) -> Arc<Core> {
+        self.inner.core.clone()
     }
 
     /// Maps raw token bytes to an access tier.

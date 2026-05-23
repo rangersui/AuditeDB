@@ -1,18 +1,11 @@
 //! Binary/server runtime assembly.
 //!
-//! This module is still compiled by the library during the PR5 transition.
-//! The next split moves ownership of this module to `main.rs`.
+//! During PR5 this module is still compiled by the library, but startup now
+//! constructs the protocol-neutral `Engine` first and only hands legacy routes
+//! a `Core` bridge until the adapters cross the crate boundary.
 
-use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize},
-    Arc, Mutex as StdMutex,
-};
-
-use dashmap::DashMap;
-use tokio::sync::{broadcast, watch, Semaphore};
 
 #[cfg(feature = "coap")]
 use crate::config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
@@ -21,7 +14,12 @@ use crate::config::{
     should_warn_public_read, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
     DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
 };
-use crate::{audit, auth, route, store, world, Core, VERSION};
+use crate::{
+    auth,
+    engine::{Engine, EngineBuilder},
+    engine_types::SecretBytes,
+    route, VERSION,
+};
 
 pub(crate) async fn run_from_env() {
     crate::pipeline::init_trace_from_env();
@@ -50,46 +48,24 @@ pub(crate) async fn run_from_env() {
         "ELASTIK_READ_CACHE_MAX_ENTRIES",
         crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
     );
-    std::fs::create_dir_all(&data).expect("create data dir");
-    let data_lock =
-        crate::acquire_data_root_writer_lock(&data).expect("acquire data-root writer lock");
     let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
         "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
     );
-    audit::verify_all_worlds(&data, &hmac_key).expect("verify audit chains at startup");
-    let durable_sizes = world::sizes(&data).expect("read durable storage usage");
-    let storage_body_bytes = durable_sizes.iter().map(|(_, size)| *size).sum();
-    let durable_world_count = durable_sizes.len();
-    let delete_ledger_created = durable_sizes
-        .iter()
-        .any(|(world_name, _)| world_name == "var/log/deletes");
-
-    let (events, _) = broadcast::channel(listen_replay_max);
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let state = Arc::new(Core {
+    let tokens = auth::Tokens::from_env();
+    let engine = build_engine_from_env(
         data,
-        tokens: auth::Tokens::from_env(),
         hmac_key,
-        mem: Arc::new(store::MemoryStore::new()),
-        max_world_bytes,
-        max_memory_bytes,
-        max_storage_bytes,
-        storage_body_bytes: Arc::new(AtomicUsize::new(storage_body_bytes)),
-        durable_world_count: Arc::new(AtomicUsize::new(durable_world_count)),
-        delete_ledger_created: Arc::new(AtomicBool::new(delete_ledger_created)),
-        events,
-        listen_slots: Arc::new(Semaphore::new(max_listen_connections)),
-        listen_replay_max,
-        event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(listen_replay_max))),
-        shutdown: shutdown_rx.clone(),
-        next_event: crate::state::new_event_counter(),
-        next_request: Arc::new(AtomicUsize::new(0)),
-        world_locks: Arc::new(DashMap::new()),
-        ledger: Arc::new(crate::ledger::LedgerWriter::new()),
-        read_cache: Arc::new(crate::read_cache::ReadCache::new(read_cache_max_entries)),
-        persist_header_allowlist: Arc::new(crate::config::header_allowlist_from_env()),
-        persist_header_user_deny: Arc::new(crate::config::header_user_deny_from_env()),
-    });
+        &tokens,
+        EngineLimits {
+            max_world_bytes,
+            max_memory_bytes,
+            max_storage_bytes,
+            max_listen_connections,
+            listen_replay_max,
+            read_cache_max_entries,
+        },
+    );
+    let state = engine.core_arc();
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
@@ -103,7 +79,7 @@ pub(crate) async fn run_from_env() {
     if let Some((coap_host, coap_port)) = coap_bind {
         let coap_addr = listen_addr(&coap_host, coap_port);
         let coap_state = state.clone();
-        let coap_shutdown = shutdown_rx.clone();
+        let coap_shutdown = state.shutdown.clone();
         tokio::spawn(async move {
             crate::coap::serve(coap_state, coap_addr, coap_shutdown, coap_max_in_flight).await;
         });
@@ -111,10 +87,55 @@ pub(crate) async fn run_from_env() {
     let app = route::build_app(state, max_world_bytes);
 
     let serve_result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
+        .with_graceful_shutdown(shutdown_signal(engine.clone()))
         .await;
-    drop(data_lock);
     serve_result.expect("axum server failed");
+    drop(engine);
+}
+
+struct EngineLimits {
+    max_world_bytes: usize,
+    max_memory_bytes: usize,
+    max_storage_bytes: Option<usize>,
+    max_listen_connections: usize,
+    listen_replay_max: usize,
+    read_cache_max_entries: usize,
+}
+
+fn build_engine_from_env(
+    data: PathBuf,
+    hmac_key: Vec<u8>,
+    tokens: &auth::Tokens,
+    limits: EngineLimits,
+) -> Engine {
+    let key = SecretBytes::new(hmac_key).expect("ELASTIK_KEY validated before Engine build");
+    let builder = Engine::builder()
+        .data_root(data)
+        .key(key)
+        .max_world_bytes(limits.max_world_bytes)
+        .max_memory_bytes(limits.max_memory_bytes)
+        .max_storage_bytes(limits.max_storage_bytes)
+        .max_listen_connections(limits.max_listen_connections)
+        .listen_replay_max(limits.listen_replay_max)
+        .read_cache_max_entries(limits.read_cache_max_entries)
+        .persist_header_allowlist(crate::config::header_allowlist_from_env())
+        .persist_header_user_deny(crate::config::header_user_deny_from_env());
+    configure_tokens(builder, tokens)
+        .build()
+        .unwrap_or_else(|err| panic!("build Engine failed: {err:?}"))
+}
+
+fn configure_tokens(mut builder: EngineBuilder, tokens: &auth::Tokens) -> EngineBuilder {
+    if let Some(token) = &tokens.read {
+        builder = builder.read_token(token.as_slice().to_vec());
+    }
+    if let Some(token) = &tokens.write {
+        builder = builder.write_token(token.as_slice().to_vec());
+    }
+    if let Some(token) = &tokens.approve {
+        builder = builder.approve_token(token.as_slice().to_vec());
+    }
+    builder
 }
 
 fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
@@ -172,10 +193,10 @@ fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
     }
 }
 
-async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
+async fn shutdown_signal(engine: Engine) {
     wait_for_shutdown_signal().await;
     eprintln!("elastik-core: shutdown signal received");
-    let _ = shutdown_tx.send(true);
+    engine.shutdown();
 }
 
 #[cfg(unix)]

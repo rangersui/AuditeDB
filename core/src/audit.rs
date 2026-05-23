@@ -188,6 +188,7 @@ pub enum VerifyReport {
     Broken(VerifyBreak),
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_all_worlds(data_root: &Path, key: &[u8]) -> rusqlite::Result<()> {
     for world_name in world::list(data_root)? {
         verify_world(data_root, &world_name, key)?;
