@@ -86,15 +86,14 @@ pub(crate) async fn run_from_env() {
         .map(|addr| addr.ip())
         .unwrap_or_else(|_| IpAddr::from([127, 0, 0, 1]));
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
-    let auth_summary_core = state.core_arc();
-    print_auth_summary(&auth_summary_core.tokens, bind_ip);
+    print_auth_summary(&tokens, bind_ip);
     #[cfg(feature = "coap")]
     if let Some((coap_host, coap_port)) = coap_bind {
         let coap_addr = listen_addr(&coap_host, coap_port);
-        let coap_state = state.core_arc();
-        let coap_shutdown = coap_state.shutdown.clone();
+        let coap_engine = engine.clone();
+        let coap_shutdown = coap_engine.shutdown_receiver();
         tokio::spawn(async move {
-            crate::coap::serve(coap_state, coap_addr, coap_shutdown, coap_max_in_flight).await;
+            crate::coap::serve(coap_engine, coap_addr, coap_shutdown, coap_max_in_flight).await;
         });
     }
     let app = route::build_app(state);

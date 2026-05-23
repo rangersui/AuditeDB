@@ -28,10 +28,8 @@
 //!
 //! ## CoAP coexistence
 //!
-//! HTTP and CoAP do not share the request lifecycle. HTTP world handlers now
-//! call public Engine methods; CoAP still reaches the same Engine-owned disk
-//! physics through the internal `EngineOps` shim until its migration layer
-//! lands. Each adapter keeps owning its wire rendering.
+//! HTTP and CoAP do not share the request lifecycle, but both now call public
+//! Engine methods. Each adapter keeps owning its wire rendering.
 
 #[path = "handler/delete.rs"]
 mod delete;

@@ -306,12 +306,9 @@ impl Engine {
         self.inner.core.as_ref()
     }
 
-    /// Temporary PR5 bridge for legacy server modules that still require Core.
-    ///
-    /// New adapter code should use Engine methods. This escape hatch exists only
-    /// until the remaining HTTP/CoAP modules stop extracting `Arc<Core>`.
-    pub(crate) fn core_arc(&self) -> Arc<Core> {
-        self.inner.core.clone()
+    #[cfg(feature = "coap")]
+    pub(crate) fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+        self.inner.shutdown_tx.subscribe()
     }
 
     /// Maps raw token bytes to an access tier.

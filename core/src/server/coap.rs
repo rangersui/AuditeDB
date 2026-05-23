@@ -1,20 +1,21 @@
 //! Native SCoAP/UDP surface for elastik-core.
 //!
 //! This is not a general CoAP stack. It is "UDP curl": parse method, path,
-//! payload, content type, and auth token, then call the same protocol-neutral
-//! world operations as HTTP. CoAP stays in core because its wire shape has
+//! payload, content type, and auth token, then call the protocol-neutral Engine
+//! facade. CoAP stays in the server adapter layer because its wire shape has
 //! near-zero semantic distance from HTTP; richer protocol politics belong in
-//! edge adapters.
+//! edge adapters. This adapter currently implements GET and PUT; POST and
+//! DELETE deliberately return 4.05 Method Not Allowed stubs.
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
 use crate::{
-    auth, canonicalize_path, coap_errors,
-    engine_ops::EngineOps,
-    engine_types::{Preconditions, Representation, ValidatedWorldPath, WriteKind},
-    Core,
+    canonicalize_path, coap_errors,
+    engine::Engine,
+    engine_trace::EngineWriteTraceHooks,
+    engine_types::{AccessTier, Preconditions, Representation, ValidatedWorldPath, WriteKind},
 };
 
 const MAX_DATAGRAM: usize = 1152;
@@ -76,7 +77,7 @@ impl Packet<'_> {
 }
 
 pub(crate) async fn serve(
-    core: std::sync::Arc<Core>,
+    engine: Engine,
     bind: String,
     mut shutdown: watch::Receiver<bool>,
     max_in_flight: usize,
@@ -135,7 +136,7 @@ pub(crate) async fn serve(
                     }
                 };
                 let socket = socket.clone();
-                let core = core.clone();
+                let engine = engine.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     let request = match parse_packet(&data) {
@@ -145,7 +146,7 @@ pub(crate) async fn serve(
                             return;
                         }
                     };
-                    let response = handle(&core, &request).await;
+                    let response = handle(&engine, &request).await;
                     if let Err(e) = socket.send_to(&response, peer).await {
                         eprintln!("scoap: send_to {peer}: {e}");
                     }
@@ -155,7 +156,7 @@ pub(crate) async fn serve(
     }
 }
 
-async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
+async fn handle(engine: &Engine, request: &Packet<'_>) -> Vec<u8> {
     let Some(method) = request.method() else {
         return encode_response(request, 133, Some(0), b"method not allowed\n");
     };
@@ -166,10 +167,10 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
     };
     let tier = request
         .auth_token
-        .map(|token| core.tokens.check_token_bytes(token))
-        .unwrap_or(auth::Tier::Anon);
+        .map(|token| engine.verify_token(token))
+        .unwrap_or(AccessTier::Anon);
     match method {
-        Method::Get => match EngineOps::new(core).read(&world_name, tier) {
+        Method::Get => match engine.read(&world_name, tier) {
             Ok(Some(result)) => {
                 let stage = result.representation;
                 if encoded_len(
@@ -202,8 +203,8 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
                 content_type: content_type.to_owned(),
                 headers: Vec::new(),
             };
-            match EngineOps::new(core)
-                .replace(
+            match engine
+                .replace_traced(
                     &world_name,
                     representation,
                     Preconditions::none(),
@@ -244,7 +245,7 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
 
 struct CoapNoopWriteTrace;
 
-impl crate::world_ops::WriteTraceHooks for CoapNoopWriteTrace {}
+impl EngineWriteTraceHooks for CoapNoopWriteTrace {}
 
 fn request_path(request: &Packet<'_>) -> String {
     let mut path = String::from("/");
@@ -468,8 +469,9 @@ fn media_type_to_cf(value: &str) -> Option<u16> {
 mod tests {
     use super::*;
     use crate::{
-        audit, auth, handler, store, Core, Phase, TraceCtx, DEFAULT_LISTEN_REPLAY_MAX,
-        DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
+        audit, auth, engine::Engine, handler, store, Core, Phase, TraceCtx,
+        DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
+        DEFAULT_MAX_WORLD_BYTES,
     };
     use axum::body::Bytes;
     use axum::http::{HeaderMap, StatusCode};
@@ -534,6 +536,10 @@ mod tests {
         )
     }
 
+    fn test_engine(core: &Core) -> Engine {
+        Engine::from_core_for_tests(Arc::new(core.clone()))
+    }
+
     #[test]
     fn parses_get_path() {
         // Ver=1, CON, TKL=1, GET, mid=0x1234, token=0xaa,
@@ -562,7 +568,7 @@ mod tests {
     async fn textual_errors_carry_text_plain_content_format() {
         let (core, dir) = test_core("error-format");
         let p = packet(&[0x41, 0x63, 0x12, 0x34, 0xaa]); // unknown method code
-        let out = handle(&core, &p).await;
+        let out = handle(&test_engine(&core), &p).await;
         assert_eq!(out[1], 133);
         assert_eq!(out[5], 0xc0); // Content-Format: text/plain
         assert_eq!(out[6], 0xff);
@@ -667,7 +673,7 @@ mod tests {
         let put_bytes = coap_put_packet(&[b"home", b"sensor", b"kitchen", b"temp"], b"23.5", None);
         let put = packet(&put_bytes);
 
-        let response = handle(&core, &put).await;
+        let response = handle(&test_engine(&core), &put).await;
 
         assert_eq!(response[1], 129); // 4.01 Unauthorized
         assert!(core
@@ -685,14 +691,14 @@ mod tests {
             .unwrap();
 
         let denied = handle(
-            &core,
+            &test_engine(&core),
             &packet(&coap_get_packet(&[b"home", b"secret"], None)),
         )
         .await;
         assert_eq!(denied[1], 129); // 4.01 Unauthorized
 
         let allowed = handle(
-            &core,
+            &test_engine(&core),
             &packet(&coap_get_packet(&[b"home", b"secret"], Some(b"reader"))),
         )
         .await;
@@ -714,7 +720,7 @@ mod tests {
         .unwrap();
 
         let get_bytes = coap_get_packet(&[b"home", b"large"], Some(b"reader"));
-        let response = handle(&core, &packet(&get_bytes)).await;
+        let response = handle(&test_engine(&core), &packet(&get_bytes)).await;
 
         assert_eq!(response[1], 141); // 4.13 Request Entity Too Large
         assert_eq!(response[5], 0xc0); // Content-Format: text/plain
@@ -737,7 +743,7 @@ mod tests {
         holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
 
         let response = handle(
-            &core,
+            &test_engine(&core),
             &packet(&coap_get_packet(&[b"home", b"busy"], Some(b"reader"))),
         )
         .await;
@@ -760,7 +766,7 @@ mod tests {
             Some(b"writer"),
         );
         let put = packet(&put_bytes);
-        let put_response = handle(&core, &put).await;
+        let put_response = handle(&test_engine(&core), &put).await;
         assert_eq!(put_response[1], 65); // 2.01 Created
 
         let stage = core
@@ -773,7 +779,7 @@ mod tests {
         let get_bytes =
             coap_get_packet(&[b"home", b"sensor", b"kitchen", b"temp"], Some(b"reader"));
         let get = packet(&get_bytes);
-        let get_response = handle(&core, &get).await;
+        let get_response = handle(&test_engine(&core), &get).await;
         assert_eq!(get_response[1], 69); // 2.05 Content
         assert_eq!(get_response[6], 0xff);
         assert_eq!(&get_response[7..], b"23.5");
@@ -812,7 +818,7 @@ mod tests {
         let coap_put_bytes =
             coap_put_packet(&[b"home", b"coap", b"temp"], b"23.5", Some(b"writer"));
         let coap_put = packet(&coap_put_bytes);
-        let coap_response = handle(&core, &coap_put).await;
+        let coap_response = handle(&test_engine(&core), &coap_put).await;
         assert_eq!(coap_response[1], 65); // 2.01 Created
         let coap_event = events.recv().await.unwrap();
         assert_eq!(coap_event.method, "PUT");
