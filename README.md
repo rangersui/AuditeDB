@@ -17,17 +17,46 @@ everything. Authenticate everything. Subscribe to changes.
 ## Quick start — binary
 
 ```bash
-ELASTIK_KEY=secret cargo run --bin elastik-core
+export ELASTIK_KEY=secret
+export ELASTIK_WRITE_TOKEN=secret
+cargo run --bin elastik-core
 # elastik-core v8.0.0 on http://127.0.0.1:3105/
 
-curl -X PUT  -d 'hi' http://127.0.0.1:3105/home/hello
-curl                  http://127.0.0.1:3105/home/hello       # -> hi
-curl                  http://127.0.0.1:3105/proc/worlds      # -> home/hello
-curl -N               http://127.0.0.1:3105/listen/home/*    # SSE stream
+curl                  http://127.0.0.1:3105/proc/version     # -> elastik-core 8.0.0 (rust)
+curl -X PUT -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
+  -d 'hi'          http://127.0.0.1:3105/home/hello
+curl              http://127.0.0.1:3105/home/hello           # -> hi
+curl              http://127.0.0.1:3105/proc/worlds          # -> home/hello
+curl -N           http://127.0.0.1:3105/listen/home/*        # SSE stream
 ```
 
 The binary refuses to build without `unstable-engine-bin` (cargo will say so).
 The library does not need that feature.
+
+Common binary environment variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ELASTIK_KEY` | required | HMAC audit-chain key; startup refuses empty or missing keys. |
+| `ELASTIK_READ_TOKEN` | unset | Gates reads, `/proc/*`, and `/listen/*`; unset means public reads. |
+| `ELASTIK_WRITE_TOKEN` | unset | Enables ordinary PUT/POST writes in user namespaces such as `home/`. |
+| `ELASTIK_APPROVE_TOKEN` | unset | Enables DELETE and writes in system namespaces such as `etc/` and `var/log/`. |
+| `ELASTIK_TOKEN` | unset | Deprecated alias for `ELASTIK_WRITE_TOKEN`. |
+| `ELASTIK_DATA` | `./data` | SQLite data root. |
+| `ELASTIK_HOST` | `127.0.0.1` | HTTP bind host. |
+| `ELASTIK_PORT` | `3105` | HTTP bind port. |
+| `ELASTIK_COAP_HOST` | `127.0.0.1` | CoAP bind host when CoAP is enabled. |
+| `ELASTIK_COAP_PORT` | unset | Enables the CoAP UDP surface on this port. |
+| `ELASTIK_COAP_MAX_IN_FLIGHT` | `64` | Maximum concurrent CoAP requests. |
+| `ELASTIK_PERSIST_HEADERS` | unset | Comma-separated custom response headers to preserve, e.g. `x-author,x-meta-*`. |
+| `ELASTIK_DENY_HEADERS` | unset | Subtracts headers from the persist allowlist. |
+| `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum body size for one world. |
+| `ELASTIK_MAX_MEMORY_BYTES` | `67108864` | Total in-memory quota for `tmp/`, `dev/`, and `sys/` worlds. |
+| `ELASTIK_MAX_STORAGE_BYTES` | unset | Optional durable SQLite-backed storage quota. |
+| `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE subscriptions. |
+| `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Replay ring size for reconnecting SSE clients. |
+| `ELASTIK_READ_CACHE_MAX_ENTRIES` | `4096` | Read-cache entry cap. |
+| `ELASTIK_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set. |
 
 ## Quick start — library
 
@@ -37,33 +66,37 @@ use elastik_core::{
 };
 use bytes::Bytes;
 
-let engine = Engine::builder()
-    .data_root("./data")
-    .key(SecretBytes::new(b"shared-secret".to_vec()).unwrap())
-    .build()
-    .unwrap();
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let engine = Engine::builder()
+        .data_root("./data")
+        .key(SecretBytes::new(b"shared-secret".to_vec()).unwrap())
+        .build()
+        .unwrap();
 
-let world = ValidatedWorldPath::new("home/hello").unwrap();
+    let world = ValidatedWorldPath::new("home/hello").unwrap();
 
-engine.replace(
-    &world,
-    Representation {
-        body: Bytes::from_static(b"hi"),
-        content_type: "text/plain".into(),
-        headers: Vec::new(),
-    },
-    Preconditions::none(),
-    AccessTier::Write,
-).await.unwrap();
+    engine.replace(
+        &world,
+        Representation {
+            body: Bytes::from_static(b"hi"),
+            content_type: "text/plain".into(),
+            headers: Vec::new(),
+        },
+        Preconditions::none(),
+        AccessTier::Write,
+    ).await.unwrap();
 
-let read = engine.read(&world, AccessTier::Read).unwrap();
-assert!(read.is_some());
+    let read = engine.read(&world, AccessTier::Read).await.unwrap();
+    assert!(read.is_some());
+}
 ```
 
 ```toml
 [dependencies]
 elastik-core = { version = "8", default-features = false,
                  features = ["bundled-sqlite", "unstable-engine"] }
+tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
 The `unstable-engine` gate explicitly marks the public Engine API unstable.
