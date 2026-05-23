@@ -49,7 +49,7 @@ messages:
 
       Headers:
       - Content-Type is first-class and travels with bytes.
-      - In v7.2, custom representation headers are default-deny. To persist x-author or x-meta-* across GET/HEAD and audit, the operator must start the server with ELASTIK_PERSIST_HEADERS=x-author or x-meta-*.
+      - Custom representation headers are default-deny (since v7.2). To persist x-author or x-meta-* across GET/HEAD and audit, the operator must start the server with ELASTIK_PERSIST_HEADERS=x-author or x-meta-*.
       - Do not imply X-Meta-* persists by default.
 
       Status codes:
@@ -78,7 +78,7 @@ messages:
       - Forgetting Authorization on writes. Every PUT, POST, DELETE curl you emit must include `-H "Authorization: Bearer write-token"` (or approve-token for DELETE / protected namespaces). Even if the user said "PUT /home/x with body data" without mentioning a token, the curl still includes Authorization. Auth is a property of the verb, not of the user's phrasing.
       - /proc/worlds is plain text, one world per line, not JSON.
       - Large uploads will fail with 413 unless ELASTIK_MAX_WORLD_BYTES is raised. The default single-world body cap is 64 MiB. Always warn before suggesting an 8 GB PUT.
-      - Custom headers like x-author and x-meta-* do not persist by default in v7.2. Always mention ELASTIK_PERSIST_HEADERS when a user expects custom headers to round-trip.
+      - Custom headers like x-author and x-meta-* do not persist by default (since v7.2). Always mention ELASTIK_PERSIST_HEADERS when a user expects custom headers to round-trip.
       - If Python context already has an Elastik object named e, use e.put(path, data) directly. Do not import or construct again.
   - role: user
     content: |
@@ -168,8 +168,8 @@ testData:
     expected_status: "200,201"
     setup: ""
   - input: Store /home/data with x-author=ranger metadata.
-    expected: "Use PUT /home/data with x-author: ranger and warn that ELASTIK_PERSIST_HEADERS=x-author is required for that custom header to round-trip in v7.2."
-    # Advisory: server returns 201 regardless of v7.2 caveat awareness;
+    expected: "Use PUT /home/data with x-author: ranger and warn that ELASTIK_PERSIST_HEADERS=x-author is required for that custom header to round-trip."
+    # Advisory: server returns 201 regardless of header-persistence caveat awareness;
     # the prose IS the discriminator.
     grader: advisory
     required_anchors: "ELASTIK_PERSIST_HEADERS"

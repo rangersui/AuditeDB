@@ -74,10 +74,12 @@ Do not file public security issues. Use `SECURITY.md`.
 
 ## Releases
 
-A version bump touches `core/Cargo.toml`, `sdk/pyproject.toml`, and every
-`sdk-js/**/package.json` (the main package plus per-platform binary packages)
-in one commit. Tag `vX.Y.Z` only after every manifest agrees. Then commit
-`RELEASE-NOTES-vX.Y.Z.md` and create the GitHub release.
+A version bump touches `core/Cargo.toml`, `core/Cargo.lock`,
+`sdk/pyproject.toml`, and every `sdk-js/**/package.json` (the main package plus
+per-platform binary packages) in one commit. Current-facing README and SDK docs
+must agree with the version and product wording. Tag `vX.Y.Z` only after every
+manifest agrees, `RELEASE-NOTES-vX.Y.Z.md` exists, and package dry-runs report
+the same version.
 
 ## Pull Requests
 

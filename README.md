@@ -18,7 +18,7 @@ everything. Authenticate everything. Subscribe to changes.
 
 ```bash
 ELASTIK_KEY=secret cargo run --bin elastik-core
-# elastik-core 7.2.0 on http://127.0.0.1:3105/
+# elastik-core v8.0.0 on http://127.0.0.1:3105/
 
 curl -X PUT  -d 'hi' http://127.0.0.1:3105/home/hello
 curl                  http://127.0.0.1:3105/home/hello       # -> hi
@@ -62,7 +62,7 @@ assert!(read.is_some());
 
 ```toml
 [dependencies]
-elastik-core = { version = "7", default-features = false,
+elastik-core = { version = "8", default-features = false,
                  features = ["bundled-sqlite", "unstable-engine"] }
 ```
 
@@ -190,7 +190,7 @@ audire   (Latin: "to listen")
   │                 surname, which means "listen!" in German)
   ├─ audit         (English: formal review — originally "to listen to
   │                 accounts being read aloud")
-  └─ subscribe     (BEW L5's fifth verb — the listening verb)
+  └─ subscribe     (Elastik L5's fifth verb — the listening verb)
 
            audire
              │
@@ -203,7 +203,7 @@ audire   (Latin: "to listen")
    │     feature)      verb)
    └─────────┼──────────┘
              ▼
-         BEW L5
+       Elastik L5
 ```
 
 The audit chain — the HMAC ledger that records every write — is the engine

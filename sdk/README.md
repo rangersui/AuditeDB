@@ -1,10 +1,11 @@
 # elastik Python SDK
 
-Python client and launcher for the Elastik V6 Engine: six verbs, one HTTP disk.
+Python client and launcher for Elastik L5: the Audi-ted storage engine over HTTP.
 
-The engine is small on purpose: `PUT`, `GET`, `HEAD`, `POST`, `DELETE`, and
-`LISTEN`. The SDK gives those verbs a Python shape without turning the core into
-a framework.
+The engine is small on purpose: the library has five verbs, while the HTTP
+adapter maps them to `PUT`, `GET`, `HEAD`, `POST`, `DELETE`, and `LISTEN`.
+The SDK gives that wire surface a Python shape without turning the core into a
+framework.
 
 The beginner surface in one breath:
 

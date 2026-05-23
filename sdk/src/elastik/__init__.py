@@ -1,6 +1,6 @@
-"""elastik: Python client for the Elastik V6 Engine.
+"""elastik: Python client for Elastik L5.
 
-Six verbs, one HTTP disk:
+HTTP adapter verbs:
   PUT, GET, HEAD, POST, DELETE, LISTEN.
 
 The beginner Python surface is intentionally small:
@@ -167,7 +167,7 @@ __all__ = [
 try:
     __version__ = version("elastik")
 except PackageNotFoundError:
-    __version__ = "6.4.4"
+    __version__ = "8.0.0"
 
 
 # ── module-level singleton client ──────────────────────────────────

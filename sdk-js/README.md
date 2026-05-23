@@ -1,10 +1,10 @@
 # @elastikjs/client
 
 > **fetch is all you need.**
-> Six verbs. One import. Zero dependencies.
+> Audi-ted L5. One import. Zero dependencies.
 
-JavaScript SDK for the [Elastik V6 Engine](https://github.com/rangersui/Elastik) HTTP byte
-store. Works in any environment that has `fetch` — browser, Node 18+, Deno, Bun, Cloudflare
+JavaScript SDK for [Elastik L5](https://github.com/rangersui/Elastik), the Audi-ted
+storage engine over HTTP. Works in any environment that has `fetch` — browser, Node 18+, Deno, Bun, Cloudflare
 Workers, Vercel Edge, you name it.
 
 TypeScript users get bundled `.d.ts` files for both `@elastikjs/client` and
@@ -105,7 +105,7 @@ the core's HTTP surface — including when they live in the same process tree.
 | `win32-x64`     | `@elastikjs/core-win32-x64`    |
 
 The npm matrix matches the Rust core's release matrix
-([Elastik v6.4.4](https://github.com/rangersui/Elastik/releases/tag/v6.4.4)).
+([Elastik v8.0.0](https://github.com/rangersui/Elastik/releases/tag/v8.0.0)).
 Linux binaries are statically linked against musl libc for distro
 compatibility. `darwin-x64` is intentionally not in the matrix (Apple
 Silicon only on the Mac side).
@@ -634,7 +634,7 @@ If you need the bytes, follow up with `e.get(ev.path)`.
 
 ```js
 await e.exists("home/note");   // → false only on 404; auth/network errors throw
-await e.version();             // → "elastik-core 6.4.4 (rust)"
+await e.version();             // → "elastik-core 8.0.0 (rust)"
 await e.worlds();              // → "home/note\nhome/log\n..."
 ```
 
