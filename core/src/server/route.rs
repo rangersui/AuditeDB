@@ -19,7 +19,7 @@ use axum::{
 
 use crate::{
     listen, options_response, pipeline, proc_audit_verify, proc_df, proc_du, proc_pool,
-    proc_reserved, proc_version, proc_worlds, root_hint, server::ServerState, Core, WORLD_ALLOW,
+    proc_reserved, proc_version, proc_worlds, root_hint, server::ServerState, WORLD_ALLOW,
 };
 
 pub(crate) fn build_app(state: ServerState) -> Router {
@@ -44,7 +44,7 @@ pub(crate) fn build_app(state: ServerState) -> Router {
 }
 
 pub(crate) async fn world_handler(
-    State(core): State<std::sync::Arc<Core>>,
+    State(state): State<ServerState>,
     axum::Extension(crate::pipeline::RequestId(req_id)): axum::Extension<
         crate::pipeline::RequestId,
     >,
@@ -67,5 +67,5 @@ pub(crate) async fn world_handler(
     if method == Method::OPTIONS {
         return options_response(WORLD_ALLOW);
     }
-    pipeline::run(method, path, headers, body, &core, req_id).await
+    pipeline::run(method, path, headers, body, &state, req_id).await
 }

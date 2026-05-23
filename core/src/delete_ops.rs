@@ -284,7 +284,7 @@ impl From<DeleteError> for EngineError {
     fn from(value: DeleteError) -> Self {
         match value {
             DeleteError::Auth(gate) => Self::Auth(gate),
-            DeleteError::AppendOnlyLedger => Self::Auth(AuthGate::Delete),
+            DeleteError::AppendOnlyLedger => Self::AppendOnly,
             DeleteError::PreconditionFailed { message } => Self::PreconditionFailed { message },
             DeleteError::NotFound => Self::NotFound,
             DeleteError::TransientStorage { scope, world, err } => {

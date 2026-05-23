@@ -27,6 +27,11 @@ pub trait EngineWriteTraceHooks {
 pub trait EngineDeleteTraceHooks {
     fn lock_acquired(&self, _world: &str) {}
     fn audit_intent(&self) {}
+    /// Diagnostic-only debug rendering when the DELETE audit intent append fails.
+    ///
+    /// Do not parse this string programmatically; use `EngineError` categories
+    /// and `sqlite_code()` for stable decisions.
+    fn audit_intent_failed(&self, _err: &str) {}
     fn read_cache_drained(&self) {}
     fn physical_deleted(&self) {}
     fn counter_decremented(&self) {}
@@ -175,7 +180,7 @@ impl Engine {
         tier: AccessTier,
         hooks: &H,
     ) -> Result<(), EngineError> {
-        EngineOps::new(self.core())
+        let result = EngineOps::new(self.core())
             .delete(
                 world,
                 DeleteRequest {
@@ -186,8 +191,11 @@ impl Engine {
                 tier.into(),
                 &PublicDeleteTrace(hooks),
             )
-            .await
-            .map_err(Into::into)
+            .await;
+        if let Err(delete_ops::DeleteError::AuditIntent { err, .. }) = &result {
+            hooks.audit_intent_failed(&format!("{err:?}"));
+        }
+        result.map_err(Into::into)
     }
 }
 

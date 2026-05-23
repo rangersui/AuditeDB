@@ -1275,6 +1275,7 @@ mod tests {
         // are rejected by `pipeline::dispatch` with `MethodNotAllowed`.
         let (core, dir) = test_core("allow");
         let core = std::sync::Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let options = options_response(WORLD_ALLOW);
         assert_eq!(options.status(), StatusCode::NO_CONTENT);
@@ -1285,7 +1286,7 @@ mod tests {
             "home/allow".to_string(),
             HeaderMap::new(),
             Bytes::new(),
-            &core,
+            &state,
             0,
         )
         .await;
@@ -2478,6 +2479,8 @@ mod tests {
     #[tokio::test]
     async fn delete_honors_if_match_before_audit_or_remove() {
         let (core, dir) = test_core("delete-if-match");
+        let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
         let h = world::write_with_audit(
             &core.data,
             "home/delete-cas",
@@ -2495,7 +2498,7 @@ mod tests {
                 stale.clone(),
                 auth::Tier::Approve,
                 world_path("home/delete-cas"),
-                &core,
+                &state,
                 &TraceCtx::disabled(),
             )
             .await,
@@ -2513,7 +2516,7 @@ mod tests {
                 good.clone(),
                 auth::Tier::Approve,
                 world_path("home/delete-cas"),
-                &core,
+                &state,
                 &TraceCtx::disabled(),
             )
             .await,
@@ -2544,6 +2547,8 @@ mod tests {
     #[tokio::test]
     async fn delete_returns_500_when_commit_audit_fails_after_physical_delete() {
         let (core, dir) = test_core("delete-commit-audit-fail");
+        let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
         core.write_world("home/delete-degraded", b"alive", "text/plain", &[])
             .unwrap();
         world::write_with_audit(
@@ -2577,7 +2582,7 @@ mod tests {
                 HeaderMap::new(),
                 auth::Tier::Approve,
                 world_path("home/delete-degraded"),
-                &core,
+                &state,
                 &TraceCtx::disabled(),
             )
             .await,
@@ -2603,6 +2608,8 @@ mod tests {
     #[tokio::test]
     async fn delete_rejects_auth_token_and_append_only_ledger() {
         let (core, dir) = test_core("delete-policy");
+        let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
         world::write_with_audit(
             &core.data,
             "home/delete-policy",
@@ -2628,7 +2635,7 @@ mod tests {
                 headers.clone(),
                 auth::Tier::Write,
                 world_path("home/delete-policy"),
-                &core,
+                &state,
                 &TraceCtx::disabled(),
             )
             .await,
@@ -2641,7 +2648,7 @@ mod tests {
                 headers.clone(),
                 auth::Tier::Approve,
                 world_path("var/log/deletes"),
-                &core,
+                &state,
                 &TraceCtx::disabled(),
             )
             .await,
@@ -2670,13 +2677,15 @@ mod tests {
     #[tokio::test]
     async fn delete_missing_world_does_not_write_delete_ledger() {
         let (core, dir) = test_core("delete-missing");
+        let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
         let headers = HeaderMap::new();
         let resp = unwrap_response(
             execute_delete(
                 headers.clone(),
                 auth::Tier::Approve,
                 world_path("home/missing"),
-                &core,
+                &state,
                 &TraceCtx::disabled(),
             )
             .await,
@@ -2795,12 +2804,8 @@ mod tests {
         assert_eq!(put.status(), StatusCode::CREATED);
 
         let state = Arc::new(core);
-        let before = proc_df(
-            State(server_state_for_tests(state.clone())),
-            Method::GET,
-            headers.clone(),
-        )
-        .await;
+        let server_state = server_state_for_tests(state.clone());
+        let before = proc_df(State(server_state.clone()), Method::GET, headers.clone()).await;
         assert!(response_text(before)
             .await
             .contains("worlds\t1\tunlimited\tunlimited\n"));
@@ -2810,14 +2815,14 @@ mod tests {
                 headers.clone(),
                 auth::Tier::Approve,
                 world_path("home/count"),
-                &state,
+                &server_state,
                 &TraceCtx::disabled(),
             )
             .await,
         );
         assert_eq!(delete.status(), StatusCode::NO_CONTENT);
 
-        let after = proc_df(State(server_state_for_tests(state)), Method::GET, headers).await;
+        let after = proc_df(State(server_state), Method::GET, headers).await;
         let after_body = response_text(after).await;
         assert!(after_body.contains("storage\t0\tunlimited\tunlimited\n"));
         assert!(after_body.contains("worlds\t0\tunlimited\tunlimited\n"));
@@ -2864,12 +2869,8 @@ mod tests {
         }
 
         let state = Arc::new(core);
-        let resp = proc_pool(
-            State(server_state_for_tests(state.clone())),
-            Method::GET,
-            headers.clone(),
-        )
-        .await;
+        let server_state = server_state_for_tests(state.clone());
+        let resp = proc_pool(State(server_state.clone()), Method::GET, headers.clone()).await;
         let body = response_text(resp).await;
 
         assert!(body.contains("read_cache_entries 1 snapshot\n"));
@@ -2889,12 +2890,12 @@ mod tests {
                 headers.clone(),
                 auth::Tier::Approve,
                 world_path("home/m"),
-                &state,
+                &server_state,
                 &TraceCtx::disabled(),
             )
             .await,
         );
-        let resp2 = proc_pool(State(server_state_for_tests(state)), Method::GET, headers).await;
+        let resp2 = proc_pool(State(server_state), Method::GET, headers).await;
         let body2 = response_text(resp2).await;
         assert!(
             body2.contains("ledger_writer_inits 1 counter\n"),
@@ -2961,9 +2962,10 @@ mod tests {
         assert!(!core.delete_ledger_created.load(Ordering::Relaxed));
 
         let state = Arc::new(core);
-        let s1 = state.clone();
-        let s2 = state.clone();
-        let s3 = state.clone();
+        let server_state = server_state_for_tests(state.clone());
+        let s1 = server_state.clone();
+        let s2 = server_state.clone();
+        let s3 = server_state.clone();
         let h1 = headers.clone();
         let h2 = headers.clone();
         let h3 = headers.clone();
@@ -3013,13 +3015,14 @@ mod tests {
         core.write_world("home/hello", b"hello world", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let resp = pipeline::run(
             Method::GET,
             "/home/hello".to_string(),
             HeaderMap::new(),
             Bytes::new(),
-            &core,
+            &state,
             42,
         )
         .await;
@@ -3042,13 +3045,14 @@ mod tests {
         core.write_world("home/hello", b"hello world", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let resp = pipeline::run(
             Method::HEAD,
             "/home/hello".to_string(),
             HeaderMap::new(),
             Bytes::new(),
-            &core,
+            &state,
             43,
         )
         .await;
@@ -3070,13 +3074,14 @@ mod tests {
     async fn pipeline_get_nonexistent_world_returns_404() {
         let (core, dir) = test_core("pipeline-get-404");
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let resp = pipeline::run(
             Method::GET,
             "/home/missing".to_string(),
             HeaderMap::new(),
             Bytes::new(),
-            &core,
+            &state,
             44,
         )
         .await;
@@ -3090,13 +3095,14 @@ mod tests {
     async fn pipeline_get_invalid_dot_segment_returns_400() {
         let (core, dir) = test_core("pipeline-get-400");
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let resp = pipeline::run(
             Method::GET,
             "/home/../etc/secret".to_string(),
             HeaderMap::new(),
             Bytes::new(),
-            &core,
+            &state,
             45,
         )
         .await;
@@ -3113,13 +3119,14 @@ mod tests {
         core.write_world("home/secret", b"shhh", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let resp = pipeline::run(
             Method::GET,
             "/home/secret".to_string(),
             HeaderMap::new(), // no Authorization header
             Bytes::new(),
-            &core,
+            &state,
             46,
         )
         .await;
@@ -3146,14 +3153,15 @@ mod tests {
         core.write_world("home/hello", b"hello world", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let app = Router::new()
             .route("/*world", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
-                server_state_for_tests(core.clone()),
+                state.clone(),
                 add_server_response_headers,
             ))
-            .with_state(core.clone());
+            .with_state(state);
 
         let req = HttpRequest::builder()
             .method("GET")
@@ -3196,14 +3204,15 @@ mod tests {
         core.write_world("home/hello", b"hello world", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let app = Router::new()
             .route("/*world", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
-                server_state_for_tests(core.clone()),
+                state.clone(),
                 add_server_response_headers,
             ))
-            .with_state(core.clone());
+            .with_state(state);
 
         let req = HttpRequest::builder()
             .method("HEAD")
@@ -3235,6 +3244,7 @@ mod tests {
         core.write_world("home/cached", b"cached body", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         // First GET to discover the current etag.
         let first = pipeline::run(
@@ -3242,7 +3252,7 @@ mod tests {
             "/home/cached".to_string(),
             HeaderMap::new(),
             Bytes::new(),
-            &core,
+            &state,
             100,
         )
         .await;
@@ -3260,7 +3270,7 @@ mod tests {
             "/home/cached".to_string(),
             headers,
             Bytes::new(),
-            &core,
+            &state,
             101,
         )
         .await;
@@ -3288,6 +3298,7 @@ mod tests {
         core.write_world("home/short", b"abc", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         // 1) Production path: pipeline::run surfaces 416 to the wire.
         let mut headers = HeaderMap::new();
@@ -3297,7 +3308,7 @@ mod tests {
             "/home/short".to_string(),
             headers,
             Bytes::new(),
-            &core,
+            &state,
             200,
         )
         .await;
@@ -3313,7 +3324,7 @@ mod tests {
             Bytes::new(),
             auth::Tier::Anon,
             world_path("home/short"),
-            &core,
+            &state,
             &TraceCtx::disabled(),
         )
         .await;
@@ -3336,6 +3347,7 @@ mod tests {
         core.write_world("home/range", b"abcdef", "text/plain", &[])
             .unwrap();
         let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
 
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
@@ -3345,7 +3357,7 @@ mod tests {
             "/home/range".to_string(),
             headers,
             Bytes::new(),
-            &core,
+            &state,
             47,
         )
         .await;

@@ -40,18 +40,17 @@
 //! shapes are SSE streams and generated introspection responses.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
     body::Bytes,
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::Response,
 };
 
 use crate::{
     auth, bad_request, canonicalize_path, engine_types::ValidatedWorldPath, method_not_allowed,
-    AuthGate, Core, WORLD_ALLOW,
+    server::ServerState, AuthGate, WORLD_ALLOW,
 };
 
 /// Request ID stamped onto each incoming request by the
@@ -335,12 +334,8 @@ fn authenticate(
     path: String,
     headers: HeaderMap,
     body: Bytes,
-    tokens: &auth::Tokens,
+    tier: auth::Tier,
 ) -> Phase {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = tokens.check(auth_header);
     Phase::Authenticated {
         method,
         path,
@@ -435,13 +430,13 @@ pub(crate) async fn run(
     path: String,
     headers: HeaderMap,
     body: Bytes,
-    core: &Arc<Core>,
+    state: &ServerState,
     req_id: u64,
 ) -> Response {
     // Request id allocation is intentionally outside this function; see
-    // the RequestId doc comment for the off-by-one history. `core` itself
-    // is consumed inside the loop (passed to `core.tokens` for auth
-    // and to `handler::execute` for the verb).
+    // the RequestId doc comment for the off-by-one history. `state` itself
+    // is consumed inside the loop (used for auth and handed to
+    // `handler::execute` for the verb).
     let trace = TraceCtx::new(req_id, Instant::now());
 
     let mut phase = Phase::Received {
@@ -459,7 +454,10 @@ pub(crate) async fn run(
                 path,
                 headers,
                 body,
-            } => authenticate(method, path, headers, body, &core.tokens),
+            } => {
+                let tier = state.access_tier_from_headers(&headers).into();
+                authenticate(method, path, headers, body, tier)
+            }
 
             Phase::Authenticated {
                 method,
@@ -483,7 +481,7 @@ pub(crate) async fn run(
                 body,
                 tier,
                 world,
-            } => crate::handler::execute(verb, headers, body, tier, world, core, &trace).await,
+            } => crate::handler::execute(verb, headers, body, tier, world, state, &trace).await,
 
             Phase::ExecutedRead(resp) | Phase::CommittedWrite(resp) => Phase::Done(resp),
 
@@ -529,7 +527,7 @@ pub(crate) async fn run(
 mod tests {
     use super::*;
     use crate::auth::Tokens;
-    use axum::http::HeaderValue;
+    use axum::http::{header, HeaderValue};
 
     fn empty_tokens() -> Tokens {
         Tokens {
@@ -566,7 +564,7 @@ mod tests {
             "/home/foo".into(),
             HeaderMap::new(),
             Bytes::new(),
-            &empty_tokens(),
+            empty_tokens().check(None),
         );
         match phase {
             Phase::Authenticated { tier, .. } => assert_eq!(tier, auth::Tier::Anon),
@@ -582,7 +580,7 @@ mod tests {
             "/home/foo".into(),
             header_map_with_auth(&bearer("writer")),
             Bytes::from_static(b"hi"),
-            &tokens,
+            tokens.check(Some(&bearer("writer"))),
         );
         match phase {
             Phase::Authenticated { tier, .. } => assert_eq!(tier, auth::Tier::Write),
@@ -598,7 +596,7 @@ mod tests {
             "/home/foo".into(),
             header_map_with_auth(&bearer("wrong")),
             Bytes::new(),
-            &tokens,
+            tokens.check(Some(&bearer("wrong"))),
         );
         match phase {
             Phase::Authenticated { tier, .. } => assert_eq!(tier, auth::Tier::Anon),

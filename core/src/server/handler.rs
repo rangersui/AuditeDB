@@ -52,6 +52,7 @@ use crate::{
     engine_ops::EngineOps,
     engine_types::{Representation, ValidatedWorldPath, WriteKind},
     http_semantics as hs, insufficient_storage, not_found, payload_too_large, precondition_failed,
+    server::ServerState,
     server_error, storage_quota_exceeded, storage_temporarily_unavailable, to_header_map,
     unauthorized, world_ops, Core, ErrorReason, Phase, TraceCtx, Verb,
 };
@@ -64,15 +65,27 @@ pub(crate) async fn execute(
     body: Bytes,
     tier: auth::Tier,
     world: ValidatedWorldPath,
-    core: &Core,
+    state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
     match verb {
-        Verb::Get => execute_get(headers, tier, world, core, trace).await,
-        Verb::Head => execute_head(headers, tier, world, core, trace).await,
-        Verb::Put => execute_put(headers, body, tier, world, core, trace).await,
-        Verb::Post => execute_post(headers, body, tier, world, core, trace).await,
-        Verb::Delete => execute_delete(headers, tier, world, core, trace).await,
+        Verb::Get => {
+            let core = state.core_arc();
+            execute_get(headers, tier, world, &core, trace).await
+        }
+        Verb::Head => {
+            let core = state.core_arc();
+            execute_head(headers, tier, world, &core, trace).await
+        }
+        Verb::Put => {
+            let core = state.core_arc();
+            execute_put(headers, body, tier, world, &core, trace).await
+        }
+        Verb::Post => {
+            let core = state.core_arc();
+            execute_post(headers, body, tier, world, &core, trace).await
+        }
+        Verb::Delete => execute_delete(headers, tier, world, state, trace).await,
     }
 }
 
@@ -332,6 +345,7 @@ fn read_error_phase(err: EngineError) -> Phase {
         },
         EngineError::InvalidWorldName
         | EngineError::NotFound
+        | EngineError::AppendOnly
         | EngineError::PayloadTooLarge { .. }
         | EngineError::PreconditionFailed { .. }
         | EngineError::QuotaExceeded { .. } => Phase::Error {
@@ -391,7 +405,7 @@ pub(in crate::handler) fn write_error_phase(err: EngineError) -> Phase {
             resp: server_error("unexpected write subscription limit".to_string()),
             reason: ErrorReason::StorageWriteAudit,
         },
-        EngineError::InvalidWorldName => Phase::Error {
+        EngineError::InvalidWorldName | EngineError::AppendOnly => Phase::Error {
             resp: server_error("invalid world reached write adapter".to_string()),
             reason: ErrorReason::StorageWriteAudit,
         },

@@ -310,6 +310,7 @@ fn proc_engine_error(scope: &'static str, err: EngineError) -> Response {
             server_error(format!("{scope} internal invariant: {message}"))
         }
         EngineError::PayloadTooLarge { .. }
+        | EngineError::AppendOnly
         | EngineError::PreconditionFailed { .. }
         | EngineError::QuotaExceeded { .. }
         | EngineError::SubscriptionLimit => {

@@ -13,8 +13,10 @@ use std::{
     sync::atomic::{fence, Ordering},
 };
 
+#[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
+#[cfg(test)]
 const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +118,7 @@ impl Tokens {
     /// Resolve the request's tier from an Authorization header.
     /// Empty / missing / unrecognized → Anon. Loopback callers may
     /// short-circuit to Anon and let the protocol layer rule.
+    #[cfg(test)]
     pub fn check(&self, authorization: Option<&str>) -> Tier {
         let Some(value) = authorization else {
             return Tier::Anon;

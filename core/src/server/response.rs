@@ -17,10 +17,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{
-    engine_introspection::{AuditBroken, AuditValid},
-    storage_class::{is_insufficient_storage_error, is_transient_storage_error},
-};
+use crate::engine_introspection::{AuditBroken, AuditValid};
+#[cfg(test)]
+use crate::storage_class::{is_insufficient_storage_error, is_transient_storage_error};
 
 // ─── header utility ─────────────────────────────────────────────────
 
@@ -181,6 +180,7 @@ pub(crate) fn storage_quota_exceeded(used: usize, quota: usize, projected: usize
         .into_response()
 }
 
+#[cfg(test)]
 pub(crate) fn storage_error(scope: &str, err: rusqlite::Error) -> Response {
     eprintln!("elastik-core internal {scope}: {err}");
     if is_insufficient_storage_error(&err) {

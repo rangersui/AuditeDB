@@ -93,6 +93,7 @@ pub enum EngineError {
     Auth(AuthGate),
     InvalidWorldName,
     NotFound,
+    AppendOnly,
     PayloadTooLarge {
         max: usize,
     },
@@ -342,6 +343,7 @@ impl EngineError {
             Self::Auth(_)
             | Self::InvalidWorldName
             | Self::NotFound
+            | Self::AppendOnly
             | Self::PayloadTooLarge { .. }
             | Self::PreconditionFailed { .. }
             | Self::QuotaExceeded { .. }

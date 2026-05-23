@@ -12,6 +12,7 @@ pub(crate) fn read_error_to_coap(err: &EngineError) -> u8 {
         EngineError::Storage { .. } | EngineError::InternalInvariant(_) => 160,
         EngineError::InvalidWorldName
         | EngineError::NotFound
+        | EngineError::AppendOnly
         | EngineError::PayloadTooLarge { .. }
         | EngineError::PreconditionFailed { .. }
         | EngineError::QuotaExceeded { .. } => 160,
@@ -41,6 +42,7 @@ pub(crate) fn write_error_to_coap(err: &EngineError) -> u8 {
         | EngineError::SubscriptionLimit => 163,
         EngineError::Storage { .. }
         | EngineError::InternalInvariant(_)
-        | EngineError::InvalidWorldName => 160,
+        | EngineError::InvalidWorldName
+        | EngineError::AppendOnly => 160,
     }
 }
