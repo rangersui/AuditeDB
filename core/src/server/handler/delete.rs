@@ -19,10 +19,9 @@ use axum::{
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::{
-    auth,
     engine::EngineError,
     engine_trace::{DeleteMetadata, EngineDeleteTraceHooks},
-    engine_types::ValidatedWorldPath,
+    engine_types::{AccessTier, ValidatedWorldPath},
     http_semantics as hs, insufficient_storage, not_found,
     server::ServerState,
     server_error, storage_temporarily_unavailable, unauthorized, AuthGate, ErrorReason, Phase,
@@ -31,11 +30,12 @@ use crate::{
 
 pub(crate) async fn execute_delete(
     headers: HeaderMap,
-    tier: auth::Tier,
+    tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
     state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
+    let tier = tier.into();
     let persist_header_allowlist = state.persist_header_allowlist();
     let persist_header_user_deny = state.persist_header_user_deny();
     let delete_meta = hs::request_meta_headers(
@@ -55,8 +55,8 @@ pub(crate) async fn execute_delete(
         .delete_traced(
             &world,
             DeleteMetadata::new(delete_content_type, delete_meta),
-            hs::request_preconditions(&headers).into(),
-            tier.into(),
+            hs::request_preconditions(&headers),
+            tier,
             &hooks,
         )
         .await
@@ -223,6 +223,11 @@ fn delete_error_phase(err: EngineError, last_step: DeleteStep) -> Phase {
         | EngineError::QuotaExceeded { .. }
         | EngineError::SubscriptionLimit => Phase::Error {
             resp: server_error("unexpected delete error".to_string()),
+            reason: ErrorReason::StorageWriteAudit,
+        },
+        #[cfg(not(test))]
+        _ => Phase::Error {
+            resp: server_error("unknown delete error".to_string()),
             reason: ErrorReason::StorageWriteAudit,
         },
     }

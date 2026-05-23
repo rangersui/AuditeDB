@@ -16,14 +16,6 @@ use crate::{
 
 pub(crate) const ALLOW: &str = "GET, OPTIONS";
 
-#[derive(Clone, Debug)]
-pub(crate) struct ChangeEvent {
-    pub(crate) id: u64,
-    pub(crate) method: &'static str,
-    pub(crate) path: String,
-    pub(crate) etag: String,
-}
-
 // SSE event tap. Curl-first:
 //   curl -N http://127.0.0.1:3105/listen/home/task/*
 //
@@ -88,6 +80,8 @@ pub(crate) async fn handler(
                 subscription,
             )),
             Err(SubscriptionRecvError::Closed) => None,
+            #[cfg(not(test))]
+            Err(_) => None,
         }
     });
 
@@ -98,28 +92,6 @@ pub(crate) async fn handler(
                 .text("keepalive"),
         )
         .into_response()
-}
-
-pub(crate) fn pattern(raw: &str) -> String {
-    let p = raw.trim();
-    if p == "*" || p == "/*" || p == "/" || p.is_empty() {
-        "*".to_owned()
-    } else if p.starts_with('/') {
-        p.to_owned()
-    } else {
-        format!("/{p}")
-    }
-}
-
-pub(crate) fn matches(pattern: &str, path: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        path.starts_with(prefix)
-    } else {
-        path == pattern
-    }
 }
 
 fn sse_change_event(change: EngineChangeEvent) -> Event {
@@ -137,7 +109,7 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{auth, server::ServerState, store, Core};
+    use crate::{auth, event, server::ServerState, store, Core};
     use dashmap::DashMap;
     use std::{
         collections::VecDeque,
@@ -151,16 +123,16 @@ mod tests {
 
     #[test]
     fn patterns_are_prefix_or_exact() {
-        assert_eq!(pattern("*"), "*");
-        assert_eq!(pattern("/"), "*");
-        assert_eq!(pattern("home/task/*"), "/home/task/*");
-        assert_eq!(pattern("home/销售/*"), "/home/销售/*");
-        assert!(matches("*", "/home/task/a"));
-        assert!(matches("/home/task/*", "/home/task/a"));
-        assert!(!matches("/home/task/*", "/home/other/a"));
-        assert!(matches("/home/销售/*", "/home/销售/报告"));
-        assert!(matches("/home/task/a", "/home/task/a"));
-        assert!(!matches("/home/task/a", "/home/task/ab"));
+        assert_eq!(event::pattern("*"), "*");
+        assert_eq!(event::pattern("/"), "*");
+        assert_eq!(event::pattern("home/task/*"), "/home/task/*");
+        assert_eq!(event::pattern("home/销售/*"), "/home/销售/*");
+        assert!(event::matches("*", "/home/task/a"));
+        assert!(event::matches("/home/task/*", "/home/task/a"));
+        assert!(!event::matches("/home/task/*", "/home/other/a"));
+        assert!(event::matches("/home/销售/*", "/home/销售/报告"));
+        assert!(event::matches("/home/task/a", "/home/task/a"));
+        assert!(!event::matches("/home/task/a", "/home/task/ab"));
     }
 
     #[test]
@@ -255,7 +227,7 @@ mod tests {
         {
             let mut log = core.event_log.lock().unwrap();
             for id in 10..=12 {
-                log.push_back(ChangeEvent {
+                log.push_back(event::ChangeEvent {
                     id,
                     method: "PUT",
                     path: format!("/home/task/{id}"),
@@ -306,7 +278,7 @@ mod tests {
         };
         {
             let mut log = core.event_log.lock().unwrap();
-            log.push_back(ChangeEvent {
+            log.push_back(event::ChangeEvent {
                 id: u64::MAX,
                 method: "PUT",
                 path: "/home/task/max".to_string(),

@@ -21,6 +21,7 @@ const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
 #[derive(Clone)]
 pub(crate) struct ServerState {
     engine: Engine,
+    #[cfg_attr(test, allow(dead_code))]
     max_world_bytes: usize,
     persist_header_allowlist: Arc<HeaderAllowlist>,
     persist_header_user_deny: Arc<HeaderAllowlist>,
@@ -60,6 +61,7 @@ impl ServerState {
         &self.engine
     }
 
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn max_world_bytes(&self) -> usize {
         self.max_world_bytes
     }

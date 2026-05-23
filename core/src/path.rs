@@ -1,24 +1,27 @@
-//! Request path validation and canonicalization.
+//! Canonical world path validation.
 //!
-//! Pure string functions: take an incoming HTTP path, decide whether
-//! it is a valid world name, and (where appropriate) attach a
-//! human-readable rejection reason. No `Core`, no I/O.
+//! Pure string functions: decide whether a canonical world name is valid and
+//! attach a human-readable rejection reason. No `Core`, no I/O, no adapter
+//! wire-path normalization.
 //!
-//! Re-exported into the crate root by `main.rs`; existing callers
-//! (`coap.rs`, the request handlers, the tests) reach these as
-//! `crate::canonicalize_path` etc. without import churn.
+//! HTTP/CoAP shorthand such as `/foo` -> `home/foo` lives in
+//! `server/path.rs`, not in the production library surface.
 
-/// Path prefix is policy: `/home/tmp/foo` must stay a durable home
-/// world, not silently become transient `/tmp/foo`. Bare `/foo` is the
-/// convenience spelling for `/home/foo`; explicit namespaces are kept.
+/// Canonical Engine world namespaces.
+pub(crate) const NAMESPACE_PREFIXES: &[&str] = &[
+    "home", "tmp", "dev", "sys", "etc", "lib", "boot", "usr", "var",
+];
+
+/// Test-only copy of the adapter-side path canonicalizer, kept for legacy
+/// white-box tests in `lib.rs`.
+#[cfg(test)]
 pub(crate) fn canonicalize_path(p: &str) -> String {
     let stripped = p.trim_start_matches('/');
     let first = stripped.split('/').next().unwrap_or("");
-    match first {
-        "home" | "tmp" | "dev" | "sys" | "proc" | "etc" | "lib" | "boot" | "usr" | "var" => {
-            stripped.to_owned()
-        }
-        _ => format!("home/{stripped}"),
+    if NAMESPACE_PREFIXES.contains(&first) || first == "proc" {
+        stripped.to_owned()
+    } else {
+        format!("home/{stripped}")
     }
 }
 
@@ -99,18 +102,7 @@ fn strip_dot_token(segment: &str) -> Option<&str> {
 /// introspection, not a world). Module-private: only
 /// `validate_world_name` calls it.
 fn is_reserved_world_name(world_name: &str) -> bool {
-    matches!(
-        world_name,
-        "home"
-            | "tmp"
-            | "dev"
-            | "sys"
-            | "proc"
-            | "etc"
-            | "lib"
-            | "boot"
-            | "usr"
-            | "var"
-            | "var/log"
-    ) || world_name.starts_with("proc/")
+    NAMESPACE_PREFIXES.contains(&world_name)
+        || matches!(world_name, "proc" | "var/log")
+        || world_name.starts_with("proc/")
 }

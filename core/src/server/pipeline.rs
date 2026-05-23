@@ -10,7 +10,7 @@
 //! ## Authentication vs Authorization
 //!
 //! - **Driver (this module)** parses the `Authorization` header into an
-//!   `auth::Tier` and stamps it onto `Phase::Authenticated`. That is
+//!   `AccessTier` and stamps it onto `Phase::Authenticated`. That is
 //!   pure authentication — "who is asking".
 //! - **Verb handlers** run the gate check (`can_read` / `can_write` /
 //!   `can_delete`). That is
@@ -49,8 +49,11 @@ use axum::{
 };
 
 use crate::{
-    auth, bad_request, canonicalize_path, engine_types::ValidatedWorldPath, method_not_allowed,
-    server::ServerState, AuthGate, WORLD_ALLOW,
+    bad_request, canonicalize_path,
+    engine_types::{AccessTier, ValidatedWorldPath},
+    method_not_allowed,
+    server::ServerState,
+    AuthGate, WORLD_ALLOW,
 };
 
 /// Request ID stamped onto each incoming request by the
@@ -90,20 +93,20 @@ pub(crate) enum Phase {
         path: String,
         headers: HeaderMap,
         body: Bytes,
-        tier: auth::Tier,
+        tier: AccessTier,
     },
     PathValidated {
         method: Method,
         headers: HeaderMap,
         body: Bytes,
-        tier: auth::Tier,
+        tier: AccessTier,
         world: ValidatedWorldPath,
     },
     Dispatched {
         verb: Verb,
         headers: HeaderMap,
         body: Bytes,
-        tier: auth::Tier,
+        tier: AccessTier,
         world: ValidatedWorldPath,
     },
     /// GET / HEAD finished. No audit, no notify.
@@ -334,7 +337,7 @@ fn authenticate(
     path: String,
     headers: HeaderMap,
     body: Bytes,
-    tier: auth::Tier,
+    tier: AccessTier,
 ) -> Phase {
     Phase::Authenticated {
         method,
@@ -355,12 +358,19 @@ fn validate_path(
     path: String,
     headers: HeaderMap,
     body: Bytes,
-    tier: auth::Tier,
+    tier: AccessTier,
 ) -> Phase {
     let world = canonicalize_path(&path);
-    let world = match ValidatedWorldPath::from_canonical(world) {
+    if let Err(reason) = crate::validate_world_name(&world) {
+        return Phase::Error {
+            resp: bad_request(reason),
+            reason: ErrorReason::PathInvalid(reason),
+        };
+    }
+    let world = match ValidatedWorldPath::new(world) {
         Ok(world) => world,
-        Err(reason) => {
+        Err(_) => {
+            let reason = "world path missing canonical namespace prefix";
             return Phase::Error {
                 resp: bad_request(reason),
                 reason: ErrorReason::PathInvalid(reason),
@@ -389,7 +399,7 @@ fn dispatch(
     method: Method,
     headers: HeaderMap,
     body: Bytes,
-    tier: auth::Tier,
+    tier: AccessTier,
     world: ValidatedWorldPath,
 ) -> Phase {
     let verb = match method {
@@ -455,7 +465,7 @@ pub(crate) async fn run(
                 headers,
                 body,
             } => {
-                let tier = state.access_tier_from_headers(&headers).into();
+                let tier = state.access_tier_from_headers(&headers);
                 authenticate(method, path, headers, body, tier)
             }
 
@@ -526,24 +536,7 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Tokens;
     use axum::http::{header, HeaderValue};
-
-    fn empty_tokens() -> Tokens {
-        Tokens {
-            read: None,
-            write: None,
-            approve: None,
-        }
-    }
-
-    fn tokens_with_write(write: &[u8]) -> Tokens {
-        Tokens {
-            read: None,
-            write: crate::auth::NonEmptyBytes::new(write.to_vec()),
-            approve: None,
-        }
-    }
 
     fn header_map_with_auth(value: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -564,42 +557,40 @@ mod tests {
             "/home/foo".into(),
             HeaderMap::new(),
             Bytes::new(),
-            empty_tokens().check(None),
+            AccessTier::Anon,
         );
         match phase {
-            Phase::Authenticated { tier, .. } => assert_eq!(tier, auth::Tier::Anon),
+            Phase::Authenticated { tier, .. } => assert_eq!(tier, AccessTier::Anon),
             _ => panic!("expected Authenticated phase"),
         }
     }
 
     #[test]
     fn authenticate_valid_bearer_yields_write_tier() {
-        let tokens = tokens_with_write(b"writer");
         let phase = authenticate(
             Method::PUT,
             "/home/foo".into(),
             header_map_with_auth(&bearer("writer")),
             Bytes::from_static(b"hi"),
-            tokens.check(Some(&bearer("writer"))),
+            AccessTier::Write,
         );
         match phase {
-            Phase::Authenticated { tier, .. } => assert_eq!(tier, auth::Tier::Write),
+            Phase::Authenticated { tier, .. } => assert_eq!(tier, AccessTier::Write),
             _ => panic!("expected Authenticated phase"),
         }
     }
 
     #[test]
     fn authenticate_unrecognized_token_falls_back_to_anon() {
-        let tokens = tokens_with_write(b"writer");
         let phase = authenticate(
             Method::PUT,
             "/home/foo".into(),
             header_map_with_auth(&bearer("wrong")),
             Bytes::new(),
-            tokens.check(Some(&bearer("wrong"))),
+            AccessTier::Anon,
         );
         match phase {
-            Phase::Authenticated { tier, .. } => assert_eq!(tier, auth::Tier::Anon),
+            Phase::Authenticated { tier, .. } => assert_eq!(tier, AccessTier::Anon),
             _ => panic!("expected Authenticated phase"),
         }
     }
@@ -613,7 +604,7 @@ mod tests {
             "/foo".into(),
             HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Anon,
+            AccessTier::Anon,
         );
         match phase {
             Phase::PathValidated { world, .. } => assert_eq!(world.as_str(), "home/foo"),
@@ -628,7 +619,7 @@ mod tests {
             "/etc/foo".into(),
             HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Approve,
+            AccessTier::Approve,
         );
         match phase {
             Phase::PathValidated { world, .. } => assert_eq!(world.as_str(), "etc/foo"),
@@ -643,7 +634,7 @@ mod tests {
             "/home/../etc/secret".into(),
             HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Write,
+            AccessTier::Write,
         );
         match phase {
             Phase::Error {
@@ -661,7 +652,7 @@ mod tests {
             "/home".into(),
             HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Write,
+            AccessTier::Write,
         );
         match phase {
             Phase::Error {
@@ -679,7 +670,7 @@ mod tests {
             "/home/%2E%2E/etc/secret".into(),
             HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Read,
+            AccessTier::Read,
         );
         assert!(matches!(
             phase,
@@ -698,7 +689,7 @@ mod tests {
             Method::GET,
             HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Anon,
+            AccessTier::Anon,
             ValidatedWorldPath::new("home/foo").unwrap(),
         );
         match phase {
@@ -713,7 +704,7 @@ mod tests {
             Method::PATCH,
             HeaderMap::new(),
             Bytes::new(),
-            auth::Tier::Write,
+            AccessTier::Write,
             ValidatedWorldPath::new("home/foo").unwrap(),
         );
         match phase {
@@ -750,7 +741,7 @@ mod tests {
                 method,
                 HeaderMap::new(),
                 Bytes::new(),
-                auth::Tier::Anon,
+                AccessTier::Anon,
                 ValidatedWorldPath::new("home/x").unwrap(),
             );
             match phase {

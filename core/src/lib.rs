@@ -1,62 +1,98 @@
-//! elastik-core -- bedrock HTTP+SQLite+HMAC.
+//! # Elastik — Audi-ted L5 Storage Engine
 //!
-//! This library target currently exists so the `elastik-core` binary can be a
-//! tiny Tokio runtime launcher. The engine API is intentionally internal and
-//! unstable; runtime use remains env-driven through the binary documented in
-//! the repository README.
+//! `elastik-core` is a protocol-neutral storage engine: canonical paths, opaque
+//! bytes, content-addressed versioning, an HMAC-chained audit log, and a
+//! four-tier access model. **SQLite for files.**
 //!
-//! The core has one semantic interface: method + path + representation bytes.
-//! HTTP is the first-class surface. SCoAP is a small UDP-curl surface because
-//! CoAP has semantic zero distance from HTTP. Everything else must arrive
-//! through SDK/client adapters that collapse it into the same tuple.
+//! ## Quick start
 //!
-//! v5.0 grammar:
+//! ```no_run
+//! # #[cfg(feature = "unstable-engine")]
+//! # async fn run() {
+//! use elastik_core::{
+//!     AccessTier, Engine, Preconditions, Representation, SecretBytes, ValidatedWorldPath,
+//! };
+//! use bytes::Bytes;
 //!
-//! ```text
-//! GET    /<world>                -> body bytes with stored Content-Type
-//! HEAD   /<world>                -> metadata headers, no body
-//! PUT    /<world>                -> replace body, update meta, audit
-//! POST   /<world>                -> append to body, no meta change, audit
-//! DELETE /<world>                -> drop world (sqlite) or evict (memory)
-//! GET    /proc/worlds            -> text/plain, one world per line
-//! GET    /proc/version           -> "elastik-core <ver> (rust)\n"
+//! let engine = Engine::builder()
+//!     .data_root("./data")
+//!     .key(SecretBytes::new(b"shared-hmac-secret".to_vec()).expect("hmac key"))
+//!     .build()
+//!     .expect("engine builds");
+//!
+//! let world = ValidatedWorldPath::new("home/hello").expect("canonical path");
+//!
+//! // Store bytes at a path.
+//! engine
+//!     .replace(
+//!         &world,
+//!         Representation {
+//!             body: Bytes::from_static(b"hi"),
+//!             content_type: "text/plain".into(),
+//!             headers: Vec::new(),
+//!         },
+//!         Preconditions::none(),
+//!         AccessTier::Write,
+//!     )
+//!     .await
+//!     .expect("write succeeds");
+//!
+//! // Retrieve bytes by path.
+//! let read = engine.read(&world, AccessTier::Read).expect("read succeeds");
+//! assert!(read.is_some());
+//! # }
 //! ```
 //!
-//! Path prefix decides backend (one core, one port, no two daemons):
+//! ## What the library does
 //!
-//! ```text
-//! /home/* /etc/* /lib/* /boot/* /usr/* /var/*  -> SQLite, durable, audited
-//! /tmp/*  /dev/*  /sys/*                       -> memory, transient
-//! ```
+//! - **Bytes at paths.** Canonical `home/`, `tmp/`, `dev/`, `sys/`, `etc/`,
+//!   `lib/`, `boot/`, `usr/`, `var/` namespaces decide durable-vs-transient
+//!   without per-call configuration.
+//! - **Versions everything.** Every successful write returns an ETag; reads,
+//!   replaces, and appends honour `Preconditions::if_match` / `if_none_match`.
+//! - **Audits everything.** HMAC-chained ledger; `Engine::verify_audit`
+//!   returns a typed [`AuditVerify`] result and refuses to start when an
+//!   existing chain is corrupted.
+//! - **Authenticates everything.** [`AccessTier`] (Anon / Read / Write /
+//!   Approve) plus token-bytes verification via [`Engine::verify_token`].
+//! - **Subscribes to changes.** [`Engine::subscribe`] returns an
+//!   [`EngineSubscription`] with replay-then-live ordering.
 //!
-//! Out of scope (deliberately):
-//!   protocol bridges      -> SDK clients / external endpoint apps
-//!   AI shaping/routing    -> SDK clients / external endpoint apps
-//!   /lib/* code running   -> never in core; /lib is inert storage
-//!   application behavior  -> outside core, expressed as HTTP
+//! ## What the library does *not* do
 //!
-//! Env:
-//!   ELASTIK_HOST           default 127.0.0.1
-//!   ELASTIK_PORT           default 3105
-//!   ELASTIK_COAP_PORT      optional; enables SCoAP/UDP when set
-//!                          (requires binary built with `coap` feature)
-//!   ELASTIK_COAP_HOST      default 127.0.0.1 when CoAP is enabled
-//!   ELASTIK_DATA           default ./data
-//!   ELASTIK_READ_TOKEN     T1 token  (optional read gate)
-//!   ELASTIK_WRITE_TOKEN    T2 token  (writes to /home/*, includes read)
-//!   ELASTIK_APPROVE_TOKEN  T3 token  (system writes/deletes, includes read)
-//!   ELASTIK_KEY            HMAC key for the audit chain (required)
-//!   ELASTIK_MAX_STORAGE_BYTES optional durable storage quota
-//!   ELASTIK_TRACE_PIPELINE optional; "1" enables the FSM trace on stderr
+//! No HTTP, no CoAP, no SSE, no server runtime. Those live in the
+//! `elastik-core` binary and consume this library through the unstable public
+//! [`Engine`] API. The library does not read environment variables, does not
+//! bind sockets, and does not depend on `axum`, `hyper`, `tower`,
+//! `tokio-stream`, `futures-util`, or `base64` in a default-feature build.
+//!
+//! ## Feature flags
+//!
+//! - `bundled-sqlite` *(default)* — link a bundled SQLite via `rusqlite/bundled`.
+//! - `coap` *(default)* — enable the CoAP adapter inside the binary.
+//! - `multi-thread` *(default)* — enable Tokio's multi-thread runtime for the
+//!   binary.
+//! - `unstable-engine` — expose the public [`Engine`] facade. **The API shape
+//!   is allowed to change between minor versions while this gate stays.**
+//! - `unstable-engine-bin` *(default)* — superset that adds `axum`, `base64`,
+//!   `futures-util`, Tokio `net`/`signal`, and `tracing-subscriber`; the
+//!   `elastik-core` binary requires this feature.
+//!
+//! Minimal library-only build: `cargo build --lib --no-default-features
+//! --features bundled-sqlite,unstable-engine`.
 mod audit;
 mod auth;
+#[cfg(test)]
 #[cfg(feature = "coap")]
 #[path = "server/coap.rs"]
 mod coap;
+#[cfg(test)]
 #[cfg(feature = "coap")]
 #[path = "server/coap_errors.rs"]
 mod coap_errors;
+#[cfg(test)]
 mod config;
+mod defaults;
 mod delete_ops;
 mod engine;
 mod engine_introspection;
@@ -64,25 +100,36 @@ mod engine_ops;
 mod engine_trace;
 mod engine_types;
 mod etag;
+mod event;
+#[cfg(test)]
 #[path = "server/handler.rs"]
 mod handler;
+#[cfg(test)]
 mod http_range;
+#[cfg(test)]
 mod http_semantics;
 mod ledger;
+#[cfg(test)]
 #[path = "server/listen.rs"]
 mod listen;
+#[cfg(test)]
 #[path = "server/middleware.rs"]
 mod middleware;
 mod path;
+#[cfg(test)]
 #[path = "server/pipeline.rs"]
 mod pipeline;
+#[cfg(test)]
 #[path = "server/proc.rs"]
 mod proc;
 mod read_cache;
+#[cfg(test)]
 #[path = "server/response.rs"]
 mod response;
+#[cfg(test)]
 #[path = "server/route.rs"]
 mod route;
+#[cfg(test)]
 mod server;
 mod state;
 mod storage_class;
@@ -90,13 +137,16 @@ mod store;
 mod world;
 mod world_ops;
 
-// Re-export the small pure-function modules at the crate root so
-// sibling modules keep referring to `crate::not_found` /
-// `crate::canonicalize_path` / `crate::Phase` / `crate::Core` etc.
-// without per-extraction import churn.
+// Re-export protocol-neutral helpers at the crate root. HTTP adapter modules
+// are only compiled here for legacy white-box tests; production binary builds
+// own their adapter helpers from `main.rs`.
+#[cfg(test)]
 pub(crate) use crate::path::*;
+#[cfg(test)]
 pub(crate) use crate::pipeline::*;
+#[cfg(test)]
 pub(crate) use crate::proc::*;
+#[cfg(test)]
 pub(crate) use crate::response::*;
 pub(crate) use crate::state::*;
 pub(crate) use crate::storage_class::*;
@@ -104,6 +154,9 @@ pub(crate) use crate::storage_class::*;
 pub use auth::AuthGate;
 #[cfg(not(feature = "unstable-engine"))]
 pub(crate) use auth::AuthGate;
+#[cfg(all(feature = "unstable-engine", feature = "coap"))]
+#[doc(hidden)]
+pub use engine::ShutdownToken;
 #[cfg(feature = "unstable-engine")]
 pub use engine::{Engine, EngineBuildError, EngineBuilder, EngineError};
 #[cfg(feature = "unstable-engine")]
@@ -124,21 +177,17 @@ use std::path::Path;
 use std::time::Duration;
 
 #[cfg(test)]
-pub(crate) use crate::config::{
+pub(crate) use crate::defaults::{
     DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
     DEFAULT_MAX_WORLD_BYTES,
 };
 
-// Re-exported to crate root for `proc.rs` (root_hint, proc_version)
-// and main()'s startup banner. The other namespace constants
-// (ROOT_ALLOW, PROC_ALLOW, AUDIT_VERIFY_ALLOW) live in proc.rs now.
+// Test-only HTTP constants for legacy white-box tests. Production constants
+// live on the binary side.
+#[cfg(test)]
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(test)]
 pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
-
-#[doc(hidden)]
-pub async fn run_from_env() {
-    server::run_from_env().await;
-}
 
 fn acquire_data_root_writer_lock(data: &Path) -> rusqlite::Result<rusqlite::Connection> {
     let c = rusqlite::Connection::open(data.join(".elastik-writer-lock.sqlite3"))?;
@@ -161,16 +210,12 @@ fn acquire_data_root_writer_lock(data: &Path) -> rusqlite::Result<rusqlite::Conn
     Ok(c)
 }
 
-// `/` and `/proc/*` route handlers (root_hint, proc_version, proc_worlds,
-// proc_du, proc_df, proc_audit_verify, proc_reserved) live in `proc.rs`
-// and are re-exported at the crate root, so the route table below and
-// the inline tests in this file reach them by short name.
+// Legacy white-box tests still compile the HTTP route modules through this
+// library crate. Production builds compile those modules only from `main.rs`.
 
 // ─── /<world> all five methods ──────────────────────────────────────
-// Path validation and canonicalization (canonicalize_path,
-// valid_world_name, validate_world_name, is_dot_segment,
-// strip_dot_token, is_reserved_world_name) live in `path.rs` and
-// are re-exported at the crate root.
+// Path validation lives in `path.rs`. Adapter-side canonicalization lives in
+// `server/path.rs` and is not part of the production library.
 
 // ─── helpers ────────────────────────────────────────────────────────
 
@@ -670,17 +715,17 @@ mod tests {
         };
         assert!(!should_warn_public_read(
             "127.0.0.1".parse::<IpAddr>().unwrap(),
-            &tokens
+            tokens.read_required()
         ));
         assert!(should_warn_public_read(
             "0.0.0.0".parse::<IpAddr>().unwrap(),
-            &tokens
+            tokens.read_required()
         ));
 
         tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
         assert!(!should_warn_public_read(
             "0.0.0.0".parse::<IpAddr>().unwrap(),
-            &tokens
+            tokens.read_required()
         ));
     }
 

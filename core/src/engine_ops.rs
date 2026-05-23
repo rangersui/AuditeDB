@@ -19,7 +19,7 @@ use crate::{
         Representation, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind,
         WriteResult,
     },
-    etag, listen, world_ops, AuthGate, BlockingSqliteError, Core,
+    etag, event, world_ops, AuthGate, BlockingSqliteError, Core,
 };
 
 pub(crate) struct EngineOps<'a> {
@@ -175,6 +175,18 @@ impl<'a> EngineOps<'a> {
 }
 
 impl Engine {
+    /// Reads a world's full representation.
+    ///
+    /// # Returns
+    /// - `Ok(Some(ReadResult))` if the world exists.
+    /// - `Ok(None)` if the world does not exist (callers that want 404
+    ///   semantics handle this).
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
+    /// - [`EngineError::TransientStorage`] for SQLite `BUSY`/`LOCKED`.
+    /// - [`EngineError::InsufficientStorage`] for full-disk failures.
+    /// - [`EngineError::Storage`] for other storage errors.
     pub fn read(
         &self,
         world: &ValidatedWorldPath,
@@ -183,6 +195,23 @@ impl Engine {
         EngineOps::new(self.core()).read(world, tier.into())
     }
 
+    /// Replaces a world with the provided representation.
+    ///
+    /// Creates the world if it does not exist; otherwise overwrites the
+    /// body, content type, and headers, then advances the audit chain.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below the namespace's write
+    ///   requirement (`Write` for `home/`, `Approve` for system
+    ///   namespaces).
+    /// - [`EngineError::PayloadTooLarge`] if the body exceeds the per-world
+    ///   cap.
+    /// - [`EngineError::PreconditionFailed`] if `preconditions` reject the
+    ///   write.
+    /// - [`EngineError::QuotaExceeded`] for durable-storage quota failures.
+    /// - [`EngineError::TransientStorage`] /
+    ///   [`EngineError::InsufficientStorage`] / [`EngineError::Storage`]
+    ///   for storage-layer failures.
     pub async fn replace(
         &self,
         world: &ValidatedWorldPath,
@@ -201,6 +230,13 @@ impl Engine {
             .await
     }
 
+    /// Appends bytes to a world's body and advances the audit chain.
+    ///
+    /// Same auth requirements and error variants as [`Engine::replace`].
+    /// The world's content type and metadata headers are unchanged.
+    ///
+    /// # Errors
+    /// Same as [`Engine::replace`].
     pub async fn append(
         &self,
         world: &ValidatedWorldPath,
@@ -215,9 +251,20 @@ impl Engine {
 
     /// Deletes a world with default, empty audit metadata.
     ///
-    /// HTTP adapters that need to preserve DELETE audit metadata should call
-    /// `delete_traced` with `DeleteMetadata`; this convenience method records
-    /// empty metadata by design.
+    /// Convenience wrapper around the DELETE protocol that records empty
+    /// content-type and headers in the audit intent. Adapters that need to
+    /// preserve the deleted representation's metadata in the audit log
+    /// should call [`Engine::delete_traced`] with a populated
+    /// [`crate::DeleteMetadata`].
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Approve`.
+    /// - [`EngineError::AppendOnly`] for append-only worlds (e.g.
+    ///   `var/log/deletes`).
+    /// - [`EngineError::PreconditionFailed`] / [`EngineError::NotFound`].
+    /// - [`EngineError::TransientStorage`] /
+    ///   [`EngineError::InsufficientStorage`] / [`EngineError::Storage`]
+    ///   for storage-layer failures.
     pub async fn delete(
         &self,
         world: &ValidatedWorldPath,
@@ -239,6 +286,23 @@ impl Engine {
             .map_err(Into::into)
     }
 
+    /// Subscribes to change events matching `pattern`.
+    ///
+    /// If `since` is `Some(id)`, the subscription replays every event with
+    /// `id > since` from the in-memory ring before switching to the live
+    /// stream. Replay is bounded by the configured `listen_replay_max`; if
+    /// `since` is older than the ring's floor, the first `recv` call yields
+    /// a [`crate::SubscriptionRecvError::Lagged`] error.
+    ///
+    /// The returned [`EngineSubscription`] holds a subscription slot until
+    /// dropped; drop it promptly when finished so other subscribers can
+    /// join.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
+    /// - [`EngineError::SubscriptionLimit`] if the slot pool is full.
+    /// - [`EngineError::ShuttingDown`] if [`Engine::shutdown`] has been
+    ///   called.
     pub fn subscribe(
         &self,
         pattern: &SubscribePattern,
@@ -279,7 +343,7 @@ pub(crate) fn replay_after(
     });
     let replay: Vec<ChangeEvent> = log
         .iter()
-        .filter(|change| change.id > last_id && listen::matches(pattern.as_str(), &change.path))
+        .filter(|change| change.id > last_id && event::matches(pattern.as_str(), &change.path))
         .cloned()
         .map(Into::into)
         .collect();

@@ -1,12 +1,25 @@
 ---
 name: elastik
-description: "Deploy and use Elastik, an HTTP key-value store and control plane backed by Rust + SQLite. Use this skill whenever the user mentions elastik, wants to start a local or network elastik instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), or evaluate whether an HTTP subsystem should reuse Elastik instead of reinventing health/metrics/version/auth/audit/static serving."
+description: "Deploy and use Elastik (Audi-ted L5 storage engine), shipped as a Rust library + binary on SQLite. Use this skill whenever the user mentions elastik, wants to start a local or network elastik instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), embed the protocol-neutral `Engine` library directly in a Rust project, or evaluate whether an HTTP subsystem should reuse Elastik instead of reinventing health/metrics/version/auth/audit/static serving."
 ---
 
 # Elastik
 
-Elastik is a flat HTTP key-value store with an introspection plane. The key
-prefix is policy.
+**Audi-ted L5 storage engine.** Bytes at paths + versions + HMAC audit chain
++ four-tier auth + change subscriptions. Five verbs (read · replace · append ·
+delete · subscribe), one SQLite store.
+
+Two ways to use it:
+
+- **Binary** (`elastik-core`): HTTP + CoAP server with `curl` as the control
+  surface. This skill covers this mode.
+- **Library** (`elastik_core` crate, `unstable-engine` feature): embed the
+  protocol-neutral `Engine` directly in a Rust process; bring your own wire
+  shape. The library has no HTTP, no CoAP, no env vars, no sockets — see
+  the crate-level rustdoc and `core/src/engine.rs` for the public surface.
+
+Elastik (the binary) is a flat HTTP key-value store with an introspection
+plane. The key prefix is policy.
 
 ```text
 home/ etc/ lib/ boot/ usr/ var/   ->  durable SQLite-backed values

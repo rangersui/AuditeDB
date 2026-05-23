@@ -48,10 +48,10 @@ use std::sync::Arc;
 #[cfg(test)]
 use crate::Core;
 use crate::{
-    auth, content_range_value, decimal_header_value,
+    content_range_value, decimal_header_value,
     engine::{Engine, EngineError},
     engine_trace::EngineWriteTraceHooks,
-    engine_types::{Representation, ValidatedWorldPath, WriteKind},
+    engine_types::{AccessTier, Representation, ValidatedWorldPath, WriteKind},
     http_semantics as hs,
     http_semantics::HeaderAllowlist,
     insufficient_storage, not_found, payload_too_large, precondition_failed,
@@ -120,11 +120,12 @@ pub(crate) async fn execute(
     verb: Verb,
     headers: HeaderMap,
     body: Bytes,
-    tier: auth::Tier,
+    tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
     state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
+    let tier = tier.into();
     match verb {
         Verb::Get => execute_get(headers, tier, world, state, trace).await,
         Verb::Head => execute_head(headers, tier, world, state, trace).await,
@@ -136,12 +137,13 @@ pub(crate) async fn execute(
 
 pub(crate) async fn execute_get<S: HandlerEngineState>(
     headers: HeaderMap,
-    tier: auth::Tier,
+    tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
     state: S,
     trace: &TraceCtx,
 ) -> Phase {
-    let result = match state.engine().read(&world, tier.into()) {
+    let tier = tier.into();
+    let result = match state.engine().read(&world, tier) {
         Ok(Some(result)) => result,
         Ok(None) => {
             return Phase::Error {
@@ -212,12 +214,13 @@ pub(crate) async fn execute_get<S: HandlerEngineState>(
 
 pub(crate) async fn execute_head<S: HandlerEngineState>(
     headers: HeaderMap,
-    tier: auth::Tier,
+    tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
     state: S,
     trace: &TraceCtx,
 ) -> Phase {
-    let result = match state.engine().read(&world, tier.into()) {
+    let tier = tier.into();
+    let result = match state.engine().read(&world, tier) {
         Ok(Some(result)) => result,
         Ok(None) => {
             return Phase::Error {
@@ -281,11 +284,12 @@ pub(crate) async fn execute_head<S: HandlerEngineState>(
 pub(crate) async fn execute_put<S: HandlerEngineState>(
     headers: HeaderMap,
     body: Bytes,
-    tier: auth::Tier,
+    tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
     state: S,
     trace: &TraceCtx,
 ) -> Phase {
+    let tier = tier.into();
     let content_type = hs::request_content_type(&headers);
     let persist_header_allowlist = state.persist_header_allowlist();
     let persist_header_user_deny = state.persist_header_user_deny();
@@ -304,8 +308,8 @@ pub(crate) async fn execute_put<S: HandlerEngineState>(
         .replace_traced(
             &world,
             representation,
-            hs::request_preconditions(&headers).into(),
-            tier.into(),
+            hs::request_preconditions(&headers),
+            tier,
             &HttpWriteTrace { trace },
         )
         .await
@@ -316,6 +320,8 @@ pub(crate) async fn execute_put<S: HandlerEngineState>(
     let status = match outcome.kind {
         WriteKind::Created => StatusCode::CREATED,
         WriteKind::Updated => StatusCode::OK,
+        #[cfg(not(test))]
+        _ => StatusCode::OK,
     };
     let mut resp_headers = vec![(header::ETAG, hs::etag_header(&outcome.etag))];
     if status == StatusCode::CREATED {
@@ -332,17 +338,15 @@ pub(crate) async fn execute_put<S: HandlerEngineState>(
 /// Etags are HMAC-SHA256 hex (64 chars) or `sha256-<64 chars>`; a
 /// 16-char prefix is enough to disambiguate while staying readable.
 ///
-/// Visibility is `pub(in crate::handler)` so the sibling `post.rs`
-/// module can reuse it (PUT and POST both emit the same
-/// `sqlite_committed etag=...` aux line). Not visible outside
-/// `crate::handler` -- etag presentation is a verb-handler concern,
-/// not a crate-wide utility.
-pub(in crate::handler) fn etag_preview(etag: &str) -> String {
+/// Crate-visible so the sibling `post.rs` module can reuse it while the
+/// handler tree is temporarily compiled by both the lib tests and bin target.
+/// ETag presentation remains a verb-handler concern, not a crate-wide utility.
+pub(crate) fn etag_preview(etag: &str) -> String {
     etag.chars().take(16).collect()
 }
 
-pub(in crate::handler) struct HttpWriteTrace<'a> {
-    pub(in crate::handler) trace: &'a TraceCtx,
+pub(crate) struct HttpWriteTrace<'a> {
+    pub(crate) trace: &'a TraceCtx,
 }
 
 impl EngineWriteTraceHooks for HttpWriteTrace<'_> {
@@ -400,10 +404,15 @@ fn read_error_phase(err: EngineError) -> Phase {
             resp: server_error("unexpected read error".to_string()),
             reason: ErrorReason::StorageRead,
         },
+        #[cfg(not(test))]
+        _ => Phase::Error {
+            resp: server_error("unknown read error".to_string()),
+            reason: ErrorReason::StorageRead,
+        },
     }
 }
 
-pub(in crate::handler) fn write_error_phase(err: EngineError) -> Phase {
+pub(crate) fn write_error_phase(err: EngineError) -> Phase {
     match err {
         EngineError::Auth(gate) => Phase::Error {
             resp: unauthorized("write requires token; system worlds need approve token"),
@@ -455,6 +464,11 @@ pub(in crate::handler) fn write_error_phase(err: EngineError) -> Phase {
         },
         EngineError::InvalidWorldName | EngineError::AppendOnly => Phase::Error {
             resp: server_error("invalid world reached write adapter".to_string()),
+            reason: ErrorReason::StorageWriteAudit,
+        },
+        #[cfg(not(test))]
+        _ => Phase::Error {
+            resp: server_error("unknown write error".to_string()),
             reason: ErrorReason::StorageWriteAudit,
         },
     }

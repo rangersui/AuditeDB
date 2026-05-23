@@ -30,64 +30,100 @@ pub struct ValidatedProcPath {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidProcPath;
 
-/// Stable proc endpoint identity carried by `ValidatedProcPath`.
+/// Stable proc endpoint identity carried by [`ValidatedProcPath`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProcEndpoint {
+    /// Engine build version string.
     Version,
+    /// Enumerate every world (durable + in-memory).
     Worlds,
+    /// Per-world body byte size (`du`-like).
     Du,
+    /// Aggregate storage + memory usage and quotas (`df`-like).
     Df,
+    /// Read cache + ledger writer pool counters.
     Pool,
+    /// Verify a single world's HMAC audit chain.
     AuditVerify,
 }
 
-/// One world-size row for Engine introspection.
+/// One world-size row for engine introspection.
 pub struct WorldUsage {
+    /// Canonical world path.
     pub world: ValidatedWorldPath,
+    /// Body byte size for this world.
     pub bytes: usize,
 }
 
-/// Snapshot backing `/proc/df`.
+/// Aggregate storage/memory snapshot.
+///
+/// Returned by [`crate::Engine::df`]. Quotas of `0`/`None` mean "unlimited";
+/// adapters should render that string for operator-facing output.
 pub struct DfSnapshot {
+    /// Bytes used by durable bodies (SQLite-backed worlds).
     pub storage_used: usize,
+    /// Configured durable quota, or `None` if unlimited.
     pub storage_quota: Option<usize>,
+    /// Bytes used by in-memory bodies.
     pub memory_used: usize,
+    /// Configured memory cap. `0` means unlimited.
     pub memory_quota: usize,
+    /// Total live worlds (durable + in-memory).
     pub worlds: usize,
 }
 
-/// Snapshot backing `/proc/pool`.
+/// Read-cache + ledger-writer snapshot.
+///
+/// Returned by [`crate::Engine::pool`]. All counters are monotonic since
+/// process start.
 pub struct PoolSnapshot {
+    /// Active read-cache entries (open SQLite connections currently parked).
     pub read_cache_entries: usize,
+    /// Tombstoned entries waiting on in-flight reads to drain.
     pub read_cache_tombstones: usize,
+    /// Cache hits since process start.
     pub read_cache_hits: usize,
+    /// Cache misses since process start.
     pub read_cache_misses: usize,
+    /// Times a read was admitted with a transient slot (cache was at cap).
     pub read_cache_capped: usize,
+    /// Read-cache slot open failures (SQLite open errors).
     pub read_cache_open_fails: usize,
+    /// Configured maximum cache entries.
     pub read_cache_max_entries: usize,
+    /// Ledger writer (re)initializations since process start.
     pub ledger_writer_inits: usize,
 }
 
 /// Successful audit-chain verification details.
 pub struct AuditValid {
+    /// Number of events on the chain.
     pub events: usize,
+    /// HMAC of the genesis event.
     pub genesis: String,
+    /// HMAC of the most recent event.
     pub latest: String,
 }
 
 /// Audit-chain break details.
 pub struct AuditBroken {
+    /// Event id at which verification failed.
     pub break_at: usize,
+    /// HMAC the chain expected at that position.
     pub expected: String,
+    /// HMAC actually stored at that position.
     pub actual: String,
 }
 
-/// Engine audit verification result.
+/// Result of [`crate::Engine::verify_audit`].
 #[non_exhaustive]
 pub enum AuditVerify {
+    /// Chain verified end-to-end.
     Valid(AuditValid),
+    /// Chain failed verification; see [`AuditBroken`] for the break point.
     Broken(AuditBroken),
+    /// World does not have an audit chain (e.g. an in-memory `tmp/` world).
     NotApplicable,
 }
 
@@ -96,6 +132,16 @@ struct IntrospectionPermit {
 }
 
 impl ValidatedProcPath {
+    /// Parses a wire-shaped proc path into a sealed endpoint identity.
+    ///
+    /// Accepts `proc/version`, `proc/worlds`, `proc/du`, `proc/df`,
+    /// `proc/pool`, or `proc/audit/<world>/verify`. Leading and trailing
+    /// slashes are tolerated.
+    ///
+    /// # Errors
+    /// Returns [`InvalidProcPath`] if the input is not one of the declared
+    /// endpoints, or if the audit-verify world fails canonical-path
+    /// validation.
     pub fn new(raw: impl AsRef<str>) -> Result<Self, InvalidProcPath> {
         let raw = raw.as_ref().trim_matches('/');
         match raw {
@@ -114,7 +160,7 @@ impl ValidatedProcPath {
                 if world.trim_matches('/').is_empty() {
                     return Err(InvalidProcPath);
                 }
-                let world = crate::canonicalize_path(world.trim_end_matches('/'));
+                let world = world.trim_end_matches('/').to_owned();
                 let world =
                     ValidatedWorldPath::from_canonical(world).map_err(|_| InvalidProcPath)?;
                 Ok(Self::audit_verify(world))
@@ -122,6 +168,7 @@ impl ValidatedProcPath {
         }
     }
 
+    /// Returns the proof token for the `version` endpoint.
     pub fn version() -> Self {
         Self {
             endpoint: ProcEndpoint::Version,
@@ -129,6 +176,7 @@ impl ValidatedProcPath {
         }
     }
 
+    /// Returns the proof token for the `worlds` endpoint.
     pub fn worlds() -> Self {
         Self {
             endpoint: ProcEndpoint::Worlds,
@@ -136,6 +184,7 @@ impl ValidatedProcPath {
         }
     }
 
+    /// Returns the proof token for the `du` endpoint.
     pub fn du() -> Self {
         Self {
             endpoint: ProcEndpoint::Du,
@@ -143,6 +192,7 @@ impl ValidatedProcPath {
         }
     }
 
+    /// Returns the proof token for the `df` endpoint.
     pub fn df() -> Self {
         Self {
             endpoint: ProcEndpoint::Df,
@@ -150,6 +200,7 @@ impl ValidatedProcPath {
         }
     }
 
+    /// Returns the proof token for the `pool` endpoint.
     pub fn pool() -> Self {
         Self {
             endpoint: ProcEndpoint::Pool,
@@ -157,6 +208,8 @@ impl ValidatedProcPath {
         }
     }
 
+    /// Returns the proof token for an `audit verify` request against a
+    /// specific world.
     pub fn audit_verify(world: ValidatedWorldPath) -> Self {
         Self {
             endpoint: ProcEndpoint::AuditVerify,
@@ -335,22 +388,53 @@ impl EngineOps<'_> {
 }
 
 impl Engine {
+    /// Lists every canonical world (durable + in-memory) in sorted order.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
+    /// - [`EngineError::TransientStorage`] / [`EngineError::Storage`] /
+    ///   [`EngineError::InsufficientStorage`] for storage failures.
     pub fn list_worlds(&self, tier: AccessTier) -> Result<Vec<ValidatedWorldPath>, EngineError> {
         EngineOps::new(self.core()).list_worlds(&ValidatedProcPath::worlds(), tier.into())
     }
 
+    /// Returns per-world body byte size, `du`-style.
+    ///
+    /// # Errors
+    /// See [`Engine::list_worlds`] for the storage-failure variants. Same
+    /// `Read`-tier requirement.
     pub fn du(&self, tier: AccessTier) -> Result<Vec<WorldUsage>, EngineError> {
         EngineOps::new(self.core()).du(&ValidatedProcPath::du(), tier.into())
     }
 
+    /// Returns aggregate storage + memory usage, `df`-style.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
     pub fn df(&self, tier: AccessTier) -> Result<DfSnapshot, EngineError> {
         EngineOps::new(self.core()).df(&ValidatedProcPath::df(), tier.into())
     }
 
+    /// Returns the read-cache + ledger-writer counter snapshot.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
     pub fn pool(&self, tier: AccessTier) -> Result<PoolSnapshot, EngineError> {
         EngineOps::new(self.core()).pool(&ValidatedProcPath::pool(), tier.into())
     }
 
+    /// Verifies a single world's HMAC audit chain.
+    ///
+    /// Returns [`AuditVerify::Valid`] / [`AuditVerify::Broken`] /
+    /// [`AuditVerify::NotApplicable`] (the latter for in-memory worlds with
+    /// no chain).
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
+    /// - [`EngineError::NotFound`] if `world` does not exist.
+    /// - [`EngineError::TransientStorage`] / [`EngineError::Storage`] /
+    ///   [`EngineError::InsufficientStorage`] for storage failures during
+    ///   verification.
     pub fn verify_audit(
         &self,
         world: &ValidatedWorldPath,
@@ -464,7 +548,7 @@ mod tests {
             ProcEndpoint::Du
         );
         assert_eq!(
-            ValidatedProcPath::new("proc/audit/foo/verify")
+            ValidatedProcPath::new("proc/audit/home/foo/verify")
                 .unwrap()
                 .audit_world()
                 .unwrap()
@@ -474,6 +558,7 @@ mod tests {
 
         assert!(ValidatedProcPath::new("proc").is_err());
         assert!(ValidatedProcPath::new("proc/nope").is_err());
+        assert!(ValidatedProcPath::new("proc/audit/foo/verify").is_err());
         assert!(ValidatedProcPath::new("proc/audit//verify").is_err());
         assert!(ValidatedProcPath::new("proc/audit/proc/version/verify").is_err());
     }

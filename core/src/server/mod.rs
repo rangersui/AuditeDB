@@ -1,29 +1,50 @@
 //! Binary/server runtime assembly.
 //!
-//! During PR5 this module is still compiled by the library, but startup now
-//! constructs the protocol-neutral `Engine` first and keeps HTTP adapter state
-//! beside it in `ServerState`.
+//! Startup constructs the protocol-neutral `Engine` first and keeps HTTP
+//! adapter state beside it in `ServerState`.
 
+#[cfg(all(not(test), feature = "coap"))]
+pub(crate) mod coap;
+#[cfg(all(not(test), feature = "coap"))]
+pub(crate) mod coap_errors;
+#[cfg(not(test))]
+pub(crate) mod handler;
+#[cfg(not(test))]
+pub(crate) mod listen;
+#[cfg(not(test))]
+pub(crate) mod middleware;
+#[cfg(not(test))]
+pub(crate) mod pipeline;
+#[cfg(not(test))]
+pub(crate) mod proc;
+#[cfg(not(test))]
+pub(crate) mod response;
+#[cfg(not(test))]
+pub(crate) mod route;
 mod state;
 pub(crate) use state::ServerState;
 
+#[cfg(not(test))]
 use std::net::IpAddr;
+#[cfg(not(test))]
 use std::path::PathBuf;
 
-#[cfg(feature = "coap")]
+#[cfg(all(not(test), feature = "coap"))]
 use crate::config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
+#[cfg(not(test))]
 use crate::config::{
     env_nonzero_usize, env_optional_usize, env_usize, hmac_key_from_env_value, listen_addr,
     should_warn_public_read, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
-    DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES,
+    DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
 };
+#[cfg(not(test))]
 use crate::{
-    auth,
     engine::{Engine, EngineBuilder},
     engine_types::SecretBytes,
-    route, VERSION,
+    VERSION,
 };
 
+#[cfg(not(test))]
 pub(crate) async fn run_from_env() {
     crate::pipeline::init_trace_from_env();
 
@@ -49,12 +70,12 @@ pub(crate) async fn run_from_env() {
         env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT);
     let read_cache_max_entries = env_nonzero_usize(
         "ELASTIK_READ_CACHE_MAX_ENTRIES",
-        crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
+        DEFAULT_READ_CACHE_MAX_ENTRIES,
     );
     let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
         "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
     );
-    let tokens = auth::Tokens::from_env();
+    let tokens = ServerTokens::from_env();
     let persist_header_allowlist = crate::config::header_allowlist_from_env();
     let persist_header_user_deny = crate::config::header_user_deny_from_env();
     let engine = build_engine_from_env(
@@ -103,6 +124,7 @@ pub(crate) async fn run_from_env() {
     drop(engine);
 }
 
+#[cfg(not(test))]
 struct EngineLimits {
     max_world_bytes: usize,
     max_memory_bytes: usize,
@@ -112,10 +134,33 @@ struct EngineLimits {
     read_cache_max_entries: usize,
 }
 
+#[cfg(not(test))]
+struct ServerTokens {
+    read: Option<Vec<u8>>,
+    write: Option<Vec<u8>>,
+    approve: Option<Vec<u8>>,
+}
+
+#[cfg(not(test))]
+impl ServerTokens {
+    fn from_env() -> Self {
+        Self {
+            read: nonempty_env("ELASTIK_READ_TOKEN"),
+            write: nonempty_env("ELASTIK_WRITE_TOKEN").or_else(|| nonempty_env("ELASTIK_TOKEN")),
+            approve: nonempty_env("ELASTIK_APPROVE_TOKEN"),
+        }
+    }
+
+    fn read_required(&self) -> bool {
+        self.read.is_some()
+    }
+}
+
+#[cfg(not(test))]
 fn build_engine_from_env(
     data: PathBuf,
     hmac_key: Vec<u8>,
-    tokens: &auth::Tokens,
+    tokens: &ServerTokens,
     limits: EngineLimits,
 ) -> Engine {
     let key = SecretBytes::new(hmac_key).expect("ELASTIK_KEY validated before Engine build");
@@ -133,20 +178,22 @@ fn build_engine_from_env(
         .unwrap_or_else(|err| panic!("build Engine failed: {err:?}"))
 }
 
-fn configure_tokens(mut builder: EngineBuilder, tokens: &auth::Tokens) -> EngineBuilder {
+#[cfg(not(test))]
+fn configure_tokens(mut builder: EngineBuilder, tokens: &ServerTokens) -> EngineBuilder {
     if let Some(token) = &tokens.read {
-        builder = builder.read_token(token.as_slice().to_vec());
+        builder = builder.read_token(token.clone());
     }
     if let Some(token) = &tokens.write {
-        builder = builder.write_token(token.as_slice().to_vec());
+        builder = builder.write_token(token.clone());
     }
     if let Some(token) = &tokens.approve {
-        builder = builder.approve_token(token.as_slice().to_vec());
+        builder = builder.approve_token(token.clone());
     }
     builder
 }
 
-fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
+#[cfg(not(test))]
+fn print_auth_summary(tokens: &ServerTokens, bind_ip: IpAddr) {
     eprintln!("auth:");
     eprintln!(
         "  read:    {}",
@@ -172,21 +219,21 @@ fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
             "disabled (ELASTIK_APPROVE_TOKEN not set)"
         }
     );
-    if auth::env_set_but_empty("ELASTIK_READ_TOKEN") {
+    if env_set_but_empty("ELASTIK_READ_TOKEN") {
         eprintln!("  warning: empty ELASTIK_READ_TOKEN treated as unset (reads public)");
     }
-    if should_warn_public_read(bind_ip, tokens) {
+    if should_warn_public_read(bind_ip, tokens.read_required()) {
         eprintln!(
             "  WARNING: reads are public on non-loopback interface {bind_ip}; set ELASTIK_READ_TOKEN to gate reads."
         );
     }
-    if auth::env_set_but_empty("ELASTIK_WRITE_TOKEN") {
+    if env_set_but_empty("ELASTIK_WRITE_TOKEN") {
         eprintln!("  warning: empty ELASTIK_WRITE_TOKEN treated as unset (PUT/POST disabled)");
     }
     if std::env::var("ELASTIK_TOKEN").is_ok() {
         eprintln!("  warning: ELASTIK_TOKEN is deprecated; rename it to ELASTIK_WRITE_TOKEN.");
     }
-    if auth::env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
+    if env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
         eprintln!(
             "  warning: empty ELASTIK_APPROVE_TOKEN treated as unset (DELETE/system writes disabled)"
         );
@@ -201,13 +248,30 @@ fn print_auth_summary(tokens: &auth::Tokens, bind_ip: IpAddr) {
     }
 }
 
+#[cfg(not(test))]
+fn nonempty_env(name: &str) -> Option<Vec<u8>> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(String::into_bytes)
+}
+
+#[cfg(not(test))]
+fn env_set_but_empty(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => value.trim().is_empty(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(test))]
 async fn shutdown_signal(engine: Engine) {
     wait_for_shutdown_signal().await;
     eprintln!("elastik-core: shutdown signal received");
     engine.shutdown();
 }
 
-#[cfg(unix)]
+#[cfg(all(not(test), unix))]
 async fn wait_for_shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
 
@@ -226,7 +290,7 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(test), not(unix)))]
 async fn wait_for_shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }

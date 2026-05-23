@@ -15,42 +15,70 @@ use crate::{
     world_ops,
 };
 
-/// Trace hooks for replace/append write transitions.
+/// Trace hooks for [`Engine::replace_traced`] / [`Engine::append_traced`].
+///
+/// All methods default to no-ops. Implement only the hooks an adapter cares
+/// about — typical use is a single per-request struct that flips a flag or
+/// emits a structured trace line on each callback.
 pub trait EngineWriteTraceHooks {
+    /// The per-world write lock was acquired.
     fn lock_acquired(&self) {}
+    /// Quota was checked. `used` is the durable storage usage before this
+    /// write; `quota` is the configured cap.
     fn quota_check(&self, _used: usize, _quota: usize) {}
+    /// SQLite transaction committed and the new ETag is known.
     fn sqlite_committed(&self, _etag: &str) {}
+    /// `notify_sent` fired the broadcast event for subscribers.
     fn notify_sent(&self) {}
 }
 
-/// Trace hooks for DELETE's intent/delete/commit protocol.
+/// Trace hooks for [`Engine::delete_traced`]'s intent/delete/commit protocol.
+///
+/// All methods default to no-ops. Hooks fire in protocol order; the
+/// `audit_intent_failed` / `audit_commit_failed*` hooks fire only on the
+/// corresponding failure path.
 pub trait EngineDeleteTraceHooks {
+    /// The per-world write lock was acquired.
     fn lock_acquired(&self, _world: &str) {}
+    /// The audit-intent ledger row was written successfully.
     fn audit_intent(&self) {}
     /// Diagnostic-only debug rendering when the DELETE audit intent append fails.
     ///
-    /// Do not parse this string programmatically; use `EngineError` categories
-    /// and `sqlite_code()` for stable decisions.
+    /// Do not parse this string programmatically; use [`EngineError`]
+    /// categories and [`EngineError::sqlite_code`] for stable decisions.
     fn audit_intent_failed(&self, _err: &str) {}
+    /// In-flight reads were drained from the read cache.
     fn read_cache_drained(&self) {}
+    /// The underlying SQLite database file was unlinked.
     fn physical_deleted(&self) {}
+    /// The durable-world counter and storage-used counter were updated.
     fn counter_decremented(&self) {}
+    /// The DELETE broadcast event was sent to subscribers.
     fn notify_sent(&self) {}
     /// Diagnostic-only debug rendering of the internal blocking storage error.
     ///
-    /// Do not parse this string programmatically; use `EngineError` categories
-    /// and `sqlite_code()` for stable decisions.
+    /// Do not parse this string programmatically; use [`EngineError`]
+    /// categories and [`EngineError::sqlite_code`] for stable decisions.
     fn audit_commit_failed(&self, _err: &str) {}
+    /// `audit_commit_failed` was followed by a successful `delete_commit_failed`
+    /// ledger entry — the audit chain reflects the partial state.
     fn audit_commit_failed_event_logged(&self) {}
     /// Diagnostic-only debug rendering of the internal blocking storage error.
     ///
-    /// Do not parse this string programmatically; use `EngineError` categories
-    /// and `sqlite_code()` for stable decisions.
+    /// Do not parse this string programmatically; use [`EngineError`]
+    /// categories and [`EngineError::sqlite_code`] for stable decisions.
     fn audit_commit_failed_event_failed(&self, _err: &str) {}
+    /// The audit-commit ledger row was written successfully.
     fn audit_commit(&self) {}
 }
 
 /// Metadata recorded with a DELETE audit intent.
+///
+/// Adapters that want the deleted representation's content-type and
+/// metadata headers preserved in the audit log fill this struct; pass
+/// [`DeleteMetadata::default`] to record empty metadata. The plain
+/// [`crate::Engine::delete`] convenience method always records empty
+/// metadata.
 #[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct DeleteMetadata {
@@ -61,6 +89,7 @@ pub struct DeleteMetadata {
 }
 
 impl DeleteMetadata {
+    /// Constructs a [`DeleteMetadata`] from a content type and header list.
     pub fn new(content_type: impl Into<String>, headers: Vec<(String, String)>) -> Self {
         Self {
             content_type: content_type.into(),
@@ -134,6 +163,14 @@ impl<H: EngineDeleteTraceHooks + ?Sized> delete_ops::DeleteTraceHooks for Public
 }
 
 impl Engine {
+    /// Same as [`crate::Engine::replace`] but invokes `hooks` on each
+    /// protocol phase.
+    ///
+    /// Adapters use this to drive structured trace output or per-request
+    /// metrics without paying the hook cost in non-traced call sites.
+    ///
+    /// # Errors
+    /// Same as [`crate::Engine::replace`].
     pub async fn replace_traced<H: EngineWriteTraceHooks + ?Sized>(
         &self,
         world: &ValidatedWorldPath,
@@ -153,6 +190,11 @@ impl Engine {
             .await
     }
 
+    /// Same as [`crate::Engine::append`] but invokes `hooks` on each
+    /// protocol phase.
+    ///
+    /// # Errors
+    /// Same as [`crate::Engine::append`].
     pub async fn append_traced<H: EngineWriteTraceHooks + ?Sized>(
         &self,
         world: &ValidatedWorldPath,
@@ -172,6 +214,20 @@ impl Engine {
             .await
     }
 
+    /// Same as [`crate::Engine::delete`] but invokes `hooks` on each
+    /// protocol phase and records the supplied [`DeleteMetadata`] in the
+    /// audit intent.
+    ///
+    /// Adapters that want to surface the deleted representation's content
+    /// type and headers in operator audit views should use this method
+    /// instead of [`crate::Engine::delete`] (which records empty metadata).
+    ///
+    /// # Errors
+    /// Same as [`crate::Engine::delete`], plus the hook-side
+    /// `audit_intent_failed` callback fires before the
+    /// [`EngineError::Storage`] / [`EngineError::TransientStorage`] /
+    /// [`EngineError::InsufficientStorage`] / [`EngineError::InternalInvariant`]
+    /// result is returned when the audit-intent write itself fails.
     pub async fn delete_traced<H: EngineDeleteTraceHooks + ?Sized>(
         &self,
         world: &ValidatedWorldPath,

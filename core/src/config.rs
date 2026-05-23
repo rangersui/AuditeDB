@@ -8,14 +8,13 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use crate::auth;
-
-pub(crate) const DEFAULT_MAX_WORLD_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const DEFAULT_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
-pub(crate) const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;
-pub(crate) const DEFAULT_MAX_LISTEN_CONNECTIONS: usize = 1024;
-#[cfg(feature = "coap")]
-pub(crate) const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
+#[cfg(all(not(test), feature = "coap"))]
+pub(crate) use crate::defaults::DEFAULT_COAP_MAX_IN_FLIGHT;
+#[cfg(not(test))]
+pub(crate) use crate::defaults::{
+    DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
+    DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
+};
 
 pub(crate) fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -52,6 +51,7 @@ pub(crate) fn env_nonzero_usize(name: &str, default: usize) -> usize {
 /// semantics. An unset, empty, or all-whitespace value yields
 /// `HeaderAllowlist::empty()`, which means "no custom headers
 /// beyond the built-in default-allow set."
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn header_allowlist_from_env() -> crate::http_semantics::HeaderAllowlist {
     let raw = std::env::var("ELASTIK_PERSIST_HEADERS").unwrap_or_default();
     crate::http_semantics::HeaderAllowlist::parse(&raw)
@@ -63,6 +63,7 @@ pub(crate) fn header_allowlist_from_env() -> crate::http_semantics::HeaderAllowl
 /// header from the built-in `DEFAULT_PERSIST_HEADERS` allow set
 /// (e.g. "this deployment doesn't want `cache-control` round-tripping").
 /// L1 hard-deny still wins over this; this beats L2 default and L3 allow.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn header_user_deny_from_env() -> crate::http_semantics::HeaderAllowlist {
     let raw = std::env::var("ELASTIK_DENY_HEADERS").unwrap_or_default();
     crate::http_semantics::HeaderAllowlist::parse(&raw)
@@ -86,8 +87,8 @@ pub(crate) fn coap_bind_from_env() -> Option<(String, u16)> {
     Some((host, port))
 }
 
-pub(crate) fn should_warn_public_read(bind_ip: IpAddr, tokens: &auth::Tokens) -> bool {
-    !bind_ip.is_loopback() && !tokens.read_required()
+pub(crate) fn should_warn_public_read(bind_ip: IpAddr, read_required: bool) -> bool {
+    !bind_ip.is_loopback() && !read_required
 }
 
 pub(crate) fn listen_addr(host: &str, port: u16) -> String {

@@ -249,7 +249,7 @@ pub(crate) async fn proc_audit_verify(
     if raw_world.is_empty() {
         return bad_request("audit verify requires a world path");
     }
-    let world = match ValidatedWorldPath::from_canonical(crate::canonicalize_path(raw_world)) {
+    let world = match ValidatedWorldPath::new(crate::canonicalize_path(raw_world)) {
         Ok(world) => world,
         Err(_) => return bad_request("invalid audit verify world path"),
     };
@@ -269,6 +269,8 @@ pub(crate) async fn proc_audit_verify(
         AuditVerify::Valid(report) => audit_valid(report),
         AuditVerify::Broken(report) => audit_broken(report),
         AuditVerify::NotApplicable => audit_not_applicable(),
+        #[cfg(not(test))]
+        _ => server_error("unknown audit verification result".to_string()),
     }
 }
 
@@ -316,6 +318,8 @@ fn proc_engine_error(scope: &'static str, err: EngineError) -> Response {
         | EngineError::SubscriptionLimit => {
             server_error(format!("unexpected {scope} engine error"))
         }
+        #[cfg(not(test))]
+        _ => server_error(format!("unknown {scope} engine error")),
     }
 }
 

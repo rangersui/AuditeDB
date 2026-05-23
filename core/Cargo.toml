@@ -2,7 +2,7 @@
 name = "elastik-core"
 version = "7.2.0"
 edition = "2021"
-description = "Elastik V6 Engine: six verbs, one HTTP disk."
+description = "Elastik — Audi-ted L5 storage engine. SQLite for files."
 license = "MIT"
 repository = "https://github.com/rangersui/Elastik"
 homepage = "https://github.com/rangersui/Elastik"
@@ -16,16 +16,15 @@ name = "elastik_core"
 path = "src/lib.rs"
 
 [dependencies]
-axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.7", optional = true, default-features = false, features = ["http1", "tokio"] }
 bytes = "1"
-tokio = { version = "1", features = ["macros", "rt", "net", "signal", "sync", "time"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+futures-util = { version = "0.3", optional = true }
 rusqlite = { version = "0.31", default-features = false }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
-base64 = "0.22"
+base64 = { version = "0.22", optional = true }
 percent-encoding = "2"
 dashmap = "6"
 tracing = { version = "0.1", optional = true }
@@ -37,9 +36,20 @@ bundled-sqlite = ["rusqlite/bundled"]
 coap = []
 multi-thread = ["tokio/rt-multi-thread"]
 unstable-engine = ["dep:tracing"]
-unstable-engine-bin = ["unstable-engine", "dep:tracing-subscriber"]
+unstable-engine-bin = [
+    "unstable-engine",
+    "dep:axum",
+    "dep:base64",
+    "dep:futures-util",
+    "tokio/net",
+    "tokio/signal",
+    "dep:tracing-subscriber",
+]
 
 [dev-dependencies]
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+base64 = "0.22"
+futures-util = "0.3"
 # `tower::util::ServiceExt::oneshot` is the standard axum testing
 # pattern (axum 0.7 does not re-export it). Used by route-level
 # tests in main.rs to send a synthetic Request through Router +
@@ -64,3 +74,4 @@ panic = "abort"
 [[bin]]
 name = "elastik-core"
 path = "src/main.rs"
+required-features = ["unstable-engine-bin"]

@@ -9,11 +9,11 @@
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::Semaphore;
 
 use crate::{
     canonicalize_path, coap_errors,
-    engine::Engine,
+    engine::{Engine, ShutdownToken},
     engine_trace::EngineWriteTraceHooks,
     engine_types::{AccessTier, Preconditions, Representation, ValidatedWorldPath, WriteKind},
 };
@@ -76,10 +76,11 @@ impl Packet<'_> {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) async fn serve(
     engine: Engine,
     bind: String,
-    mut shutdown: watch::Receiver<bool>,
+    mut shutdown: ShutdownToken,
     max_in_flight: usize,
 ) {
     let socket = match UdpSocket::bind(&bind).await {
@@ -96,7 +97,7 @@ pub(crate) async fn serve(
     let mut buf = [0_u8; RECV_BUF];
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            _ = shutdown.wait() => {
                 eprintln!("scoap: shutdown signal received");
                 return;
             }
@@ -217,6 +218,8 @@ async fn handle(engine: &Engine, request: &Packet<'_>) -> Vec<u8> {
                     let code = match outcome.kind {
                         WriteKind::Created => 65,
                         WriteKind::Updated => 68,
+                        #[cfg(not(test))]
+                        _ => 68,
                     };
                     encode_response(request, code, None, b"")
                 }

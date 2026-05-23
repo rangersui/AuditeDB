@@ -22,6 +22,7 @@ use crate::{
     proc_reserved, proc_version, proc_worlds, root_hint, server::ServerState, WORLD_ALLOW,
 };
 
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn build_app(state: ServerState) -> Router {
     Router::new()
         .route("/", any(root_hint))

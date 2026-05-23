@@ -103,6 +103,7 @@ impl Tokens {
     /// treated as **unset** — never as "the empty token is valid."
     /// A `.env` with `ELASTIK_WRITE_TOKEN=` (placeholder unfilled) must not
     /// silently grant T2 to anyone sending `Authorization: Bearer `.
+    #[cfg(test)]
     pub fn from_env() -> Self {
         Self {
             read: nonempty_env("ELASTIK_READ_TOKEN"),
@@ -169,6 +170,7 @@ impl Tokens {
     }
 }
 
+#[cfg(test)]
 fn nonempty_env(name: &str) -> Option<NonEmptyBytes> {
     match std::env::var(name) {
         Ok(s) => NonEmptyBytes::new(s.into_bytes()),
@@ -180,6 +182,7 @@ fn nonempty_env(name: &str) -> Option<NonEmptyBytes> {
 /// whitespace-only string. Used by main.rs to print a startup warning
 /// — the user almost certainly meant "disabled," and we treated it as
 /// such, but they should know their `.env` placeholder is still bare.
+#[cfg(test)]
 pub fn env_set_but_empty(name: &str) -> bool {
     match std::env::var(name) {
         Ok(s) => s.trim().is_empty(),

@@ -5,7 +5,10 @@ use axum::{
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::{BTreeMap, HashSet};
 
-use crate::{etag, to_header_map, unsatisfied_range_value};
+use crate::{
+    engine_types::{EtagMatcher, Preconditions},
+    to_header_map, unsatisfied_range_value,
+};
 #[cfg(test)]
 use crate::{precondition_failed, storage_error, Core};
 
@@ -221,19 +224,19 @@ pub(crate) fn etag_header(etag: &str) -> HeaderValue {
         .unwrap_or_else(|_| HeaderValue::from_static("\"invalid\""))
 }
 
-pub(crate) fn request_preconditions(headers: &HeaderMap) -> etag::Preconditions {
-    etag::Preconditions::new(
-        headers
+pub(crate) fn request_preconditions(headers: &HeaderMap) -> Preconditions {
+    Preconditions {
+        if_match: headers
             .get(header::IF_MATCH)
             .and_then(|v| v.to_str().ok())
-            .map(etag::parse_etag_matchers)
+            .map(parse_etag_matchers)
             .unwrap_or_default(),
-        headers
+        if_none_match: headers
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
-            .map(etag::parse_etag_matchers)
+            .map(parse_etag_matchers)
             .unwrap_or_default(),
-    )
+    }
 }
 
 #[cfg(test)]
@@ -243,7 +246,18 @@ pub(crate) fn check_write_preconditions(
     world_name: &str,
     req_headers: &HeaderMap,
 ) -> Result<(), Response> {
-    let preconditions = request_preconditions(req_headers);
+    let preconditions = crate::etag::Preconditions::new(
+        req_headers
+            .get(header::IF_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .map(crate::etag::parse_etag_matchers)
+            .unwrap_or_default(),
+        req_headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .map(crate::etag::parse_etag_matchers)
+            .unwrap_or_default(),
+    );
     if preconditions.is_empty() {
         return Ok(());
     }
@@ -252,15 +266,60 @@ pub(crate) fn check_write_preconditions(
         .map_err(|e| storage_error("precondition read", e))?;
     let current_tag = current.as_ref().map(|(_, etag)| etag.clone());
 
-    etag::check_preconditions(&preconditions, current_tag.as_deref()).map_err(precondition_failed)
+    crate::etag::check_preconditions(&preconditions, current_tag.as_deref())
+        .map_err(precondition_failed)
 }
 
 pub(crate) fn read_not_modified(req_headers: &HeaderMap, current: &str) -> bool {
     req_headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .map(|h| etag::etag_list_weak_matches(h, current))
+        .map(|h| etag_list_weak_matches(h, current))
         .unwrap_or(false)
+}
+
+fn parse_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(parse_etag_matcher)
+        .collect()
+}
+
+fn parse_etag_matcher(raw: &str) -> EtagMatcher {
+    if raw == "*" {
+        return EtagMatcher::Any;
+    }
+    if let Some(rest) = raw.strip_prefix("W/").or_else(|| raw.strip_prefix("w/")) {
+        if let Some(value) = quoted_etag(rest) {
+            return EtagMatcher::Weak(value.to_owned());
+        }
+        return EtagMatcher::Invalid;
+    }
+    if let Some(value) = quoted_etag(raw) {
+        return EtagMatcher::Strong(value.to_owned());
+    }
+    EtagMatcher::Invalid
+}
+
+fn quoted_etag(candidate: &str) -> Option<&str> {
+    let candidate = candidate.trim();
+    candidate
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .filter(|value| !value.contains('"'))
+}
+
+fn etag_list_weak_matches(header_value: &str, current: &str) -> bool {
+    parse_etag_matchers(header_value)
+        .into_iter()
+        .any(|matcher| match matcher {
+            EtagMatcher::Any => true,
+            EtagMatcher::Strong(value) | EtagMatcher::Weak(value) => value == current,
+            EtagMatcher::Invalid => false,
+            #[cfg(not(test))]
+            _ => false,
+        })
 }
 
 pub(crate) fn request_content_type(headers: &HeaderMap) -> String {

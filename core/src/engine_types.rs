@@ -46,12 +46,23 @@ pub struct InvalidWorldPath;
 pub struct SubscribePattern(String);
 
 /// Access tier granted to a caller after token verification.
+///
+/// Tiers are linearly inclusive: `Approve` covers `Write`, `Write` covers
+/// `Read`, `Read` covers `Anon`. Each engine operation declares the minimum
+/// tier it requires; lower tiers fail with [`crate::EngineError::Auth`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AccessTier {
+    /// No token presented. Allowed only on public reads when no read token
+    /// is configured.
     Anon,
+    /// Read token. Allowed: read, list, subscribe, audit verify.
     Read,
+    /// Write token. Allowed: everything `Read` plus replace/append in
+    /// `home/`.
     Write,
+    /// Approve token. Allowed: everything `Write` plus delete + writes into
+    /// system namespaces (`etc/`, `lib/`, `boot/`, `usr/`, `var/`).
     Approve,
 }
 
@@ -60,46 +71,70 @@ pub enum AccessTier {
 /// Header persistence policy belongs to adapters. The engine treats these
 /// pairs as opaque metadata.
 pub struct Representation {
+    /// Opaque payload bytes stored verbatim.
     pub body: Bytes,
+    /// MIME type recorded with the body.
     pub content_type: String,
+    /// Arbitrary metadata header pairs. Header-name de-duplication and
+    /// allow/deny policy belong to the adapter that constructs this struct.
     pub headers: Vec<(String, String)>,
 }
 
 /// Protocol-neutral write preconditions.
+///
+/// Use [`Preconditions::none`] to skip all checks. Multiple matchers within a
+/// list are OR'd; the two lists are AND'd.
 pub struct Preconditions {
+    /// `If-Match`-style matchers. The write proceeds only if **any** matcher
+    /// matches the current ETag.
     pub if_match: Vec<EtagMatcher>,
+    /// `If-None-Match`-style matchers. The write proceeds only if **no**
+    /// matcher matches the current ETag.
     pub if_none_match: Vec<EtagMatcher>,
 }
 
 /// ETag matcher parsed by adapters before calling the engine.
 #[non_exhaustive]
 pub enum EtagMatcher {
+    /// Wildcard (`*`) — matches anything.
     Any,
+    /// Strong ETag comparison; must match byte-for-byte.
     Strong(String),
+    /// Weak ETag comparison; matches if the inner value matches either side
+    /// (weak or strong).
     Weak(String),
+    /// Adapter-side parse failure. Engine treats this as a never-match for
+    /// `If-Match` (rejects the write) and always-match for `If-None-Match`
+    /// (rejects the write).
     Invalid,
 }
 
 /// Result of a successful full-representation read.
 pub struct ReadResult {
+    /// The stored representation (body + content-type + metadata headers).
     pub representation: Representation,
+    /// Strong ETag for the returned representation.
     pub etag: String,
 }
 
 /// Whether a write created a new world or updated an existing one.
 #[non_exhaustive]
 pub enum WriteKind {
+    /// Path did not exist before this write.
     Created,
+    /// Path already existed; this write replaced or appended.
     Updated,
 }
 
 /// Result of a successful write.
 pub struct WriteResult {
+    /// Whether the write created a new world or updated an existing one.
     pub kind: WriteKind,
+    /// Strong ETag for the new representation.
     pub etag: String,
 }
 
-/// Protocol-neutral change event.
+/// Protocol-neutral change event delivered to subscribers.
 ///
 /// On targets with native 64-bit atomics, ids advance through the full `u64`
 /// range via `AtomicU64`. On 32-bit targets without native 64-bit atomics, a
@@ -108,13 +143,22 @@ pub struct WriteResult {
 /// all platforms.
 #[derive(Clone, Debug)]
 pub struct ChangeEvent {
+    /// Monotonically increasing event id. Use this as `since` for resumed
+    /// subscriptions.
     pub id: u64,
+    /// Verb that produced the change (`"PUT"`, `"POST"`, `"DELETE"`).
     pub method: &'static str,
+    /// Canonical world path the change applies to.
     pub path: ValidatedWorldPath,
+    /// Strong ETag after the change (empty string for `DELETE`).
     pub etag: String,
 }
 
 /// Subscription to protocol-neutral engine change events.
+///
+/// Returned by [`crate::Engine::subscribe`]. The subscription holds a slot
+/// permit until dropped — drop it promptly when the caller is done so other
+/// subscribers can join.
 pub struct EngineSubscription {
     _slot: OwnedSemaphorePermit,
     state: SubscriptionState,
@@ -122,14 +166,14 @@ pub struct EngineSubscription {
 }
 
 struct DeferredLiveSubscription {
-    rx: broadcast::Receiver<crate::listen::ChangeEvent>,
+    rx: broadcast::Receiver<crate::event::ChangeEvent>,
     pattern: SubscribePattern,
     replay_mode: bool,
     live_floor: u64,
 }
 
 struct LiveSubscription {
-    rx: broadcast::Receiver<crate::listen::ChangeEvent>,
+    rx: broadcast::Receiver<crate::event::ChangeEvent>,
     pattern: SubscribePattern,
     replay_mode: bool,
     live_floor: u64,
@@ -157,21 +201,36 @@ impl DeferredLiveSubscription {
     }
 }
 
-/// Error returned by `EngineSubscription::recv`.
+/// Error returned by [`EngineSubscription::recv`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SubscriptionRecvError {
+    /// The engine is shutting down or the broadcast channel was closed.
+    /// Terminal — subsequent `recv` calls keep returning `Closed`.
     Closed,
-    Lagged { skipped: u64 },
+    /// The broadcast ring buffer overflowed and `skipped` events were lost.
+    /// Recoverable: the next `recv` resumes with fresh live events.
+    Lagged {
+        /// Number of events the receiver missed.
+        skipped: u64,
+    },
 }
 
 impl SecretBytes {
+    /// Wraps owned bytes as an HMAC secret.
+    ///
+    /// # Errors
+    /// Returns [`EmptyKeyError`] if the byte slice is empty or all whitespace.
     pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, EmptyKeyError> {
         NonEmptyBytes::new(bytes)
             .map(|bytes| Self { bytes })
             .ok_or(EmptyKeyError)
     }
 
+    /// Copies the slice and wraps it as an HMAC secret.
+    ///
+    /// # Errors
+    /// Returns [`EmptyKeyError`] if the slice is empty or all whitespace.
     pub fn try_from_slice(bytes: &[u8]) -> Result<Self, EmptyKeyError> {
         Self::new(bytes.to_vec())
     }
@@ -186,10 +245,19 @@ impl SecretBytes {
 }
 
 impl ValidatedWorldPath {
+    /// Validates `world` as a canonical engine path.
+    ///
+    /// Accepts canonical names like `home/foo` or `var/log/deletes`. Rejects
+    /// wire paths (`/foo`), bare names (`foo`), unknown namespaces, and any
+    /// path with `.`/`..` segments.
+    ///
+    /// # Errors
+    /// Returns [`InvalidWorldPath`] if validation fails.
     pub fn new(world: impl Into<String>) -> Result<Self, InvalidWorldPath> {
         Self::from_canonical(world.into()).map_err(|_| InvalidWorldPath)
     }
 
+    /// Returns the canonical string representation (no leading slash).
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -204,10 +272,7 @@ impl ValidatedWorldPath {
 }
 
 fn has_canonical_namespace(world: &str) -> bool {
-    matches!(
-        world.split('/').next().unwrap_or(""),
-        "home" | "tmp" | "dev" | "sys" | "etc" | "lib" | "boot" | "usr" | "var"
-    )
+    crate::path::NAMESPACE_PREFIXES.contains(&world.split('/').next().unwrap_or(""))
 }
 
 impl fmt::Display for ValidatedWorldPath {
@@ -224,8 +289,8 @@ impl fmt::Display for InvalidWorldPath {
 
 impl std::error::Error for InvalidWorldPath {}
 
-impl From<crate::listen::ChangeEvent> for ChangeEvent {
-    fn from(value: crate::listen::ChangeEvent) -> Self {
+impl From<crate::event::ChangeEvent> for ChangeEvent {
+    fn from(value: crate::event::ChangeEvent) -> Self {
         let canonical = value.path.trim_start_matches('/').to_owned();
         let path = ValidatedWorldPath::from_canonical(canonical)
             .expect("listen events are emitted only for validated world paths");
@@ -239,10 +304,16 @@ impl From<crate::listen::ChangeEvent> for ChangeEvent {
 }
 
 impl SubscribePattern {
+    /// Normalizes `raw` into a subscription pattern.
+    ///
+    /// Empty / `/` / `*` all collapse to the catch-all `*`. Other inputs are
+    /// prefixed with `/` if not already present. Trailing `*` is the only
+    /// wildcard supported.
     pub fn new(raw: impl AsRef<str>) -> Self {
-        Self(crate::listen::pattern(raw.as_ref()))
+        Self(crate::event::pattern(raw.as_ref()))
     }
 
+    /// Returns the normalized pattern string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -252,7 +323,7 @@ impl EngineSubscription {
     pub(crate) fn new(
         slot: OwnedSemaphorePermit,
         replay: VecDeque<Result<ChangeEvent, SubscriptionRecvError>>,
-        rx: broadcast::Receiver<crate::listen::ChangeEvent>,
+        rx: broadcast::Receiver<crate::event::ChangeEvent>,
         pattern: SubscribePattern,
         replay_mode: bool,
         live_floor: u64,
@@ -282,10 +353,19 @@ impl EngineSubscription {
         }
     }
 
-    /// Returns one event from replay or the live stream.
+    /// Returns the next change event for this subscription.
     ///
-    /// `Lagged` is recoverable: subsequent calls continue with fresh live
-    /// events. `Closed` is terminal.
+    /// Drains the replay queue first (in increasing event id order), then
+    /// switches to the live broadcast stream. If the caller passed `since` to
+    /// [`crate::Engine::subscribe`], events with id `<= since` are filtered.
+    ///
+    /// # Errors
+    /// - [`SubscriptionRecvError::Closed`] when the engine shut down or the
+    ///   underlying channel closed. Terminal: subsequent calls keep
+    ///   returning `Closed`.
+    /// - [`SubscriptionRecvError::Lagged`] when the broadcast ring buffer
+    ///   overflowed and events were lost. Recoverable: the next call resumes
+    ///   with fresh events.
     pub async fn recv(&mut self) -> Result<ChangeEvent, SubscriptionRecvError> {
         loop {
             let state = std::mem::replace(&mut self.state, SubscriptionState::Closed);
@@ -323,7 +403,7 @@ impl EngineSubscription {
                             match item {
                                 Ok(change)
                                     if (!live.replay_mode || change.id > live.live_floor)
-                                        && crate::listen::matches(live.pattern.as_str(), &change.path) =>
+                                        && crate::event::matches(live.pattern.as_str(), &change.path) =>
                                 {
                                     self.state = SubscriptionState::Live(live);
                                     return Ok(change.into());
@@ -349,6 +429,7 @@ impl EngineSubscription {
 }
 
 impl Preconditions {
+    /// Returns a [`Preconditions`] value with both lists empty (no checks).
     pub fn none() -> Self {
         Self {
             if_match: Vec::new(),

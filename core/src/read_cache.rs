@@ -56,6 +56,7 @@ use crate::world;
 /// memory is bounded to ~250KB (PRAGMA cache_size=-200), so 5000
 /// caps resident at ~1.25 GB. Operators with larger working sets
 /// raise via `ELASTIK_READ_CACHE_MAX_ENTRIES` (wired in PR 3).
+#[cfg(test)]
 pub(crate) const DEFAULT_READ_CACHE_MAX_ENTRIES: usize = 5000;
 
 /// SQLite busy_timeout for cached read connections. Tighter than

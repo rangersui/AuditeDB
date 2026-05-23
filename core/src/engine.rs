@@ -23,12 +23,12 @@ use tokio::sync::{broadcast, watch, Semaphore};
 use crate::{
     audit,
     auth::{self, AuthGate, NonEmptyBytes},
-    config::{
+    defaults::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
-        DEFAULT_MAX_WORLD_BYTES,
+        DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
     },
     engine_types::{AccessTier, SecretBytes},
-    read_cache::{ReadCache, DEFAULT_READ_CACHE_MAX_ENTRIES},
+    read_cache::ReadCache,
     state::{new_event_counter, Core},
     storage_class, store, world,
 };
@@ -48,6 +48,14 @@ struct EngineInner {
     _data_lock: StdMutex<rusqlite::Connection>,
 }
 
+/// Adapter-side handle for waiting on Engine shutdown without exposing Tokio's
+/// watch channel type in the public facade.
+#[cfg(feature = "coap")]
+#[doc(hidden)]
+pub struct ShutdownToken {
+    rx: watch::Receiver<bool>,
+}
+
 /// Builder for an `Engine`.
 ///
 /// The builder is the only public construction path. New fields can gain
@@ -64,55 +72,99 @@ pub struct EngineBuilder {
     read_cache_max_entries: usize,
 }
 
-/// Errors that can occur while constructing an `Engine`.
+/// Errors that can occur while constructing an [`Engine`].
+///
+/// Build failures are setup-time failures: they happen once at
+/// [`EngineBuilder::build`] and never as part of per-operation runtime errors,
+/// which are reported as [`EngineError`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum EngineBuildError {
+    /// Creating the `data_root` directory or its writer-lock file failed.
     DataRootIo(std::io::Error),
+    /// Another process holds the writer lock on `data_root`.
     DataRootLockHeld {
+        /// The data root that failed to acquire the writer lock.
         path: PathBuf,
     },
+    /// [`EngineBuilder::key`] was never called.
     HmacKeyMissing,
+    /// Startup audit verification found a tampered HMAC chain.
     AuditChainCorrupted {
+        /// Canonical name of the world whose chain failed verification.
         world: String,
+        /// Human-readable failure detail (do not parse).
         detail: String,
     },
+    /// Storage layer failure during startup (schema, IO, or quota).
     Storage {
+        /// Underlying SQLite extended result code, when available.
         sqlite_code: Option<i32>,
+        /// Human-readable failure detail (do not parse).
         detail: String,
     },
 }
 
-/// Runtime operation errors reported by the engine facade.
+/// Runtime operation errors reported by the Engine facade.
+///
+/// Distinct from [`EngineBuildError`]: these are per-operation failures
+/// returned by [`Engine::read`], [`Engine::replace`], [`Engine::append`],
+/// [`Engine::delete`], [`Engine::subscribe`], and the introspection methods.
+/// The enum is `#[non_exhaustive]`; match on the variants you care about and
+/// route the rest through a default arm.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum EngineError {
+    /// Caller's tier is too low for the requested gate.
     Auth(AuthGate),
+    /// The supplied world name failed canonical-path validation.
     InvalidWorldName,
+    /// The world does not exist.
     NotFound,
+    /// The target world is append-only and refuses delete/overwrite (for
+    /// example `var/log/deletes`).
     AppendOnly,
+    /// Request body exceeded the per-world byte limit.
     PayloadTooLarge {
+        /// Configured maximum body length, in bytes.
         max: usize,
     },
+    /// An `If-Match` / `If-None-Match` precondition rejected the write.
     PreconditionFailed {
+        /// Static reason string (`stale`, `exists`, ...).
         message: &'static str,
     },
+    /// Write would exceed the configured durable storage quota.
     QuotaExceeded {
+        /// Bytes already in use.
         used: usize,
+        /// Configured quota ceiling.
         quota: usize,
+        /// Projected total if the write were applied.
         projected: usize,
     },
+    /// Storage is temporarily unavailable (e.g. SQLite `BUSY`/`LOCKED`).
+    /// Callers should retry with backoff.
     TransientStorage {
+        /// Underlying SQLite extended result code, when available.
         sqlite_code: Option<i32>,
     },
+    /// Storage backing exhausted (full disk, IO failure that maps to
+    /// "no space left"). Callers must surface this as 5xx-class to operators.
     InsufficientStorage {
+        /// Underlying SQLite extended result code, when available.
         sqlite_code: Option<i32>,
     },
+    /// Generic storage failure that is neither transient nor insufficient.
     Storage {
+        /// Underlying SQLite extended result code, when available.
         sqlite_code: Option<i32>,
     },
+    /// Subscription slot semaphore is exhausted.
     SubscriptionLimit,
+    /// [`Engine::shutdown`] has been called; do not start new operations.
     ShuttingDown,
+    /// Internal invariant violation. Indicates a bug in the engine.
     InternalInvariant(&'static str),
 }
 
@@ -137,61 +189,103 @@ impl Default for EngineBuilder {
 }
 
 impl EngineBuilder {
+    /// Sets the directory where durable worlds and the audit log live.
+    ///
+    /// Default: `./data`. The directory is created if missing.
     pub fn data_root(mut self, path: impl Into<PathBuf>) -> Self {
         self.data_root = path.into();
         self
     }
 
+    /// Sets the HMAC key that protects the audit chain. Required.
     pub fn key(mut self, key: SecretBytes) -> Self {
         self.key = Some(key);
         self
     }
 
+    /// Sets the optional read-tier token.
+    ///
+    /// Empty or all-whitespace bytes are treated as "unset" — they never
+    /// silently grant access.
     pub fn read_token(mut self, token: impl Into<Vec<u8>>) -> Self {
         self.tokens.read = NonEmptyBytes::new(token);
         self
     }
 
+    /// Sets the optional write-tier token (covers read + write).
+    ///
+    /// Empty or all-whitespace bytes are treated as "unset" — they never
+    /// silently grant access.
     pub fn write_token(mut self, token: impl Into<Vec<u8>>) -> Self {
         self.tokens.write = NonEmptyBytes::new(token);
         self
     }
 
+    /// Sets the optional approve-tier token (covers read + write + system
+    /// writes + delete).
+    ///
+    /// Empty or all-whitespace bytes are treated as "unset" — they never
+    /// silently grant access.
     pub fn approve_token(mut self, token: impl Into<Vec<u8>>) -> Self {
         self.tokens.approve = NonEmptyBytes::new(token);
         self
     }
 
+    /// Caps the per-world payload size in bytes. Defaults to 64 MiB.
     pub fn max_world_bytes(mut self, value: usize) -> Self {
         self.max_world_bytes = value;
         self
     }
 
+    /// Caps the in-memory backend's total bytes. Defaults to 256 MiB.
     pub fn max_memory_bytes(mut self, value: usize) -> Self {
         self.max_memory_bytes = value;
         self
     }
 
+    /// Sets an optional durable storage quota in bytes.
+    ///
+    /// `Some(0)` is treated as "no quota". Writes that would push the total
+    /// past the quota fail with [`EngineError::QuotaExceeded`].
     pub fn max_storage_bytes(mut self, value: Option<usize>) -> Self {
         self.max_storage_bytes = value.filter(|value| *value > 0);
         self
     }
 
+    /// Sets the maximum simultaneous subscription slots. `0` reverts to the
+    /// default (1024).
     pub fn max_listen_connections(mut self, value: usize) -> Self {
         self.max_listen_connections = nonzero_or_default(value, DEFAULT_MAX_LISTEN_CONNECTIONS);
         self
     }
 
+    /// Sets the per-subscription replay ring depth. `0` reverts to the
+    /// default (1024).
     pub fn listen_replay_max(mut self, value: usize) -> Self {
         self.listen_replay_max = nonzero_or_default(value, DEFAULT_LISTEN_REPLAY_MAX);
         self
     }
 
+    /// Sets the read cache's maximum tracked entries. `0` reverts to the
+    /// default (5000).
     pub fn read_cache_max_entries(mut self, value: usize) -> Self {
         self.read_cache_max_entries = nonzero_or_default(value, DEFAULT_READ_CACHE_MAX_ENTRIES);
         self
     }
 
+    /// Acquires the data-root writer lock, verifies every audit chain, and
+    /// returns a ready-to-serve [`Engine`].
+    ///
+    /// # Errors
+    /// - [`EngineBuildError::HmacKeyMissing`] if [`EngineBuilder::key`] was
+    ///   never called.
+    /// - [`EngineBuildError::DataRootIo`] for filesystem errors creating
+    ///   `data_root`.
+    /// - [`EngineBuildError::DataRootLockHeld`] if another process holds the
+    ///   writer lock.
+    /// - [`EngineBuildError::AuditChainCorrupted`] if any existing world's
+    ///   HMAC chain fails verification.
+    /// - [`EngineBuildError::Storage`] for other storage-layer failures.
     pub fn build(self) -> Result<Engine, EngineBuildError> {
         std::fs::create_dir_all(&self.data_root).map_err(EngineBuildError::DataRootIo)?;
         let data_lock = crate::acquire_data_root_writer_lock(&self.data_root)
@@ -254,6 +348,7 @@ impl EngineBuilder {
 }
 
 impl Engine {
+    /// Returns a fresh [`EngineBuilder`] populated with crate defaults.
     pub fn builder() -> EngineBuilder {
         EngineBuilder::default()
     }
@@ -279,19 +374,34 @@ impl Engine {
         self.inner.core.as_ref()
     }
 
+    /// Subscribes to the engine shutdown signal.
+    ///
+    /// Returned receiver yields `true` exactly once when [`Engine::shutdown`]
+    /// is called. Intended for adapter graceful-shutdown loops; not part of
+    /// the documented stable surface.
     #[cfg(feature = "coap")]
-    pub(crate) fn shutdown_receiver(&self) -> watch::Receiver<bool> {
-        self.inner.shutdown_tx.subscribe()
+    #[doc(hidden)]
+    pub fn shutdown_receiver(&self) -> ShutdownToken {
+        ShutdownToken {
+            rx: self.inner.shutdown_tx.subscribe(),
+        }
     }
 
-    /// Maps raw token bytes to an access tier.
+    /// Maps raw token bytes to an [`AccessTier`].
     ///
-    /// Invalid, unknown, or empty token bytes return `AccessTier::Anon`.
+    /// Constant-time comparison against configured tokens. Returns
+    /// [`AccessTier::Anon`] for empty, unrecognized, or invalid token bytes;
+    /// returns the highest matching tier otherwise.
     pub fn verify_token(&self, token: &[u8]) -> AccessTier {
         self.inner.core.tokens.check_token_bytes(token).into()
     }
 
-    /// Starts orderly shutdown. Repeated calls are no-ops.
+    /// Starts orderly shutdown.
+    ///
+    /// Sets the engine-owned shutdown signal so subscribers
+    /// ([`crate::EngineSubscription`] recv loops, adapter graceful-shutdown
+    /// futures) can drain in-flight work. Repeated calls are no-ops; only
+    /// the first call flips the signal.
     pub fn shutdown(&self) {
         self.inner.shutdown_tx.send_if_modified(|shutdown| {
             if *shutdown {
@@ -304,7 +414,30 @@ impl Engine {
     }
 }
 
+#[cfg(feature = "coap")]
+impl ShutdownToken {
+    /// Returns whether shutdown has already been requested.
+    pub fn is_shutdown(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    /// Waits until shutdown is requested or the Engine owner is dropped.
+    pub async fn wait(&mut self) {
+        if self.is_shutdown() {
+            return;
+        }
+        let _ = self.rx.changed().await;
+    }
+}
+
 impl EngineError {
+    /// Returns the underlying SQLite extended result code, when this error
+    /// originated in the storage backend.
+    ///
+    /// Non-storage variants (auth, not-found, append-only, precondition,
+    /// quota, subscription-limit, shutting-down, internal-invariant) always
+    /// return `None`. Adapters can use this for protocol-specific code
+    /// mapping (HTTP 503 vs 507 vs 500) without inspecting the variant.
     pub fn sqlite_code(&self) -> Option<i32> {
         match self {
             Self::TransientStorage { sqlite_code }

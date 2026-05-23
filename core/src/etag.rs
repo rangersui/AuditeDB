@@ -75,10 +75,12 @@ pub(crate) fn check_preconditions(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn parse_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
     raw.split(',').filter_map(parse_etag_matcher).collect()
 }
 
+#[cfg(test)]
 fn parse_etag_matcher(raw: &str) -> Option<EtagMatcher> {
     let candidate = raw.trim();
     if candidate.is_empty() {
@@ -96,6 +98,7 @@ fn parse_etag_matcher(raw: &str) -> Option<EtagMatcher> {
     Some(EtagMatcher::Invalid)
 }
 
+#[cfg(test)]
 fn quoted_etag(candidate: &str) -> Option<&str> {
     candidate
         .strip_prefix('"')
@@ -129,6 +132,7 @@ pub(crate) fn etag_list_strong_matches(header_value: &str, current: &str) -> boo
         .any(|candidate| candidate == "*" || candidate == quoted.as_str())
 }
 
+#[cfg(test)]
 pub(crate) fn etag_list_weak_matches(header_value: &str, current: &str) -> bool {
     let quoted = format!("\"{current}\"");
     header_value.split(',').map(str::trim).any(|candidate| {

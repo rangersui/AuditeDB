@@ -31,7 +31,7 @@ use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
 use crate::read_cache::ReadCache;
 use crate::world::Stage;
-use crate::{audit, auth, listen, store, world};
+use crate::{audit, auth, event, store, world};
 
 #[cfg(target_has_atomic = "64")]
 pub(crate) type EventCounter = AtomicU64;
@@ -85,10 +85,10 @@ pub(crate) struct Core {
     pub(crate) storage_body_bytes: Arc<AtomicUsize>,
     pub(crate) durable_world_count: Arc<AtomicUsize>,
     pub(crate) delete_ledger_created: Arc<AtomicBool>,
-    pub(crate) events: broadcast::Sender<listen::ChangeEvent>,
+    pub(crate) events: broadcast::Sender<event::ChangeEvent>,
     pub(crate) listen_slots: Arc<Semaphore>,
     pub(crate) listen_replay_max: usize,
-    pub(crate) event_log: Arc<StdMutex<VecDeque<listen::ChangeEvent>>>,
+    pub(crate) event_log: Arc<StdMutex<VecDeque<event::ChangeEvent>>>,
     pub(crate) shutdown: watch::Receiver<bool>,
     /// Listen ids stay u64-monotonic because replay uses `>` comparisons
     /// against Last-Event-ID. 64-bit targets use `AtomicU64`; 32-bit targets
@@ -296,7 +296,7 @@ impl Core {
 
     pub(crate) fn notify(&self, method: &'static str, world: &ValidatedWorldPath, etag: &str) {
         let id = next_event_id(&self.next_event);
-        let change = listen::ChangeEvent {
+        let change = event::ChangeEvent {
             id,
             method,
             path: format!("/{}", world.as_str()),
