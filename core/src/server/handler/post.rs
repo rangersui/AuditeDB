@@ -20,26 +20,24 @@ use axum::{
     response::IntoResponse,
 };
 
-use super::{write_error_phase, HttpWriteTrace};
-use crate::{
-    auth, engine_ops::EngineOps, engine_types::ValidatedWorldPath, http_semantics as hs, Core,
-    Phase, TraceCtx,
-};
+use super::{write_error_phase, HandlerEngineState, HttpWriteTrace};
+use crate::{auth, engine_types::ValidatedWorldPath, http_semantics as hs, Phase, TraceCtx};
 
-pub(crate) async fn execute_post(
+pub(crate) async fn execute_post<S: HandlerEngineState>(
     headers: HeaderMap,
     body: Bytes,
     tier: auth::Tier,
     world: ValidatedWorldPath,
-    core: &Core,
+    state: S,
     trace: &TraceCtx,
 ) -> Phase {
-    let outcome = match EngineOps::new(core)
-        .append(
+    let outcome = match state
+        .engine()
+        .append_traced(
             &world,
             body,
             hs::request_preconditions(&headers).into(),
-            tier,
+            tier.into(),
             &HttpWriteTrace { trace },
         )
         .await

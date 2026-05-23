@@ -128,6 +128,9 @@ pub(crate) struct Core {
     /// `DEFAULT_PERSIST_HEADERS` round-trip; nothing custom unless
     /// the operator opts in." See
     /// `crate::http_semantics::HeaderAllowlist`.
+    // PR5 transition: HTTP header persistence policy is moving into
+    // `ServerState`; Core still carries these for legacy tests and bridges.
+    #[allow(dead_code)]
     pub(crate) persist_header_allowlist: Arc<HeaderAllowlist>,
     /// User-configured deny set that subtracts from the built-in
     /// `DEFAULT_PERSIST_HEADERS` (Layer 1.5). Lets an operator say
@@ -136,6 +139,9 @@ pub(crate) struct Core {
     /// `ELASTIK_DENY_HEADERS`; default empty means "no L2 entries
     /// are subtracted." Same matcher shape as the allowlist; L1
     /// hard deny still wins over this.
+    // PR5 transition: HTTP header persistence policy is moving into
+    // `ServerState`; Core still carries these for legacy tests and bridges.
+    #[allow(dead_code)]
     pub(crate) persist_header_user_deny: Arc<HeaderAllowlist>,
 }
 

@@ -10,13 +10,10 @@ use std::sync::{
     Arc,
 };
 
-use axum::{
-    extract::FromRef,
-    http::{header, HeaderMap},
-};
+use axum::http::{header, HeaderMap};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
-use crate::{engine::Engine, engine_types::AccessTier, Core};
+use crate::{engine::Engine, engine_types::AccessTier, http_semantics::HeaderAllowlist, Core};
 
 const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
 
@@ -24,14 +21,23 @@ const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
 pub(crate) struct ServerState {
     engine: Engine,
     max_world_bytes: usize,
+    persist_header_allowlist: Arc<HeaderAllowlist>,
+    persist_header_user_deny: Arc<HeaderAllowlist>,
     next_request: Arc<AtomicUsize>,
 }
 
 impl ServerState {
-    pub(crate) fn new(engine: Engine, max_world_bytes: usize) -> Self {
+    pub(crate) fn new(
+        engine: Engine,
+        max_world_bytes: usize,
+        persist_header_allowlist: HeaderAllowlist,
+        persist_header_user_deny: HeaderAllowlist,
+    ) -> Self {
         Self {
             engine,
             max_world_bytes,
+            persist_header_allowlist: Arc::new(persist_header_allowlist),
+            persist_header_user_deny: Arc::new(persist_header_user_deny),
             next_request: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -40,7 +46,12 @@ impl ServerState {
     /// Test-only bypass: wraps a raw `Core` into `ServerState` via
     /// `Engine::from_core_for_tests`. See its doc for bypass details.
     pub(crate) fn from_core_for_tests(core: Arc<Core>, max_world_bytes: usize) -> Self {
-        Self::new(Engine::from_core_for_tests(core), max_world_bytes)
+        Self::new(
+            Engine::from_core_for_tests(core.clone()),
+            max_world_bytes,
+            (*core.persist_header_allowlist).clone(),
+            (*core.persist_header_user_deny).clone(),
+        )
     }
 
     /// Returns the protocol-neutral Engine for handlers that have migrated
@@ -55,6 +66,14 @@ impl ServerState {
 
     pub(crate) fn max_world_bytes(&self) -> usize {
         self.max_world_bytes
+    }
+
+    pub(crate) fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
+        self.persist_header_allowlist.clone()
+    }
+
+    pub(crate) fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
+        self.persist_header_user_deny.clone()
     }
 
     pub(crate) fn next_request_id(&self) -> u64 {
@@ -86,11 +105,5 @@ impl ServerState {
             }
         }
         AccessTier::Anon
-    }
-}
-
-impl FromRef<ServerState> for Arc<Core> {
-    fn from_ref(input: &ServerState) -> Self {
-        input.core_arc()
     }
 }

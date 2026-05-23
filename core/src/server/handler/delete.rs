@@ -36,13 +36,13 @@ pub(crate) async fn execute_delete(
     state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
-    let core = state.core_arc();
+    let persist_header_allowlist = state.persist_header_allowlist();
+    let persist_header_user_deny = state.persist_header_user_deny();
     let delete_meta = hs::request_meta_headers(
         &headers,
-        &core.persist_header_allowlist,
-        &core.persist_header_user_deny,
+        &persist_header_allowlist,
+        &persist_header_user_deny,
     );
-    drop(core);
     let delete_content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -94,6 +94,10 @@ enum DeleteStep {
 }
 
 impl DeleteStep {
+    fn store_in(self, slot: &AtomicU8) {
+        slot.store(self as u8, Ordering::Relaxed);
+    }
+
     fn from_u8(value: u8) -> Self {
         match value {
             value if value == Self::None as u8 => Self::None,
@@ -126,14 +130,12 @@ impl EngineDeleteTraceHooks for HttpDeleteTrace<'_> {
     }
 
     fn audit_intent(&self) {
-        self.last_step
-            .store(DeleteStep::Intent as u8, Ordering::Relaxed);
+        DeleteStep::Intent.store_in(&self.last_step);
         self.trace.emit_aux("audit_intent");
     }
 
     fn audit_intent_failed(&self, err: &str) {
-        self.last_step
-            .store(DeleteStep::AuditIntentFailed as u8, Ordering::Relaxed);
+        DeleteStep::AuditIntentFailed.store_in(&self.last_step);
         self.trace
             .emit_aux_kv("audit_intent_failed", &format!("err={err}"));
     }
@@ -143,8 +145,7 @@ impl EngineDeleteTraceHooks for HttpDeleteTrace<'_> {
     }
 
     fn physical_deleted(&self) {
-        self.last_step
-            .store(DeleteStep::PhysicalDeleted as u8, Ordering::Relaxed);
+        DeleteStep::PhysicalDeleted.store_in(&self.last_step);
         self.trace.emit_aux("physical_deleted");
     }
 
@@ -153,8 +154,7 @@ impl EngineDeleteTraceHooks for HttpDeleteTrace<'_> {
     }
 
     fn notify_sent(&self) {
-        self.last_step
-            .store(DeleteStep::NotifySent as u8, Ordering::Relaxed);
+        DeleteStep::NotifySent.store_in(&self.last_step);
         self.trace.emit_aux("notify_sent");
     }
 

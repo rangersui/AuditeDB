@@ -28,10 +28,10 @@
 //!
 //! ## CoAP coexistence
 //!
-//! HTTP and CoAP do not share the request lifecycle, but they do share
-//! disk transitions through `world_ops`. That keeps auth, locks,
-//! preconditions, quota, audit, and notify in one place while each
-//! adapter owns its wire rendering.
+//! HTTP and CoAP do not share the request lifecycle. HTTP world handlers now
+//! call public Engine methods; CoAP still reaches the same Engine-owned disk
+//! physics through the internal `EngineOps` shim until its migration layer
+//! lands. Each adapter keeps owning its wire rendering.
 
 #[path = "handler/delete.rs"]
 mod delete;
@@ -45,17 +45,72 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
+use std::sync::Arc;
 
+#[cfg(test)]
+use crate::Core;
 use crate::{
     auth, content_range_value, decimal_header_value,
-    engine::EngineError,
-    engine_ops::EngineOps,
+    engine::{Engine, EngineError},
+    engine_trace::EngineWriteTraceHooks,
     engine_types::{Representation, ValidatedWorldPath, WriteKind},
-    http_semantics as hs, insufficient_storage, not_found, payload_too_large, precondition_failed,
+    http_semantics as hs,
+    http_semantics::HeaderAllowlist,
+    insufficient_storage, not_found, payload_too_large, precondition_failed,
     server::ServerState,
     server_error, storage_quota_exceeded, storage_temporarily_unavailable, to_header_map,
-    unauthorized, world_ops, Core, ErrorReason, Phase, TraceCtx, Verb,
+    unauthorized, ErrorReason, Phase, TraceCtx, Verb,
 };
+
+pub(crate) trait HandlerEngineState {
+    fn engine(&self) -> Engine;
+    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist>;
+    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist>;
+}
+
+impl HandlerEngineState for &ServerState {
+    fn engine(&self) -> Engine {
+        ServerState::engine(self).clone()
+    }
+
+    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
+        ServerState::persist_header_allowlist(self)
+    }
+
+    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
+        ServerState::persist_header_user_deny(self)
+    }
+}
+
+#[cfg(test)]
+impl HandlerEngineState for &Arc<Core> {
+    fn engine(&self) -> Engine {
+        Engine::from_core_for_tests((*self).clone())
+    }
+
+    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
+        self.persist_header_allowlist.clone()
+    }
+
+    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
+        self.persist_header_user_deny.clone()
+    }
+}
+
+#[cfg(test)]
+impl HandlerEngineState for &Core {
+    fn engine(&self) -> Engine {
+        Engine::from_core_for_tests(Arc::new((*self).clone()))
+    }
+
+    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
+        self.persist_header_allowlist.clone()
+    }
+
+    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
+        self.persist_header_user_deny.clone()
+    }
+}
 
 /// Dispatch from `Phase::Dispatched` to the verb-specific handler.
 /// Called from inside `pipeline::run`'s match arm.
@@ -69,34 +124,22 @@ pub(crate) async fn execute(
     trace: &TraceCtx,
 ) -> Phase {
     match verb {
-        Verb::Get => {
-            let core = state.core_arc();
-            execute_get(headers, tier, world, &core, trace).await
-        }
-        Verb::Head => {
-            let core = state.core_arc();
-            execute_head(headers, tier, world, &core, trace).await
-        }
-        Verb::Put => {
-            let core = state.core_arc();
-            execute_put(headers, body, tier, world, &core, trace).await
-        }
-        Verb::Post => {
-            let core = state.core_arc();
-            execute_post(headers, body, tier, world, &core, trace).await
-        }
+        Verb::Get => execute_get(headers, tier, world, state, trace).await,
+        Verb::Head => execute_head(headers, tier, world, state, trace).await,
+        Verb::Put => execute_put(headers, body, tier, world, state, trace).await,
+        Verb::Post => execute_post(headers, body, tier, world, state, trace).await,
         Verb::Delete => execute_delete(headers, tier, world, state, trace).await,
     }
 }
 
-pub(crate) async fn execute_get(
+pub(crate) async fn execute_get<S: HandlerEngineState>(
     headers: HeaderMap,
     tier: auth::Tier,
     world: ValidatedWorldPath,
-    core: &Core,
+    state: S,
     trace: &TraceCtx,
 ) -> Phase {
-    let result = match EngineOps::new(core).read(&world, tier) {
+    let result = match state.engine().read(&world, tier.into()) {
         Ok(Some(result)) => result,
         Ok(None) => {
             return Phase::Error {
@@ -165,14 +208,14 @@ pub(crate) async fn execute_get(
     }
 }
 
-pub(crate) async fn execute_head(
+pub(crate) async fn execute_head<S: HandlerEngineState>(
     headers: HeaderMap,
     tier: auth::Tier,
     world: ValidatedWorldPath,
-    core: &Core,
+    state: S,
     trace: &TraceCtx,
 ) -> Phase {
-    let result = match EngineOps::new(core).read(&world, tier) {
+    let result = match state.engine().read(&world, tier.into()) {
         Ok(Some(result)) => result,
         Ok(None) => {
             return Phase::Error {
@@ -233,31 +276,34 @@ pub(crate) async fn execute_head(
     }
 }
 
-pub(crate) async fn execute_put(
+pub(crate) async fn execute_put<S: HandlerEngineState>(
     headers: HeaderMap,
     body: Bytes,
     tier: auth::Tier,
     world: ValidatedWorldPath,
-    core: &Core,
+    state: S,
     trace: &TraceCtx,
 ) -> Phase {
     let content_type = hs::request_content_type(&headers);
+    let persist_header_allowlist = state.persist_header_allowlist();
+    let persist_header_user_deny = state.persist_header_user_deny();
     let meta = hs::request_meta_headers(
         &headers,
-        &core.persist_header_allowlist,
-        &core.persist_header_user_deny,
+        &persist_header_allowlist,
+        &persist_header_user_deny,
     );
     let representation = Representation {
         body,
         content_type,
         headers: meta,
     };
-    let outcome = match EngineOps::new(core)
-        .replace(
+    let outcome = match state
+        .engine()
+        .replace_traced(
             &world,
             representation,
             hs::request_preconditions(&headers).into(),
-            tier,
+            tier.into(),
             &HttpWriteTrace { trace },
         )
         .await
@@ -297,7 +343,7 @@ pub(in crate::handler) struct HttpWriteTrace<'a> {
     pub(in crate::handler) trace: &'a TraceCtx,
 }
 
-impl world_ops::WriteTraceHooks for HttpWriteTrace<'_> {
+impl EngineWriteTraceHooks for HttpWriteTrace<'_> {
     fn lock_acquired(&self) {
         self.trace.emit_aux("lock_acquired");
     }

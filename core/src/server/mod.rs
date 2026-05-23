@@ -55,10 +55,14 @@ pub(crate) async fn run_from_env() {
         "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
     );
     let tokens = auth::Tokens::from_env();
+    let persist_header_allowlist = crate::config::header_allowlist_from_env();
+    let persist_header_user_deny = crate::config::header_user_deny_from_env();
     let engine = build_engine_from_env(
         data,
         hmac_key,
         &tokens,
+        persist_header_allowlist.clone(),
+        persist_header_user_deny.clone(),
         EngineLimits {
             max_world_bytes,
             max_memory_bytes,
@@ -68,7 +72,12 @@ pub(crate) async fn run_from_env() {
             read_cache_max_entries,
         },
     );
-    let state = ServerState::new(engine.clone(), max_world_bytes);
+    let state = ServerState::new(
+        engine.clone(),
+        max_world_bytes,
+        persist_header_allowlist,
+        persist_header_user_deny,
+    );
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
@@ -110,6 +119,8 @@ fn build_engine_from_env(
     data: PathBuf,
     hmac_key: Vec<u8>,
     tokens: &auth::Tokens,
+    persist_header_allowlist: crate::http_semantics::HeaderAllowlist,
+    persist_header_user_deny: crate::http_semantics::HeaderAllowlist,
     limits: EngineLimits,
 ) -> Engine {
     let key = SecretBytes::new(hmac_key).expect("ELASTIK_KEY validated before Engine build");
@@ -122,8 +133,8 @@ fn build_engine_from_env(
         .max_listen_connections(limits.max_listen_connections)
         .listen_replay_max(limits.listen_replay_max)
         .read_cache_max_entries(limits.read_cache_max_entries)
-        .persist_header_allowlist(crate::config::header_allowlist_from_env())
-        .persist_header_user_deny(crate::config::header_user_deny_from_env());
+        .persist_header_allowlist(persist_header_allowlist)
+        .persist_header_user_deny(persist_header_user_deny);
     configure_tokens(builder, tokens)
         .build()
         .unwrap_or_else(|err| panic!("build Engine failed: {err:?}"))
