@@ -18,6 +18,7 @@ mkdir -p "$OUT"
 # Pin by default so matrix sizes and linker behavior stay reproducible.
 # Override with RUST_NIGHTLY=nightly-YYYY-MM-DD when refreshing the toolchain.
 RUST_NIGHTLY="${RUST_NIGHTLY:-nightly-2026-05-22}"
+OPENWRT_CARGO_FEATURES="${OPENWRT_CARGO_FEATURES:-bundled-sqlite,unstable-engine-bin}"
 HOST_UID="${HOST_UID:-$(id -u 2>/dev/null || printf '')}"
 HOST_GID="${HOST_GID:-$(id -g 2>/dev/null || printf '')}"
 
@@ -67,6 +68,7 @@ run_one() {
     -e "CROSS_PREFIX=$prefix" \
     -e "EXTRA_RUSTFLAGS=$extra_flags" \
     -e "RUST_NIGHTLY=$RUST_NIGHTLY" \
+    -e "OPENWRT_CARGO_FEATURES=$OPENWRT_CARGO_FEATURES" \
     -e "CARGO_TARGET_DIR=$cargo_target_dir" \
     -e "HOST_UID=$HOST_UID" \
     -e "HOST_GID=$HOST_GID" \
@@ -118,7 +120,7 @@ cargo +"$RUST_NIGHTLY" build \
   --profile rut241 \
   --target "$RUST_TARGET" \
   --no-default-features \
-  --features bundled-sqlite
+  --features "$OPENWRT_CARGO_FEATURES"
 
 out="$CARGO_TARGET_DIR/$RUST_TARGET/rut241/elastik-core"
 ls -lh "$out"

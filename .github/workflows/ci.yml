@@ -39,7 +39,7 @@ jobs:
         run: cargo clippy --lib --bin elastik-core -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: core production clippy doctrine lint minimal
         working-directory: core
-        run: cargo clippy --lib --bin elastik-core --no-default-features --features bundled-sqlite -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --lib --bin elastik-core --no-default-features --features bundled-sqlite,unstable-engine-bin -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: clippy
         working-directory: core
         run: cargo clippy -- -D warnings
