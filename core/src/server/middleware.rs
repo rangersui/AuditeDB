@@ -35,7 +35,7 @@ pub(crate) async fn add_server_response_headers(
     // Stash on request extensions so the FSM driver
     // (`pipeline::run`) reads the SAME id we'll stamp on the
     // response. Without this, the middleware and `pipeline::run`
-    // each call `next_request.fetch_add` and produce off-by-one
+    // each call `next_request_id()` and produce off-by-one
     // ids -- trace says `req-43` while the response says `42`.
     req.extensions_mut()
         .insert(crate::pipeline::RequestId(request_id));

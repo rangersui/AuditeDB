@@ -285,6 +285,9 @@ impl Engine {
     }
 
     #[cfg(test)]
+    /// Test-only bypass: constructs Engine without writer lock acquisition
+    /// or startup audit verification. Shutdown channel is disconnected from
+    /// `core.shutdown` -- not suitable for shutdown-propagation tests.
     pub(crate) fn from_core_for_tests(core: Arc<Core>) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
         let data_lock = rusqlite::Connection::open_in_memory()

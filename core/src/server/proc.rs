@@ -16,8 +16,6 @@
 //! inline tests in main.rs (via `super::*`) keep working without
 //! import churn.
 
-use std::sync::Arc;
-
 use axum::{
     extract::{Path as AxPath, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
@@ -27,13 +25,13 @@ use axum::{
 use crate::{
     audit_broken, audit_not_applicable, audit_valid, bad_request, decimal_header_value, df_body,
     du_body,
-    engine::EngineError,
-    engine_introspection::{AuditVerify, PoolSnapshot, ValidatedProcPath, WorldUsage},
-    engine_ops::EngineOps,
+    engine::{Engine, EngineError},
+    engine_introspection::{AuditVerify, PoolSnapshot, WorldUsage},
     engine_types::ValidatedWorldPath,
     insufficient_storage, method_not_allowed, not_found, options_response, proc_text_response,
+    server::ServerState,
     server_error, storage_temporarily_unavailable, to_header_map, unauthorized, world_list_body,
-    Core, VERSION,
+    VERSION,
 };
 
 // Allow headers for OPTIONS / 405 responses. `pub(crate)` so the
@@ -104,7 +102,7 @@ pub(crate) async fn proc_version(method: Method) -> Response {
 
 // ─── /proc/worlds ───────────────────────────────────────────────────
 pub(crate) async fn proc_worlds(
-    State(core): State<Arc<Core>>,
+    State(state): State<ServerState>,
     method: Method,
     headers: HeaderMap,
 ) -> Response {
@@ -114,10 +112,10 @@ pub(crate) async fn proc_worlds(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    let tier = tier_from_headers(&core, &headers);
-    let proc_path = ValidatedProcPath::worlds();
-    let names = match run_introspection(core.clone(), "proc worlds", move |core| {
-        EngineOps::new(core).list_worlds(&proc_path, tier)
+    let tier = state.access_tier_from_headers(&headers);
+    let engine = state.engine().clone();
+    let names = match run_introspection(engine, "proc worlds", move |engine| {
+        engine.list_worlds(tier)
     })
     .await
     {
@@ -148,7 +146,7 @@ pub(crate) async fn proc_worlds(
 // like Unix du: one line per world. Durable scans run on the blocking pool; use
 // /proc/df for cheap polling instead of scraping this as hot-path telemetry.
 pub(crate) async fn proc_du(
-    State(core): State<Arc<Core>>,
+    State(state): State<ServerState>,
     method: Method,
     headers: HeaderMap,
 ) -> Response {
@@ -158,13 +156,9 @@ pub(crate) async fn proc_du(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    let tier = tier_from_headers(&core, &headers);
-    let proc_path = ValidatedProcPath::du();
-    let sizes = match run_introspection(core.clone(), "proc du", move |core| {
-        EngineOps::new(core).du(&proc_path, tier)
-    })
-    .await
-    {
+    let tier = state.access_tier_from_headers(&headers);
+    let engine = state.engine().clone();
+    let sizes = match run_introspection(engine, "proc du", move |engine| engine.du(tier)).await {
         Ok(sizes) => sizes,
         Err(resp) => return *resp,
     };
@@ -173,7 +167,7 @@ pub(crate) async fn proc_du(
 }
 
 pub(crate) async fn proc_df(
-    State(core): State<Arc<Core>>,
+    State(state): State<ServerState>,
     method: Method,
     headers: HeaderMap,
 ) -> Response {
@@ -183,13 +177,9 @@ pub(crate) async fn proc_df(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    let tier = tier_from_headers(&core, &headers);
-    let proc_path = ValidatedProcPath::df();
-    let snapshot = match run_introspection(core.clone(), "proc df", move |core| {
-        EngineOps::new(core).df(&proc_path, tier)
-    })
-    .await
-    {
+    let tier = state.access_tier_from_headers(&headers);
+    let engine = state.engine().clone();
+    let snapshot = match run_introspection(engine, "proc df", move |engine| engine.df(tier)).await {
         Ok(snapshot) => snapshot,
         Err(resp) => return *resp,
     };
@@ -217,7 +207,7 @@ pub(crate) async fn proc_df(
 // async task -- they don't block. Same pattern as `proc_du` and
 // `proc_df`. (Codex P2.)
 pub(crate) async fn proc_pool(
-    State(core): State<Arc<Core>>,
+    State(state): State<ServerState>,
     method: Method,
     headers: HeaderMap,
 ) -> Response {
@@ -227,23 +217,20 @@ pub(crate) async fn proc_pool(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    let tier = tier_from_headers(&core, &headers);
-    let proc_path = ValidatedProcPath::pool();
-    let snapshot = match run_introspection(core.clone(), "proc pool", move |core| {
-        EngineOps::new(core).pool(&proc_path, tier)
-    })
-    .await
-    {
-        Ok(snapshot) => snapshot,
-        Err(resp) => return *resp,
-    };
+    let tier = state.access_tier_from_headers(&headers);
+    let engine = state.engine().clone();
+    let snapshot =
+        match run_introspection(engine, "proc pool", move |engine| engine.pool(tier)).await {
+            Ok(snapshot) => snapshot,
+            Err(resp) => return *resp,
+        };
     let body = pool_body(&snapshot);
     proc_text_response(method, body)
 }
 
 // /proc/audit/{world}/verify
 pub(crate) async fn proc_audit_verify(
-    State(core): State<Arc<Core>>,
+    State(state): State<ServerState>,
     method: Method,
     AxPath(audit_path): AxPath<String>,
     headers: HeaderMap,
@@ -262,14 +249,15 @@ pub(crate) async fn proc_audit_verify(
     if raw_world.is_empty() {
         return bad_request("audit verify requires a world path");
     }
-    let proc_path = match ValidatedProcPath::new(format!("proc/audit/{raw_world}/verify")) {
-        Ok(path) => path,
+    let world = match ValidatedWorldPath::from_canonical(crate::canonicalize_path(raw_world)) {
+        Ok(world) => world,
         Err(_) => return bad_request("invalid audit verify world path"),
     };
 
-    let tier = tier_from_headers(&core, &headers);
-    let verify_result = match run_introspection(core.clone(), "audit verify", move |core| {
-        EngineOps::new(core).verify_audit(&proc_path, tier)
+    let tier = state.access_tier_from_headers(&headers);
+    let engine = state.engine().clone();
+    let verify_result = match run_introspection(engine, "audit verify", move |engine| {
+        engine.verify_audit(&world, tier)
     })
     .await
     {
@@ -292,23 +280,16 @@ pub(crate) async fn proc_reserved(method: Method) -> Response {
     }
 }
 
-fn tier_from_headers(core: &Core, headers: &HeaderMap) -> crate::auth::Tier {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    core.tokens.check(auth_header)
-}
-
 async fn run_introspection<T, F>(
-    core: Arc<Core>,
+    engine: Engine,
     scope: &'static str,
     f: F,
 ) -> Result<T, Box<Response>>
 where
     T: Send + 'static,
-    F: FnOnce(&Core) -> Result<T, EngineError> + Send + 'static,
+    F: FnOnce(&Engine) -> Result<T, EngineError> + Send + 'static,
 {
-    match tokio::task::spawn_blocking(move || f(core.as_ref())).await {
+    match tokio::task::spawn_blocking(move || f(&engine)).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(err)) => Err(Box::new(proc_engine_error(scope, err))),
         Err(_) => Err(Box::new(server_error(format!("{scope} worker failed")))),

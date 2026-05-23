@@ -1335,7 +1335,12 @@ mod tests {
         let state = Arc::new(core);
         let headers = HeaderMap::new();
 
-        let head = proc_worlds(State(state.clone()), Method::HEAD, headers.clone()).await;
+        let head = proc_worlds(
+            State(server_state_for_tests(state.clone())),
+            Method::HEAD,
+            headers.clone(),
+        )
+        .await;
         assert_eq!(head.status(), StatusCode::OK);
         assert_eq!(
             head.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -1343,11 +1348,21 @@ mod tests {
         );
         assert!(head.headers().get(header::CONTENT_LENGTH).is_some());
 
-        let options = proc_worlds(State(state.clone()), Method::OPTIONS, headers.clone()).await;
+        let options = proc_worlds(
+            State(server_state_for_tests(state.clone())),
+            Method::OPTIONS,
+            headers.clone(),
+        )
+        .await;
         assert_eq!(options.status(), StatusCode::NO_CONTENT);
         assert_eq!(options.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
 
-        let delete = proc_worlds(State(state), Method::DELETE, headers).await;
+        let delete = proc_worlds(
+            State(server_state_for_tests(state)),
+            Method::DELETE,
+            headers,
+        )
+        .await;
         assert_eq!(delete.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(delete.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
 
@@ -1385,7 +1400,7 @@ mod tests {
         .unwrap();
         let state = Arc::new(core);
         let resp = proc_audit_verify(
-            State(state),
+            State(server_state_for_tests(state)),
             Method::HEAD,
             AxPath("home/audit-ok/verify".to_owned()),
             HeaderMap::new(),
@@ -1423,7 +1438,7 @@ mod tests {
 
         let state = Arc::new(core);
         let resp = proc_audit_verify(
-            State(state),
+            State(server_state_for_tests(state)),
             Method::HEAD,
             AxPath("home/audit-broken/verify".to_owned()),
             HeaderMap::new(),
@@ -1460,7 +1475,7 @@ mod tests {
 
         let state = Arc::new(core);
         let resp = proc_audit_verify(
-            State(state),
+            State(server_state_for_tests(state)),
             Method::HEAD,
             AxPath("home/audit-escaped/verify".to_owned()),
             HeaderMap::new(),
@@ -1483,7 +1498,7 @@ mod tests {
             .unwrap();
         let state = Arc::new(core);
         let resp = proc_audit_verify(
-            State(state),
+            State(server_state_for_tests(state)),
             Method::HEAD,
             AxPath("tmp/scratch/verify".to_owned()),
             HeaderMap::new(),
@@ -1504,7 +1519,7 @@ mod tests {
 
         let state = Arc::new(core);
         let resp = proc_audit_verify(
-            State(state),
+            State(server_state_for_tests(state)),
             Method::HEAD,
             AxPath("home/missing-audit/verify".to_owned()),
             HeaderMap::new(),
@@ -2692,20 +2707,30 @@ mod tests {
         let state = Arc::new(core);
         let headers = HeaderMap::new();
 
-        let du = proc_du(State(state.clone()), Method::GET, headers.clone()).await;
+        let du = proc_du(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
         assert_eq!(du.status(), StatusCode::OK);
         let du_body = response_text(du).await;
         assert!(du_body.contains("home/hello\t5\n"));
         assert!(du_body.contains("tmp/scratch\t4\n"));
 
-        let df = proc_df(State(state.clone()), Method::GET, headers.clone()).await;
+        let df = proc_df(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
         assert_eq!(df.status(), StatusCode::OK);
         let df_body = response_text(df).await;
         assert!(df_body.contains("storage\t5\t10\t5\n"));
         assert!(df_body.contains("memory\t4\t268435456\t268435452\n"));
         assert!(df_body.contains("worlds\t2\tunlimited\tunlimited\n"));
 
-        let head = proc_du(State(state), Method::HEAD, headers).await;
+        let head = proc_du(State(server_state_for_tests(state)), Method::HEAD, headers).await;
         assert_eq!(head.status(), StatusCode::OK);
         assert_eq!(head.headers().get(header::CONTENT_LENGTH).unwrap(), "27");
         assert_eq!(response_text(head).await, "");
@@ -2720,11 +2745,33 @@ mod tests {
         let state = Arc::new(core);
         let headers = HeaderMap::new();
 
-        let du = proc_du(State(state.clone()), Method::GET, headers.clone()).await;
+        let du = proc_du(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
         assert_eq!(du.status(), StatusCode::UNAUTHORIZED);
 
-        let df = proc_df(State(state), Method::GET, headers).await;
+        let df = proc_df(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers,
+        )
+        .await;
         assert_eq!(df.status(), StatusCode::UNAUTHORIZED);
+
+        let mut auth_headers = HeaderMap::new();
+        let auth_value =
+            HeaderValue::from_str(&format!("{} {}", "Bearer", "reader")).expect("valid test auth");
+        auth_headers.insert(header::AUTHORIZATION, auth_value);
+        let authorized = proc_df(
+            State(server_state_for_tests(state)),
+            Method::GET,
+            auth_headers,
+        )
+        .await;
+        assert_eq!(authorized.status(), StatusCode::OK);
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2748,7 +2795,12 @@ mod tests {
         assert_eq!(put.status(), StatusCode::CREATED);
 
         let state = Arc::new(core);
-        let before = proc_df(State(state.clone()), Method::GET, headers.clone()).await;
+        let before = proc_df(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
         assert!(response_text(before)
             .await
             .contains("worlds\t1\tunlimited\tunlimited\n"));
@@ -2765,7 +2817,7 @@ mod tests {
         );
         assert_eq!(delete.status(), StatusCode::NO_CONTENT);
 
-        let after = proc_df(State(state), Method::GET, headers).await;
+        let after = proc_df(State(server_state_for_tests(state)), Method::GET, headers).await;
         let after_body = response_text(after).await;
         assert!(after_body.contains("storage\t0\tunlimited\tunlimited\n"));
         assert!(after_body.contains("worlds\t0\tunlimited\tunlimited\n"));
@@ -2812,7 +2864,12 @@ mod tests {
         }
 
         let state = Arc::new(core);
-        let resp = proc_pool(State(state.clone()), Method::GET, headers.clone()).await;
+        let resp = proc_pool(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
         let body = response_text(resp).await;
 
         assert!(body.contains("read_cache_entries 1 snapshot\n"));
@@ -2837,7 +2894,7 @@ mod tests {
             )
             .await,
         );
-        let resp2 = proc_pool(State(state), Method::GET, headers).await;
+        let resp2 = proc_pool(State(server_state_for_tests(state)), Method::GET, headers).await;
         let body2 = response_text(resp2).await;
         assert!(
             body2.contains("ledger_writer_inits 1 counter\n"),
@@ -2858,7 +2915,7 @@ mod tests {
         let state = Arc::new(core);
         let headers = HeaderMap::new();
 
-        let resp = proc_pool(State(state), Method::GET, headers).await;
+        let resp = proc_pool(State(server_state_for_tests(state)), Method::GET, headers).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
         let _ = std::fs::remove_dir_all(dir);

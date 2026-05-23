@@ -12,8 +12,8 @@
 //! - **Driver (this module)** parses the `Authorization` header into an
 //!   `auth::Tier` and stamps it onto `Phase::Authenticated`. That is
 //!   pure authentication — "who is asking".
-//! - **Verb handlers** (lands in PR 4b for read, 4c for write) run the
-//!   gate check (`can_read` / `can_write` / `can_delete`). That is
+//! - **Verb handlers** run the gate check (`can_read` / `can_write` /
+//!   `can_delete`). That is
 //!   authorization — "may this identity do this thing on this
 //!   resource". Gates are verb-and-path-specific (PUT to `/home/`
 //!   needs Write, PUT to `/etc/` needs Approve, etc), so they live
@@ -33,15 +33,11 @@
 //! handlers can also call `TraceCtx::emit_aux(...)` for indented
 //! sub-step lines (lock acquisition, SQLite commit, audit append, ...).
 //!
-//! ## PR 4a scope
+//! ## Routing scope
 //!
-//! This is the FSM **skeleton**: Phase enum, ErrorReason vocabulary,
-//! TraceCtx, the driver loop, and transition functions through
-//! `dispatch`. Verb handler integration (Phase::Dispatched →
-//! ExecutedRead / CommittedWrite) lands in PR 4b (read path) and
-//! PR 4c (write path). In 4a the Dispatched arm of the driver loop
-//! returns a synthetic 501 so the loop terminates; no production
-//! route in `main.rs` calls `run()` yet.
+//! This driver owns regular world routes reached from `server/route.rs`.
+//! `/listen/*` and `/proc/*` keep dedicated handlers because their wire
+//! shapes are SSE streams and generated introspection responses.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -59,7 +55,7 @@ use crate::{
 };
 
 /// Request ID stamped onto each incoming request by the
-/// `add_core_response_headers` middleware in `main.rs` and threaded
+/// `add_server_response_headers` middleware in `server/middleware.rs` and threaded
 /// through axum's request extensions so the pipeline driver and the
 /// `x-request-id` response header are guaranteed to use the same
 /// number. Without this, two independent request-id allocations
@@ -430,7 +426,7 @@ fn dispatch(
 /// returns the final `Response`.
 ///
 /// `req_id` is the request identifier assigned by the
-/// `add_core_response_headers` middleware in `main.rs` and stamped
+/// `add_server_response_headers` middleware in `server/middleware.rs` and stamped
 /// onto the response as `x-request-id`. The pipeline does NOT
 /// allocate its own id — that would diverge from the response
 /// header. Tests calling `run` directly pass an explicit id.
