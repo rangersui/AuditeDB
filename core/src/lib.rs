@@ -251,7 +251,7 @@ mod tests {
     use crate::etag as et;
     use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
     use crate::http_semantics as hs;
-    use crate::middleware::{add_core_response_headers, stamp_core_response_headers};
+    use crate::middleware::{add_server_response_headers, stamp_core_response_headers};
     use crate::route::world_handler;
     use axum::body::Bytes;
     use axum::extract::{Path as AxPath, State};
@@ -266,6 +266,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex, Mutex as TestMutex, OnceLock};
     use tokio::sync::{broadcast, watch, Semaphore};
+
+    fn server_state_for_tests(core: Arc<Core>) -> crate::server::ServerState {
+        crate::server::ServerState::from_core_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
+    }
 
     /// PR 4c: 50 unit tests below were renamed mechanically from
     /// `handle_*` (sync `&Core -> Response`) to `execute_*` (async
@@ -3072,7 +3076,7 @@ mod tests {
     /// (`State` + `Extension<RequestId>` + `Method` + `AxPath` +
     /// `HeaderMap` + `Bytes`) wires up correctly and `world_handler`
     /// routes GET to the pipeline. Goes through `tower::oneshot` so
-    /// the `add_core_response_headers` middleware fires too -- that
+    /// the `add_server_response_headers` middleware fires too -- that
     /// way we can assert the unified `x-request-id` header lands on
     /// the response.
     #[tokio::test]
@@ -3089,8 +3093,8 @@ mod tests {
         let app = Router::new()
             .route("/*world", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
-                core.clone(),
-                add_core_response_headers,
+                server_state_for_tests(core.clone()),
+                add_server_response_headers,
             ))
             .with_state(core.clone());
 
@@ -3139,8 +3143,8 @@ mod tests {
         let app = Router::new()
             .route("/*world", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
-                core.clone(),
-                add_core_response_headers,
+                server_state_for_tests(core.clone()),
+                add_server_response_headers,
             ))
             .with_state(core.clone());
 
@@ -3338,7 +3342,6 @@ mod tests {
                     ))),
                     shutdown: watch::channel(false).1,
                     next_event: crate::state::new_event_counter(),
-                    next_request: Arc::new(AtomicUsize::new(0)),
                     world_locks: Arc::new(DashMap::new()),
                     ledger: Arc::new(crate::ledger::LedgerWriter::new()),
                     read_cache: Arc::new(crate::read_cache::ReadCache::new(

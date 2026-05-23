@@ -205,7 +205,6 @@ mod tests {
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: crate::state::new_event_counter(),
-            next_request: Arc::new(AtomicUsize::new(0)),
             world_locks: Arc::new(DashMap::new()),
             ledger: Arc::new(crate::ledger::LedgerWriter::new()),
             read_cache: Arc::new(crate::read_cache::ReadCache::new(
@@ -251,7 +250,6 @@ mod tests {
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: crate::state::new_event_counter(),
-            next_request: Arc::new(AtomicUsize::new(0)),
             world_locks: Arc::new(DashMap::new()),
             ledger: Arc::new(crate::ledger::LedgerWriter::new()),
             read_cache: Arc::new(crate::read_cache::ReadCache::new(
@@ -306,7 +304,6 @@ mod tests {
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: crate::state::new_event_counter(),
-            next_request: Arc::new(AtomicUsize::new(0)),
             world_locks: Arc::new(DashMap::new()),
             ledger: Arc::new(crate::ledger::LedgerWriter::new()),
             read_cache: Arc::new(crate::read_cache::ReadCache::new(

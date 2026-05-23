@@ -262,7 +262,6 @@ impl EngineBuilder {
             ))),
             shutdown: shutdown_rx,
             next_event: new_event_counter(),
-            next_request: Arc::new(AtomicUsize::new(0)),
             world_locks: Arc::new(DashMap::new()),
             ledger: Arc::new(crate::ledger::LedgerWriter::new()),
             read_cache: Arc::new(ReadCache::new(self.read_cache_max_entries)),
@@ -283,6 +282,20 @@ impl EngineBuilder {
 impl Engine {
     pub fn builder() -> EngineBuilder {
         EngineBuilder::default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_core_for_tests(core: Arc<Core>) -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
+        let data_lock = rusqlite::Connection::open_in_memory()
+            .expect("test Engine data lock connection should open");
+        Self {
+            inner: Arc::new(EngineInner {
+                core,
+                shutdown_tx,
+                _data_lock: StdMutex::new(data_lock),
+            }),
+        }
     }
 
     pub(crate) fn core(&self) -> &Core {

@@ -97,9 +97,6 @@ pub(crate) struct Core {
     /// against Last-Event-ID. 64-bit targets use `AtomicU64`; 32-bit targets
     /// fall back to a tiny mutex because they lack native 64-bit atomics.
     pub(crate) next_event: Arc<EventCounter>,
-    /// Request ids are diagnostic only; `AtomicUsize` keeps 32-bit targets on
-    /// native atomics.
-    pub(crate) next_request: Arc<AtomicUsize>,
     /// Per-world async write lock. Replaces the previous global
     /// write_lock. Writes to different worlds run concurrently;
     /// writes to the same world serialize (preserving

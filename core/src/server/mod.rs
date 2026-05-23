@@ -4,6 +4,9 @@
 //! constructs the protocol-neutral `Engine` first and only hands legacy routes
 //! a `Core` bridge until the adapters cross the crate boundary.
 
+mod state;
+pub(crate) use state::ServerState;
+
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -65,7 +68,7 @@ pub(crate) async fn run_from_env() {
             read_cache_max_entries,
         },
     );
-    let state = engine.core_arc();
+    let state = ServerState::new(engine.clone(), max_world_bytes);
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
@@ -74,17 +77,18 @@ pub(crate) async fn run_from_env() {
         .map(|addr| addr.ip())
         .unwrap_or_else(|_| IpAddr::from([127, 0, 0, 1]));
     eprintln!("elastik-core v{VERSION} on http://{addr}/");
-    print_auth_summary(&state.tokens, bind_ip);
+    let auth_summary_core = state.core_arc();
+    print_auth_summary(&auth_summary_core.tokens, bind_ip);
     #[cfg(feature = "coap")]
     if let Some((coap_host, coap_port)) = coap_bind {
         let coap_addr = listen_addr(&coap_host, coap_port);
-        let coap_state = state.clone();
-        let coap_shutdown = state.shutdown.clone();
+        let coap_state = state.core_arc();
+        let coap_shutdown = coap_state.shutdown.clone();
         tokio::spawn(async move {
             crate::coap::serve(coap_state, coap_addr, coap_shutdown, coap_max_in_flight).await;
         });
     }
-    let app = route::build_app(state, max_world_bytes);
+    let app = route::build_app(state);
 
     let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(engine.clone()))

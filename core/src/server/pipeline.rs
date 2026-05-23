@@ -62,9 +62,9 @@ use crate::{
 /// `add_core_response_headers` middleware in `main.rs` and threaded
 /// through axum's request extensions so the pipeline driver and the
 /// `x-request-id` response header are guaranteed to use the same
-/// number. Without this, two independent `core.next_request.fetch_add`
-/// calls (one in the middleware, one in `pipeline::run`) produced
-/// off-by-one ids — trace said `req-43` while the response header
+/// number. Without this, two independent request-id allocations
+/// (one in the middleware, one in `pipeline::run`) produced
+/// off-by-one ids: trace said `req-43` while the response header
 /// said `42`.
 #[derive(Clone, Copy)]
 pub(crate) struct RequestId(pub(crate) u64);
@@ -442,8 +442,8 @@ pub(crate) async fn run(
     core: &Arc<Core>,
     req_id: u64,
 ) -> Response {
-    // `core.next_request` is intentionally untouched here — see the
-    // RequestId doc comment for the off-by-one history. `core` itself
+    // Request id allocation is intentionally outside this function; see
+    // the RequestId doc comment for the off-by-one history. `core` itself
     // is consumed inside the loop (passed to `core.tokens` for auth
     // and to `handler::execute` for the verb).
     let trace = TraceCtx::new(req_id, Instant::now());

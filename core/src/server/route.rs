@@ -1,13 +1,11 @@
 //! axum router assembly + the world route's thin handler.
 //!
-//! `build_app(state, max_world_bytes)` returns the fully wired
+//! `build_app(state)` returns the fully wired
 //! `Router` that `main()` serves. The route table itself is short
 //! (root, listen, proc/*, `/<world>`) and adding a new top-level
 //! route happens here. Per-verb logic lives in `crate::handler`;
 //! `world_handler` only routes OPTIONS to a static response and
 //! every other method into `pipeline::run`.
-
-use std::sync::Arc;
 
 use axum::{
     body::Bytes,
@@ -21,10 +19,10 @@ use axum::{
 
 use crate::{
     listen, options_response, pipeline, proc_audit_verify, proc_df, proc_du, proc_pool,
-    proc_reserved, proc_version, proc_worlds, root_hint, Core, WORLD_ALLOW,
+    proc_reserved, proc_version, proc_worlds, root_hint, server::ServerState, Core, WORLD_ALLOW,
 };
 
-pub(crate) fn build_app(state: Arc<Core>, max_world_bytes: usize) -> Router {
+pub(crate) fn build_app(state: ServerState) -> Router {
     Router::new()
         .route("/", any(root_hint))
         .route("/listen/*pattern", any(listen::handler))
@@ -38,15 +36,15 @@ pub(crate) fn build_app(state: Arc<Core>, max_world_bytes: usize) -> Router {
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))
         .with_state(state.clone())
-        .layer(DefaultBodyLimit::max(max_world_bytes))
+        .layer(DefaultBodyLimit::max(state.max_world_bytes()))
         .layer(from_fn_with_state(
             state,
-            crate::middleware::add_core_response_headers,
+            crate::middleware::add_server_response_headers,
         ))
 }
 
 pub(crate) async fn world_handler(
-    State(core): State<Arc<Core>>,
+    State(core): State<std::sync::Arc<Core>>,
     axum::Extension(crate::pipeline::RequestId(req_id)): axum::Extension<
         crate::pipeline::RequestId,
     >,
@@ -63,7 +61,7 @@ pub(crate) async fn world_handler(
     // share the FSM driver and produce trace output under
     // `ELASTIK_TRACE_PIPELINE=1`.
     //
-    // `req_id` comes from `add_core_response_headers` middleware via
+    // `req_id` comes from `add_server_response_headers` middleware via
     // request extensions -- same id stamped on `x-request-id` so
     // trace output and response header agree.
     if method == Method::OPTIONS {

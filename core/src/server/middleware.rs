@@ -1,21 +1,19 @@
 //! axum middleware that runs around every request.
 //!
-//! `add_core_response_headers` is the single Tower layer the router
+//! `add_server_response_headers` is the single Tower layer the router
 //! installs. It does two jobs:
 //!
-//! 1. Allocates a per-request id from `Core::next_request` and
+//! 1. Allocates a per-request id from server-owned state and
 //!    inserts it into the request extensions as
 //!    `crate::pipeline::RequestId`. The FSM driver (`pipeline::run`)
 //!    pulls the SAME id out of extensions, so trace output and the
 //!    `x-request-id` response header agree. Without this, the
-//!    middleware and `pipeline::run` each independently called
-//!    `next_request.fetch_add` and produced off-by-one ids.
+//!    middleware and `pipeline::run` each independently allocated ids.
 //! 2. Stamps `x-request-id`, `x-elapsed-us`, `Vary: Authorization`,
 //!    and `x-content-type-options: nosniff` onto every response.
 //!    These are uniform across all routes; the layer is the only
 //!    place they're set.
 
-use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
 
 use axum::{
@@ -26,14 +24,14 @@ use axum::{
     response::Response,
 };
 
-use crate::Core;
+use crate::server::ServerState;
 
-pub(crate) async fn add_core_response_headers(
-    State(core): State<Arc<Core>>,
+pub(crate) async fn add_server_response_headers(
+    State(state): State<ServerState>,
     mut req: axum::http::Request<Body>,
     next: Next,
 ) -> Response {
-    let request_id = (core.next_request.fetch_add(1, Ordering::Relaxed) + 1) as u64;
+    let request_id = state.next_request_id();
     // Stash on request extensions so the FSM driver
     // (`pipeline::run`) reads the SAME id we'll stamp on the
     // response. Without this, the middleware and `pipeline::run`
