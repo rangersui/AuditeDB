@@ -31,6 +31,10 @@ impl Preconditions {
     pub(crate) fn is_empty(&self) -> bool {
         self.if_match.is_empty() && self.if_none_match.is_empty()
     }
+
+    pub(crate) fn into_parts(self) -> (Vec<EtagMatcher>, Vec<EtagMatcher>) {
+        (self.if_match, self.if_none_match)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

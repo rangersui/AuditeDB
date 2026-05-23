@@ -28,6 +28,7 @@ use std::sync::atomic::AtomicU64;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
+use crate::engine_types::ValidatedWorldPath;
 use crate::http_semantics::HeaderAllowlist;
 use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
@@ -316,12 +317,12 @@ impl Core {
         }
     }
 
-    pub(crate) fn notify(&self, method: &'static str, world: &str, etag: &str) {
+    pub(crate) fn notify(&self, method: &'static str, world: &ValidatedWorldPath, etag: &str) {
         let id = next_event_id(&self.next_event);
         let change = listen::ChangeEvent {
             id,
             method,
-            path: format!("/{world}"),
+            path: format!("/{}", world.as_str()),
             etag: etag.to_owned(),
         };
         {

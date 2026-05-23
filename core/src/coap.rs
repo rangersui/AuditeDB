@@ -10,7 +10,12 @@ use bytes::Bytes;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Semaphore};
 
-use crate::{auth, canonicalize_path, coap_errors, etag, valid_world_name, world_ops, Core};
+use crate::{
+    auth, canonicalize_path, coap_errors,
+    engine_ops::EngineOps,
+    engine_types::{Preconditions, Representation, ValidatedWorldPath, WriteKind},
+    Core,
+};
 
 const MAX_DATAGRAM: usize = 1152;
 const RECV_BUF: usize = MAX_DATAGRAM + 1;
@@ -156,84 +161,61 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
     };
     let path = request_path(request);
     let world_name = canonicalize_path(&path);
-    if !valid_world_name(&world_name) {
+    let Ok(world_name) = ValidatedWorldPath::new(world_name) else {
         return encode_response(request, 128, Some(0), b"bad world name\n");
-    }
+    };
     let tier = request
         .auth_token
         .map(|token| core.tokens.check_token_bytes(token))
         .unwrap_or(auth::Tier::Anon);
     match method {
-        Method::Get => {
-            let permit = match world_ops::authorize_read(core, &world_name, tier) {
-                Ok(permit) => permit,
-                Err(err) => {
-                    return encode_response(
-                        request,
-                        coap_errors::read_error_to_coap(&err),
-                        Some(0),
-                        coap_errors::read_error_body(&err),
-                    );
-                }
-            };
-            match world_ops::read_world_for(core, &permit, &world_name) {
-                Ok(world_ops::ReadOutcome::Found { stage, .. }) => {
-                    if encoded_len(
-                        request,
-                        media_type_to_cf(&stage.content_type),
-                        stage.body.len(),
-                    ) > MAX_DATAGRAM
-                    {
-                        return encode_response(
-                            request,
-                            141,
-                            Some(0),
-                            b"world too large for coap\n",
-                        );
-                    }
-                    encode_response(
-                        request,
-                        69,
-                        media_type_to_cf(&stage.content_type),
-                        &stage.body,
-                    )
-                }
-                Ok(world_ops::ReadOutcome::Missing) => {
-                    encode_response(request, 132, Some(0), b"not found\n")
-                }
-                Err(err) => encode_response(
+        Method::Get => match EngineOps::new(core).read(&world_name, tier) {
+            Ok(Some(result)) => {
+                let stage = result.representation;
+                if encoded_len(
                     request,
-                    coap_errors::read_error_to_coap(&err),
-                    Some(0),
-                    coap_errors::read_error_body(&err),
-                ),
+                    media_type_to_cf(&stage.content_type),
+                    stage.body.len(),
+                ) > MAX_DATAGRAM
+                {
+                    return encode_response(request, 141, Some(0), b"world too large for coap\n");
+                }
+                encode_response(
+                    request,
+                    69,
+                    media_type_to_cf(&stage.content_type),
+                    &stage.body,
+                )
             }
-        }
+            Ok(None) => encode_response(request, 132, Some(0), b"not found\n"),
+            Err(err) => encode_response(
+                request,
+                coap_errors::read_error_to_coap(&err),
+                Some(0),
+                coap_errors::read_error_body(&err),
+            ),
+        },
         Method::Put => {
             let content_type = cf_to_media_type(request.content_format);
-            let permit = match world_ops::authorize_write(&world_name, tier) {
-                Ok(permit) => permit,
-                Err(err) => {
-                    return encode_response(
-                        request,
-                        coap_errors::write_error_to_coap(&err),
-                        Some(0),
-                        b"error\n",
-                    );
-                }
-            };
-            let req = world_ops::ReplaceRequest {
-                world: world_name,
+            let representation = Representation {
                 body: Bytes::copy_from_slice(request.payload),
                 content_type: content_type.to_owned(),
                 headers: Vec::new(),
-                preconditions: etag::Preconditions::default(),
             };
-            match world_ops::replace_write(core, &permit, req, &world_ops::NoopWriteTrace).await {
+            match EngineOps::new(core)
+                .replace(
+                    &world_name,
+                    representation,
+                    Preconditions::none(),
+                    tier,
+                    &CoapNoopWriteTrace,
+                )
+                .await
+            {
                 Ok(outcome) => {
-                    let code = match outcome.status_kind {
-                        world_ops::WriteStatusKind::Created => 65,
-                        world_ops::WriteStatusKind::Updated => 68,
+                    let code = match outcome.kind {
+                        WriteKind::Created => 65,
+                        WriteKind::Updated => 68,
                     };
                     encode_response(request, code, None, b"")
                 }
@@ -259,6 +241,10 @@ async fn handle(core: &Core, request: &Packet<'_>) -> Vec<u8> {
         ),
     }
 }
+
+struct CoapNoopWriteTrace;
+
+impl crate::world_ops::WriteTraceHooks for CoapNoopWriteTrace {}
 
 fn request_path(request: &Packet<'_>) -> String {
     let mut path = String::from("/");
@@ -604,7 +590,7 @@ mod tests {
     #[test]
     fn write_quota_maps_to_coap_insufficient_storage() {
         assert_eq!(
-            coap_errors::write_error_to_coap(&world_ops::WriteError::QuotaExceeded {
+            coap_errors::write_error_to_coap(&crate::engine::EngineError::QuotaExceeded {
                 used: 9,
                 quota: 10,
                 projected: 11,
@@ -616,7 +602,9 @@ mod tests {
     #[test]
     fn write_payload_too_large_maps_to_coap_request_entity_too_large() {
         assert_eq!(
-            coap_errors::write_error_to_coap(&world_ops::WriteError::PayloadTooLarge { max: 1024 }),
+            coap_errors::write_error_to_coap(&crate::engine::EngineError::PayloadTooLarge {
+                max: 1024
+            }),
             141
         );
     }
@@ -795,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_put_and_coap_put_share_world_ops_semantics() {
+    async fn http_put_and_coap_put_share_engine_semantics() {
         let (core, dir) = test_core("cross-protocol");
         let mut events = core.events.subscribe();
 
@@ -808,7 +796,7 @@ mod tests {
             http_headers,
             Bytes::from_static(b"23.5"),
             auth::Tier::Write,
-            "home/http-temp".to_owned(),
+            ValidatedWorldPath::new("home/http-temp").unwrap(),
             &core,
             &TraceCtx::disabled(),
         )

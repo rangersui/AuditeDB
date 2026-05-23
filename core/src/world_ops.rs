@@ -16,25 +16,20 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 
 use crate::{
-    auth, can_read, can_write, etag, is_insufficient_storage_error, is_transient_storage_error,
-    needs_write_approve, store, world, AuthGate, Core,
+    auth, can_read, can_write, engine_types::ValidatedWorldPath, etag,
+    is_insufficient_storage_error, is_transient_storage_error, needs_write_approve, store, world,
+    AuthGate, Core,
 };
 
 #[derive(Debug)]
 pub(crate) struct ReadPermit {
-    world: String,
+    world: ValidatedWorldPath,
 }
 
 #[derive(Debug)]
 pub(crate) struct WritePermit {
-    world: String,
+    world: ValidatedWorldPath,
     gate: AuthGate,
-}
-
-impl WritePermit {
-    pub(crate) fn world(&self) -> &str {
-        &self.world
-    }
 }
 
 pub(crate) enum ReadOutcome {
@@ -46,14 +41,17 @@ pub(crate) enum ReadOutcome {
 pub(crate) enum ReadError {
     Auth(AuthGate),
     TransientStorage {
+        #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
     },
     InsufficientStorage {
+        #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
     },
     StorageRead {
+        #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
     },
@@ -62,7 +60,6 @@ pub(crate) enum ReadError {
 
 #[derive(Debug)]
 pub(crate) struct ReplaceRequest {
-    pub(crate) world: String,
     pub(crate) body: Bytes,
     pub(crate) content_type: String,
     pub(crate) headers: Vec<(String, String)>,
@@ -71,7 +68,6 @@ pub(crate) struct ReplaceRequest {
 
 #[derive(Debug)]
 pub(crate) struct AppendRequest {
-    pub(crate) world: String,
     pub(crate) body: Bytes,
     pub(crate) preconditions: etag::Preconditions,
 }
@@ -105,25 +101,30 @@ pub(crate) enum WriteError {
         projected: usize,
     },
     TransientStorage {
+        #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
+        #[allow(dead_code)]
         op: StorageOp,
     },
     InsufficientStorage {
+        #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
+        #[allow(dead_code)]
         op: StorageOp,
     },
     StorageRead {
+        #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
     },
     StorageWriteAudit {
+        #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
     },
     Internal(&'static str),
-    PermitWorldMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,35 +140,32 @@ pub(crate) trait WriteTraceHooks {
     fn notify_sent(&self) {}
 }
 
-#[cfg(feature = "coap")]
-pub(crate) struct NoopWriteTrace;
-
-#[cfg(feature = "coap")]
-impl WriteTraceHooks for NoopWriteTrace {}
-
 pub(crate) fn authorize_read(
     core: &Core,
-    world: &str,
+    world: &ValidatedWorldPath,
     tier: auth::Tier,
 ) -> Result<ReadPermit, ReadError> {
     if can_read(core, tier) {
         Ok(ReadPermit {
-            world: world.to_owned(),
+            world: world.clone(),
         })
     } else {
         Err(ReadError::Auth(AuthGate::Read))
     }
 }
 
-pub(crate) fn authorize_write(world: &str, tier: auth::Tier) -> Result<WritePermit, WriteError> {
-    let gate = if needs_write_approve(world) {
+pub(crate) fn authorize_write(
+    world: &ValidatedWorldPath,
+    tier: auth::Tier,
+) -> Result<WritePermit, WriteError> {
+    let gate = if needs_write_approve(world.as_str()) {
         AuthGate::WriteApprove
     } else {
         AuthGate::Write
     };
-    if can_write(world, tier) {
+    if can_write(world.as_str(), tier) {
         Ok(WritePermit {
-            world: world.to_owned(),
+            world: world.clone(),
             gate,
         })
     } else {
@@ -182,12 +180,12 @@ pub(crate) fn read_world(core: &Core, permit: &ReadPermit) -> Result<ReadOutcome
 pub(crate) fn read_world_for(
     core: &Core,
     permit: &ReadPermit,
-    world: &str,
+    world: &ValidatedWorldPath,
 ) -> Result<ReadOutcome, ReadError> {
-    if permit.world != world {
+    if &permit.world != world {
         return Err(ReadError::PermitWorldMismatch);
     }
-    match core.read_world_with_etag(world) {
+    match core.read_world_with_etag(world.as_str()) {
         Ok(Some((stage, etag))) => Ok(ReadOutcome::Found { stage, etag }),
         Ok(None) => Ok(ReadOutcome::Missing),
         Err(err) => Err(classify_read_error("storage read", err)),
@@ -200,20 +198,21 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     req: ReplaceRequest,
     hooks: &H,
 ) -> Result<WriteOutcome, WriteError> {
-    ensure_write_permit(permit, &req.world)?;
+    ensure_write_permit(permit)?;
+    let world = permit.world.as_str();
     if req.body.len() > core.max_world_bytes {
         return Err(WriteError::PayloadTooLarge {
             max: core.max_world_bytes,
         });
     }
 
-    let _write_guard = core.acquire_world_lock(&req.world).await;
+    let _write_guard = core.acquire_world_lock(world).await;
     hooks.lock_acquired();
-    core.clear_tombstone(&req.world);
-    check_write_preconditions(core, &req.world, &req.preconditions)?;
+    core.clear_tombstone(world);
+    check_write_preconditions(core, world, &req.preconditions)?;
 
-    let (existed, etag) = if store::is_persistent(&req.world) {
-        let prev_len_opt = world::body_len(&core.data, &req.world).map_err(|err| {
+    let (existed, etag) = if store::is_persistent(world) {
+        let prev_len_opt = world::body_len(&core.data, world).map_err(|err| {
             classify_write_storage_error("storage metadata", err, StorageOp::Read)
         })?;
         let existed = prev_len_opt.is_some();
@@ -230,7 +229,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
         }
         match world::write_with_audit_checked(
             &core.data,
-            &req.world,
+            world,
             &req.body,
             &req.content_type,
             &req.headers,
@@ -258,7 +257,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
         }
     } else {
         match core.mem.write_with_quota(
-            &req.world,
+            world,
             &req.body,
             &req.content_type,
             &req.headers,
@@ -272,7 +271,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     };
 
     hooks.sqlite_committed(&etag);
-    core.notify("PUT", &req.world, &etag);
+    core.notify("PUT", &permit.world, &etag);
     hooks.notify_sent();
     Ok(WriteOutcome {
         status_kind: if existed {
@@ -290,16 +289,17 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     req: AppendRequest,
     hooks: &H,
 ) -> Result<WriteOutcome, WriteError> {
-    ensure_write_permit(permit, &req.world)?;
-    let _write_guard = core.acquire_world_lock(&req.world).await;
+    ensure_write_permit(permit)?;
+    let world = permit.world.as_str();
+    let _write_guard = core.acquire_world_lock(world).await;
     hooks.lock_acquired();
-    core.clear_tombstone(&req.world);
-    check_write_preconditions(core, &req.world, &req.preconditions)?;
+    core.clear_tombstone(world);
+    check_write_preconditions(core, world, &req.preconditions)?;
 
-    let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(&req.world) {
-        core.mem.metadata(&req.world)
+    let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(world) {
+        core.mem.metadata(world)
     } else {
-        world::metadata(&core.data, &req.world)
+        world::metadata(&core.data, world)
             .map_err(|err| classify_write_storage_error("storage metadata", err, StorageOp::Read))?
     }) else {
         return Err(WriteError::NotFound);
@@ -315,7 +315,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         });
     }
 
-    let etag = if store::is_persistent(&req.world) {
+    let etag = if store::is_persistent(world) {
         if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
         }
@@ -328,7 +328,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         }
         match world::append_with_audit(
             &core.data,
-            &req.world,
+            world,
             &req.body,
             &content_type,
             &stored_headers,
@@ -351,7 +351,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     } else {
         match core
             .mem
-            .append_with_quota(&req.world, &req.body, core.max_memory_bytes)
+            .append_with_quota(world, &req.body, core.max_memory_bytes)
         {
             Ok(Some(result)) => format!("sha256-{}", result.body_sha256_after),
             Ok(None) => return Err(WriteError::NotFound),
@@ -362,7 +362,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     };
 
     hooks.sqlite_committed(&etag);
-    core.notify("POST", &req.world, &etag);
+    core.notify("POST", &permit.world, &etag);
     hooks.notify_sent();
     Ok(WriteOutcome {
         status_kind: WriteStatusKind::Updated,
@@ -370,11 +370,8 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     })
 }
 
-fn ensure_write_permit(permit: &WritePermit, world: &str) -> Result<(), WriteError> {
-    if permit.world != world {
-        return Err(WriteError::PermitWorldMismatch);
-    }
-    let expected_gate = if needs_write_approve(world) {
+fn ensure_write_permit(permit: &WritePermit) -> Result<(), WriteError> {
+    let expected_gate = if needs_write_approve(permit.world.as_str()) {
         AuthGate::WriteApprove
     } else {
         AuthGate::Write

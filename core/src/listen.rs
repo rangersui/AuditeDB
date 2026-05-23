@@ -4,13 +4,14 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
 };
-use std::{convert::Infallible, sync::Arc, time::Duration};
-use tokio_stream::{
-    iter,
-    wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
-};
+use std::{sync::Arc, time::Duration};
 
-use crate::{can_read, method_not_allowed, options_response, unauthorized, Core};
+use crate::{
+    engine::EngineError,
+    engine_ops::EngineOps,
+    engine_types::{ChangeEvent as EngineChangeEvent, SubscribePattern, SubscriptionRecvError},
+    method_not_allowed, options_response, server_error, unauthorized, Core,
+};
 
 pub(crate) const ALLOW: &str = "GET, OPTIONS";
 
@@ -44,62 +45,52 @@ pub(crate) async fn handler(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
     let tier = core.tokens.check(auth_header);
-    if !can_read(&core, tier) {
-        return unauthorized("listen requires read token");
-    }
-    let Ok(listen_permit) = core.listen_slots.clone().try_acquire_owned() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            "too many listen connections\n",
-        )
-            .into_response();
-    };
-    let pattern = pattern(&raw_pattern);
+    let pattern = SubscribePattern::new(&raw_pattern);
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok());
-    let rx = core.events.subscribe();
-    let (lag, replay, live_floor) = replay_after(&core, last_event_id, &pattern);
-    let replay_mode = last_event_id.is_some();
-    let lag_stream = iter(lag.into_iter().map(|missed| {
-        Ok::<Event, Infallible>(
-            Event::default()
-                .event("lag")
-                .data(format!("missed: {missed}")),
-        )
-    }));
-    let replay_stream = iter(
-        replay
-            .into_iter()
-            .map(|change| Ok::<Event, Infallible>(sse_change_event(change))),
-    );
-    let live_stream = tokio_stream::StreamExt::filter_map(BroadcastStream::new(rx), move |item| {
-        let pattern = pattern.clone();
-        match item {
-            Ok(change)
-                if (!replay_mode || change.id > live_floor) && matches(&pattern, &change.path) =>
-            {
-                Some(Ok::<Event, Infallible>(sse_change_event(change)))
-            }
-            Ok(_) => None,
-            Err(BroadcastStreamRecvError::Lagged(n)) => Some(Ok(Event::default()
-                .event("lag")
-                .data(format!("missed: {n}")))),
+    let subscription = match EngineOps::new(&core).subscribe(&pattern, tier, last_event_id) {
+        Ok(subscription) => subscription,
+        Err(EngineError::Auth(_)) => return unauthorized("listen requires read token"),
+        Err(EngineError::SubscriptionLimit) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [
+                    (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                    (header::RETRY_AFTER, "1"),
+                ],
+                "too many listen connections\n",
+            )
+                .into_response();
         }
-    });
-    let mut shutdown = core.shutdown.clone();
-    let shutdown_signal = async move {
-        let _ = shutdown.changed().await;
+        Err(EngineError::ShuttingDown) | Err(EngineError::TransientStorage { .. }) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [
+                    (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                    (header::RETRY_AFTER, "1"),
+                ],
+                "listen temporarily unavailable\n",
+            )
+                .into_response();
+        }
+        Err(_) => return server_error("listen failed".to_string()),
     };
-    let replay_stream = futures_util::StreamExt::chain(lag_stream, replay_stream);
-    let live_stream = futures_util::StreamExt::take_until(live_stream, shutdown_signal);
-
-    let stream = futures_util::StreamExt::chain(replay_stream, live_stream);
-    let stream = futures_util::StreamExt::map(stream, move |event| {
-        let _keep_alive = &listen_permit;
-        event
+    let stream = futures_util::stream::unfold(subscription, |mut subscription| async move {
+        match subscription.recv().await {
+            Ok(change) => Some((
+                Ok::<Event, std::convert::Infallible>(sse_change_event(change)),
+                subscription,
+            )),
+            Err(SubscriptionRecvError::Lagged { skipped }) => Some((
+                Ok(Event::default()
+                    .event("lag")
+                    .data(format!("missed: {skipped}"))),
+                subscription,
+            )),
+            Err(SubscriptionRecvError::Closed) => None,
+        }
     });
 
     Sse::new(stream)
@@ -109,35 +100,6 @@ pub(crate) async fn handler(
                 .text("keepalive"),
         )
         .into_response()
-}
-
-fn replay_after(
-    core: &Core,
-    last_event_id: Option<u64>,
-    pattern: &str,
-) -> (Option<u64>, Vec<ChangeEvent>, u64) {
-    let Some(last_id) = last_event_id else {
-        return (None, Vec::new(), 0);
-    };
-    let log = core
-        .event_log
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    let gap = log.front().and_then(|oldest| {
-        let expected_next = last_id.saturating_add(1);
-        if expected_next < oldest.id {
-            Some(oldest.id - expected_next)
-        } else {
-            None
-        }
-    });
-    let replay: Vec<_> = log
-        .iter()
-        .filter(|change| change.id > last_id && matches(pattern, &change.path))
-        .cloned()
-        .collect();
-    let live_floor = replay.last().map(|change| change.id).unwrap_or(last_id);
-    (gap, replay, live_floor)
 }
 
 pub(crate) fn pattern(raw: &str) -> String {
@@ -162,8 +124,8 @@ pub(crate) fn matches(pattern: &str, path: &str) -> bool {
     }
 }
 
-fn sse_change_event(change: ChangeEvent) -> Event {
-    let mut data = format!("path: {}\nmethod: {}", change.path, change.method);
+fn sse_change_event(change: EngineChangeEvent) -> Event {
+    let mut data = format!("path: /{}\nmethod: {}", change.path, change.method);
     if !change.etag.is_empty() {
         data.push_str("\netag: ");
         data.push_str(&change.etag);
@@ -205,10 +167,10 @@ mod tests {
 
     #[test]
     fn sse_change_event_is_control_plane_only() {
-        let event = sse_change_event(ChangeEvent {
+        let event = sse_change_event(crate::engine_types::ChangeEvent {
             id: 42,
             method: "PUT",
-            path: "/home/task/a".to_string(),
+            path: crate::engine_types::ValidatedWorldPath::new("home/task/a").unwrap(),
             etag: "hmac-abc".to_string(),
         });
         let wire = format!("{event:?}");
@@ -262,6 +224,7 @@ mod tests {
         .await;
 
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get(header::RETRY_AFTER).unwrap(), "1");
     }
 
     #[test]
@@ -309,11 +272,13 @@ mod tests {
             }
         }
 
-        let (gap, replay, floor) = replay_after(&core, Some(5), "/home/task/*");
+        let pattern = SubscribePattern::new("home/task/*");
+        let (gap, replay, floor) = crate::engine_ops::replay_after(&core, Some(5), &pattern);
 
         assert_eq!(gap, Some(4));
         assert_eq!(replay.len(), 3);
         assert_eq!(replay[0].id, 10);
+        assert_eq!(replay[0].path.as_str(), "home/task/10");
         assert_eq!(floor, 12);
     }
 
@@ -360,7 +325,8 @@ mod tests {
             });
         }
 
-        let (gap, replay, floor) = replay_after(&core, Some(u64::MAX), "/home/task/*");
+        let pattern = SubscribePattern::new("home/task/*");
+        let (gap, replay, floor) = crate::engine_ops::replay_after(&core, Some(u64::MAX), &pattern);
 
         assert_eq!(gap, None);
         assert!(replay.is_empty());

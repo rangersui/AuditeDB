@@ -1,39 +1,46 @@
-//! CoAP response-code mapping for protocol-neutral world operation errors.
+//! CoAP response-code mapping for protocol-neutral engine operation errors.
 
-use crate::world_ops;
+use crate::engine::EngineError;
 
-pub(crate) fn read_error_to_coap(err: &world_ops::ReadError) -> u8 {
+pub(crate) fn read_error_to_coap(err: &EngineError) -> u8 {
     match err {
-        world_ops::ReadError::Auth(_) => 129,
-        world_ops::ReadError::InsufficientStorage { .. } => 167,
-        world_ops::ReadError::TransientStorage { .. } => 163,
-        world_ops::ReadError::StorageRead { .. } | world_ops::ReadError::PermitWorldMismatch => 160,
+        EngineError::Auth(_) => 129,
+        EngineError::InsufficientStorage { .. } => 167,
+        EngineError::TransientStorage { .. }
+        | EngineError::ShuttingDown
+        | EngineError::SubscriptionLimit => 163,
+        EngineError::Storage { .. } | EngineError::InternalInvariant(_) => 160,
+        EngineError::InvalidWorldName
+        | EngineError::NotFound
+        | EngineError::PayloadTooLarge { .. }
+        | EngineError::PreconditionFailed { .. }
+        | EngineError::QuotaExceeded { .. } => 160,
     }
 }
 
-pub(crate) fn read_error_body(err: &world_ops::ReadError) -> &'static [u8] {
+pub(crate) fn read_error_body(err: &EngineError) -> &'static [u8] {
     match err {
-        world_ops::ReadError::Auth(_) => b"unauthorized\n",
-        world_ops::ReadError::InsufficientStorage { .. } => b"insufficient storage\n",
-        world_ops::ReadError::TransientStorage { .. } => b"storage busy\n",
-        world_ops::ReadError::StorageRead { .. } | world_ops::ReadError::PermitWorldMismatch => {
-            b"storage error\n"
-        }
+        EngineError::Auth(_) => b"unauthorized\n",
+        EngineError::InsufficientStorage { .. } => b"insufficient storage\n",
+        EngineError::TransientStorage { .. }
+        | EngineError::ShuttingDown
+        | EngineError::SubscriptionLimit => b"storage busy\n",
+        _ => b"storage error\n",
     }
 }
 
-pub(crate) fn write_error_to_coap(err: &world_ops::WriteError) -> u8 {
+pub(crate) fn write_error_to_coap(err: &EngineError) -> u8 {
     match err {
-        world_ops::WriteError::Auth(_) => 129,
-        world_ops::WriteError::PayloadTooLarge { .. } => 141,
-        world_ops::WriteError::PreconditionFailed { .. } => 140,
-        world_ops::WriteError::NotFound => 132,
-        world_ops::WriteError::QuotaExceeded { .. }
-        | world_ops::WriteError::InsufficientStorage { .. } => 167,
-        world_ops::WriteError::TransientStorage { .. } => 163,
-        world_ops::WriteError::StorageRead { .. }
-        | world_ops::WriteError::StorageWriteAudit { .. }
-        | world_ops::WriteError::Internal(_)
-        | world_ops::WriteError::PermitWorldMismatch => 160,
+        EngineError::Auth(_) => 129,
+        EngineError::PayloadTooLarge { .. } => 141,
+        EngineError::PreconditionFailed { .. } => 140,
+        EngineError::NotFound => 132,
+        EngineError::QuotaExceeded { .. } | EngineError::InsufficientStorage { .. } => 167,
+        EngineError::TransientStorage { .. }
+        | EngineError::ShuttingDown
+        | EngineError::SubscriptionLimit => 163,
+        EngineError::Storage { .. }
+        | EngineError::InternalInvariant(_)
+        | EngineError::InvalidWorldName => 160,
     }
 }

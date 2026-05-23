@@ -55,9 +55,13 @@ mod coap;
 #[cfg(feature = "coap")]
 mod coap_errors;
 mod config;
+mod delete_ops;
 mod engine;
+mod engine_ops;
+mod engine_types;
 mod etag;
 mod handler;
+mod http_range;
 mod http_semantics;
 mod ledger;
 mod listen;
@@ -89,10 +93,12 @@ pub use auth::AuthGate;
 #[cfg(not(feature = "unstable-engine"))]
 pub(crate) use auth::AuthGate;
 #[cfg(feature = "unstable-engine")]
-pub use engine::{
-    AccessTier, ChangeEvent, EmptyKeyError, Engine, EngineBuildError, EngineBuilder, EngineError,
-    EngineSubscription, EtagMatcher, Preconditions, ReadResult, Representation, SecretBytes,
-    SubscriptionRecvError, WriteKind, WriteResult,
+pub use engine::{Engine, EngineBuildError, EngineBuilder, EngineError};
+#[cfg(feature = "unstable-engine")]
+pub use engine_types::{
+    AccessTier, ChangeEvent, EmptyKeyError, EngineSubscription, EtagMatcher, InvalidWorldPath,
+    Preconditions, ReadResult, Representation, SecretBytes, SubscribePattern,
+    SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
 };
 
 use std::collections::VecDeque;
@@ -445,6 +451,10 @@ mod tests {
         }
     }
 
+    fn world_path(world: &str) -> crate::engine_types::ValidatedWorldPath {
+        crate::engine_types::ValidatedWorldPath::new(world).unwrap()
+    }
+
     fn env_lock() -> &'static TestMutex<()> {
         static LOCK: OnceLock<TestMutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| TestMutex::new(()))
@@ -589,7 +599,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"1234"),
                 auth::Tier::Write,
-                "home/a".to_string(),
+                world_path("home/a"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -602,7 +612,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"5"),
                 auth::Tier::Write,
-                "home/b".to_string(),
+                world_path("home/b"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -619,7 +629,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"5"),
                 auth::Tier::Write,
-                "home/a".to_string(),
+                world_path("home/a"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -665,7 +675,7 @@ mod tests {
                         HeaderMap::new(),
                         body,
                         auth::Tier::Write,
-                        path.to_string(),
+                        world_path(&path),
                         &core,
                         &TraceCtx::disabled(),
                     )
@@ -723,7 +733,7 @@ mod tests {
                         HeaderMap::new(),
                         body,
                         auth::Tier::Write,
-                        path.to_string(),
+                        world_path(&path),
                         &core,
                         &TraceCtx::disabled(),
                     )
@@ -842,7 +852,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"12345"),
                 auth::Tier::Write,
-                "home/too-big".to_string(),
+                world_path("home/too-big"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -855,7 +865,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"1234"),
                 auth::Tier::Write,
-                "home/four".to_string(),
+                world_path("home/four"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -868,7 +878,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"5"),
                 auth::Tier::Write,
-                "home/four".to_string(),
+                world_path("home/four"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -890,7 +900,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"12"),
                 auth::Tier::Write,
-                "tmp/a".to_string(),
+                world_path("tmp/a"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -902,7 +912,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"34"),
                 auth::Tier::Write,
-                "tmp/b".to_string(),
+                world_path("tmp/b"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -914,7 +924,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"5"),
                 auth::Tier::Write,
-                "tmp/c".to_string(),
+                world_path("tmp/c"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -969,7 +979,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/private".to_string(),
+                world_path("home/private"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -980,7 +990,7 @@ mod tests {
             execute_head(
                 headers.clone(),
                 auth::Tier::Read,
-                "home/private".to_string(),
+                world_path("home/private"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1139,7 +1149,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/range".to_string(),
+                world_path("home/range"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1156,7 +1166,7 @@ mod tests {
             execute_head(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/range".to_string(),
+                world_path("home/range"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1183,7 +1193,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/ranges".to_string(),
+                world_path("home/ranges"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1196,7 +1206,7 @@ mod tests {
             execute_head(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/ranges".to_string(),
+                world_path("home/ranges"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1220,7 +1230,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/range".to_string(),
+                world_path("home/range"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1248,7 +1258,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/range".to_string(),
+                world_path("home/range"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1272,7 +1282,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/links".to_string(),
+                world_path("home/links"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1291,7 +1301,7 @@ mod tests {
             execute_head(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/links".to_string(),
+                world_path("home/links"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1335,7 +1345,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/range".to_string(),
+                world_path("home/range"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1368,7 +1378,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/cache".to_string(),
+                world_path("home/cache"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1386,7 +1396,7 @@ mod tests {
             execute_head(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/cache".to_string(),
+                world_path("home/cache"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1403,7 +1413,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/cache".to_string(),
+                world_path("home/cache"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1673,7 +1683,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"new"),
                 auth::Tier::Write,
-                "home/created".to_string(),
+                world_path("home/created"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1691,7 +1701,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"again"),
                 auth::Tier::Write,
-                "home/created".to_string(),
+                world_path("home/created"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1712,7 +1722,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"new"),
                 auth::Tier::Write,
-                "home/café report".to_string(),
+                world_path("home/café report"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1728,7 +1738,7 @@ mod tests {
             execute_get(
                 headers.clone(),
                 auth::Tier::Anon,
-                "home/café report".to_string(),
+                world_path("home/café report"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1762,7 +1772,7 @@ mod tests {
             execute_get(
                 req_headers.clone(),
                 auth::Tier::Anon,
-                "home/销售/报告".to_string(),
+                world_path("home/销售/报告"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1840,7 +1850,7 @@ mod tests {
                 stale.clone(),
                 Bytes::from_static(b"two"),
                 auth::Tier::Write,
-                "home/cas".to_string(),
+                world_path("home/cas"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1853,7 +1863,7 @@ mod tests {
                 stale.clone(),
                 Bytes::from_static(b" plus"),
                 auth::Tier::Write,
-                "home/cas".to_string(),
+                world_path("home/cas"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -1871,7 +1881,7 @@ mod tests {
                 good.clone(),
                 Bytes::from_static(b" plus"),
                 auth::Tier::Write,
-                "home/cas".to_string(),
+                world_path("home/cas"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2404,7 +2414,7 @@ mod tests {
             execute_get(
                 req_headers.clone(),
                 auth::Tier::Anon,
-                "home/gzip".to_string(),
+                world_path("home/gzip"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2575,7 +2585,7 @@ mod tests {
                 req_headers.clone(),
                 Bytes::from_static(b" world"),
                 auth::Tier::Write,
-                "home/post-audit-meta".to_string(),
+                world_path("home/post-audit-meta"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2626,7 +2636,7 @@ mod tests {
             execute_delete(
                 stale.clone(),
                 auth::Tier::Approve,
-                "home/delete-cas".to_string(),
+                world_path("home/delete-cas"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2644,7 +2654,7 @@ mod tests {
             execute_delete(
                 good.clone(),
                 auth::Tier::Approve,
-                "home/delete-cas".to_string(),
+                world_path("home/delete-cas"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2708,7 +2718,7 @@ mod tests {
             execute_delete(
                 HeaderMap::new(),
                 auth::Tier::Approve,
-                "home/delete-degraded".to_string(),
+                world_path("home/delete-degraded"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2759,7 +2769,7 @@ mod tests {
             execute_delete(
                 headers.clone(),
                 auth::Tier::Write,
-                "home/delete-policy".to_string(),
+                world_path("home/delete-policy"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2772,13 +2782,28 @@ mod tests {
             execute_delete(
                 headers.clone(),
                 auth::Tier::Approve,
-                "var/log/deletes".to_string(),
+                world_path("var/log/deletes"),
                 &core,
                 &TraceCtx::disabled(),
             )
             .await,
         );
         assert_eq!(ledger_delete.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            ledger_delete
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .unwrap(),
+            "Bearer realm=\"elastik\""
+        );
+        assert_eq!(
+            ledger_delete.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            response_text(ledger_delete).await,
+            "auth required: delete ledger is append-only\n"
+        );
         assert!(core.read_world("var/log/deletes").unwrap().is_some());
 
         let _ = std::fs::remove_dir_all(dir);
@@ -2792,7 +2817,7 @@ mod tests {
             execute_delete(
                 headers.clone(),
                 auth::Tier::Approve,
-                "home/missing".to_string(),
+                world_path("home/missing"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2871,7 +2896,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"x"),
                 auth::Tier::Write,
-                "home/count".to_string(),
+                world_path("home/count"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2889,7 +2914,7 @@ mod tests {
             execute_delete(
                 headers.clone(),
                 auth::Tier::Approve,
-                "home/count".to_string(),
+                world_path("home/count"),
                 &state,
                 &TraceCtx::disabled(),
             )
@@ -2920,7 +2945,7 @@ mod tests {
                 headers.clone(),
                 Bytes::from_static(b"hello"),
                 auth::Tier::Write,
-                "home/m".to_string(),
+                world_path("home/m"),
                 &core,
                 &TraceCtx::disabled(),
             )
@@ -2934,7 +2959,7 @@ mod tests {
                 execute_get(
                     headers.clone(),
                     auth::Tier::Read,
-                    "home/m".to_string(),
+                    world_path("home/m"),
                     &core,
                     &TraceCtx::disabled(),
                 )
@@ -2963,7 +2988,7 @@ mod tests {
             execute_delete(
                 headers.clone(),
                 auth::Tier::Approve,
-                "home/m".to_string(),
+                world_path("home/m"),
                 &state,
                 &TraceCtx::disabled(),
             )
@@ -3024,7 +3049,7 @@ mod tests {
                     headers.clone(),
                     Bytes::from_static(b"x"),
                     auth::Tier::Write,
-                    w.to_string(),
+                    world_path(w),
                     &core,
                     &TraceCtx::disabled(),
                 )
@@ -3046,9 +3071,9 @@ mod tests {
         let trace2 = TraceCtx::disabled();
         let trace3 = TraceCtx::disabled();
         let (r1, r2, r3) = tokio::join!(
-            execute_delete(h1, auth::Tier::Approve, "home/a".to_string(), &s1, &trace1),
-            execute_delete(h2, auth::Tier::Approve, "home/b".to_string(), &s2, &trace2),
-            execute_delete(h3, auth::Tier::Approve, "home/c".to_string(), &s3, &trace3),
+            execute_delete(h1, auth::Tier::Approve, world_path("home/a"), &s1, &trace1),
+            execute_delete(h2, auth::Tier::Approve, world_path("home/b"), &s2, &trace2),
+            execute_delete(h3, auth::Tier::Approve, world_path("home/c"), &s3, &trace3),
         );
         assert_eq!(unwrap_response(r1).status(), StatusCode::NO_CONTENT);
         assert_eq!(unwrap_response(r2).status(), StatusCode::NO_CONTENT);
@@ -3387,7 +3412,7 @@ mod tests {
             headers2,
             Bytes::new(),
             auth::Tier::Anon,
-            "home/short".to_string(),
+            world_path("home/short"),
             &core,
             &TraceCtx::disabled(),
         )
@@ -3498,26 +3523,42 @@ mod tests {
         impl crate::world_ops::WriteTraceHooks for NoopTrace {}
 
         let (core, dir) = test_core("permit-bound");
-        let permit = crate::world_ops::authorize_write("home/permit-a", auth::Tier::Write)
+        let world = world_path("home/permit-a");
+        let permit = crate::world_ops::authorize_write(&world, auth::Tier::Write)
             .expect("write token tier should authorize home writes");
         let req = crate::world_ops::ReplaceRequest {
-            world: "home/permit-b".to_owned(),
-            body: Bytes::from_static(b"wrong-door"),
+            body: Bytes::from_static(b"right-door"),
             content_type: "text/plain; charset=utf-8".to_owned(),
             headers: Vec::new(),
             preconditions: et::Preconditions::default(),
         };
 
-        let err = crate::world_ops::replace_write(&core, &permit, req, &NoopTrace)
+        crate::world_ops::replace_write(&core, &permit, req, &NoopTrace)
             .await
-            .expect_err("permit for one world must not write a different world");
+            .expect("permit writes only its bound world");
 
-        assert!(matches!(
-            err,
-            crate::world_ops::WriteError::PermitWorldMismatch
-        ));
+        assert_eq!(
+            core.read_world("home/permit-a").unwrap().unwrap().body,
+            b"right-door"
+        );
         assert!(core.read_world("home/permit-b").unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_permit_preserves_path_based_approve_gate() {
+        assert!(matches!(
+            crate::world_ops::authorize_write(&world_path("etc/config"), auth::Tier::Write),
+            Err(crate::world_ops::WriteError::Auth(AuthGate::WriteApprove))
+        ));
+        assert!(
+            crate::world_ops::authorize_write(&world_path("etc/config"), auth::Tier::Approve)
+                .is_ok()
+        );
+        assert!(
+            crate::world_ops::authorize_write(&world_path("home/config"), auth::Tier::Write)
+                .is_ok()
+        );
     }
 }

@@ -17,7 +17,6 @@ use std::{
     },
 };
 
-use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Semaphore};
 
@@ -28,6 +27,7 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES,
     },
+    engine_types::{AccessTier, SecretBytes},
     http_semantics::HeaderAllowlist,
     read_cache::{ReadCache, DEFAULT_READ_CACHE_MAX_ENTRIES},
     state::{new_event_counter, Core},
@@ -65,86 +65,6 @@ pub struct EngineBuilder {
     read_cache_max_entries: usize,
     persist_header_allowlist: HeaderAllowlist,
     persist_header_user_deny: HeaderAllowlist,
-}
-
-/// HMAC key material for the audit chain.
-///
-/// Empty and all-whitespace keys are rejected. The key intentionally has no
-/// public `Debug`, `Display`, or `AsRef<[u8]>` implementation.
-pub struct SecretBytes {
-    bytes: NonEmptyBytes,
-}
-
-/// Returned when a secret key constructor receives an empty or all-whitespace
-/// byte string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmptyKeyError;
-
-/// Access tier granted to a caller after token verification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum AccessTier {
-    Anon,
-    Read,
-    Write,
-    Approve,
-}
-
-/// Stored representation passed to write operations.
-///
-/// Header persistence policy belongs to adapters. The engine treats these
-/// pairs as opaque metadata.
-pub struct Representation {
-    pub body: Bytes,
-    pub content_type: String,
-    pub headers: Vec<(String, String)>,
-}
-
-/// Protocol-neutral write preconditions.
-pub struct Preconditions {
-    pub if_match: Vec<EtagMatcher>,
-    pub if_none_match: Vec<EtagMatcher>,
-}
-
-/// ETag matcher parsed by adapters before calling the engine.
-#[non_exhaustive]
-pub enum EtagMatcher {
-    Any,
-    Strong(String),
-    Weak(String),
-}
-
-/// Result of a successful full-representation read.
-pub struct ReadResult {
-    pub representation: Representation,
-    pub etag: String,
-}
-
-/// Whether a write created a new world or updated an existing one.
-#[non_exhaustive]
-pub enum WriteKind {
-    Created,
-    Updated,
-}
-
-/// Result of a successful write.
-pub struct WriteResult {
-    pub kind: WriteKind,
-    pub etag: String,
-}
-
-/// Protocol-neutral change event.
-///
-/// On targets with native 64-bit atomics, ids advance through the full `u64`
-/// range via `AtomicU64`. On 32-bit targets without native 64-bit atomics, a
-/// mutex-backed `u64` counter provides the same external id range. The counter
-/// uses saturating increments, so `u64::MAX` is the rollover-imminent signal on
-/// all platforms.
-pub struct ChangeEvent {
-    pub id: u64,
-    pub method: &'static str,
-    pub path: String,
-    pub etag: String,
 }
 
 /// Errors that can occur while constructing an `Engine`.
@@ -193,40 +113,9 @@ pub enum EngineError {
     Storage {
         sqlite_code: Option<i32>,
     },
+    SubscriptionLimit,
     ShuttingDown,
     InternalInvariant(&'static str),
-}
-
-/// Subscription to protocol-neutral engine change events.
-pub struct EngineSubscription {
-    _private: (),
-}
-
-/// Error returned by `EngineSubscription::recv`.
-#[non_exhaustive]
-pub enum SubscriptionRecvError {
-    Closed,
-    Lagged { skipped: u64 },
-}
-
-impl SecretBytes {
-    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, EmptyKeyError> {
-        NonEmptyBytes::new(bytes)
-            .map(|bytes| Self { bytes })
-            .ok_or(EmptyKeyError)
-    }
-
-    pub fn try_from_slice(bytes: &[u8]) -> Result<Self, EmptyKeyError> {
-        Self::new(bytes.to_vec())
-    }
-
-    /// Transfers the bytes out of the secret wrapper.
-    ///
-    /// After this call, wipe-on-drop responsibility belongs to the caller that
-    /// owns the returned `Vec<u8>`. Today that caller is `Core::hmac_key`.
-    fn into_vec(self) -> Vec<u8> {
-        self.bytes.into_vec()
-    }
 }
 
 impl Default for EngineBuilder {
@@ -376,6 +265,10 @@ impl Engine {
         EngineBuilder::default()
     }
 
+    pub(crate) fn core(&self) -> &Core {
+        self.inner.core.as_ref()
+    }
+
     /// Maps raw token bytes to an access tier.
     ///
     /// Invalid, unknown, or empty token bytes return `AccessTier::Anon`.
@@ -408,19 +301,9 @@ impl EngineError {
             | Self::PayloadTooLarge { .. }
             | Self::PreconditionFailed { .. }
             | Self::QuotaExceeded { .. }
+            | Self::SubscriptionLimit
             | Self::ShuttingDown
             | Self::InternalInvariant(_) => None,
-        }
-    }
-}
-
-impl From<auth::Tier> for AccessTier {
-    fn from(tier: auth::Tier) -> Self {
-        match tier {
-            auth::Tier::Anon => Self::Anon,
-            auth::Tier::Read => Self::Read,
-            auth::Tier::Write => Self::Write,
-            auth::Tier::Approve => Self::Approve,
         }
     }
 }
@@ -431,14 +314,6 @@ impl fmt::Debug for Engine {
     }
 }
 
-impl fmt::Display for EmptyKeyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("secret key must not be empty or all whitespace")
-    }
-}
-
-impl std::error::Error for EmptyKeyError {}
-
 fn nonzero_or_default(value: usize, default: usize) -> usize {
     match value {
         0 => default,
@@ -446,7 +321,7 @@ fn nonzero_or_default(value: usize, default: usize) -> usize {
     }
 }
 
-fn sqlite_code(err: &rusqlite::Error) -> Option<i32> {
+pub(crate) fn sqlite_code(err: &rusqlite::Error) -> Option<i32> {
     err.sqlite_error_code().map(|code| code as i32)
 }
 

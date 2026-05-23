@@ -21,26 +21,28 @@ use axum::{
 };
 
 use super::{write_error_phase, HttpWriteTrace};
-use crate::{auth, http_semantics as hs, world_ops, Core, Phase, TraceCtx};
+use crate::{
+    auth, engine_ops::EngineOps, engine_types::ValidatedWorldPath, http_semantics as hs, Core,
+    Phase, TraceCtx,
+};
 
 pub(crate) async fn execute_post(
     headers: HeaderMap,
     body: Bytes,
     tier: auth::Tier,
-    world: String,
+    world: ValidatedWorldPath,
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    let permit = match world_ops::authorize_write(&world, tier) {
-        Ok(permit) => permit,
-        Err(err) => return write_error_phase(err),
-    };
-    let req = world_ops::AppendRequest {
-        world,
-        body,
-        preconditions: hs::request_preconditions(&headers),
-    };
-    let outcome = match world_ops::append_write(core, &permit, req, &HttpWriteTrace { trace }).await
+    let outcome = match EngineOps::new(core)
+        .append(
+            &world,
+            body,
+            hs::request_preconditions(&headers).into(),
+            tier,
+            &HttpWriteTrace { trace },
+        )
+        .await
     {
         Ok(outcome) => outcome,
         Err(err) => return write_error_phase(err),

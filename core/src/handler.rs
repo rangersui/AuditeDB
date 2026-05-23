@@ -45,9 +45,13 @@ use axum::{
 };
 
 use crate::{
-    auth, content_range_value, decimal_header_value, http_semantics as hs, not_found,
-    payload_too_large, precondition_failed, server_error, storage_error, storage_quota_exceeded,
-    to_header_map, unauthorized, world_ops, Core, ErrorReason, Phase, TraceCtx, Verb,
+    auth, content_range_value, decimal_header_value,
+    engine::EngineError,
+    engine_ops::EngineOps,
+    engine_types::{Representation, ValidatedWorldPath, WriteKind},
+    http_semantics as hs, insufficient_storage, not_found, payload_too_large, precondition_failed,
+    server_error, storage_quota_exceeded, storage_temporarily_unavailable, to_header_map,
+    unauthorized, world_ops, Core, ErrorReason, Phase, TraceCtx, Verb,
 };
 
 /// Dispatch from `Phase::Dispatched` to the verb-specific handler.
@@ -57,7 +61,7 @@ pub(crate) async fn execute(
     headers: HeaderMap,
     body: Bytes,
     tier: auth::Tier,
-    world: String,
+    world: ValidatedWorldPath,
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
@@ -73,17 +77,13 @@ pub(crate) async fn execute(
 pub(crate) async fn execute_get(
     headers: HeaderMap,
     tier: auth::Tier,
-    world: String,
+    world: ValidatedWorldPath,
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    let permit = match world_ops::authorize_read(core, &world, tier) {
-        Ok(permit) => permit,
-        Err(err) => return read_error_phase(err),
-    };
-    let (stage, etag) = match world_ops::read_world(core, &permit) {
-        Ok(world_ops::ReadOutcome::Found { stage, etag }) => (stage, etag),
-        Ok(world_ops::ReadOutcome::Missing) => {
+    let result = match EngineOps::new(core).read(&world, tier) {
+        Ok(Some(result)) => result,
+        Ok(None) => {
             return Phase::Error {
                 resp: not_found(),
                 reason: ErrorReason::NotFound,
@@ -91,11 +91,18 @@ pub(crate) async fn execute_get(
         }
         Err(err) => return read_error_phase(err),
     };
+    let stage = result.representation;
+    let etag = result.etag;
     if hs::read_not_modified(&headers, &etag) {
         // 304: no body, but emit body_size for diagnostic clarity
         // ("the cached body would be N bytes if the client revalidated").
         trace.emit_aux_kv("body_size", &stage.body.len().to_string());
-        return Phase::ExecutedRead(hs::not_modified(&world, &etag, &stage));
+        return Phase::ExecutedRead(hs::not_modified(
+            world.as_str(),
+            &etag,
+            &stage.content_type,
+            &stage.headers,
+        ));
     }
     let mut resp_headers = vec![
         (
@@ -106,7 +113,7 @@ pub(crate) async fn execute_get(
         (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
         (header::ETAG, hs::etag_header(&etag)),
     ];
-    hs::apply_world_links(&world, &mut resp_headers);
+    hs::apply_world_links(world.as_str(), &mut resp_headers);
     hs::apply_meta_headers(&stage.headers, &mut resp_headers);
     match hs::effective_range(&headers, stage.body.len(), &etag) {
         Ok(Some((start, end))) => {
@@ -146,17 +153,13 @@ pub(crate) async fn execute_get(
 pub(crate) async fn execute_head(
     headers: HeaderMap,
     tier: auth::Tier,
-    world: String,
+    world: ValidatedWorldPath,
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    let permit = match world_ops::authorize_read(core, &world, tier) {
-        Ok(permit) => permit,
-        Err(err) => return read_error_phase(err),
-    };
-    let (stage, etag) = match world_ops::read_world(core, &permit) {
-        Ok(world_ops::ReadOutcome::Found { stage, etag }) => (stage, etag),
-        Ok(world_ops::ReadOutcome::Missing) => {
+    let result = match EngineOps::new(core).read(&world, tier) {
+        Ok(Some(result)) => result,
+        Ok(None) => {
             return Phase::Error {
                 resp: not_found(),
                 reason: ErrorReason::NotFound,
@@ -164,9 +167,16 @@ pub(crate) async fn execute_head(
         }
         Err(err) => return read_error_phase(err),
     };
+    let stage = result.representation;
+    let etag = result.etag;
     if hs::read_not_modified(&headers, &etag) {
         trace.emit_aux_kv("body_size", &stage.body.len().to_string());
-        return Phase::ExecutedRead(hs::not_modified(&world, &etag, &stage));
+        return Phase::ExecutedRead(hs::not_modified(
+            world.as_str(),
+            &etag,
+            &stage.content_type,
+            &stage.headers,
+        ));
     }
     let mut resp_headers = vec![
         (
@@ -181,7 +191,7 @@ pub(crate) async fn execute_head(
         (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
         (header::ETAG, hs::etag_header(&etag)),
     ];
-    hs::apply_world_links(&world, &mut resp_headers);
+    hs::apply_world_links(world.as_str(), &mut resp_headers);
     hs::apply_meta_headers(&stage.headers, &mut resp_headers);
     match hs::effective_range(&headers, stage.body.len(), &etag) {
         Ok(Some((start, end))) => {
@@ -212,41 +222,43 @@ pub(crate) async fn execute_put(
     headers: HeaderMap,
     body: Bytes,
     tier: auth::Tier,
-    world: String,
+    world: ValidatedWorldPath,
     core: &Core,
     trace: &TraceCtx,
 ) -> Phase {
-    let permit = match world_ops::authorize_write(&world, tier) {
-        Ok(permit) => permit,
-        Err(err) => return write_error_phase(err),
-    };
     let content_type = hs::request_content_type(&headers);
     let meta = hs::request_meta_headers(
         &headers,
         &core.persist_header_allowlist,
         &core.persist_header_user_deny,
     );
-    let req = world_ops::ReplaceRequest {
-        world,
+    let representation = Representation {
         body,
         content_type,
         headers: meta,
-        preconditions: hs::request_preconditions(&headers),
     };
-    let outcome =
-        match world_ops::replace_write(core, &permit, req, &HttpWriteTrace { trace }).await {
-            Ok(outcome) => outcome,
-            Err(err) => return write_error_phase(err),
-        };
-    let status = match outcome.status_kind {
-        world_ops::WriteStatusKind::Created => StatusCode::CREATED,
-        world_ops::WriteStatusKind::Updated => StatusCode::OK,
+    let outcome = match EngineOps::new(core)
+        .replace(
+            &world,
+            representation,
+            hs::request_preconditions(&headers).into(),
+            tier,
+            &HttpWriteTrace { trace },
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(err) => return write_error_phase(err),
+    };
+    let status = match outcome.kind {
+        WriteKind::Created => StatusCode::CREATED,
+        WriteKind::Updated => StatusCode::OK,
     };
     let mut resp_headers = vec![(header::ETAG, hs::etag_header(&outcome.etag))];
     if status == StatusCode::CREATED {
         resp_headers.push((
             header::LOCATION,
-            HeaderValue::from_str(&hs::world_url(permit.world()))
+            HeaderValue::from_str(&hs::world_url(world.as_str()))
                 .unwrap_or_else(|_| HeaderValue::from_static("/")),
         ));
     }
@@ -290,44 +302,62 @@ impl world_ops::WriteTraceHooks for HttpWriteTrace<'_> {
     }
 }
 
-fn read_error_phase(err: world_ops::ReadError) -> Phase {
+fn read_error_phase(err: EngineError) -> Phase {
     match err {
-        world_ops::ReadError::Auth(gate) => Phase::Error {
+        EngineError::Auth(gate) => Phase::Error {
             resp: unauthorized("read requires read token"),
             reason: ErrorReason::Auth(gate),
         },
-        world_ops::ReadError::TransientStorage { scope, err }
-        | world_ops::ReadError::InsufficientStorage { scope, err }
-        | world_ops::ReadError::StorageRead { scope, err } => Phase::Error {
-            resp: storage_error(scope, err),
+        EngineError::TransientStorage { .. } => Phase::Error {
+            resp: storage_temporarily_unavailable(),
             reason: ErrorReason::StorageRead,
         },
-        world_ops::ReadError::PermitWorldMismatch => Phase::Error {
-            resp: server_error("read permit world mismatch".to_string()),
+        EngineError::InsufficientStorage { .. } => Phase::Error {
+            resp: insufficient_storage(),
+            reason: ErrorReason::InsufficientStorage,
+        },
+        EngineError::Storage { .. } | EngineError::InternalInvariant(_) => Phase::Error {
+            resp: server_error("storage failure".to_string()),
+            reason: ErrorReason::StorageRead,
+        },
+        EngineError::ShuttingDown => Phase::Error {
+            resp: storage_temporarily_unavailable(),
+            reason: ErrorReason::StorageRead,
+        },
+        EngineError::SubscriptionLimit => Phase::Error {
+            resp: server_error("unexpected read subscription limit".to_string()),
+            reason: ErrorReason::StorageRead,
+        },
+        EngineError::InvalidWorldName
+        | EngineError::NotFound
+        | EngineError::PayloadTooLarge { .. }
+        | EngineError::PreconditionFailed { .. }
+        | EngineError::QuotaExceeded { .. } => Phase::Error {
+            resp: server_error("unexpected read error".to_string()),
             reason: ErrorReason::StorageRead,
         },
     }
 }
 
-pub(in crate::handler) fn write_error_phase(err: world_ops::WriteError) -> Phase {
+pub(in crate::handler) fn write_error_phase(err: EngineError) -> Phase {
     match err {
-        world_ops::WriteError::Auth(gate) => Phase::Error {
+        EngineError::Auth(gate) => Phase::Error {
             resp: unauthorized("write requires token; system worlds need approve token"),
             reason: ErrorReason::Auth(gate),
         },
-        world_ops::WriteError::PayloadTooLarge { max } => Phase::Error {
+        EngineError::PayloadTooLarge { max } => Phase::Error {
             resp: payload_too_large(max),
             reason: ErrorReason::PayloadTooLarge,
         },
-        world_ops::WriteError::PreconditionFailed { message } => Phase::Error {
+        EngineError::PreconditionFailed { message } => Phase::Error {
             resp: precondition_failed(message),
             reason: ErrorReason::PreconditionFailed,
         },
-        world_ops::WriteError::NotFound => Phase::Error {
+        EngineError::NotFound => Phase::Error {
             resp: not_found(),
             reason: ErrorReason::NotFound,
         },
-        world_ops::WriteError::QuotaExceeded {
+        EngineError::QuotaExceeded {
             used,
             quota,
             projected,
@@ -335,39 +365,33 @@ pub(in crate::handler) fn write_error_phase(err: world_ops::WriteError) -> Phase
             resp: storage_quota_exceeded(used, quota, projected),
             reason: ErrorReason::QuotaExceeded,
         },
-        world_ops::WriteError::TransientStorage { scope, err, op } => Phase::Error {
-            resp: storage_error(scope, err),
-            reason: transient_storage_reason(op),
-        },
-        world_ops::WriteError::InsufficientStorage { scope, err, op } => Phase::Error {
-            resp: storage_error(scope, err),
-            reason: match op {
-                world_ops::StorageOp::Read => ErrorReason::StorageRead,
-                world_ops::StorageOp::WriteAudit => ErrorReason::InsufficientStorage,
-            },
-        },
-        world_ops::WriteError::StorageRead { scope, err } => Phase::Error {
-            resp: storage_error(scope, err),
-            reason: ErrorReason::StorageRead,
-        },
-        world_ops::WriteError::StorageWriteAudit { scope, err } => Phase::Error {
-            resp: storage_error(scope, err),
+        EngineError::TransientStorage { .. } => Phase::Error {
+            resp: storage_temporarily_unavailable(),
             reason: ErrorReason::StorageWriteAudit,
         },
-        world_ops::WriteError::Internal(message) => Phase::Error {
+        EngineError::InsufficientStorage { .. } => Phase::Error {
+            resp: insufficient_storage(),
+            reason: ErrorReason::InsufficientStorage,
+        },
+        EngineError::Storage { .. } => Phase::Error {
+            resp: server_error("storage failure".to_string()),
+            reason: ErrorReason::StorageRead,
+        },
+        EngineError::InternalInvariant(message) => Phase::Error {
             resp: server_error(message.to_string()),
             reason: ErrorReason::StorageWriteAudit,
         },
-        world_ops::WriteError::PermitWorldMismatch => Phase::Error {
-            resp: server_error("write permit world mismatch".to_string()),
+        EngineError::ShuttingDown => Phase::Error {
+            resp: storage_temporarily_unavailable(),
             reason: ErrorReason::StorageWriteAudit,
         },
-    }
-}
-
-fn transient_storage_reason(op: world_ops::StorageOp) -> ErrorReason {
-    match op {
-        world_ops::StorageOp::Read => ErrorReason::StorageRead,
-        world_ops::StorageOp::WriteAudit => ErrorReason::StorageWriteAudit,
+        EngineError::SubscriptionLimit => Phase::Error {
+            resp: server_error("unexpected write subscription limit".to_string()),
+            reason: ErrorReason::StorageWriteAudit,
+        },
+        EngineError::InvalidWorldName => Phase::Error {
+            resp: server_error("invalid world reached write adapter".to_string()),
+            reason: ErrorReason::StorageWriteAudit,
+        },
     }
 }

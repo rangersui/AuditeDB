@@ -54,8 +54,8 @@ use axum::{
 };
 
 use crate::{
-    auth, bad_request, canonicalize_path, method_not_allowed, validate_world_name, AuthGate, Core,
-    WORLD_ALLOW,
+    auth, bad_request, canonicalize_path, engine_types::ValidatedWorldPath, method_not_allowed,
+    AuthGate, Core, WORLD_ALLOW,
 };
 
 /// Request ID stamped onto each incoming request by the
@@ -102,14 +102,14 @@ pub(crate) enum Phase {
         headers: HeaderMap,
         body: Bytes,
         tier: auth::Tier,
-        world: String,
+        world: ValidatedWorldPath,
     },
     Dispatched {
         verb: Verb,
         headers: HeaderMap,
         body: Bytes,
         tier: auth::Tier,
-        world: String,
+        world: ValidatedWorldPath,
     },
     /// GET / HEAD finished. No audit, no notify.
     ExecutedRead(Response),
@@ -367,12 +367,15 @@ fn validate_path(
     tier: auth::Tier,
 ) -> Phase {
     let world = canonicalize_path(&path);
-    if let Err(reason) = validate_world_name(&world) {
-        return Phase::Error {
-            resp: bad_request(reason),
-            reason: ErrorReason::PathInvalid(reason),
-        };
-    }
+    let world = match ValidatedWorldPath::from_canonical(world) {
+        Ok(world) => world,
+        Err(reason) => {
+            return Phase::Error {
+                resp: bad_request(reason),
+                reason: ErrorReason::PathInvalid(reason),
+            };
+        }
+    };
     Phase::PathValidated {
         method,
         headers,
@@ -396,7 +399,7 @@ fn dispatch(
     headers: HeaderMap,
     body: Bytes,
     tier: auth::Tier,
-    world: String,
+    world: ValidatedWorldPath,
 ) -> Phase {
     let verb = match method {
         Method::GET => Verb::Get,
@@ -619,7 +622,7 @@ mod tests {
             auth::Tier::Anon,
         );
         match phase {
-            Phase::PathValidated { world, .. } => assert_eq!(world, "home/foo"),
+            Phase::PathValidated { world, .. } => assert_eq!(world.as_str(), "home/foo"),
             _ => panic!("expected PathValidated"),
         }
     }
@@ -634,7 +637,7 @@ mod tests {
             auth::Tier::Approve,
         );
         match phase {
-            Phase::PathValidated { world, .. } => assert_eq!(world, "etc/foo"),
+            Phase::PathValidated { world, .. } => assert_eq!(world.as_str(), "etc/foo"),
             _ => panic!("expected PathValidated"),
         }
     }
@@ -702,7 +705,7 @@ mod tests {
             HeaderMap::new(),
             Bytes::new(),
             auth::Tier::Anon,
-            "home/foo".into(),
+            ValidatedWorldPath::new("home/foo").unwrap(),
         );
         match phase {
             Phase::Dispatched { verb, .. } => assert_eq!(verb, Verb::Get),
@@ -717,7 +720,7 @@ mod tests {
             HeaderMap::new(),
             Bytes::new(),
             auth::Tier::Write,
-            "home/foo".into(),
+            ValidatedWorldPath::new("home/foo").unwrap(),
         );
         match phase {
             Phase::Error {
@@ -754,7 +757,7 @@ mod tests {
                 HeaderMap::new(),
                 Bytes::new(),
                 auth::Tier::Anon,
-                "home/x".into(),
+                ValidatedWorldPath::new("home/x").unwrap(),
             );
             match phase {
                 Phase::Dispatched { verb, .. } => assert_eq!(verb, expected_verb),

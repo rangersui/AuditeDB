@@ -5,25 +5,17 @@ use axum::{
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::{BTreeMap, HashSet};
 
-use crate::world::Stage;
-use crate::{
-    etag, precondition_failed, storage_error, to_header_map, unsatisfied_range_value, Core,
-};
+use crate::{etag, to_header_map, unsatisfied_range_value};
+#[cfg(test)]
+use crate::{precondition_failed, storage_error, Core};
 
-/// User-configurable matcher used by both Layer 3 (user allow,
-/// `ELASTIK_PERSIST_HEADERS`) and Layer 1.5 (user deny,
-/// `ELASTIK_DENY_HEADERS`) of the four-layer persist policy. Same
-/// matcher type, two field instances on `Core`; the call site
-/// (`should_persist_for_storage`) decides allow-vs-deny semantics.
-/// Built once at startup; held on `Core`.
-///
+pub(crate) use crate::http_range::effective_range;
+#[cfg(test)]
+pub(crate) use crate::http_range::parse_range;
+
 /// Entries are normalized to lowercase. A trailing `*` makes an
 /// entry a prefix match (e.g. `x-my-*` matches `x-my-anything`).
 /// Anything else is exact match.
-///
-/// The empty allowlist is fully valid and means "no custom headers
-/// beyond the built-in default allow set are persisted." Default
-/// `Core` construction in tests uses `HeaderAllowlist::empty()`.
 #[derive(Default, Clone)]
 pub(crate) struct HeaderAllowlist {
     exact: HashSet<String>,
@@ -244,6 +236,7 @@ pub(crate) fn request_preconditions(headers: &HeaderMap) -> etag::Preconditions 
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::result_large_err)]
 pub(crate) fn check_write_preconditions(
     core: &Core,
@@ -268,68 +261,6 @@ pub(crate) fn read_not_modified(req_headers: &HeaderMap, current: &str) -> bool 
         .and_then(|v| v.to_str().ok())
         .map(|h| etag::etag_list_weak_matches(h, current))
         .unwrap_or(false)
-}
-
-pub(crate) fn effective_range(
-    req_headers: &HeaderMap,
-    len: usize,
-    current_etag: &str,
-) -> Result<Option<(usize, usize)>, ()> {
-    if let Some(if_range) = req_headers
-        .get(header::IF_RANGE)
-        .and_then(|v| v.to_str().ok())
-    {
-        if !if_range_strong_matches(if_range, current_etag) {
-            return Ok(None);
-        }
-    }
-    parse_range(req_headers, len)
-}
-
-pub(crate) fn parse_range(
-    req_headers: &HeaderMap,
-    len: usize,
-) -> Result<Option<(usize, usize)>, ()> {
-    let Some(raw) = req_headers.get(header::RANGE).and_then(|v| v.to_str().ok()) else {
-        return Ok(None);
-    };
-    let Some(spec) = raw.trim().strip_prefix("bytes=") else {
-        return Err(());
-    };
-    if spec.contains(',') {
-        return Ok(None);
-    }
-    let Some((left, right)) = spec.split_once('-') else {
-        return Err(());
-    };
-    if len == 0 {
-        return Err(());
-    }
-    if left.is_empty() {
-        let suffix: usize = right.parse().map_err(|_| ())?;
-        if suffix == 0 {
-            return Err(());
-        }
-        let take = suffix.min(len);
-        return Ok(Some((len - take, len - 1)));
-    }
-    let start: usize = left.parse().map_err(|_| ())?;
-    if start >= len {
-        return Err(());
-    }
-    let end = if right.is_empty() {
-        len - 1
-    } else {
-        right.parse().map_err(|_| ())?
-    };
-    if end < start {
-        return Err(());
-    }
-    Ok(Some((start, end.min(len - 1))))
-}
-
-pub(crate) fn if_range_strong_matches(header_value: &str, current: &str) -> bool {
-    header_value.trim() == format!("\"{current}\"")
 }
 
 pub(crate) fn request_content_type(headers: &HeaderMap) -> String {
@@ -524,18 +455,23 @@ pub(crate) fn is_never_persisted_header(name_lower: &str) -> bool {
         )
 }
 
-pub(crate) fn not_modified(world_name: &str, etag: &str, stage: &Stage) -> Response {
+pub(crate) fn not_modified(
+    world_name: &str,
+    etag: &str,
+    content_type: &str,
+    meta_headers: &[(String, String)],
+) -> Response {
     let mut headers = vec![
         (header::ETAG, etag_header(etag)),
         (
             header::CONTENT_TYPE,
-            HeaderValue::from_str(&stage.content_type)
+            HeaderValue::from_str(content_type)
                 .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
         ),
         (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
     ];
     apply_world_links(world_name, &mut headers);
-    apply_meta_headers(&stage.headers, &mut headers);
+    apply_meta_headers(meta_headers, &mut headers);
     (StatusCode::NOT_MODIFIED, to_header_map(headers), "").into_response()
 }
 
