@@ -33,7 +33,9 @@
 //! preconditions, quota, audit, and notify in one place while each
 //! adapter owns its wire rendering.
 
+#[path = "handler/delete.rs"]
 mod delete;
+#[path = "handler/post.rs"]
 mod post;
 pub(crate) use delete::execute_delete;
 pub(crate) use post::execute_post;

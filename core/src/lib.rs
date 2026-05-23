@@ -51,8 +51,10 @@
 mod audit;
 mod auth;
 #[cfg(feature = "coap")]
+#[path = "server/coap.rs"]
 mod coap;
 #[cfg(feature = "coap")]
+#[path = "server/coap_errors.rs"]
 mod coap_errors;
 mod config;
 mod delete_ops;
@@ -61,17 +63,24 @@ mod engine_introspection;
 mod engine_ops;
 mod engine_types;
 mod etag;
+#[path = "server/handler.rs"]
 mod handler;
 mod http_range;
 mod http_semantics;
 mod ledger;
+#[path = "server/listen.rs"]
 mod listen;
+#[path = "server/middleware.rs"]
 mod middleware;
 mod path;
+#[path = "server/pipeline.rs"]
 mod pipeline;
+#[path = "server/proc.rs"]
 mod proc;
 mod read_cache;
+#[path = "server/response.rs"]
 mod response;
+#[path = "server/route.rs"]
 mod route;
 mod state;
 mod storage_class;
