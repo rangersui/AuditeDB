@@ -16,7 +16,7 @@
 //! inline tests in main.rs (via `super::*`) keep working without
 //! import churn.
 
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::Arc;
 
 use axum::{
     extract::{Path as AxPath, State},
@@ -25,10 +25,15 @@ use axum::{
 };
 
 use crate::{
-    audit, audit_broken, audit_not_applicable, audit_valid, bad_request, can_read,
-    canonicalize_path, decimal_header_value, df_body, du_body, method_not_allowed, not_found,
-    options_response, proc_text_response, server_error, storage_error, store, to_header_map,
-    unauthorized, validate_world_name, world, world_list_body, Core, VERSION,
+    audit_broken, audit_not_applicable, audit_valid, bad_request, decimal_header_value, df_body,
+    du_body,
+    engine::EngineError,
+    engine_introspection::{AuditVerify, PoolSnapshot, ValidatedProcPath, WorldUsage},
+    engine_ops::EngineOps,
+    engine_types::ValidatedWorldPath,
+    insufficient_storage, method_not_allowed, not_found, options_response, proc_text_response,
+    server_error, storage_temporarily_unavailable, to_header_map, unauthorized, world_list_body,
+    Core, VERSION,
 };
 
 // Allow headers for OPTIONS / 405 responses. `pub(crate)` so the
@@ -109,23 +114,17 @@ pub(crate) async fn proc_worlds(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
-    if !can_read(&core, tier) {
-        return unauthorized("read requires read token");
-    }
-    let data = core.data.clone();
-    let mut names = match tokio::task::spawn_blocking(move || world::list(&data)).await {
-        Ok(Ok(names)) => names,
-        Ok(Err(e)) => return storage_error("proc worlds", e),
-        Err(_) => return server_error("proc worlds worker failed".to_string()),
+    let tier = tier_from_headers(&core, &headers);
+    let proc_path = ValidatedProcPath::worlds();
+    let names = match run_introspection(core.clone(), "proc worlds", move |core| {
+        EngineOps::new(core).list_worlds(&proc_path, tier)
+    })
+    .await
+    {
+        Ok(names) => names,
+        Err(resp) => return *resp,
     };
-    names.extend(core.mem.list());
-    names.sort();
-    names.dedup();
-    let body = world_list_body(&names);
+    let body = world_list_body_from_paths(&names);
     let mut resp_headers = vec![(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; charset=utf-8"),
@@ -159,19 +158,17 @@ pub(crate) async fn proc_du(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    if let Err(resp) = require_read(&core, &headers) {
-        return *resp;
-    }
-    let data = core.data.clone();
-    let mut sizes = match tokio::task::spawn_blocking(move || world::sizes(&data)).await {
-        Ok(Ok(sizes)) => sizes,
-        Ok(Err(e)) => return storage_error("proc du", e),
-        Err(_) => return server_error("proc du worker failed".to_string()),
+    let tier = tier_from_headers(&core, &headers);
+    let proc_path = ValidatedProcPath::du();
+    let sizes = match run_introspection(core.clone(), "proc du", move |core| {
+        EngineOps::new(core).du(&proc_path, tier)
+    })
+    .await
+    {
+        Ok(sizes) => sizes,
+        Err(resp) => return *resp,
     };
-    sizes.extend(core.mem.sizes());
-    sizes.sort_by(|a, b| a.0.cmp(&b.0));
-    sizes.dedup_by(|a, b| a.0 == b.0);
-    let body = du_body(&sizes);
+    let body = du_body_from_usage(&sizes);
     proc_text_response(method, body)
 }
 
@@ -186,29 +183,22 @@ pub(crate) async fn proc_df(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    if let Err(resp) = require_read(&core, &headers) {
-        return *resp;
-    }
-    let mem = core.mem.clone();
-    let (memory_used, memory_worlds) =
-        match tokio::task::spawn_blocking(move || (mem.total_bytes(), mem.list().len())).await {
-            Ok(counts) => counts,
-            Err(_) => return server_error("proc df worker failed".to_string()),
-        };
-    let storage_used = core.storage_body_bytes.load(Ordering::Relaxed);
-    let durable_worlds = core
-        .durable_world_count
-        .load(Ordering::Relaxed)
-        .saturating_sub(usize::from(
-            core.delete_ledger_created.load(Ordering::Relaxed),
-        ));
-    let worlds = durable_worlds + memory_worlds;
+    let tier = tier_from_headers(&core, &headers);
+    let proc_path = ValidatedProcPath::df();
+    let snapshot = match run_introspection(core.clone(), "proc df", move |core| {
+        EngineOps::new(core).df(&proc_path, tier)
+    })
+    .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(resp) => return *resp,
+    };
     let body = df_body(
-        storage_used,
-        core.max_storage_bytes,
-        memory_used,
-        core.max_memory_bytes,
-        worlds,
+        snapshot.storage_used,
+        snapshot.storage_quota,
+        snapshot.memory_used,
+        snapshot.memory_quota,
+        snapshot.worlds,
     );
     proc_text_response(method, body)
 }
@@ -237,56 +227,17 @@ pub(crate) async fn proc_pool(
     if method != Method::GET && method != Method::HEAD {
         return method_not_allowed(PROC_ALLOW);
     }
-    if let Err(resp) = require_read(&core, &headers) {
-        return *resp;
-    }
-
-    let hits = core
-        .read_cache
-        .metrics
-        .read_cache_hits
-        .load(Ordering::Relaxed);
-    let misses = core
-        .read_cache
-        .metrics
-        .read_cache_misses
-        .load(Ordering::Relaxed);
-    let capped = core
-        .read_cache
-        .metrics
-        .read_cache_capped
-        .load(Ordering::Relaxed);
-    let open_fails = core
-        .read_cache
-        .metrics
-        .read_cache_open_fails
-        .load(Ordering::Relaxed);
-    let ledger_inits = core.ledger.inits.load(Ordering::Relaxed);
-    let max_entries = core.read_cache.max_entries;
-
-    let read_cache = core.read_cache.clone();
-    let snapshot = match tokio::task::spawn_blocking(move || {
-        let entries = read_cache.snapshot_entries();
-        let tombstones = read_cache.snapshot_tombstones();
-        (entries, tombstones)
+    let tier = tier_from_headers(&core, &headers);
+    let proc_path = ValidatedProcPath::pool();
+    let snapshot = match run_introspection(core.clone(), "proc pool", move |core| {
+        EngineOps::new(core).pool(&proc_path, tier)
     })
     .await
     {
-        Ok(snap) => snap,
-        Err(_) => return server_error("proc pool worker failed".to_string()),
+        Ok(snapshot) => snapshot,
+        Err(resp) => return *resp,
     };
-    let (entries, tombstones) = snapshot;
-
-    let body = format!(
-        "read_cache_entries {entries} snapshot\n\
-         read_cache_tombstones {tombstones} snapshot\n\
-         read_cache_hits {hits} counter\n\
-         read_cache_misses {misses} counter\n\
-         read_cache_capped {capped} counter\n\
-         read_cache_open_fails {open_fails} counter\n\
-         read_cache_max_entries {max_entries} snapshot\n\
-         ledger_writer_inits {ledger_inits} counter\n"
-    );
+    let body = pool_body(&snapshot);
     proc_text_response(method, body)
 }
 
@@ -311,46 +262,25 @@ pub(crate) async fn proc_audit_verify(
     if raw_world.is_empty() {
         return bad_request("audit verify requires a world path");
     }
-    let world_name = canonicalize_path(raw_world);
-    if let Err(reason) = validate_world_name(&world_name) {
-        return bad_request(reason);
-    }
+    let proc_path = match ValidatedProcPath::new(format!("proc/audit/{raw_world}/verify")) {
+        Ok(path) => path,
+        Err(_) => return bad_request("invalid audit verify world path"),
+    };
 
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
-    if !can_read(&core, tier) {
-        return unauthorized("read requires read token");
-    }
-
-    if store::is_memory_world(&world_name) {
-        if !core.mem.contains(&world_name) {
-            return not_found();
-        }
-        return audit_not_applicable();
-    }
-
-    // Bug 58 fix: route through the read cache so DELETE on the same
-    // world drains in-flight verifies via the slot's write guard.
-    // The bare `audit::verify_chain(data, world, key)` path is gone
-    // -- it opened a fresh fd outside SlotState and would have
-    // re-introduced Bug 48 / Bug 54-shape races on this admin endpoint.
-    let core_clone = core.clone();
-    let verify_result = match tokio::task::spawn_blocking(move || {
-        core_clone.cached_verify_chain(&world_name)
+    let tier = tier_from_headers(&core, &headers);
+    let verify_result = match run_introspection(core.clone(), "audit verify", move |core| {
+        EngineOps::new(core).verify_audit(&proc_path, tier)
     })
     .await
     {
         Ok(result) => result,
-        Err(_) => return server_error("audit verify worker failed".to_string()),
+        Err(resp) => return *resp,
     };
 
     match verify_result {
-        Ok(Some(audit::VerifyReport::Valid(report))) => audit_valid(report),
-        Ok(Some(audit::VerifyReport::Broken(report))) => audit_broken(report),
-        Ok(None) => not_found(),
-        Err(e) => storage_error("audit verify", e),
+        AuditVerify::Valid(report) => audit_valid(report),
+        AuditVerify::Broken(report) => audit_broken(report),
+        AuditVerify::NotApplicable => audit_not_applicable(),
     }
 }
 
@@ -362,18 +292,84 @@ pub(crate) async fn proc_reserved(method: Method) -> Response {
     }
 }
 
-/// Auth gate shared by `/proc/du` and `/proc/df`. Module-private —
-/// only the proc handlers in this file call it. Returns the
-/// `Box<Response>` form so the lint `clippy::result_large_err` stays
-/// happy without forcing the caller to box at every site.
-fn require_read(core: &Core, headers: &HeaderMap) -> Result<(), Box<Response>> {
+fn tier_from_headers(core: &Core, headers: &HeaderMap) -> crate::auth::Tier {
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
-    let tier = core.tokens.check(auth_header);
-    if can_read(core, tier) {
-        Ok(())
-    } else {
-        Err(Box::new(unauthorized("read requires read token")))
+    core.tokens.check(auth_header)
+}
+
+async fn run_introspection<T, F>(
+    core: Arc<Core>,
+    scope: &'static str,
+    f: F,
+) -> Result<T, Box<Response>>
+where
+    T: Send + 'static,
+    F: FnOnce(&Core) -> Result<T, EngineError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(move || f(core.as_ref())).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(Box::new(proc_engine_error(scope, err))),
+        Err(_) => Err(Box::new(server_error(format!("{scope} worker failed")))),
     }
+}
+
+fn proc_engine_error(scope: &'static str, err: EngineError) -> Response {
+    match err {
+        EngineError::Auth(_) => unauthorized("read requires read token"),
+        EngineError::NotFound => not_found(),
+        EngineError::TransientStorage { .. } | EngineError::ShuttingDown => {
+            storage_temporarily_unavailable()
+        }
+        EngineError::InsufficientStorage { .. } => insufficient_storage(),
+        EngineError::Storage { .. } => server_error(format!("{scope} storage failure")),
+        EngineError::InvalidWorldName => bad_request("invalid world path"),
+        EngineError::InternalInvariant(message) => {
+            server_error(format!("{scope} internal invariant: {message}"))
+        }
+        EngineError::PayloadTooLarge { .. }
+        | EngineError::PreconditionFailed { .. }
+        | EngineError::QuotaExceeded { .. }
+        | EngineError::SubscriptionLimit => {
+            server_error(format!("unexpected {scope} engine error"))
+        }
+    }
+}
+
+fn world_list_body_from_paths(names: &[ValidatedWorldPath]) -> String {
+    let names: Vec<String> = names
+        .iter()
+        .map(|world| world.as_str().to_owned())
+        .collect();
+    world_list_body(&names)
+}
+
+fn du_body_from_usage(sizes: &[WorldUsage]) -> String {
+    let sizes: Vec<(String, usize)> = sizes
+        .iter()
+        .map(|usage| (usage.world.as_str().to_owned(), usage.bytes))
+        .collect();
+    du_body(&sizes)
+}
+
+fn pool_body(snapshot: &PoolSnapshot) -> String {
+    format!(
+        "read_cache_entries {} snapshot\n\
+         read_cache_tombstones {} snapshot\n\
+         read_cache_hits {} counter\n\
+         read_cache_misses {} counter\n\
+         read_cache_capped {} counter\n\
+         read_cache_open_fails {} counter\n\
+         read_cache_max_entries {} snapshot\n\
+         ledger_writer_inits {} counter\n",
+        snapshot.read_cache_entries,
+        snapshot.read_cache_tombstones,
+        snapshot.read_cache_hits,
+        snapshot.read_cache_misses,
+        snapshot.read_cache_capped,
+        snapshot.read_cache_open_fails,
+        snapshot.read_cache_max_entries,
+        snapshot.ledger_writer_inits
+    )
 }

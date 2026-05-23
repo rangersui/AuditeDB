@@ -117,13 +117,44 @@ pub struct ChangeEvent {
 /// Subscription to protocol-neutral engine change events.
 pub struct EngineSubscription {
     _slot: OwnedSemaphorePermit,
-    replay: VecDeque<Result<ChangeEvent, SubscriptionRecvError>>,
+    state: SubscriptionState,
+    pending_shutdown: Option<watch::Receiver<bool>>,
+}
+
+struct DeferredLiveSubscription {
+    rx: broadcast::Receiver<crate::listen::ChangeEvent>,
+    pattern: SubscribePattern,
+    replay_mode: bool,
+    live_floor: u64,
+}
+
+struct LiveSubscription {
     rx: broadcast::Receiver<crate::listen::ChangeEvent>,
     pattern: SubscribePattern,
     replay_mode: bool,
     live_floor: u64,
     shutdown: watch::Receiver<bool>,
-    closed: bool,
+}
+
+enum SubscriptionState {
+    Replaying {
+        remaining: VecDeque<Result<ChangeEvent, SubscriptionRecvError>>,
+        live: DeferredLiveSubscription,
+    },
+    Live(LiveSubscription),
+    Closed,
+}
+
+impl DeferredLiveSubscription {
+    fn with_shutdown(self, shutdown: watch::Receiver<bool>) -> LiveSubscription {
+        LiveSubscription {
+            rx: self.rx,
+            pattern: self.pattern,
+            replay_mode: self.replay_mode,
+            live_floor: self.live_floor,
+            shutdown,
+        }
+    }
 }
 
 /// Error returned by `EngineSubscription::recv`.
@@ -227,15 +258,27 @@ impl EngineSubscription {
         live_floor: u64,
         shutdown: watch::Receiver<bool>,
     ) -> Self {
-        Self {
-            _slot: slot,
-            replay,
+        let live = DeferredLiveSubscription {
             rx,
             pattern,
             replay_mode,
             live_floor,
-            shutdown,
-            closed: false,
+        };
+        let (state, pending_shutdown) = if replay.is_empty() {
+            (SubscriptionState::Live(live.with_shutdown(shutdown)), None)
+        } else {
+            (
+                SubscriptionState::Replaying {
+                    remaining: replay,
+                    live,
+                },
+                Some(shutdown),
+            )
+        };
+        Self {
+            _slot: slot,
+            state,
+            pending_shutdown,
         }
     }
 
@@ -244,40 +287,59 @@ impl EngineSubscription {
     /// `Lagged` is recoverable: subsequent calls continue with fresh live
     /// events. `Closed` is terminal.
     pub async fn recv(&mut self) -> Result<ChangeEvent, SubscriptionRecvError> {
-        if self.closed {
-            self.closed = true;
-            return Err(SubscriptionRecvError::Closed);
-        }
-        if let Some(item) = self.replay.pop_front() {
-            return item;
-        }
-        if *self.shutdown.borrow() {
-            self.closed = true;
-            return Err(SubscriptionRecvError::Closed);
-        }
-
         loop {
-            tokio::select! {
-                changed = self.shutdown.changed() => {
-                    self.closed = true;
-                    let _ = changed;
+            let state = std::mem::replace(&mut self.state, SubscriptionState::Closed);
+            match state {
+                SubscriptionState::Closed => {
+                    self.state = SubscriptionState::Closed;
                     return Err(SubscriptionRecvError::Closed);
                 }
-                item = self.rx.recv() => {
-                    match item {
-                        Ok(change)
-                            if (!self.replay_mode || change.id > self.live_floor)
-                                && crate::listen::matches(self.pattern.as_str(), &change.path) =>
-                        {
-                            return Ok(change.into());
-                        }
-                        Ok(_) => {}
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            return Err(SubscriptionRecvError::Lagged { skipped });
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            self.closed = true;
+                SubscriptionState::Replaying {
+                    mut remaining,
+                    live,
+                } => {
+                    if let Some(item) = remaining.pop_front() {
+                        self.state = SubscriptionState::Replaying { remaining, live };
+                        return item;
+                    }
+                    let shutdown = self
+                        .pending_shutdown
+                        .take()
+                        .expect("replay state retains pending shutdown receiver");
+                    self.state = SubscriptionState::Live(live.with_shutdown(shutdown));
+                }
+                SubscriptionState::Live(mut live) => {
+                    if *live.shutdown.borrow() {
+                        self.state = SubscriptionState::Closed;
+                        return Err(SubscriptionRecvError::Closed);
+                    }
+                    tokio::select! {
+                        changed = live.shutdown.changed() => {
+                            let _ = changed;
+                            self.state = SubscriptionState::Closed;
                             return Err(SubscriptionRecvError::Closed);
+                        }
+                        item = live.rx.recv() => {
+                            match item {
+                                Ok(change)
+                                    if (!live.replay_mode || change.id > live.live_floor)
+                                        && crate::listen::matches(live.pattern.as_str(), &change.path) =>
+                                {
+                                    self.state = SubscriptionState::Live(live);
+                                    return Ok(change.into());
+                                }
+                                Ok(_) => {
+                                    self.state = SubscriptionState::Live(live);
+                                }
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    self.state = SubscriptionState::Live(live);
+                                    return Err(SubscriptionRecvError::Lagged { skipped });
+                                }
+                                Err(broadcast::error::RecvError::Closed) => {
+                                    self.state = SubscriptionState::Closed;
+                                    return Err(SubscriptionRecvError::Closed);
+                                }
+                            }
                         }
                     }
                 }

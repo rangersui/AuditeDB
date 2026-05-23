@@ -18,7 +18,7 @@ use axum::{
 };
 
 use crate::{
-    audit,
+    engine_introspection::{AuditBroken, AuditValid},
     storage_class::{is_insufficient_storage_error, is_transient_storage_error},
 };
 
@@ -194,7 +194,7 @@ pub(crate) fn storage_error(scope: &str, err: rusqlite::Error) -> Response {
 
 // ─── audit verify responses ────────────────────────────────────────
 
-pub(crate) fn audit_valid(report: audit::VerifyOk) -> Response {
+pub(crate) fn audit_valid(report: AuditValid) -> Response {
     (
         StatusCode::OK,
         to_header_map(vec![
@@ -221,7 +221,7 @@ pub(crate) fn audit_valid(report: audit::VerifyOk) -> Response {
         .into_response()
 }
 
-pub(crate) fn audit_broken(report: audit::VerifyBreak) -> Response {
+pub(crate) fn audit_broken(report: AuditBroken) -> Response {
     (
         StatusCode::CONFLICT,
         to_header_map(vec![
