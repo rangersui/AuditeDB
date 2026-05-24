@@ -72,7 +72,6 @@ elastik.load_dotenv(path) yourself.
 from __future__ import annotations
 
 import os
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from elastik.sdk import (
@@ -165,10 +164,7 @@ __all__ = [
     "list_worlds", "list_paths", "list_keys", "request",
 ]
 
-try:
-    __version__ = version("elastik")
-except PackageNotFoundError:
-    __version__ = "8.0.0"
+__version__ = "8.0.0"
 
 
 # ── module-level singleton client ──────────────────────────────────
