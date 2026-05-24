@@ -298,11 +298,7 @@ pub(crate) async fn execute_put<S: HandlerEngineState>(
         &persist_header_allowlist,
         &persist_header_user_deny,
     );
-    let representation = Representation {
-        body,
-        content_type,
-        headers: meta,
-    };
+    let representation = Representation::new(body, content_type, meta);
     let outcome = match state
         .engine()
         .replace_traced(

@@ -199,11 +199,11 @@ async fn handle(engine: &Engine, request: &Packet<'_>) -> Vec<u8> {
         },
         Method::Put => {
             let content_type = cf_to_media_type(request.content_format);
-            let representation = Representation {
-                body: Bytes::copy_from_slice(request.payload),
-                content_type: content_type.to_owned(),
-                headers: Vec::new(),
-            };
+            let representation = Representation::new(
+                Bytes::copy_from_slice(request.payload),
+                content_type,
+                Vec::new(),
+            );
             match engine
                 .replace_traced(
                     &world_name,

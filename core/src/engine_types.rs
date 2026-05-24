@@ -70,6 +70,7 @@ pub enum AccessTier {
 ///
 /// Header persistence policy belongs to adapters. The engine treats these
 /// pairs as opaque metadata.
+#[non_exhaustive]
 pub struct Representation {
     /// Opaque payload bytes stored verbatim.
     pub body: Bytes,
@@ -84,6 +85,7 @@ pub struct Representation {
 ///
 /// Use [`Preconditions::none`] to skip all checks. Multiple matchers within a
 /// list are OR'd; the two lists are AND'd.
+#[non_exhaustive]
 pub struct Preconditions {
     /// `If-Match`-style matchers. The write proceeds only if **any** matcher
     /// matches the current ETag.
@@ -145,6 +147,7 @@ impl From<crate::etag::EtagMatcher> for EtagMatcher {
 }
 
 /// Result of a successful full-representation read.
+#[non_exhaustive]
 pub struct ReadResult {
     /// The stored representation (body + content-type + metadata headers).
     pub representation: Representation,
@@ -162,6 +165,7 @@ pub enum WriteKind {
 }
 
 /// Result of a successful write.
+#[non_exhaustive]
 pub struct WriteResult {
     /// Whether the write created a new world or updated an existing one.
     pub kind: WriteKind,
@@ -177,6 +181,7 @@ pub struct WriteResult {
 /// uses saturating increments, so `u64::MAX` is the rollover-imminent signal on
 /// all platforms.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ChangeEvent {
     /// Monotonically increasing event id. Use this as `since` for resumed
     /// subscriptions.
@@ -329,12 +334,7 @@ impl From<crate::event::ChangeEvent> for ChangeEvent {
         let canonical = value.path.trim_start_matches('/').to_owned();
         let path = ValidatedWorldPath::from_canonical(canonical)
             .expect("listen events are emitted only for validated world paths");
-        Self {
-            id: value.id,
-            method: value.method,
-            path,
-            etag: value.etag,
-        }
+        Self::new(value.id, value.method, path, value.etag)
     }
 }
 
@@ -351,6 +351,53 @@ impl SubscribePattern {
     /// Returns the normalized pattern string.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Representation {
+    /// Builds a stored representation from payload bytes, content type, and
+    /// adapter-supplied metadata headers.
+    pub fn new(
+        body: impl Into<Bytes>,
+        content_type: impl Into<String>,
+        headers: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            body: body.into(),
+            content_type: content_type.into(),
+            headers,
+        }
+    }
+}
+
+impl ReadResult {
+    pub(crate) fn new(representation: Representation, etag: String) -> Self {
+        Self {
+            representation,
+            etag,
+        }
+    }
+}
+
+impl WriteResult {
+    pub(crate) fn new(kind: WriteKind, etag: String) -> Self {
+        Self { kind, etag }
+    }
+}
+
+impl ChangeEvent {
+    pub(crate) fn new(
+        id: u64,
+        method: &'static str,
+        path: ValidatedWorldPath,
+        etag: String,
+    ) -> Self {
+        Self {
+            id,
+            method,
+            path,
+            etag,
+        }
     }
 }
 
@@ -464,6 +511,14 @@ impl EngineSubscription {
 }
 
 impl Preconditions {
+    /// Builds protocol-neutral write preconditions from matcher lists.
+    pub fn new(if_match: Vec<EtagMatcher>, if_none_match: Vec<EtagMatcher>) -> Self {
+        Self {
+            if_match,
+            if_none_match,
+        }
+    }
+
     /// Returns a [`Preconditions`] value with both lists empty (no checks).
     pub fn none() -> Self {
         Self {
@@ -494,7 +549,8 @@ impl std::error::Error for EmptyKeyError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{SubscribePattern, ValidatedWorldPath};
+    use super::{EtagMatcher, Preconditions, Representation, SubscribePattern, ValidatedWorldPath};
+    use bytes::Bytes;
 
     #[test]
     fn validated_world_path_accepts_canonical_namespaced_worlds() {
@@ -537,5 +593,38 @@ mod tests {
             SubscribePattern::new("/home/jobs/*").as_str(),
             "/home/jobs/*"
         );
+    }
+
+    #[test]
+    fn representation_constructor_sets_all_public_fields() {
+        let repr = Representation::new(
+            Bytes::from_static(b"hello"),
+            "text/plain",
+            vec![("x-meta-project".to_string(), "demo".to_string())],
+        );
+
+        assert_eq!(repr.body, Bytes::from_static(b"hello"));
+        assert_eq!(repr.content_type, "text/plain");
+        assert_eq!(
+            repr.headers,
+            vec![("x-meta-project".to_string(), "demo".to_string())]
+        );
+    }
+
+    #[test]
+    fn preconditions_constructor_sets_matcher_lists() {
+        let preconditions = Preconditions::new(
+            vec![EtagMatcher::Strong("abc".to_string())],
+            vec![EtagMatcher::Any],
+        );
+
+        assert!(matches!(
+            preconditions.if_match.as_slice(),
+            [EtagMatcher::Strong(value)] if value == "abc"
+        ));
+        assert!(matches!(
+            preconditions.if_none_match.as_slice(),
+            [EtagMatcher::Any]
+        ));
     }
 }

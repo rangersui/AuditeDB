@@ -26,11 +26,7 @@
 //! engine
 //!     .replace(
 //!         &world,
-//!         Representation {
-//!             body: Bytes::from_static(b"hi"),
-//!             content_type: "text/plain".into(),
-//!             headers: Vec::new(),
-//!         },
+//!         Representation::new(Bytes::from_static(b"hi"), "text/plain", Vec::new()),
 //!         Preconditions::none(),
 //!         AccessTier::Write,
 //!     )
@@ -2923,6 +2919,7 @@ mod tests {
         assert!(body.contains("read_cache_hits 1 counter\n"));
         assert!(body.contains("read_cache_misses 1 counter\n"));
         assert!(body.contains("read_cache_capped 0 counter\n"));
+        assert!(body.contains("read_cache_evictions 0 counter\n"));
         assert!(body.contains("read_cache_open_fails 0 counter\n"));
         assert!(body.contains("read_cache_max_entries "));
         // No DELETE issued yet -- ledger writer never lazy-inited.
@@ -2946,6 +2943,55 @@ mod tests {
             body2.contains("ledger_writer_inits 1 counter\n"),
             "expected counter to bump to 1 after first DELETE; body=\n{body2}"
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_pool_reports_read_cache_eviction_values() {
+        let (core, dir) = test_core_with_read_cache_max("proc-pool-eviction-values", 2);
+        let headers = HeaderMap::new();
+
+        for world in ["home/a", "home/b", "home/c"] {
+            let put = unwrap_response(
+                execute_put(
+                    headers.clone(),
+                    Bytes::from_static(b"x"),
+                    auth::Tier::Write,
+                    world_path(world),
+                    &core,
+                    &TraceCtx::disabled(),
+                )
+                .await,
+            );
+            assert_eq!(put.status(), StatusCode::CREATED);
+        }
+
+        for world in ["home/a", "home/b", "home/c"] {
+            let get = unwrap_response(
+                execute_get(
+                    headers.clone(),
+                    auth::Tier::Read,
+                    world_path(world),
+                    &core,
+                    &TraceCtx::disabled(),
+                )
+                .await,
+            );
+            assert_eq!(get.status(), StatusCode::OK);
+        }
+
+        let state = Arc::new(core);
+        let server_state = server_state_for_tests(state);
+        let resp = proc_pool(State(server_state), Method::GET, headers).await;
+        let body = response_text(resp).await;
+
+        assert!(body.contains("read_cache_entries 2 snapshot\n"));
+        assert!(body.contains("read_cache_hits 0 counter\n"));
+        assert!(body.contains("read_cache_misses 3 counter\n"));
+        assert!(body.contains("read_cache_capped 1 counter\n"));
+        assert!(body.contains("read_cache_evictions 1 counter\n"));
+        assert!(body.contains("read_cache_open_fails 0 counter\n"));
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3420,6 +3466,13 @@ mod tests {
     }
 
     fn test_core(label: &str) -> (Core, PathBuf) {
+        test_core_with_read_cache_max(label, crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES)
+    }
+
+    fn test_core_with_read_cache_max(
+        label: &str,
+        read_cache_max_entries: usize,
+    ) -> (Core, PathBuf) {
         let mut dir = std::env::temp_dir();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3458,9 +3511,7 @@ mod tests {
                     next_event: crate::state::new_event_counter(),
                     world_locks: Arc::new(DashMap::new()),
                     ledger: Arc::new(crate::ledger::LedgerWriter::new()),
-                    read_cache: Arc::new(crate::read_cache::ReadCache::new(
-                        crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
-                    )),
+                    read_cache: Arc::new(crate::read_cache::ReadCache::new(read_cache_max_entries)),
                 }
             },
             dir,

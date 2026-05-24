@@ -49,6 +49,7 @@ pub enum ProcEndpoint {
 }
 
 /// One world-size row for engine introspection.
+#[non_exhaustive]
 pub struct WorldUsage {
     /// Canonical world path.
     pub world: ValidatedWorldPath,
@@ -60,6 +61,7 @@ pub struct WorldUsage {
 ///
 /// Returned by [`crate::Engine::df`]. Quotas of `0`/`None` mean "unlimited";
 /// adapters should render that string for operator-facing output.
+#[non_exhaustive]
 pub struct DfSnapshot {
     /// Bytes used by durable bodies (SQLite-backed worlds).
     pub storage_used: usize,
@@ -77,17 +79,32 @@ pub struct DfSnapshot {
 ///
 /// Returned by [`crate::Engine::pool`]. All counters are monotonic since
 /// process start.
+#[non_exhaustive]
 pub struct PoolSnapshot {
     /// Active read-cache entries (open SQLite connections currently parked).
     pub read_cache_entries: usize,
     /// Tombstoned entries waiting on in-flight reads to drain.
     pub read_cache_tombstones: usize,
     /// Cache hits since process start.
+    ///
+    /// A hit means a Phase 1 cached slot returned a definitive answer:
+    /// `Some` from a Ready slot, or `None` from Tombstone. Opening and
+    /// Evicted retry signals are not hits.
     pub read_cache_hits: usize,
     /// Cache misses since process start.
+    ///
+    /// Counted at most once per external read, even if internal retry loops run
+    /// more than once. Under races, one external read may independently count a
+    /// miss and later a hit if another reader installs the target slot first.
     pub read_cache_misses: usize,
-    /// Times a read was admitted with a transient slot (cache was at cap).
+    /// Times a read saw the cache at cap after a miss.
+    ///
+    /// Counted at most once per external read. The read may still evict a
+    /// sampled cold slot instead of falling back to a transient slot.
     pub read_cache_capped: usize,
+    /// Successful cap-full read-cache evictions since process start. Failed
+    /// eviction attempts fall back to transient reads and are not counted.
+    pub read_cache_evictions: usize,
     /// Read-cache slot open failures (SQLite open errors).
     pub read_cache_open_fails: usize,
     /// Configured maximum cache entries.
@@ -97,6 +114,7 @@ pub struct PoolSnapshot {
 }
 
 /// Successful audit-chain verification details.
+#[non_exhaustive]
 pub struct AuditValid {
     /// Number of events on the chain.
     pub events: usize,
@@ -107,6 +125,7 @@ pub struct AuditValid {
 }
 
 /// Audit-chain break details.
+#[non_exhaustive]
 pub struct AuditBroken {
     /// Event id at which verification failed.
     pub break_at: usize,
@@ -331,6 +350,12 @@ impl EngineOps<'_> {
                 .read_cache
                 .metrics
                 .read_cache_capped
+                .load(Ordering::Relaxed),
+            read_cache_evictions: self
+                .core()
+                .read_cache
+                .metrics
+                .read_cache_evictions
                 .load(Ordering::Relaxed),
             read_cache_open_fails: self
                 .core()
@@ -587,11 +612,7 @@ mod tests {
             engine
                 .replace(
                     world,
-                    Representation {
-                        body: Bytes::from_static(b"hello"),
-                        content_type: "text/plain".to_owned(),
-                        headers: Vec::new(),
-                    },
+                    Representation::new(Bytes::from_static(b"hello"), "text/plain", Vec::new()),
                     Preconditions::none(),
                     AccessTier::Write,
                 )
