@@ -231,7 +231,8 @@ Concrete mapping:
 | `"/tmp/scratch"` | `/tmp/scratch` |
 | `"proc/worlds"` | `/proc/worlds` |
 | `"proc/pool"` | `/proc/pool` |
-| `"/proc/anything-else"` | rejected |
+| `"proc/audit/home/note/verify"` | `/proc/audit/home/note/verify` |
+| `"/proc/unknown"` | rejected |
 
 `list_paths()` is the preferred name. `list_keys()` and the older
 `list_worlds()` name remain as aliases; all three read `/proc/worlds`.

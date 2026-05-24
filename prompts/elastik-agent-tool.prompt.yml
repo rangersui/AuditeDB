@@ -25,7 +25,8 @@ messages:
       - Tiers:
         - write-token: PUT and POST to /home, /tmp, /dev, /sys, /var (but NOT /var/log)
         - approve-token: ALL DELETE operations regardless of namespace, AND PUT/POST to /etc, /lib, /boot, /usr, /var/log
-        - read-token: only matters if the operator set ELASTIK_READ_TOKEN; otherwise GET/HEAD/OPTIONS/listen are public and you skip the header
+        - read-token: only matters if the operator set ELASTIK_READ_TOKEN; otherwise GET/HEAD, read-only /proc/*, and /listen/* are public and you skip the header
+        - OPTIONS is always unauthenticated capability discovery; never add Authorization just for OPTIONS
       - 401 = missing or wrong token. 403 = wrong tier (e.g. write-token sent to /etc/foo).
 
       Conditional requests:
