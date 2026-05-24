@@ -348,14 +348,18 @@ impl ReadCache {
     {
         let path = world::world_db(data, world);
         let mut f = Some(f);
+        let mut counted_miss = false;
+        let mut counted_capped = false;
 
         loop {
             // PHASE 1 -- Cache hit (any state).
             if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
                 self.touch_slot(&arc);
-                self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
                 match self.invoke_via_slot(arc.clone(), &mut f)? {
-                    SlotRead::Done(value) => return Ok(value),
+                    SlotRead::Done(value) => {
+                        self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
+                        return Ok(value);
+                    }
                     SlotRead::Evicted => {
                         self.remove_evicted_entry(world, &arc);
                         continue;
@@ -363,15 +367,21 @@ impl ReadCache {
                 }
             }
 
-            self.metrics
-                .read_cache_misses
-                .fetch_add(1, Ordering::Relaxed);
+            if !counted_miss {
+                self.metrics
+                    .read_cache_misses
+                    .fetch_add(1, Ordering::Relaxed);
+                counted_miss = true;
+            }
 
             // PHASE 2 -- Cache miss + cap reached: transient tracked slot.
             if self.read_conns.len() >= self.max_entries {
-                self.metrics
-                    .read_cache_capped
-                    .fetch_add(1, Ordering::Relaxed);
+                if !counted_capped {
+                    self.metrics
+                        .read_cache_capped
+                        .fetch_add(1, Ordering::Relaxed);
+                    counted_capped = true;
+                }
                 if self.try_evict_oldest_sample() {
                     continue;
                 }
@@ -737,6 +747,11 @@ mod tests {
         assert!(cache.read_conns.get("home/c").is_some());
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 1);
         assert_eq!(
+            cache.metrics.read_cache_misses.load(Ordering::Relaxed),
+            3,
+            "A, B, and C are three external cache misses; eviction retry must not double-count C"
+        );
+        assert_eq!(
             cache.metrics.read_cache_evictions.load(Ordering::Relaxed),
             1
         );
@@ -767,6 +782,11 @@ mod tests {
         assert!(cache.read_conns.get("home/a").is_some());
         assert!(cache.read_conns.get("home/b").is_some());
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            cache.metrics.read_cache_misses.load(Ordering::Relaxed),
+            3,
+            "transient fallback is one miss for C, not one miss per internal retry"
+        );
         assert_eq!(
             cache.metrics.read_cache_evictions.load(Ordering::Relaxed),
             0
@@ -827,6 +847,16 @@ mod tests {
         let read = cache.cached_read_with_hmac(&dir, world).unwrap();
         let (stage, _hmac) = read.expect("evicted cache slot must reopen existing world");
         assert_eq!(stage.body, b"still here");
+        assert_eq!(
+            cache.metrics.read_cache_hits.load(Ordering::Relaxed),
+            0,
+            "evicted slots are retry signals, not successful cache hits"
+        );
+        assert_eq!(
+            cache.metrics.read_cache_misses.load(Ordering::Relaxed),
+            1,
+            "evicted slot retry should count as one external miss"
+        );
         assert!(
             cache.read_conns.get(world).is_some(),
             "retry path should install a fresh tracked slot"
