@@ -5,6 +5,8 @@
 **SQLite for files.** Store bytes at paths. Version everything. Audit
 everything. Authenticate everything. Subscribe to changes.
 
+*SQLite für Dateien. Bytes an Pfaden. Alles auditiert. Änderungen abonniert.*
+
 ```
 ┌─ engine (library) ─────────────────────────┐    ┌─ adapter (binary) ──────┐
 │ paths + bytes + ETags + HMAC chain + auth  │ ←─ │ HTTP / CoAP / SSE /     │
