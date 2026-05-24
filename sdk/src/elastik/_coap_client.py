@@ -4,8 +4,8 @@ This is UDP's curl-shaped helper: humans say method/path/body, Python
 packs the small CoAP envelope, and the core sees the same bytes as HTTP.
 
 It is intentionally not a general CoAP stack. It speaks the subset that
-elastik-core accepts: GET, PUT, Uri-Path, Content-Format, payload marker,
-and private auth option 65001.
+elastik-core accepts: GET, PUT, Uri-Path, text/plain or octet-stream
+Content-Format, payload marker, and private auth option 65001.
 """
 from __future__ import annotations
 
@@ -32,8 +32,6 @@ MAX_DATAGRAM = 1152
 _CONTENT_FORMATS = {
     "text/plain": 0,
     "application/octet-stream": 42,
-    "application/json": 50,
-    "application/cbor": 60,
 }
 _CODE_TEXT = {
     65: "2.01 Created",

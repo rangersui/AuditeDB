@@ -566,7 +566,7 @@ function stripQuotes(v) {
 }
 
 const RESERVED_NAMESPACES = new Set(["home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"]);
-const PROC_ENDPOINTS = new Set(["proc/version", "proc/worlds", "proc/du", "proc/df"]);
+const PROC_ENDPOINTS = new Set(["proc/version", "proc/worlds", "proc/du", "proc/df", "proc/pool"]);
 const APPROVE_WRITE_PREFIXES = Object.freeze(["lib", "etc", "boot", "usr", "var/log"]);
 
 function canonicalPath(path) {

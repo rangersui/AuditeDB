@@ -157,7 +157,9 @@ Module-level `elastik.put/get/...` calls require either a prior
 
 ## Tokens
 
-- `read_token`: gates `GET`, `HEAD`, `OPTIONS`, `/listen/*`, and `/proc/worlds`.
+- `read_token`: gates `GET`, `HEAD`, `/listen/*`, and read-only `/proc/*`
+  requests such as `/proc/worlds`, `/proc/du`, `/proc/df`, `/proc/pool`, and
+  `/proc/audit/<world>/verify`. `OPTIONS` is policy-free.
 - `write_token`: ordinary write token for `PUT` and `POST`.
 - `approve_token`: admin token for `DELETE` and system namespaces.
 
@@ -192,7 +194,9 @@ print(c.get("home/sensor/temp").payload)
 
 This is not a full RFC 7252 CoAP stack. It is a CoAP-shaped UDP adapter:
 one datagram in, one datagram out, `GET`/`PUT`, `Uri-Path`, `Content-Format`,
-payload bytes, and response codes. It does not implement retransmission,
+payload bytes, and response codes. The SDK only advertises `text/plain` and
+`application/octet-stream`; JSON/CBOR content formats are intentionally not
+part of the no-JSON CoAP surface. It does not implement retransmission,
 dedup, Observe, Block-Wise transfer, DTLS/OSCORE, `.well-known/core`, multicast
 discovery, `Max-Age`, or strict critical-option handling.
 
@@ -210,7 +214,8 @@ Explicit namespaces are allowed when you want their storage policy:
 
 - `/home/*`: durable SQLite storage.
 - `/tmp/*`, `/dev/*`, `/sys/*`: memory-backed storage.
-- `/proc/version`, `/proc/worlds`: core introspection endpoints.
+- `/proc/version`, `/proc/worlds`, `/proc/du`, `/proc/df`, `/proc/pool`: core
+  introspection endpoints.
 
 Namespace roots like `/home`, `/tmp`, `/lib`, `/etc`, `/var/log`, and `/proc/*`
 internals are reserved. Store application data under a child path such as
@@ -225,6 +230,7 @@ Concrete mapping:
 | `"tmp/scratch"` | `/tmp/scratch` |
 | `"/tmp/scratch"` | `/tmp/scratch` |
 | `"proc/worlds"` | `/proc/worlds` |
+| `"proc/pool"` | `/proc/pool` |
 | `"/proc/anything-else"` | rejected |
 
 `list_paths()` is the preferred name. `list_keys()` and the older

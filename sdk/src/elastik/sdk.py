@@ -33,7 +33,7 @@ from typing import Any, Callable, Iterator, TypedDict
 
 
 _NAMESPACES = {"home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"}
-_PROC_ENDPOINTS = {"proc/version", "proc/worlds", "proc/du", "proc/df"}
+_PROC_ENDPOINTS = {"proc/version", "proc/worlds", "proc/du", "proc/df", "proc/pool"}
 _RESERVED_WORLD_NAMES = {
     "home",
     "tmp",
@@ -1567,7 +1567,7 @@ def _quote_path(path: str) -> str:
     world = _canonical_world_name(path)
     if world == "proc" or world.startswith("proc/"):
         raise ValueError(
-            "/proc is reserved; only /proc/version, /proc/worlds, /proc/du, /proc/df, "
+            "/proc is reserved; only /proc/version, /proc/worlds, /proc/du, /proc/df, /proc/pool, "
             "and /proc/audit/{path}/verify exist"
         )
     _validate_world_name(world)

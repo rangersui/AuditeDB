@@ -71,7 +71,7 @@ def main() -> int:
     p_coap_put.add_argument("path")
     p_coap_put.add_argument("payload", nargs="?", default=None, help="UTF-8 payload; omit or use '-' to read stdin bytes")
     p_coap_put.add_argument("--token", default=None, help="elastik auth token carried in CoAP option 65001")
-    p_coap_put.add_argument("--content-type", default=None, help="text/plain, application/json, application/octet-stream, or application/cbor")
+    p_coap_put.add_argument("--content-type", default=None, help="text/plain or application/octet-stream")
     p_coap_put.add_argument("--timeout", type=float, default=2.0)
     p_coap_put.add_argument("--verbose", action="store_true", help="print CoAP status to stderr")
 

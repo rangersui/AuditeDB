@@ -114,9 +114,9 @@ API shapes may change between minor versions until that gate is removed.
 | `delete`    | `Engine::delete`     | Unlink the world; audit chain advances.              |
 | `subscribe` | `Engine::subscribe`  | Replay-then-live `ChangeEvent` stream.               |
 
-The binary's HTTP surface (`GET / HEAD / PUT / POST / DELETE / GET /listen/*`)
-and the CoAP surface are two possible mappings. The library does not know
-about either; it knows about the five verbs.
+The binary's HTTP surface (world `GET / HEAD / PUT / POST / DELETE` plus
+`/listen/*` SSE) and the CoAP surface are two possible mappings. The library
+does not know about either; it knows about the five verbs.
 
 ## Four trust tiers
 

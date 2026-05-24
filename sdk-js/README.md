@@ -554,6 +554,10 @@ await e.isAudited("home/note");    // true for durable HMAC-backed worlds
 await e.verify("home/note");       // true when the core verifies the audit chain
 ```
 
+Raw `/proc` inspection endpoints are available through `request()`, including
+`/proc/version`, `/proc/worlds`, `/proc/du`, `/proc/df`, `/proc/pool`, and
+`/proc/audit/<world>/verify`.
+
 ### `await e.post(path, body, options?)` → `{ etag, status }`
 
 Append bytes. Does not change Content-Type or X-Meta-* (PUT owns metadata).
