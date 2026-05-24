@@ -43,7 +43,7 @@
 //! Tokio worker (the same pattern DELETE already uses for
 //! `delete_world_blocking`).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use std::time::Duration;
 
@@ -112,6 +112,12 @@ enum SlotState {
 /// API that exposes the inner `RwLock<SlotState>` to callers.
 struct ReadSlot {
     inner: StdRwLock<SlotState>,
+    /// Monotonic access tick used as an approximate-LRU hint.
+    ///
+    /// This is not a synchronization primitive. `Relaxed` reads/writes are
+    /// enough because eviction will treat it as a best-effort ordering signal,
+    /// never as proof that a slot is safe to remove.
+    last_access: AtomicU64,
 }
 
 /// RAII guard for the Opening -> Ready/Tombstone transition. Without
@@ -198,6 +204,7 @@ pub(crate) struct ReadCacheMetrics {
 /// observability surface -- never the slots themselves.
 pub(crate) struct ReadCache {
     read_conns: DashMap<String, Arc<ReadSlot>>,
+    access_clock: AtomicU64,
     pub(crate) max_entries: usize,
     pub(crate) metrics: ReadCacheMetrics,
 }
@@ -206,9 +213,26 @@ impl ReadCache {
     pub(crate) fn new(max_entries: usize) -> Self {
         Self {
             read_conns: DashMap::new(),
+            access_clock: AtomicU64::new(0),
             max_entries,
             metrics: ReadCacheMetrics::default(),
         }
+    }
+
+    fn new_slot(&self, state: SlotState) -> Arc<ReadSlot> {
+        Arc::new(ReadSlot {
+            inner: StdRwLock::new(state),
+            last_access: AtomicU64::new(self.next_access_tick()),
+        })
+    }
+
+    fn next_access_tick(&self) -> u64 {
+        self.access_clock.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn touch_slot(&self, slot: &ReadSlot) {
+        slot.last_access
+            .store(self.next_access_tick(), Ordering::Relaxed);
     }
 
     /// Read body + meta + latest hmac via the cached read path.
@@ -260,6 +284,7 @@ impl ReadCache {
 
         // PHASE 1 -- Cache hit (any state).
         if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
+            self.touch_slot(&arc);
             self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
             return self.invoke_via_slot(arc, f);
         }
@@ -285,9 +310,7 @@ impl ReadCache {
             }
         }
 
-        let new_slot = Arc::new(ReadSlot {
-            inner: StdRwLock::new(SlotState::Opening),
-        });
+        let new_slot = self.new_slot(SlotState::Opening);
         let arc = self
             .read_conns
             .entry(world.to_string())
@@ -327,6 +350,7 @@ impl ReadCache {
             }
         }
 
+        self.touch_slot(&arc);
         self.invoke_via_slot(arc, f)
     }
 
@@ -342,12 +366,11 @@ impl ReadCache {
         // Fast-path: slot already exists (concurrent reader installed
         // one, or DELETE installed a tombstone).
         if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
+            self.touch_slot(&arc);
             return self.invoke_via_slot(arc, f);
         }
 
-        let transient_slot = Arc::new(ReadSlot {
-            inner: StdRwLock::new(SlotState::Opening),
-        });
+        let transient_slot = self.new_slot(SlotState::Opening);
         let arc = self
             .read_conns
             .entry(world.to_string())
@@ -387,6 +410,7 @@ impl ReadCache {
             }
         }
 
+        self.touch_slot(&arc);
         let result = self.invoke_via_slot(arc.clone(), f);
 
         // Drain-before-remove (Bug 54): write guard, mem::replace
@@ -423,9 +447,7 @@ impl ReadCache {
     /// Sync version. DELETE callers wrap this in `spawn_blocking` so
     /// the drain wait doesn't stall a Tokio worker.
     pub(crate) fn install_tombstone_blocking(&self, world: &str) {
-        let new_tombstone = Arc::new(ReadSlot {
-            inner: StdRwLock::new(SlotState::Tombstone),
-        });
+        let new_tombstone = self.new_slot(SlotState::Tombstone);
         let prev = self.read_conns.insert(world.to_string(), new_tombstone);
         if let Some(prev_slot) = prev {
             let mut g = prev_slot.inner.write().unwrap_or_else(|p| p.into_inner());
@@ -508,6 +530,50 @@ mod tests {
     }
 
     #[test]
+    fn cache_hit_updates_last_access_tick() {
+        let dir = scratch_dir("last-access");
+        for w in ["home/a", "home/b"] {
+            let _c = world::open(&dir, w).unwrap();
+            world::write(&dir, w, b"hello", "text/plain", &[]).unwrap();
+        }
+
+        let cache = ReadCache::new(2);
+        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
+        let a_first = cache
+            .read_conns
+            .get("home/a")
+            .unwrap()
+            .last_access
+            .load(Ordering::Relaxed);
+
+        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
+        let b_first = cache
+            .read_conns
+            .get("home/b")
+            .unwrap()
+            .last_access
+            .load(Ordering::Relaxed);
+        assert!(
+            b_first > a_first,
+            "later insert should receive a newer access tick"
+        );
+
+        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
+        let a_second = cache
+            .read_conns
+            .get("home/a")
+            .unwrap()
+            .last_access
+            .load(Ordering::Relaxed);
+        assert!(
+            a_second > b_first,
+            "cache hit should refresh approximate-LRU recency"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn missing_world_returns_none_via_phase3() {
         let dir = scratch_dir("missing");
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
@@ -585,6 +651,7 @@ mod tests {
     fn opening_transition_drop_sets_tombstone_on_panic_path() {
         let slot = Arc::new(ReadSlot {
             inner: StdRwLock::new(SlotState::Opening),
+            last_access: AtomicU64::new(0),
         });
         {
             let mut g = slot.inner.write().unwrap();
