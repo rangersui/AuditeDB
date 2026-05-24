@@ -16,7 +16,7 @@ mod server_path;
 
 #[cfg(not(test))]
 mod engine {
-    #[cfg(feature = "coap")]
+    #[allow(unused_imports)]
     pub(crate) use elastik_core::ShutdownToken;
     pub(crate) use elastik_core::{Engine, EngineBuilder, EngineError};
 }
@@ -34,8 +34,8 @@ mod engine_trace {
 #[cfg(not(test))]
 mod engine_types {
     pub(crate) use elastik_core::{
-        AccessTier, ChangeEvent, EtagMatcher, Preconditions, Representation, SecretBytes,
-        SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind,
+        parse_etag_matchers, AccessTier, ChangeEvent, EtagMatcher, Preconditions, Representation,
+        SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind,
     };
 }
 

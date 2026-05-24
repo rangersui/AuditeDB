@@ -136,7 +136,9 @@ impl ValidatedProcPath {
     ///
     /// Accepts `proc/version`, `proc/worlds`, `proc/du`, `proc/df`,
     /// `proc/pool`, or `proc/audit/<world>/verify`. Leading and trailing
-    /// slashes are tolerated.
+    /// slashes are tolerated. The audit world segment must already be a
+    /// canonical Engine path such as `home/foo`; bare names like `foo`, wire
+    /// paths like `/home/foo`, and generated `proc/*` worlds are rejected.
     ///
     /// # Errors
     /// Returns [`InvalidProcPath`] if the input is not one of the declared

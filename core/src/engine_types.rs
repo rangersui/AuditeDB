@@ -109,6 +109,41 @@ pub enum EtagMatcher {
     Invalid,
 }
 
+/// Parses a comma-separated ETag matcher list for protocol adapters.
+///
+/// Hidden because this is adapter plumbing, not the stable high-level Engine
+/// shape. Keeping it here still gives every adapter one parser and one matcher
+/// semantics instead of hand-rolled copies.
+#[doc(hidden)]
+pub fn parse_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
+    crate::etag::parse_etag_matchers(raw)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+impl From<EtagMatcher> for crate::etag::EtagMatcher {
+    fn from(value: EtagMatcher) -> Self {
+        match value {
+            EtagMatcher::Any => Self::Any,
+            EtagMatcher::Strong(value) => Self::Strong(value),
+            EtagMatcher::Weak(value) => Self::Weak(value),
+            EtagMatcher::Invalid => Self::Invalid,
+        }
+    }
+}
+
+impl From<crate::etag::EtagMatcher> for EtagMatcher {
+    fn from(value: crate::etag::EtagMatcher) -> Self {
+        match value {
+            crate::etag::EtagMatcher::Any => Self::Any,
+            crate::etag::EtagMatcher::Strong(value) => Self::Strong(value),
+            crate::etag::EtagMatcher::Weak(value) => Self::Weak(value),
+            crate::etag::EtagMatcher::Invalid => Self::Invalid,
+        }
+    }
+}
+
 /// Result of a successful full-representation read.
 pub struct ReadResult {
     /// The stored representation (body + content-type + metadata headers).

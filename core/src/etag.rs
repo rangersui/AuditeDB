@@ -75,34 +75,45 @@ pub(crate) fn check_preconditions(
     Ok(())
 }
 
-#[cfg(test)]
+// HTTP adapter builds consume this parser; library-only clippy checks compile
+// `etag.rs` without the adapter modules, so keep the shared parser available
+// without forcing a fake lib-side call site.
+#[allow(dead_code)]
 pub(crate) fn parse_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
-    raw.split(',').filter_map(parse_etag_matcher).collect()
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(parse_etag_matcher)
+        .collect()
 }
 
-#[cfg(test)]
-fn parse_etag_matcher(raw: &str) -> Option<EtagMatcher> {
-    let candidate = raw.trim();
-    if candidate.is_empty() {
-        return None;
-    }
+#[allow(dead_code)]
+fn parse_etag_matcher(candidate: &str) -> EtagMatcher {
     if candidate == "*" {
-        return Some(EtagMatcher::Any);
+        return EtagMatcher::Any;
     }
-    if let Some(strong) = quoted_etag(candidate) {
-        return Some(EtagMatcher::Strong(strong.to_owned()));
+    if let Some(rest) = candidate
+        .strip_prefix("W/")
+        .or_else(|| candidate.strip_prefix("w/"))
+    {
+        if let Some(value) = quoted_etag(rest) {
+            return EtagMatcher::Weak(value.to_owned());
+        }
+        return EtagMatcher::Invalid;
     }
-    if let Some(weak) = candidate.strip_prefix("W/").and_then(quoted_etag) {
-        return Some(EtagMatcher::Weak(weak.to_owned()));
+    if let Some(value) = quoted_etag(candidate) {
+        return EtagMatcher::Strong(value.to_owned());
     }
-    Some(EtagMatcher::Invalid)
+    EtagMatcher::Invalid
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn quoted_etag(candidate: &str) -> Option<&str> {
+    let candidate = candidate.trim();
     candidate
         .strip_prefix('"')
         .and_then(|v| v.strip_suffix('"'))
+        .filter(|value| !value.contains('"'))
 }
 
 impl EtagMatcher {

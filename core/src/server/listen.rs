@@ -80,7 +80,12 @@ pub(crate) async fn handler(
                 subscription,
             )),
             Err(SubscriptionRecvError::Closed) => None,
-            #[cfg(not(test))]
+            #[cfg(all(not(test), feature = "unstable-engine"))]
+            Err(err) => {
+                tracing::warn!(?err, "listen subscription receive failed");
+                None
+            }
+            #[cfg(all(not(test), not(feature = "unstable-engine")))]
             Err(_) => None,
         }
     });

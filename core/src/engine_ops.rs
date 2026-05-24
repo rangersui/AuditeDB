@@ -15,9 +15,8 @@ use crate::{
     delete_ops::{self, DeleteRequest, DeleteTraceHooks},
     engine::{self, Engine, EngineError},
     engine_types::{
-        AccessTier, ChangeEvent, EngineSubscription, EtagMatcher, Preconditions, ReadResult,
-        Representation, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind,
-        WriteResult,
+        AccessTier, ChangeEvent, EngineSubscription, Preconditions, ReadResult, Representation,
+        SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
     },
     etag, event, world_ops, AuthGate, BlockingSqliteError, Core,
 };
@@ -366,28 +365,6 @@ impl From<etag::Preconditions> for Preconditions {
         Self {
             if_match: if_match.into_iter().map(Into::into).collect(),
             if_none_match: if_none_match.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<EtagMatcher> for etag::EtagMatcher {
-    fn from(value: EtagMatcher) -> Self {
-        match value {
-            EtagMatcher::Any => Self::Any,
-            EtagMatcher::Strong(value) => Self::Strong(value),
-            EtagMatcher::Weak(value) => Self::Weak(value),
-            EtagMatcher::Invalid => Self::Invalid,
-        }
-    }
-}
-
-impl From<etag::EtagMatcher> for EtagMatcher {
-    fn from(value: etag::EtagMatcher) -> Self {
-        match value {
-            etag::EtagMatcher::Any => Self::Any,
-            etag::EtagMatcher::Strong(value) => Self::Strong(value),
-            etag::EtagMatcher::Weak(value) => Self::Weak(value),
-            etag::EtagMatcher::Invalid => Self::Invalid,
         }
     }
 }

@@ -229,12 +229,12 @@ pub(crate) fn request_preconditions(headers: &HeaderMap) -> Preconditions {
         if_match: headers
             .get(header::IF_MATCH)
             .and_then(|v| v.to_str().ok())
-            .map(parse_etag_matchers)
+            .map(parse_public_etag_matchers)
             .unwrap_or_default(),
         if_none_match: headers
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
-            .map(parse_etag_matchers)
+            .map(parse_public_etag_matchers)
             .unwrap_or_default(),
     }
 }
@@ -278,40 +278,12 @@ pub(crate) fn read_not_modified(req_headers: &HeaderMap, current: &str) -> bool 
         .unwrap_or(false)
 }
 
-fn parse_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(parse_etag_matcher)
-        .collect()
-}
-
-fn parse_etag_matcher(raw: &str) -> EtagMatcher {
-    if raw == "*" {
-        return EtagMatcher::Any;
-    }
-    if let Some(rest) = raw.strip_prefix("W/").or_else(|| raw.strip_prefix("w/")) {
-        if let Some(value) = quoted_etag(rest) {
-            return EtagMatcher::Weak(value.to_owned());
-        }
-        return EtagMatcher::Invalid;
-    }
-    if let Some(value) = quoted_etag(raw) {
-        return EtagMatcher::Strong(value.to_owned());
-    }
-    EtagMatcher::Invalid
-}
-
-fn quoted_etag(candidate: &str) -> Option<&str> {
-    let candidate = candidate.trim();
-    candidate
-        .strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .filter(|value| !value.contains('"'))
+fn parse_public_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
+    crate::engine_types::parse_etag_matchers(raw)
 }
 
 fn etag_list_weak_matches(header_value: &str, current: &str) -> bool {
-    parse_etag_matchers(header_value)
+    parse_public_etag_matchers(header_value)
         .into_iter()
         .any(|matcher| match matcher {
             EtagMatcher::Any => true,

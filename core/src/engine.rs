@@ -50,7 +50,7 @@ struct EngineInner {
 
 /// Adapter-side handle for waiting on Engine shutdown without exposing Tokio's
 /// watch channel type in the public facade.
-#[cfg(feature = "coap")]
+#[cfg(feature = "unstable-engine")]
 #[doc(hidden)]
 pub struct ShutdownToken {
     rx: watch::Receiver<bool>,
@@ -379,7 +379,7 @@ impl Engine {
     /// Returned receiver yields `true` exactly once when [`Engine::shutdown`]
     /// is called. Intended for adapter graceful-shutdown loops; not part of
     /// the documented stable surface.
-    #[cfg(feature = "coap")]
+    #[cfg(feature = "unstable-engine")]
     #[doc(hidden)]
     pub fn shutdown_receiver(&self) -> ShutdownToken {
         ShutdownToken {
@@ -414,7 +414,7 @@ impl Engine {
     }
 }
 
-#[cfg(feature = "coap")]
+#[cfg(feature = "unstable-engine")]
 impl ShutdownToken {
     /// Returns whether shutdown has already been requested.
     pub fn is_shutdown(&self) -> bool {
