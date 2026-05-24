@@ -35,7 +35,7 @@ Common projection -> Elastik primitive:
 
 The design error is not "writing an adapter." The error is putting common
 control-plane concerns inside every adapter instead of mounting adapters onto
-the shared HTTP disk.
+the shared L5 storage surface.
 
 ## PLC gateway pattern (example)
 

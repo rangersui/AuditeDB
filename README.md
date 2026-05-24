@@ -191,8 +191,9 @@ package:
 
 The split is real, not cosmetic:
 
-- `cargo build --lib --no-default-features --features bundled-sqlite` produces
-  a library whose dep tree contains **zero** HTTP-shaped crates.
+- `cargo build --lib --no-default-features --features bundled-sqlite,unstable-engine`
+  produces an embeddable Engine library whose dep tree contains **zero**
+  HTTP-shaped crates.
 - `[[bin]] required-features = ["unstable-engine-bin"]` makes `cargo` refuse
   to produce a binary without the HTTP stack — the requirement is explicit.
 

@@ -62,9 +62,9 @@
 //!
 //! No HTTP, no CoAP, no SSE, no server runtime. Those live in the
 //! `elastik-core` binary and consume this library through the unstable public
-//! [`Engine`] API. The library does not read environment variables, does not
-//! bind sockets, and does not depend on `axum`, `hyper`, `tower`,
-//! `tokio-stream`, `futures-util`, or `base64` in a default-feature build.
+//! [`Engine`] API. In a minimal library-only build, the library does not read
+//! environment variables, does not bind sockets, and does not depend on `axum`,
+//! `hyper`, `tower`, `tokio-stream`, `futures-util`, or `base64`.
 //!
 //! ## Feature flags
 //!

@@ -71,7 +71,7 @@ Properties:
 - No network filesystem.
 - No reverse proxy.
 - No public endpoint.
-- One process, one local data directory, one HTTP disk.
+- One process, one local data directory, one L5 storage endpoint.
 
 This is the traditional single-process model and it remains the default shape. The
 fancier modes below are extensions, not replacements.
@@ -104,7 +104,8 @@ keep the data local to that process, and let HTTP be the sharing boundary.
 
 ### Mode A: private local endpoint, remote data
 
-Use this when one user wants a local HTTP disk backed by a NAS or shared disk.
+Use this when one user wants a local Elastik storage endpoint backed by a NAS
+or shared disk.
 
 ```bash
 export ELASTIK_HOST=127.0.0.1
@@ -297,8 +298,8 @@ local files       -> elastik -> static HTML + proc surface
 ```
 
 The goal is not to hide every domain detail. Domain adapters should still own
-domain semantics. Elastik owns the common HTTP disk: paths, bodies, headers,
-tokens, audit, proc, and static serving.
+domain semantics. Elastik owns the common L5 storage surface: paths, bodies,
+headers, tokens, audit, proc, and static serving.
 
 ## Minimal verification
 

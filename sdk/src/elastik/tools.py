@@ -1,6 +1,6 @@
 """SDK-side execution helpers for @listen handlers.
 
-The core is a dumb HTTP disk. Tools live here, beside the reactor:
+The core is an Audi-ted L5 storage surface. Tools live here, beside the reactor:
 
     pool = TrustedShellPool(size=4)
 

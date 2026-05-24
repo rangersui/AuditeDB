@@ -15,8 +15,9 @@ Two ways to use it:
   surface. This skill covers this mode.
 - **Library** (`elastik_core` crate, `unstable-engine` feature): embed the
   protocol-neutral `Engine` directly in a Rust process; bring your own wire
-  shape. The library has no HTTP, no CoAP, no env vars, no sockets — see
-  the crate-level rustdoc and `core/src/engine.rs` for the public surface.
+  shape. In minimal library-only builds it has no HTTP, no CoAP, no env vars,
+  no sockets — see the crate-level rustdoc and `core/src/engine.rs` for the
+  public surface.
 
 Elastik (the binary) is a flat HTTP key-value store with an introspection
 plane. The key prefix is policy.
