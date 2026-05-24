@@ -75,10 +75,6 @@ pub(crate) fn check_preconditions(
     Ok(())
 }
 
-// HTTP adapter builds consume this parser; library-only clippy checks compile
-// `etag.rs` without the adapter modules, so keep the shared parser available
-// without forcing a fake lib-side call site.
-#[allow(dead_code)]
 pub(crate) fn parse_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
     raw.split(',')
         .map(str::trim)
@@ -87,7 +83,6 @@ pub(crate) fn parse_etag_matchers(raw: &str) -> Vec<EtagMatcher> {
         .collect()
 }
 
-#[allow(dead_code)]
 fn parse_etag_matcher(candidate: &str) -> EtagMatcher {
     if candidate == "*" {
         return EtagMatcher::Any;
@@ -107,7 +102,6 @@ fn parse_etag_matcher(candidate: &str) -> EtagMatcher {
     EtagMatcher::Invalid
 }
 
-#[allow(dead_code)]
 fn quoted_etag(candidate: &str) -> Option<&str> {
     let candidate = candidate.trim();
     candidate

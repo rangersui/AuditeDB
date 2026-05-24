@@ -16,7 +16,7 @@ mod server_path;
 
 #[cfg(not(test))]
 mod engine {
-    #[allow(unused_imports)]
+    #[cfg(feature = "coap")]
     pub(crate) use elastik_core::ShutdownToken;
     pub(crate) use elastik_core::{Engine, EngineBuilder, EngineError};
 }

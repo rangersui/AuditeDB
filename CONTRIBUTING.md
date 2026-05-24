@@ -81,6 +81,11 @@ must agree with the version and product wording. Tag `vX.Y.Z` only after every
 manifest agrees, `RELEASE-NOTES-vX.Y.Z.md` exists, and package dry-runs report
 the same version.
 
+The release workflow publishes the Rust crate, npm packages, PyPI wheels, and
+GitHub Release assets from the tag. It requires `CARGO_REGISTRY_TOKEN` for
+crates.io, `NPM_TOKEN` for npm, and PyPI trusted publishing for the `publish to
+PyPI` job.
+
 ## Pull Requests
 
 Good PRs are small enough to review in one pass. Include:
