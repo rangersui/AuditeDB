@@ -295,12 +295,11 @@ fn verify_statement(
             prev_hmac: r.get(8)?,
         };
         if current.as_ref().is_some_and(|event| event.id != row.id) {
-            if let Some(event) = current.take() {
-                if let Some(break_report) =
-                    verify_event(&event, &headers, key, &mut prev, &mut genesis, &mut events)
-                {
-                    return Ok(VerifyReport::Broken(break_report));
-                }
+            let event = current.take().expect("current event");
+            if let Some(break_report) =
+                verify_event(&event, &headers, key, &mut prev, &mut genesis, &mut events)
+            {
+                return Ok(VerifyReport::Broken(break_report));
             }
             headers.clear();
         }
