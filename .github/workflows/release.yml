@@ -175,7 +175,7 @@ jobs:
             library-path: target/release/libelastik_ffi.so
             asset-name: elastik-ffi-linux-arm64.zip
           - name: macos-x64
-            os: macos-13
+            os: macos-15-intel
             library-path: target/release/libelastik_ffi.dylib
             asset-name: elastik-ffi-darwin-x64.zip
           - name: macos-arm64
