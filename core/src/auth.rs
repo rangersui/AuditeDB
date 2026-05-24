@@ -9,7 +9,9 @@
 //! to make auth decisions.
 
 use std::{
-    fmt, ptr,
+    fmt,
+    hint::black_box,
+    ptr,
     sync::atomic::{fence, Ordering},
 };
 
@@ -196,7 +198,8 @@ pub fn env_set_but_empty(name: &str) -> bool {
 /// and wipe-on-drop on `std` primitives only. `subtle` is already present
 /// through RustCrypto, but this small auth boundary stays locally auditable:
 /// length mismatches return early, and equal-length token bytes are compared
-/// by XOR accumulation without per-byte early return.
+/// by XOR accumulation without per-byte early return. The final `black_box`
+/// keeps the result comparison visibly tied to the accumulated byte work.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -205,7 +208,7 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;
     }
-    diff == 0
+    black_box(diff) == 0
 }
 
 #[cfg(test)]
