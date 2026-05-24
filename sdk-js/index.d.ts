@@ -12,7 +12,7 @@ export interface ElastikOptions {
     token?: string;
     /** Token for GET / HEAD / listen. Defaults to writeToken. */
     readToken?: string;
-    /** Token for DELETE and system writes. Defaults to writeToken. */
+    /** Token for DELETE and protected writes. Defaults to writeToken. */
     approveToken?: string;
     /** Custom fetch implementation for tests, polyfills, Workers, etc. */
     fetch?: FetchLike;

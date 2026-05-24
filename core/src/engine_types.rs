@@ -58,11 +58,11 @@ pub enum AccessTier {
     Anon,
     /// Read token. Allowed: read, list, subscribe, audit verify.
     Read,
-    /// Write token. Allowed: everything `Read` plus replace/append in
-    /// `home/`.
+    /// Write token. Allowed: everything `Read` plus ordinary replace/append
+    /// in `home/`, `tmp/`, `dev/`, `sys/`, and non-log `var/`.
     Write,
     /// Approve token. Allowed: everything `Write` plus delete + writes into
-    /// system namespaces (`etc/`, `lib/`, `boot/`, `usr/`, `var/`).
+    /// protected namespaces (`etc/`, `lib/`, `boot/`, `usr/`, `var/log/`).
     Approve,
 }
 

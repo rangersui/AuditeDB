@@ -79,7 +79,7 @@ Auth gates:
 ```text
 ELASTIK_READ_TOKEN=<optional read token>
 ELASTIK_WRITE_TOKEN=<write token for PUT/POST on ordinary namespaces>
-ELASTIK_APPROVE_TOKEN=<approve token for system writes and all DELETEs>
+ELASTIK_APPROVE_TOKEN=<approve token for protected writes and all DELETEs>
 ```
 
 Header policy:

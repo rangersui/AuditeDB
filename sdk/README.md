@@ -123,7 +123,7 @@ e = elastik.start(
     key=secrets.token_hex(32),   # required HMAC key for the audit chain
     read_token="read-token",     # optional: omit for public reads
     write_token="write-token",   # optional: ordinary PUT/POST
-    approve_token="admin-token", # optional: DELETE and system namespaces
+    approve_token="admin-token", # optional: DELETE and protected namespaces
 )
 ```
 
@@ -161,7 +161,9 @@ Module-level `elastik.put/get/...` calls require either a prior
   requests such as `/proc/worlds`, `/proc/du`, `/proc/df`, `/proc/pool`, and
   `/proc/audit/<world>/verify`. `OPTIONS` is policy-free.
 - `write_token`: ordinary write token for `PUT` and `POST`.
-- `approve_token`: admin token for `DELETE` and system namespaces.
+- `approve_token`: admin token for `DELETE` and protected namespaces
+  (`etc/`, `lib/`, `boot/`, `usr/`, `var/log/`). Non-log `var/` uses the
+  ordinary write token.
 
 If `read_token` is omitted, reads are public. If `write_token` is omitted,
 ordinary writes are disabled. If `approve_token` is omitted, destructive/admin

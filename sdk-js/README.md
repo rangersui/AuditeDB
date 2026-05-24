@@ -160,7 +160,7 @@ Same bytes. Same HTTP. Different host language instincts.
 const e = new Elastik("http://127.0.0.1:3105", {
     writeToken: "write-token",       // default Authorization (write tier)
     readToken: "read-token",         // optional separate read token
-    approveToken: "approve-token",   // optional approve token (DELETE / system writes)
+    approveToken: "approve-token",   // optional approve token (DELETE / protected writes)
     fetch: customFetch,              // optional fetch impl (testing / polyfills)
 });
 ```
@@ -168,7 +168,7 @@ const e = new Elastik("http://127.0.0.1:3105", {
 - `writeToken` is the write token; it falls through to read and approve if those aren't set.
 - `token` is accepted as a backwards-compatible alias, but new code should use `writeToken`.
 - `readToken` overrides for `GET` / `HEAD` / `listen`.
-- `approveToken` overrides for `DELETE` and writes to system worlds (`lib/`, `etc/`, `boot/`, `usr/`, `var/log/`).
+- `approveToken` overrides for `DELETE` and writes to protected worlds (`lib/`, `etc/`, `boot/`, `usr/`, `var/log/`).
 - If you pass `Authorization` inside `options.headers`, it wins over the client's token. `headers` is the raw HTTP escape hatch.
 
 Typed errors mirror the Python SDK:
@@ -582,7 +582,7 @@ await e.delete("home/note", { ifMatch: currentEtag });   // If-Match
 
 Escape hatch for unusual HTTP calls. It adds Authorization like the high-level
 methods (`GET`/`HEAD` use `readToken`, `PUT`/`POST` use `writeToken` or
-`approveToken` for system namespaces, `DELETE` uses `approveToken`), unless
+`approveToken` for protected namespaces, `DELETE` uses `approveToken`), unless
 you pass `options.token` or an explicit `Authorization` header. It then returns
 `{ status, statusText, headers, body }` without trying to interpret the response.
 

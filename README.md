@@ -40,7 +40,7 @@ Common binary environment variables:
 | `ELASTIK_KEY` | required | HMAC audit-chain key; startup refuses empty or missing keys. |
 | `ELASTIK_READ_TOKEN` | unset | Gates reads, `/proc/*`, and `/listen/*`; unset means public reads. |
 | `ELASTIK_WRITE_TOKEN` | unset | Enables ordinary PUT/POST writes in user namespaces such as `home/`. |
-| `ELASTIK_APPROVE_TOKEN` | unset | Enables DELETE and writes in system namespaces such as `etc/` and `var/log/`. |
+| `ELASTIK_APPROVE_TOKEN` | unset | Enables DELETE and writes in protected namespaces such as `etc/` and `var/log/`. |
 | `ELASTIK_TOKEN` | unset | Deprecated alias for `ELASTIK_WRITE_TOKEN`. |
 | `ELASTIK_DATA` | `./data` | SQLite data root. |
 | `ELASTIK_HOST` | `127.0.0.1` | HTTP bind host. |
@@ -127,8 +127,8 @@ tier it requires; the engine refuses with `EngineError::Auth(...)` below it.
 |-----------|-------------------------|-------------------------------------------------------------|
 | `Anon`    | no token                | public reads, when no read token is configured              |
 | `Read`    | `ELASTIK_READ_TOKEN`    | read, list, subscribe, audit verify                         |
-| `Write`   | `ELASTIK_WRITE_TOKEN`   | everything `Read` + replace/append in `home/`               |
-| `Approve` | `ELASTIK_APPROVE_TOKEN` | everything `Write` + delete + writes in system namespaces   |
+| `Write`   | `ELASTIK_WRITE_TOKEN`   | everything `Read` + ordinary replace/append (`home/`, `tmp/`, `dev/`, `sys/`, non-log `var/`) |
+| `Approve` | `ELASTIK_APPROVE_TOKEN` | everything `Write` + delete + writes in protected namespaces (`etc/`, `lib/`, `boot/`, `usr/`, `var/log/`) |
 
 ---
 
@@ -144,7 +144,7 @@ downstream operations cannot drift.
 | `lib/`    | SQLite   | yes     | yes     | `Approve` | inert blobs |
 | `boot/`   | SQLite   | yes     | yes     | `Approve` | bootstrap state |
 | `usr/`    | SQLite   | yes     | yes     | `Approve` | user-scoped data |
-| `var/`    | SQLite   | yes     | yes     | `Approve` | system logs (`var/log/deletes` is append-only) |
+| `var/`    | SQLite   | yes     | yes     | `Write` | variable durable state; `var/log/` requires `Approve` and `var/log/deletes` is append-only |
 | `tmp/`    | memory   | no      | no      | `Write` | scratch |
 | `dev/`    | memory   | no      | no      | `Write` | device-like ephemeral |
 | `sys/`    | memory   | no      | no      | `Write` | service-info ephemeral |

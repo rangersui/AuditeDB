@@ -82,7 +82,7 @@ export class Elastik {
      * @param {string} [options.writeToken]    write token (preferred; fallthrough for read/approve)
      * @param {string} [options.token]         deprecated alias for writeToken
      * @param {string} [options.readToken]     read-only token (overrides token for GET/HEAD/listen)
-     * @param {string} [options.approveToken]  approve token (DELETE + system writes)
+     * @param {string} [options.approveToken]  approve token (DELETE + protected writes)
      * @param {Function} [options.fetch]       custom fetch impl (testing, polyfill)
      */
     constructor(url, options = {}) {
