@@ -162,6 +162,7 @@ jobs:
   build-ffi-assets:
     name: build ffi asset (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -199,11 +200,14 @@ jobs:
       - name: generate Python UniFFI binding
         shell: bash
         working-directory: ffi
-        run: >
-          cargo run --bin uniffi-bindgen --
-          generate "${{ matrix.library-path }}"
-          --language python
-          --out-dir target/bindings/python
+        run: |
+          bindgen="target/release/uniffi-bindgen"
+          if [ -x "target/release/uniffi-bindgen.exe" ]; then
+            bindgen="target/release/uniffi-bindgen.exe"
+          fi
+          "$bindgen" generate "${{ matrix.library-path }}" \
+            --language python \
+            --out-dir target/bindings/python
 
       - name: smoke generated Python binding
         shell: bash
