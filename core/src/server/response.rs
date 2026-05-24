@@ -39,13 +39,13 @@ pub(crate) fn decimal_header_value(value: usize) -> HeaderValue {
 #[inline]
 pub(crate) fn content_range_value(start: usize, end: usize, len: usize) -> HeaderValue {
     HeaderValue::from_str(&format!("bytes {start}-{end}/{len}"))
-        .expect("Content-Range format uses only visible ASCII bytes")
+        .unwrap_or_else(|_| HeaderValue::from_static("bytes */0"))
 }
 
 #[inline]
 pub(crate) fn unsatisfied_range_value(len: usize) -> HeaderValue {
     HeaderValue::from_str(&format!("bytes */{len}"))
-        .expect("Content-Range format uses only visible ASCII bytes")
+        .unwrap_or_else(|_| HeaderValue::from_static("bytes */0"))
 }
 
 // ─── basic error responses ──────────────────────────────────────────
@@ -272,7 +272,7 @@ pub(crate) fn audit_header_value(value: &str) -> HeaderValue {
             out.push_str(&format!("\\x{b:02x}"));
         }
     }
-    HeaderValue::from_str(&out).expect("escaped audit header is visible ASCII")
+    HeaderValue::from_str(&out).unwrap_or_else(|_| HeaderValue::from_static("invalid"))
 }
 
 // ─── proc/* response helpers ───────────────────────────────────────
