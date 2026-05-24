@@ -14,7 +14,7 @@ use elastik_core::{
     ChangeEvent, Engine, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
 };
 use tokio::{
-    runtime::{Builder as RuntimeBuilder, Handle, Runtime},
+    runtime::{Builder as RuntimeBuilder, Runtime},
     sync::{mpsc, watch, Mutex},
     time::timeout,
 };
@@ -29,7 +29,7 @@ uniffi::setup_scaffolding!();
 #[derive(uniffi::Object)]
 pub struct FfiEngine {
     engine: Engine,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     config: FfiEngineConfigSummary,
 }
 
@@ -38,7 +38,7 @@ pub struct FfiEngine {
 pub struct FfiSubscription {
     events: Mutex<mpsc::Receiver<FfiSubscriptionNext>>,
     cancel: watch::Sender<bool>,
-    runtime: Handle,
+    runtime: Arc<Runtime>,
 }
 
 const FFI_SUBSCRIPTION_BUFFER: usize = 1024;
@@ -89,13 +89,15 @@ impl FfiEngine {
         }
 
         let engine = builder.build()?;
-        let runtime = RuntimeBuilder::new_multi_thread()
-            .enable_all()
-            .thread_name("elastik-ffi")
-            .build()
-            .map_err(|err| FfiError::RuntimeInitFailed {
-                message: err.to_string(),
-            })?;
+        let runtime = Arc::new(
+            RuntimeBuilder::new_multi_thread()
+                .enable_all()
+                .thread_name("elastik-ffi")
+                .build()
+                .map_err(|err| FfiError::RuntimeInitFailed {
+                    message: err.to_string(),
+                })?,
+        );
 
         Ok(Arc::new(Self {
             engine,
@@ -272,7 +274,7 @@ impl FfiEngine {
         Ok(Arc::new(FfiSubscription {
             events: Mutex::new(events_rx),
             cancel,
-            runtime: self.runtime.handle().clone(),
+            runtime: Arc::clone(&self.runtime),
         }))
     }
 }
@@ -698,6 +700,24 @@ mod tests {
         let closed = subscription.next(1_000);
         assert_eq!(closed.kind, FfiSubscriptionNextKind::Closed);
         assert!(closed.event.is_none());
+    }
+
+    #[test]
+    fn subscription_next_survives_engine_handle_drop() {
+        let engine = test_engine("subscribe-drop-engine");
+        let subscription = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("subscription opens");
+
+        drop(engine);
+
+        let next = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subscription.next(10)))
+            .expect("subscription next must not panic after engine handle drop");
+        assert!(matches!(
+            next.kind,
+            FfiSubscriptionNextKind::Closed | FfiSubscriptionNextKind::Timeout
+        ));
+        assert!(next.event.is_none());
     }
 
     #[test]
