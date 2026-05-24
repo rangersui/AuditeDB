@@ -346,6 +346,7 @@ fn pool_body(snapshot: &PoolSnapshot) -> String {
          read_cache_hits {} counter\n\
          read_cache_misses {} counter\n\
          read_cache_capped {} counter\n\
+         read_cache_evictions {} counter\n\
          read_cache_open_fails {} counter\n\
          read_cache_max_entries {} snapshot\n\
          ledger_writer_inits {} counter\n",
@@ -354,6 +355,7 @@ fn pool_body(snapshot: &PoolSnapshot) -> String {
         snapshot.read_cache_hits,
         snapshot.read_cache_misses,
         snapshot.read_cache_capped,
+        snapshot.read_cache_evictions,
         snapshot.read_cache_open_fails,
         snapshot.read_cache_max_entries,
         snapshot.ledger_writer_inits

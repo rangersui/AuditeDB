@@ -88,6 +88,8 @@ pub struct PoolSnapshot {
     pub read_cache_misses: usize,
     /// Times a read was admitted with a transient slot (cache was at cap).
     pub read_cache_capped: usize,
+    /// Read-cache evictions since process start.
+    pub read_cache_evictions: usize,
     /// Read-cache slot open failures (SQLite open errors).
     pub read_cache_open_fails: usize,
     /// Configured maximum cache entries.
@@ -331,6 +333,12 @@ impl EngineOps<'_> {
                 .read_cache
                 .metrics
                 .read_cache_capped
+                .load(Ordering::Relaxed),
+            read_cache_evictions: self
+                .core()
+                .read_cache
+                .metrics
+                .read_cache_evictions
                 .load(Ordering::Relaxed),
             read_cache_open_fails: self
                 .core()

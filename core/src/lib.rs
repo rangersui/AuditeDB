@@ -2923,6 +2923,7 @@ mod tests {
         assert!(body.contains("read_cache_hits 1 counter\n"));
         assert!(body.contains("read_cache_misses 1 counter\n"));
         assert!(body.contains("read_cache_capped 0 counter\n"));
+        assert!(body.contains("read_cache_evictions 0 counter\n"));
         assert!(body.contains("read_cache_open_fails 0 counter\n"));
         assert!(body.contains("read_cache_max_entries "));
         // No DELETE issued yet -- ledger writer never lazy-inited.
