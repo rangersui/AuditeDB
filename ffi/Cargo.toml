@@ -15,6 +15,7 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 elastik-core = { path = "../core", default-features = false, features = ["bundled-sqlite", "unstable-engine"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 uniffi = { version = "0.31.1", features = ["cli"] }
 
 [[bin]]
