@@ -258,7 +258,8 @@ Five overloaded reasons. All true.
    is adversarially reviewed before it lands.
 3. **Five engine verbs.** read · replace · append · delete · **subscribe**.
 4. **Linear architecture.** Straight pipe: validate → permit → transition →
-   notify. No branching complexity in the call graph.
+   audit → notify. Durable writes append the HMAC audit record in the write
+   transaction before subscribers hear about the change.
 5. **Five layers of trust.** Anon → Read → Write → Approve → Engine itself.
 
 ### The fifth cylinder is the brand
