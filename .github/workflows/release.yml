@@ -340,6 +340,11 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | head -n1)"
+          if [[ "$manifest_version" != "$version" ]]; then
+            echo "::error::tag v${version} does not match core/Cargo.toml version ${manifest_version}"
+            exit 1
+          fi
           api_url="https://crates.io/api/v1/crates/elastik-core/${version}"
           if curl -fsS -H "User-Agent: Elastik release workflow" "$api_url" >/dev/null; then
             echo "elastik-core ${version} already published; skipping cargo publish"

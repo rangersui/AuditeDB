@@ -89,6 +89,8 @@ export class Elastik {
         this.url = stripTrailingSlashes(String(url));
         this.writeToken = options.writeToken ?? options.token ?? "";
         this.readToken = options.readToken ?? this.writeToken;
+        this._approveTokenExplicit = Object.prototype.hasOwnProperty.call(options, "approveToken");
+        this._warnedMissingApproveToken = false;
         this.approveToken = options.approveToken ?? this.writeToken;
         // bind() so user can do `const get = e.get`. Native fetch hates being
         // detached from globalThis on some runtimes; bind defensively.
@@ -141,7 +143,7 @@ export class Elastik {
         assertBodyType(body, "put");
         const policy = expandPolicies(options);
         const merged = policy ? { ...policy, ...(options.headers || {}) } : options.headers;
-        const headers = this._auth(this._writeTokenForPath(path), merged);
+        const headers = this._auth(this._writeTokenForPath(path, merged), merged);
         const ct = options.contentType ?? mimeFromPath(path);
         if (ct) headers["Content-Type"] = ct;
         const ifMatch = options.ifMatch ?? options.etag;
@@ -240,7 +242,7 @@ export class Elastik {
     // Returns { etag, status }.
     async post(path, body, options = {}) {
         assertBodyType(body, "post");
-        const headers = this._auth(this._writeTokenForPath(path), options.headers);
+        const headers = this._auth(this._writeTokenForPath(path, options.headers), options.headers);
         const ifMatch = options.ifMatch ?? options.etag;
         if (ifMatch) headers["If-Match"] = ifMatch;
         const res = await this._fetch(this._url(path), {
@@ -254,7 +256,7 @@ export class Elastik {
     // Requires approve token. Returns { status } (204 on success).
     // options.ifMatch → If-Match (conditional delete, 412 on stale)
     async delete(path, options = {}) {
-        const headers = this._auth(this.approveToken, options.headers);
+        const headers = this._auth(this._approveTokenFor("DELETE", path, options.headers), options.headers);
         const ifMatch = options.ifMatch ?? options.etag;
         if (ifMatch) headers["If-Match"] = ifMatch;
         const res = await this._fetch(this._url(path), {
@@ -266,7 +268,7 @@ export class Elastik {
 
     async request(method, path, options = {}) {
         assertBodyType(options.body, "request");
-        const token = Object.hasOwn(options, "token") ? options.token : this._tokenForRequest(method, path);
+        const token = Object.hasOwn(options, "token") ? options.token : this._tokenForRequest(method, path, options.headers);
         const headers = this._auth(token, options.headers);
         const res = await this._fetch(this._url(path), {
             method,
@@ -359,27 +361,37 @@ export class Elastik {
         const cleaned = validateRequestPath(path);
         return `${this.url}/${encodePath(cleaned)}`;
     }
-    _writeTokenForPath(path) {
-        return needsApproveForWrite(canonicalPath(path)) ? this.approveToken : this.writeToken;
+    _writeTokenForPath(path, extras) {
+        return needsApproveForWrite(canonicalPath(path)) ? this._approveTokenFor("write", path, extras) : this.writeToken;
     }
-    _tokenForRequest(method, path) {
+    _approveTokenFor(operation, path, extras) {
+        if (!this._approveTokenExplicit && !hasAuthorizationHeader(extras) && !this._warnedMissingApproveToken) {
+            this._warnedMissingApproveToken = true;
+            console.warn(
+                `Elastik ${operation} for ${path} needs approve tier; ` +
+                "approveToken was not configured, so the SDK is reusing writeToken. " +
+                "Set approveToken when the core uses a distinct ELASTIK_APPROVE_TOKEN."
+            );
+        }
+        return this.approveToken;
+    }
+    _tokenForRequest(method, path, extras) {
         switch (String(method || "GET").toUpperCase()) {
         case "GET":
         case "HEAD":
             return this.readToken;
         case "DELETE":
-            return this.approveToken;
+            return this._approveTokenFor("DELETE", path, extras);
         case "PUT":
         case "POST":
-            return this._writeTokenForPath(path);
+            return this._writeTokenForPath(path, extras);
         default:
             return this.writeToken;
         }
     }
     _auth(token, extras = {}) {
         const h = { ...(extras || {}) };
-        const hasAuthorization = Object.keys(h).some((key) => key.toLowerCase() === "authorization");
-        if (token && !hasAuthorization) h["Authorization"] = `Bearer ${token}`;
+        if (token && !hasAuthorizationHeader(h)) h["Authorization"] = `Bearer ${token}`;
         return h;
     }
     async _throwIfError(res, path) {
@@ -584,6 +596,10 @@ function exactOrChild(world, prefix) {
 
 function needsApproveForWrite(world) {
     return APPROVE_WRITE_PREFIXES.some((prefix) => exactOrChild(world, prefix));
+}
+
+function hasAuthorizationHeader(headers) {
+    return Object.keys(headers || {}).some((key) => key.toLowerCase() === "authorization");
 }
 
 function canonicalPrefix(prefix) {

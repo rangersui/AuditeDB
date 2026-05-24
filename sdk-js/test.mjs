@@ -421,6 +421,20 @@ eq(authSeen, [
     "Bearer APPROVE",
 ], "method/path auth chooses read/write/approve tokens");
 authSeen = [];
+const approveWarnings = [];
+const originalWarn = console.warn;
+console.warn = (message) => { approveWarnings.push(String(message)); };
+try {
+    const eNoApprove = new Elastik("http://stub", { writeToken: "WRITE", fetch: authFetch });
+    await eNoApprove.delete("home/gone");
+    await eNoApprove.put("etc/sysconfig", "x");
+} finally {
+    console.warn = originalWarn;
+}
+eq(authSeen, ["Bearer WRITE", "Bearer WRITE"], "missing approveToken falls back to writeToken");
+check(approveWarnings.length === 1, "missing approveToken warns once");
+check(approveWarnings[0].includes("approveToken was not configured"), "missing approveToken warning is actionable");
+authSeen = [];
 await eAuth.put("etc/sysconfig", "x", { headers: { Authorization: "Bearer USER" } });
 await eAuth.request("DELETE", "home/gone", { headers: { authorization: "Bearer lower-user" } });
 eq(authSeen, ["Bearer USER", "Bearer lower-user"], "explicit Authorization header wins");
