@@ -22,9 +22,9 @@ everything. Authenticate everything. Subscribe to changes.
 export ELASTIK_KEY=secret
 export ELASTIK_WRITE_TOKEN=secret
 cargo run --bin elastik-core
-# elastik-core v8.0.0 on http://127.0.0.1:3105/
+# elastik-core v8.0.1 on http://127.0.0.1:3105/
 
-curl                  http://127.0.0.1:3105/proc/version     # -> elastik-core 8.0.0 (rust)
+curl                  http://127.0.0.1:3105/proc/version     # -> elastik-core 8.0.1 (rust)
 curl -X PUT -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
   -d 'hi'          http://127.0.0.1:3105/home/hello
 curl              http://127.0.0.1:3105/home/hello           # -> hi
@@ -70,7 +70,7 @@ always policy-free capability discovery.
 
 | Endpoint | Methods | Auth | Purpose |
 |----------|---------|------|---------|
-| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `elastik-core 8.0.0 (rust)`. |
+| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `elastik-core 8.0.1 (rust)`. |
 | `/proc/worlds` | `GET`, `HEAD`, `OPTIONS` | read-gated | Canonical world list, one `home/foo`-style key per line. |
 | `/proc/du` | `GET`, `HEAD`, `OPTIONS` | read-gated | Per-world byte usage. This is an unpaginated management view. |
 | `/proc/df` | `GET`, `HEAD`, `OPTIONS` | read-gated | Storage and memory quota snapshot plus world count. |

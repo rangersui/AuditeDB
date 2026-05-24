@@ -1,6 +1,6 @@
 {
   "name": "@elastikjs/core-win32-x64",
-  "version": "8.0.0",
+  "version": "8.0.1",
   "description": "Elastik L5 — bundled Rust core binary for Windows x64. Installed transitively by @elastikjs/client when start() runs a local core.",
   "files": [
     "elastik-core.exe"

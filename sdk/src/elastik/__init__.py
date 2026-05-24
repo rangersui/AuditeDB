@@ -164,7 +164,7 @@ __all__ = [
     "list_worlds", "list_paths", "list_keys", "request",
 ]
 
-__version__ = "8.0.0"
+__version__ = "8.0.1"
 
 
 # ── module-level singleton client ──────────────────────────────────
