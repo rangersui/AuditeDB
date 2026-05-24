@@ -78,6 +78,10 @@ HTTP wire:        /home/a    /tmp/x
 core canonical:   home/a     tmp/x
 ```
 
+The canonical form is deliberately MQTT-like: no leading slash, slash-separated
+hierarchy, no query string. A future MQTT adapter would use the topic as the
+world path; it should not add a second naming grammar.
+
 Unprefixed paths fall under the bare-path rule and are prepended with `home/`:
 
 ```text

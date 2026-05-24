@@ -36,6 +36,10 @@ chain, four-tier auth, five verbs. The binary is one specific projection of
 that engine onto HTTP and CoAP wires. Every architecture question about
 Elastik reduces to one test:
 
+The canonical path shape is intentionally MQTT-like: no leading slash,
+slash-separated hierarchy, no query string. HTTP `/home/a`, CoAP `home/a`, and a
+future MQTT topic `home/a` all project onto the same `ValidatedWorldPath`.
+
 ```text
 Does this keep the engine a storage engine, or does it turn the engine into
 something else?

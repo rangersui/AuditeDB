@@ -153,6 +153,11 @@ Bare names (`foo`) and wire paths (`/foo`) are rejected by the library. The
 binary's adapter-side canonicalisation maps HTTP `/foo` to `home/foo` before
 constructing the validated path.
 
+The canonical key is also MQTT-topic-shaped: no leading slash, slash-separated
+hierarchy, and no query string. An MQTT adapter can map topic
+`home/sensor/temp` to world `home/sensor/temp` without inventing another
+routing grammar; HTTP and CoAP are adapter skins over the same validated key.
+
 ---
 
 ## Feature flags

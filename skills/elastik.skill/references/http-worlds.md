@@ -27,6 +27,14 @@ HTTP wire:        /home/a    /tmp/x
 core canonical:   home/a     tmp/x
 ```
 
+### MQTT-shaped canonical keys
+
+Core canonical keys are MQTT-topic-shaped: `home/sensor/temp`, not
+`/home/sensor/temp` and not `home/sensor/temp?x=y`. This is why HTTP, CoAP,
+SSE, and a future MQTT adapter can all project onto the same
+`ValidatedWorldPath`: the adapter owns wire syntax, the engine owns the
+topic-like key.
+
 ### Bare-path rule
 
 Paths that do not start with a reserved root get `home/` prepended:

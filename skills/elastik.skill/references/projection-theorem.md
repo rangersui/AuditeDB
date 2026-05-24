@@ -32,6 +32,7 @@ Common projection -> Elastik primitive:
 - Local auth gate -> Elastik auth tiers and bearer tokens
 - Static HTML server -> world body with `Content-Type: text/html`
 - Event feed -> `/listen/*`
+- MQTT topic tree -> canonical world path (`home/sensor/temp`)
 
 The design error is not "writing an adapter." The error is putting common
 control-plane concerns inside every adapter instead of mounting adapters onto
