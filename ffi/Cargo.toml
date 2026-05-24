@@ -1,0 +1,22 @@
+[package]
+name = "elastik-ffi"
+version = "8.0.1"
+edition = "2021"
+description = "UniFFI adapter for Elastik's protocol-neutral Engine."
+license = "MIT"
+repository = "https://github.com/rangersui/Elastik"
+homepage = "https://github.com/rangersui/Elastik"
+publish = false
+
+[lib]
+name = "elastik_ffi"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+elastik-core = { path = "../core", default-features = false, features = ["bundled-sqlite", "unstable-engine"] }
+uniffi = { version = "0.31.1", features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
