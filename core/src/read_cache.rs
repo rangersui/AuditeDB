@@ -26,8 +26,11 @@
 //!    we install a slot for one read and then remove it) drain the
 //!    slot before removing -- `arc.inner.write()` waits for any
 //!    Phase-1-cache-hit clones to release their read guards, then
-//!    `mem::replace` Tombstone closes the fd. The map entry is then
-//!    safe to remove. See AGENTS.md section "Drain before remove."
+//!    `mem::replace` Evicted closes the fd. `Evicted` is not a
+//!    404/tombstone signal: concurrent readers retry through the
+//!    miss/open path because the world may still exist. The map entry
+//!    is then safe to remove. See AGENTS.md section "Drain before
+//!    remove."
 //! 4. **Type-system enforcement** -- `TrackedReadConnection` wraps
 //!    `rusqlite::Connection`. Its constructor (`from_raw`) is
 //!    module-private and called only from `OpeningTransition::promote`.
@@ -104,7 +107,18 @@ impl TrackedReadConnection {
 enum SlotState {
     Opening,
     Ready(StdMutex<TrackedReadConnection>),
+    /// Cache eviction marker.
+    ///
+    /// Unlike `Tombstone`, this is not a DELETE semantic. A reader that sees
+    /// `Evicted` must retry through the miss/open path rather than returning
+    /// `Ok(None)`, because the world may still exist on disk.
+    Evicted,
     Tombstone,
+}
+
+enum SlotRead<R> {
+    Done(Option<R>),
+    Evicted,
 }
 
 /// Same module-private treatment -- `Arc<ReadSlot>` is held inside
@@ -235,6 +249,28 @@ impl ReadCache {
             .store(self.next_access_tick(), Ordering::Relaxed);
     }
 
+    fn remove_evicted_entry(&self, world: &str, arc: &Arc<ReadSlot>) {
+        self.read_conns
+            .remove_if(world, |_k, v| Arc::ptr_eq(v, arc));
+    }
+
+    /// Best-effort eviction primitive. The next stack layer wires this into
+    /// cap-full misses; this layer defines and tests the safety boundary.
+    #[allow(dead_code)]
+    fn try_evict_ready_slot(&self, world: &str, arc: &Arc<ReadSlot>) -> bool {
+        let Ok(mut guard) = arc.inner.try_write() else {
+            return false;
+        };
+        if !matches!(&*guard, SlotState::Ready(_)) {
+            return false;
+        }
+        let old = std::mem::replace(&mut *guard, SlotState::Evicted);
+        drop(old);
+        drop(guard);
+        self.remove_evicted_entry(world, arc);
+        true
+    }
+
     /// Read body + meta + latest hmac via the cached read path.
     /// Thin wrapper over the generic `with_tracked_conn` machinery.
     pub(crate) fn cached_read_with_hmac(
@@ -281,77 +317,93 @@ impl ReadCache {
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
         let path = world::world_db(data, world);
+        let mut f = Some(f);
 
-        // PHASE 1 -- Cache hit (any state).
-        if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
-            self.touch_slot(&arc);
-            self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
-            return self.invoke_via_slot(arc, f);
-        }
-        self.metrics
-            .read_cache_misses
-            .fetch_add(1, Ordering::Relaxed);
-
-        // PHASE 2 -- Cache miss + cap reached: transient tracked slot.
-        if self.read_conns.len() >= self.max_entries {
-            self.metrics
-                .read_cache_capped
-                .fetch_add(1, Ordering::Relaxed);
-            return self.invoke_transient(&path, world, f);
-        }
-
-        // PHASE 3 -- Cache miss + room: slot-before-open lazy-init.
-        match path.try_exists() {
-            Ok(false) => return Ok(None),
-            Ok(true) => {}
-            Err(_) => {
-                // Defer to the open: if metadata is unreadable, the
-                // open itself will surface the actual error.
-            }
-        }
-
-        let new_slot = self.new_slot(SlotState::Opening);
-        let arc = self
-            .read_conns
-            .entry(world.to_string())
-            .or_insert_with(|| new_slot.clone())
-            .value()
-            .clone();
-        let we_own_slot = Arc::ptr_eq(&arc, &new_slot);
-
-        if we_own_slot {
-            let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
-            if matches!(&*g, SlotState::Opening) {
-                let transition = OpeningTransition::new(&mut g);
-                let init: rusqlite::Result<Connection> = (|| {
-                    let c = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                    c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
-                    c.pragma_update(None, "cache_size", -200)?;
-                    Ok(c)
-                })();
-                match init {
-                    Ok(c) => transition.promote(c),
-                    Err(e) => {
-                        transition.fail();
-                        drop(g);
-                        self.read_conns
-                            .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
-                        self.metrics
-                            .read_cache_open_fails
-                            .fetch_add(1, Ordering::Relaxed);
-                        if matches!(e.sqlite_error_code(), Some(ErrorCode::CannotOpen))
-                            && matches!(path.try_exists(), Ok(false))
-                        {
-                            return Ok(None);
-                        }
-                        return Err(e);
+        loop {
+            // PHASE 1 -- Cache hit (any state).
+            if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
+                self.touch_slot(&arc);
+                self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
+                match self.invoke_via_slot(arc.clone(), &mut f)? {
+                    SlotRead::Done(value) => return Ok(value),
+                    SlotRead::Evicted => {
+                        self.remove_evicted_entry(world, &arc);
+                        continue;
                     }
                 }
             }
-        }
 
-        self.touch_slot(&arc);
-        self.invoke_via_slot(arc, f)
+            self.metrics
+                .read_cache_misses
+                .fetch_add(1, Ordering::Relaxed);
+
+            // PHASE 2 -- Cache miss + cap reached: transient tracked slot.
+            if self.read_conns.len() >= self.max_entries {
+                self.metrics
+                    .read_cache_capped
+                    .fetch_add(1, Ordering::Relaxed);
+                return self.invoke_transient(&path, world, f.take().expect("read closure"));
+            }
+
+            // PHASE 3 -- Cache miss + room: slot-before-open lazy-init.
+            match path.try_exists() {
+                Ok(false) => return Ok(None),
+                Ok(true) => {}
+                Err(_) => {
+                    // Defer to the open: if metadata is unreadable, the
+                    // open itself will surface the actual error.
+                }
+            }
+
+            let new_slot = self.new_slot(SlotState::Opening);
+            let arc = self
+                .read_conns
+                .entry(world.to_string())
+                .or_insert_with(|| new_slot.clone())
+                .value()
+                .clone();
+            let we_own_slot = Arc::ptr_eq(&arc, &new_slot);
+
+            if we_own_slot {
+                let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
+                if matches!(&*g, SlotState::Opening) {
+                    let transition = OpeningTransition::new(&mut g);
+                    let init: rusqlite::Result<Connection> = (|| {
+                        let c =
+                            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                        c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
+                        c.pragma_update(None, "cache_size", -200)?;
+                        Ok(c)
+                    })();
+                    match init {
+                        Ok(c) => transition.promote(c),
+                        Err(e) => {
+                            transition.fail();
+                            drop(g);
+                            self.read_conns
+                                .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
+                            self.metrics
+                                .read_cache_open_fails
+                                .fetch_add(1, Ordering::Relaxed);
+                            if matches!(e.sqlite_error_code(), Some(ErrorCode::CannotOpen))
+                                && matches!(path.try_exists(), Ok(false))
+                            {
+                                return Ok(None);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+
+            self.touch_slot(&arc);
+            match self.invoke_via_slot(arc.clone(), &mut f)? {
+                SlotRead::Done(value) => return Ok(value),
+                SlotRead::Evicted => {
+                    self.remove_evicted_entry(world, &arc);
+                }
+            }
+        }
     }
 
     fn invoke_transient<F, R>(
@@ -363,73 +415,96 @@ impl ReadCache {
     where
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
-        // Fast-path: slot already exists (concurrent reader installed
-        // one, or DELETE installed a tombstone).
-        if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
-            self.touch_slot(&arc);
-            return self.invoke_via_slot(arc, f);
-        }
-
-        let transient_slot = self.new_slot(SlotState::Opening);
-        let arc = self
-            .read_conns
-            .entry(world.to_string())
-            .or_insert_with(|| transient_slot.clone())
-            .value()
-            .clone();
-        let we_own_slot = Arc::ptr_eq(&arc, &transient_slot);
-
-        if we_own_slot {
-            let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
-            if matches!(&*g, SlotState::Opening) {
-                let transition = OpeningTransition::new(&mut g);
-                let init: rusqlite::Result<Connection> = (|| {
-                    let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                    c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
-                    c.pragma_update(None, "cache_size", -200)?;
-                    Ok(c)
-                })();
-                match init {
-                    Ok(c) => transition.promote(c),
-                    Err(e) => {
-                        transition.fail();
-                        drop(g);
-                        self.read_conns
-                            .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
-                        self.metrics
-                            .read_cache_open_fails
-                            .fetch_add(1, Ordering::Relaxed);
-                        if matches!(e.sqlite_error_code(), Some(ErrorCode::CannotOpen))
-                            && matches!(path.try_exists(), Ok(false))
-                        {
-                            return Ok(None);
-                        }
-                        return Err(e);
+        let mut f = Some(f);
+        loop {
+            // Fast-path: slot already exists (concurrent reader installed
+            // one, DELETE installed a tombstone, or eviction has not removed
+            // the map entry yet).
+            if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
+                self.touch_slot(&arc);
+                match self.invoke_via_slot(arc.clone(), &mut f)? {
+                    SlotRead::Done(value) => return Ok(value),
+                    SlotRead::Evicted => {
+                        self.remove_evicted_entry(world, &arc);
+                        continue;
                     }
                 }
             }
-        }
 
-        self.touch_slot(&arc);
-        let result = self.invoke_via_slot(arc.clone(), f);
+            let transient_slot = self.new_slot(SlotState::Opening);
+            let arc = self
+                .read_conns
+                .entry(world.to_string())
+                .or_insert_with(|| transient_slot.clone())
+                .value()
+                .clone();
+            let we_own_slot = Arc::ptr_eq(&arc, &transient_slot);
 
-        // Drain-before-remove (Bug 54): write guard, mem::replace
-        // Tombstone (drops Connection inside guard window -- fd
-        // close happens here), drop guard, then remove_if.
-        if we_own_slot {
-            {
+            if we_own_slot {
                 let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
-                let old = std::mem::replace(&mut *g, SlotState::Tombstone);
-                drop(old);
-                drop(g);
+                if matches!(&*g, SlotState::Opening) {
+                    let transition = OpeningTransition::new(&mut g);
+                    let init: rusqlite::Result<Connection> = (|| {
+                        let c =
+                            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                        c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
+                        c.pragma_update(None, "cache_size", -200)?;
+                        Ok(c)
+                    })();
+                    match init {
+                        Ok(c) => transition.promote(c),
+                        Err(e) => {
+                            transition.fail();
+                            drop(g);
+                            self.read_conns
+                                .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
+                            self.metrics
+                                .read_cache_open_fails
+                                .fetch_add(1, Ordering::Relaxed);
+                            if matches!(e.sqlite_error_code(), Some(ErrorCode::CannotOpen))
+                                && matches!(path.try_exists(), Ok(false))
+                            {
+                                return Ok(None);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
             }
-            self.read_conns
-                .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
+
+            self.touch_slot(&arc);
+            let result = match self.invoke_via_slot(arc.clone(), &mut f)? {
+                SlotRead::Done(value) => Ok(value),
+                SlotRead::Evicted => {
+                    self.remove_evicted_entry(world, &arc);
+                    continue;
+                }
+            };
+
+            // Drain-before-remove (Bug 54, tightened by #138): write guard,
+            // mem::replace Evicted (drops Connection inside guard window --
+            // fd close happens here), drop guard, then remove_if. Evicted is
+            // deliberately not Tombstone: concurrent readers must retry and
+            // reopen an existing world rather than returning a spurious 404.
+            if we_own_slot {
+                {
+                    let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
+                    let old = std::mem::replace(&mut *g, SlotState::Evicted);
+                    drop(old);
+                    drop(g);
+                }
+                self.read_conns
+                    .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
+            }
+            return result;
         }
-        result
     }
 
-    fn invoke_via_slot<F, R>(&self, arc: Arc<ReadSlot>, f: F) -> rusqlite::Result<Option<R>>
+    fn invoke_via_slot<F, R>(
+        &self,
+        arc: Arc<ReadSlot>,
+        f: &mut Option<F>,
+    ) -> rusqlite::Result<SlotRead<R>>
     where
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
@@ -437,10 +512,12 @@ impl ReadCache {
         match &*read_guard {
             SlotState::Ready(tracked_mutex) => {
                 let mut tracked = tracked_mutex.lock().unwrap_or_else(|p| p.into_inner());
-                f(&mut tracked).map(Some)
+                let f = f.take().expect("read closure invoked once");
+                f(&mut tracked).map(|value| SlotRead::Done(Some(value)))
             }
-            SlotState::Tombstone => Ok(None),
-            SlotState::Opening => Ok(None),
+            SlotState::Tombstone => Ok(SlotRead::Done(None)),
+            SlotState::Opening => Ok(SlotRead::Done(None)),
+            SlotState::Evicted => Ok(SlotRead::Evicted),
         }
     }
 
@@ -662,6 +739,54 @@ mod tests {
         assert!(matches!(*g, SlotState::Tombstone));
     }
 
+    #[test]
+    fn evicted_slot_reopens_existing_world_instead_of_404() {
+        let dir = scratch_dir("evicted-retry");
+        let world = "home/evicted";
+        let _c = world::open(&dir, world).unwrap();
+        world::write(&dir, world, b"still here", "text/plain", &[]).unwrap();
+
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+        cache
+            .read_conns
+            .insert(world.to_string(), cache.new_slot(SlotState::Evicted));
+
+        let read = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let (stage, _hmac) = read.expect("evicted cache slot must reopen existing world");
+        assert_eq!(stage.body, b"still here");
+        assert!(
+            cache.read_conns.get(world).is_some(),
+            "retry path should install a fresh tracked slot"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eviction_refuses_slots_with_active_read_guards() {
+        let dir = scratch_dir("evict-busy");
+        let world = "home/busy";
+        let _c = world::open(&dir, world).unwrap();
+        world::write(&dir, world, b"busy", "text/plain", &[]).unwrap();
+
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+        let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let arc = cache.read_conns.get(world).unwrap().value().clone();
+        let read_guard = arc.inner.read().unwrap();
+
+        assert!(
+            !cache.try_evict_ready_slot(world, &arc),
+            "eviction must not drain a slot while a reader holds the read guard"
+        );
+        drop(read_guard);
+        assert!(
+            cache.read_conns.get(world).is_some(),
+            "busy eviction refusal must leave the cached slot installed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // -- Bug 58 (audit verify routes through SlotState) -------------
     //
     // Verifies that `cached_verify_chain` uses the same slot-before-
@@ -728,13 +853,14 @@ mod tests {
     //
     // Single-threaded `cap_uses_transient_slot_then_drains_and_removes`
     // above covers the install + cleanup ordering on one thread. It
-    // does NOT cover the actual race the v9 round closed: a Phase 1
-    // cache hit lands on the same transient Arc while the owner is
-    // mid-cleanup. The owner's `mem::replace(Tombstone)` must drop the
-    // Connection inside the write-guard window, so any clone the
-    // hitter still holds either finishes before drain (sees Ready,
-    // succeeds) or arrives after drain (sees Tombstone, returns
-    // `Ok(None)`). Neither case leaves an fd alive past the cleanup.
+    // does NOT cover the actual race #138 fixed: a Phase 1 cache hit
+    // lands on the same transient Arc while the owner is mid-cleanup.
+    // The owner's `mem::replace(Evicted)` must drop the Connection inside
+    // the write-guard window, so any clone the hitter still holds either
+    // finishes before drain (sees Ready, succeeds) or arrives after drain
+    // (sees Evicted, retries through the miss/open path). Neither case
+    // leaves an fd alive past cleanup, and neither case reports a spurious
+    // 404 for an existing world.
     #[test]
     fn cap_transient_slot_concurrent_readers_safe_under_cleanup() {
         use std::sync::Arc as StdArc;
@@ -758,23 +884,16 @@ mod tests {
         //   - Phase 1 cache hit BEFORE the owner's drain begins:
         //     gets `Ok(Some(body))` from the still-Ready slot.
         //   - Phase 1 cache hit AFTER the owner's `mem::replace
-        //     Tombstone` but BEFORE the owner's `remove_if`: read
-        //     guard sees Tombstone -> returns `Ok(None)`. This is
-        //     the documented v9 "spurious-404 micro-window" trade
-        //     -- accepted because the alternative is an fd-vs-DELETE
-        //     race that's strictly worse than a transient 404.
-        //     `std::sync::RwLock` is reader-preferring on Linux,
-        //     so the window is wide enough to hit reliably under
-        //     concurrent load (Windows happens to be writer-fair,
-        //     which is why this test passed locally before CI on
-        //     Linux surfaced it).
+        //     Evicted` but BEFORE the owner's `remove_if`: read
+        //     guard sees Evicted -> retries through the miss/open
+        //     path rather than returning `Ok(None)`.
         //   - Cache miss after the slot is removed: installs a
         //     fresh transient and reads through it.
         //
-        // Test contract: every reader returns either a correct body
-        // or a clean `Ok(None)` (never a torn body, never an Err,
-        // never a panic). The transient owner is guaranteed to
-        // succeed (it took the read guard before its own drain).
+        // Test contract: every reader returns a correct body (never
+        // a spurious Ok(None), never a torn body, never an Err, never
+        // a panic). The transient owner is guaranteed to succeed
+        // (it took the read guard before its own drain).
         // After all readers complete, the slot is removed (cap
         // honored) and the persistent A / B slots are preserved.
         let mut handles = Vec::new();
@@ -785,25 +904,14 @@ mod tests {
                 cache.cached_read_with_hmac(&dir, "home/c").expect("read")
             }));
         }
-        let mut bodies = 0usize;
-        let mut spurious_404s = 0usize;
         for h in handles {
-            match h.join().expect("thread") {
-                Some((stage, _hmac)) => {
-                    assert_eq!(stage.body, b"hello world", "body must not be torn");
-                    assert_eq!(stage.content_type, "text/plain");
-                    bodies += 1;
-                }
-                None => spurious_404s += 1,
-            }
+            let (stage, _hmac) = h
+                .join()
+                .expect("thread")
+                .expect("existing world must not look missing during transient cleanup");
+            assert_eq!(stage.body, b"hello world", "body must not be torn");
+            assert_eq!(stage.content_type, "text/plain");
         }
-        // The transient owner is guaranteed to read its own slot
-        // before initiating drain, so at least one body is required.
-        assert!(
-            bodies >= 1,
-            "transient slot owner must read body before drain; \
-             got {bodies} body / {spurious_404s} Ok(None)"
-        );
 
         // After all readers complete, the transient slot should be
         // gone (cleanup ran). A and B remain (persistent slots).
