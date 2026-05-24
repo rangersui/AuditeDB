@@ -397,6 +397,34 @@ eq(stubBody, "stubbed", "custom fetch is used");
 check(stubCalls === 1, "custom fetch was called once");
 check(stubUrl === "http://stub/home/anywhere", "bare SDK paths canonicalize to /home", stubUrl);
 
+let authSeen = [];
+const authFetch = async (_url, init = {}) => {
+    authSeen.push(init.headers?.Authorization ?? init.headers?.authorization ?? "");
+    return new Response(null, { status: 204, headers: { "ETag": '"hmac-auth"' } });
+};
+const eAuth = new Elastik("http://stub", {
+    writeToken: "WRITE",
+    readToken: "READ",
+    approveToken: "APPROVE",
+    fetch: authFetch,
+});
+await eAuth.put("etc/sysconfig", "x");
+await eAuth.post("var/log/audit", "x");
+await eAuth.request("GET", "home/read");
+await eAuth.request("PUT", "etc/raw", { body: "x" });
+await eAuth.delete("home/gone");
+eq(authSeen, [
+    "Bearer APPROVE",
+    "Bearer APPROVE",
+    "Bearer READ",
+    "Bearer APPROVE",
+    "Bearer APPROVE",
+], "method/path auth chooses read/write/approve tokens");
+authSeen = [];
+await eAuth.put("etc/sysconfig", "x", { headers: { Authorization: "Bearer USER" } });
+await eAuth.request("DELETE", "home/gone", { headers: { authorization: "Bearer lower-user" } });
+eq(authSeen, ["Bearer USER", "Bearer lower-user"], "explicit Authorization header wins");
+
 // ─── Test 18: template strings + nested paths ───────────────
 console.log("\n=== template strings ===");
 const sensor = "temperature-3";

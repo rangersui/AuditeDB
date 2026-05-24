@@ -168,7 +168,7 @@ const e = new Elastik("http://127.0.0.1:3105", {
 - `writeToken` is the write token; it falls through to read and approve if those aren't set.
 - `token` is accepted as a backwards-compatible alias, but new code should use `writeToken`.
 - `readToken` overrides for `GET` / `HEAD` / `listen`.
-- `approveToken` overrides for `DELETE` and writes to system worlds.
+- `approveToken` overrides for `DELETE` and writes to system worlds (`lib/`, `etc/`, `boot/`, `usr/`, `var/log/`).
 - If you pass `Authorization` inside `options.headers`, it wins over the client's token. `headers` is the raw HTTP escape hatch.
 
 Typed errors mirror the Python SDK:
@@ -577,8 +577,10 @@ await e.delete("home/note", { ifMatch: currentEtag });   // If-Match
 ### `await e.request(method, path, options?)` → raw response
 
 Escape hatch for unusual HTTP calls. It adds Authorization like the high-level
-methods, then returns `{ status, statusText, headers, body }` without trying to
-interpret the response.
+methods (`GET`/`HEAD` use `readToken`, `PUT`/`POST` use `writeToken` or
+`approveToken` for system namespaces, `DELETE` uses `approveToken`), unless
+you pass `options.token` or an explicit `Authorization` header. It then returns
+`{ status, statusText, headers, body }` without trying to interpret the response.
 
 ```js
 const res = await e.request("OPTIONS", "home/note");

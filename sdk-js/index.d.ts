@@ -90,7 +90,7 @@ export interface HeadOptions extends CommonOptions {}
 
 export interface RequestOptions extends CommonOptions {
     body?: RequestBody;
-    /** Explicit bearer token for this raw request. Defaults to writeToken. */
+    /** Explicit bearer token for this raw request. Defaults by method/path. */
     token?: string;
 }
 

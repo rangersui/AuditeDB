@@ -31,11 +31,12 @@ Path rule: "foo" and "/foo" both mean "/home/foo". "tmp/foo" means
 "/tmp/foo" because tmp is an explicit namespace. Namespace roots and
 /proc internals are reserved by the core.
 
-put(..., project="demo") stores `X-Meta-Project: demo`. These kwargs
-do not drive auth or routing, but durable worlds include them in audited
-representation metadata. Standard HTTP representation headers use named
-kwargs: content_type, cache_control, content_encoding, content_language,
-and content_disposition.
+put(..., project="demo") sends `X-Meta-Project: demo`. These kwargs do not
+drive auth or routing. They round-trip and enter audited representation
+metadata only when the core is started with `ELASTIK_PERSIST_HEADERS=x-meta-*`
+or another allowlist that includes them. Standard HTTP representation headers
+use named kwargs: content_type, cache_control, content_encoding,
+content_language, and content_disposition.
 
 Reactor (declarative event handlers):
 

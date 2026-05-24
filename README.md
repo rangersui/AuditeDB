@@ -47,15 +47,15 @@ Common binary environment variables:
 | `ELASTIK_PORT` | `3105` | HTTP bind port. |
 | `ELASTIK_COAP_HOST` | `127.0.0.1` | CoAP bind host when CoAP is enabled. |
 | `ELASTIK_COAP_PORT` | unset | Enables the CoAP UDP surface on this port. |
-| `ELASTIK_COAP_MAX_IN_FLIGHT` | `64` | Maximum concurrent CoAP requests. |
+| `ELASTIK_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent CoAP requests. |
 | `ELASTIK_PERSIST_HEADERS` | unset | Comma-separated custom response headers to preserve, e.g. `x-author,x-meta-*`. |
 | `ELASTIK_DENY_HEADERS` | unset | Subtracts headers from the persist allowlist. |
 | `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum body size for one world. |
-| `ELASTIK_MAX_MEMORY_BYTES` | `67108864` | Total in-memory quota for `tmp/`, `dev/`, and `sys/` worlds. |
+| `ELASTIK_MAX_MEMORY_BYTES` | `268435456` | Total in-memory quota for `tmp/`, `dev/`, and `sys/` worlds. |
 | `ELASTIK_MAX_STORAGE_BYTES` | unset | Optional durable SQLite-backed storage quota. |
 | `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE subscriptions. |
 | `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Replay ring size for reconnecting SSE clients. |
-| `ELASTIK_READ_CACHE_MAX_ENTRIES` | `4096` | Read-cache entry cap. |
+| `ELASTIK_READ_CACHE_MAX_ENTRIES` | `5000` | Read-cache entry cap. |
 | `ELASTIK_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set. |
 
 ## Quick start — library

@@ -141,7 +141,7 @@ export class Elastik {
         assertBodyType(body, "put");
         const policy = expandPolicies(options);
         const merged = policy ? { ...policy, ...(options.headers || {}) } : options.headers;
-        const headers = this._auth(this.writeToken, merged);
+        const headers = this._auth(this._writeTokenForPath(path), merged);
         const ct = options.contentType ?? mimeFromPath(path);
         if (ct) headers["Content-Type"] = ct;
         const ifMatch = options.ifMatch ?? options.etag;
@@ -240,7 +240,7 @@ export class Elastik {
     // Returns { etag, status }.
     async post(path, body, options = {}) {
         assertBodyType(body, "post");
-        const headers = this._auth(this.writeToken, options.headers);
+        const headers = this._auth(this._writeTokenForPath(path), options.headers);
         const ifMatch = options.ifMatch ?? options.etag;
         if (ifMatch) headers["If-Match"] = ifMatch;
         const res = await this._fetch(this._url(path), {
@@ -266,7 +266,7 @@ export class Elastik {
 
     async request(method, path, options = {}) {
         assertBodyType(options.body, "request");
-        const token = options.token ?? this.writeToken;
+        const token = Object.hasOwn(options, "token") ? options.token : this._tokenForRequest(method, path);
         const headers = this._auth(token, options.headers);
         const res = await this._fetch(this._url(path), {
             method,
@@ -359,9 +359,27 @@ export class Elastik {
         const cleaned = validateRequestPath(path);
         return `${this.url}/${encodePath(cleaned)}`;
     }
+    _writeTokenForPath(path) {
+        return needsApproveForWrite(canonicalPath(path)) ? this.approveToken : this.writeToken;
+    }
+    _tokenForRequest(method, path) {
+        switch (String(method || "GET").toUpperCase()) {
+        case "GET":
+        case "HEAD":
+            return this.readToken;
+        case "DELETE":
+            return this.approveToken;
+        case "PUT":
+        case "POST":
+            return this._writeTokenForPath(path);
+        default:
+            return this.writeToken;
+        }
+    }
     _auth(token, extras = {}) {
         const h = { ...(extras || {}) };
-        if (token) h["Authorization"] = `Bearer ${token}`;
+        const hasAuthorization = Object.keys(h).some((key) => key.toLowerCase() === "authorization");
+        if (token && !hasAuthorization) h["Authorization"] = `Bearer ${token}`;
         return h;
     }
     async _throwIfError(res, path) {
@@ -549,6 +567,7 @@ function stripQuotes(v) {
 
 const RESERVED_NAMESPACES = new Set(["home", "tmp", "dev", "sys", "proc", "etc", "lib", "boot", "usr", "var"]);
 const PROC_ENDPOINTS = new Set(["proc/version", "proc/worlds", "proc/du", "proc/df"]);
+const APPROVE_WRITE_PREFIXES = Object.freeze(["lib", "etc", "boot", "usr", "var/log"]);
 
 function canonicalPath(path) {
     const clean = stripLeadingSlashes(String(path ?? ""));
@@ -557,6 +576,14 @@ function canonicalPath(path) {
     const world = RESERVED_NAMESPACES.has(first) ? clean : `home/${clean}`;
     validateWorldName(world);
     return world;
+}
+
+function exactOrChild(world, prefix) {
+    return world === prefix || world.startsWith(`${prefix}/`);
+}
+
+function needsApproveForWrite(world) {
+    return APPROVE_WRITE_PREFIXES.some((prefix) => exactOrChild(world, prefix));
 }
 
 function canonicalPrefix(prefix) {
