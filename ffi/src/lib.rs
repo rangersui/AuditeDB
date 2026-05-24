@@ -1,8 +1,8 @@
 //! UniFFI adapter for Elastik's protocol-neutral Engine.
 //!
 //! This crate is intentionally separate from `elastik-core`: it is an adapter
-//! peer of HTTP and CoAP, not a new core surface. Layer 1 only proves the
-//! UniFFI scaffold builds. Later stack layers will bind Engine methods.
+//! peer of HTTP and CoAP, not a new core surface. This layer adds the
+//! Engine-owned FFI handle; later stack layers bind Engine methods.
 
 use std::sync::Arc;
 
