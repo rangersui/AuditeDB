@@ -159,6 +159,169 @@ jobs:
           path: npm-packages/*.tgz
           if-no-files-found: error
 
+  build-ffi-assets:
+    name: build ffi asset (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            library-path: target/release/libelastik_ffi.so
+            asset-name: elastik-ffi-linux-x64.zip
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            library-path: target/release/libelastik_ffi.so
+            asset-name: elastik-ffi-linux-arm64.zip
+          - name: macos-x64
+            os: macos-13
+            library-path: target/release/libelastik_ffi.dylib
+            asset-name: elastik-ffi-darwin-x64.zip
+          - name: macos-arm64
+            os: macos-14
+            library-path: target/release/libelastik_ffi.dylib
+            asset-name: elastik-ffi-darwin-arm64.zip
+          - name: windows-x64
+            os: windows-latest
+            library-path: target/release/elastik_ffi.dll
+            asset-name: elastik-ffi-win32-x64.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: build ffi library
+        run: cargo build --release --manifest-path ffi/Cargo.toml
+
+      - name: generate Python UniFFI binding
+        shell: bash
+        working-directory: ffi
+        run: >
+          cargo run --bin uniffi-bindgen --
+          generate "${{ matrix.library-path }}"
+          --language python
+          --out-dir target/bindings/python
+
+      - name: smoke generated Python binding
+        shell: bash
+        working-directory: ffi
+        env:
+          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import shutil
+          import sys
+          import tempfile
+
+          bindings = pathlib.Path("target/bindings/python").resolve()
+          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
+          if not library.exists():
+              raise SystemExit(f"missing FFI library: {library}")
+          shutil.copy2(library, bindings / library.name)
+          sys.path.insert(0, str(bindings))
+
+          import elastik_ffi as e
+
+          root = pathlib.Path(tempfile.mkdtemp(prefix="elastik-ffi-release-"))
+          none = e.FfiPreconditions(if_match=[], if_none_match=[])
+          engine = e.FfiEngine.open(e.FfiEngineConfig(
+              data_root=str(root),
+              hmac_key=b"ffi-release-key",
+              read_token=None,
+              write_token=None,
+              approve_token=None,
+              max_world_bytes=None,
+              max_memory_bytes=None,
+              max_storage_bytes=None,
+              max_listen_connections=None,
+              listen_replay_max=8,
+              read_cache_max_entries=2,
+          ))
+          engine.replace("home/ffi", e.FfiRepresentation(
+              body=b"release",
+              content_type="text/plain",
+              headers=[],
+          ), none, e.FfiAccessTier.WRITE)
+          read = engine.read("home/ffi", e.FfiAccessTier.READ)
+          assert read is not None
+          assert read.representation.body == b"release"
+          engine.shutdown()
+          print("ffi release smoke ok", e.ffi_version(), root)
+          PY
+
+      - name: package ffi asset
+        shell: bash
+        working-directory: ffi
+        env:
+          ELASTIK_FFI_NAME: ${{ matrix.name }}
+          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
+          ELASTIK_FFI_ASSET: ${{ matrix.asset-name }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import shutil
+          import zipfile
+
+          name = os.environ["ELASTIK_FFI_NAME"]
+          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
+          asset = pathlib.Path(os.environ["ELASTIK_FFI_ASSET"]).resolve()
+          bindings = pathlib.Path("target/bindings/python").resolve()
+          out = pathlib.Path("ffi-release-asset").resolve()
+
+          if out.exists():
+              shutil.rmtree(out)
+          out.joinpath("lib").mkdir(parents=True)
+          out.joinpath("python").mkdir(parents=True)
+
+          native_dst = out / "lib" / library.name
+          shutil.copy2(library, native_dst)
+          shutil.copy2(bindings / "elastik_ffi.py", out / "python" / "elastik_ffi.py")
+          shutil.copy2(library, out / "python" / library.name)
+
+          def sha256(path: pathlib.Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          out.joinpath("MANIFEST.txt").write_text("\n".join([
+              f"name={name}",
+              f"library={library.name}",
+              f"library_sha256={sha256(native_dst)}",
+              "python_binding=python/elastik_ffi.py",
+              "",
+          ]), encoding="utf-8")
+
+          if asset.exists():
+              asset.unlink()
+          with zipfile.ZipFile(asset, "w", zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(out.rglob("*")):
+                  if path.is_file():
+                      z.write(path, path.relative_to(out).as_posix())
+          print(asset)
+          PY
+
+      - name: upload ffi release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ffi/${{ matrix.asset-name }}
+
+      - name: upload ffi asset artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffi-asset-${{ matrix.name }}
+          path: ffi/${{ matrix.asset-name }}
+          if-no-files-found: error
+
   build-wheels:
     name: build wheel (${{ matrix.name }})
     needs: build-core-assets
@@ -426,6 +589,7 @@ jobs:
   release-checksums:
     name: publish release checksums
     needs:
+      - build-ffi-assets
       - publish-pypi
       - publish-crates
       - publish-npm-client
@@ -496,7 +660,13 @@ jobs:
               if path.suffix in {".zip", ".whl"}:
                   with zipfile.ZipFile(path) as z:
                       for name in sorted(z.namelist()):
-                          if pathlib.PurePosixPath(name).name in {"elastik-core", "elastik-core.exe"}:
+                          if pathlib.PurePosixPath(name).name in {
+                              "elastik-core",
+                              "elastik-core.exe",
+                              "elastik_ffi.dll",
+                              "libelastik_ffi.dylib",
+                              "libelastik_ffi.so",
+                          }:
                               record_binary(name, z.read(name))
               elif path.suffix == ".tgz":
                   with tarfile.open(path, "r:gz") as t:
