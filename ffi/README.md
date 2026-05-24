@@ -95,5 +95,12 @@ Python bindings for:
 - macOS ARM64 (`libelastik_ffi.dylib`)
 - Windows x64 (`elastik_ffi.dll`)
 
-Tagged-release attachment and checksum integration belong to the next stack
-layer after the CI artifact shape is validated.
+Tagged-release attachment and checksum integration live in the release workflow
+stack layer after the CI artifact shape is validated.
+
+## OpenWrt / MIPS
+
+OpenWrt/MIPS is not part of the hosted FFI artifact matrix yet. It needs an
+OpenWrt SDK or equivalent cross toolchain, Rust standard-library support for
+the selected MIPS target, and a QEMU or hardware smoke path before it can be a
+release artifact. See [OPENWRT.md](OPENWRT.md).
