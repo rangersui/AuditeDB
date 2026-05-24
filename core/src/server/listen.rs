@@ -142,12 +142,12 @@ mod tests {
 
     #[test]
     fn sse_change_event_is_control_plane_only() {
-        let event = sse_change_event(crate::engine_types::ChangeEvent {
-            id: 42,
-            method: "PUT",
-            path: crate::engine_types::ValidatedWorldPath::new("home/task/a").unwrap(),
-            etag: "hmac-abc".to_string(),
-        });
+        let event = sse_change_event(crate::engine_types::ChangeEvent::new(
+            42,
+            "PUT",
+            crate::engine_types::ValidatedWorldPath::new("home/task/a").unwrap(),
+            "hmac-abc".to_string(),
+        ));
         let wire = format!("{event:?}");
         assert!(wire.contains("put"));
         assert!(wire.contains("42"));

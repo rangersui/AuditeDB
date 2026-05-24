@@ -49,6 +49,7 @@ pub enum ProcEndpoint {
 }
 
 /// One world-size row for engine introspection.
+#[non_exhaustive]
 pub struct WorldUsage {
     /// Canonical world path.
     pub world: ValidatedWorldPath,
@@ -60,6 +61,7 @@ pub struct WorldUsage {
 ///
 /// Returned by [`crate::Engine::df`]. Quotas of `0`/`None` mean "unlimited";
 /// adapters should render that string for operator-facing output.
+#[non_exhaustive]
 pub struct DfSnapshot {
     /// Bytes used by durable bodies (SQLite-backed worlds).
     pub storage_used: usize,
@@ -77,6 +79,7 @@ pub struct DfSnapshot {
 ///
 /// Returned by [`crate::Engine::pool`]. All counters are monotonic since
 /// process start.
+#[non_exhaustive]
 pub struct PoolSnapshot {
     /// Active read-cache entries (open SQLite connections currently parked).
     pub read_cache_entries: usize,
@@ -88,7 +91,8 @@ pub struct PoolSnapshot {
     pub read_cache_misses: usize,
     /// Times a read was admitted with a transient slot (cache was at cap).
     pub read_cache_capped: usize,
-    /// Read-cache evictions since process start.
+    /// Successful cap-full read-cache evictions since process start. Failed
+    /// eviction attempts fall back to transient reads and are not counted.
     pub read_cache_evictions: usize,
     /// Read-cache slot open failures (SQLite open errors).
     pub read_cache_open_fails: usize,
@@ -99,6 +103,7 @@ pub struct PoolSnapshot {
 }
 
 /// Successful audit-chain verification details.
+#[non_exhaustive]
 pub struct AuditValid {
     /// Number of events on the chain.
     pub events: usize,
@@ -109,6 +114,7 @@ pub struct AuditValid {
 }
 
 /// Audit-chain break details.
+#[non_exhaustive]
 pub struct AuditBroken {
     /// Event id at which verification failed.
     pub break_at: usize,
@@ -595,11 +601,7 @@ mod tests {
             engine
                 .replace(
                     world,
-                    Representation {
-                        body: Bytes::from_static(b"hello"),
-                        content_type: "text/plain".to_owned(),
-                        headers: Vec::new(),
-                    },
+                    Representation::new(Bytes::from_static(b"hello"), "text/plain", Vec::new()),
                     Preconditions::none(),
                     AccessTier::Write,
                 )

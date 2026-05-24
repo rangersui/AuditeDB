@@ -26,11 +26,7 @@
 //! engine
 //!     .replace(
 //!         &world,
-//!         Representation {
-//!             body: Bytes::from_static(b"hi"),
-//!             content_type: "text/plain".into(),
-//!             headers: Vec::new(),
-//!         },
+//!         Representation::new(Bytes::from_static(b"hi"), "text/plain", Vec::new()),
 //!         Preconditions::none(),
 //!         AccessTier::Write,
 //!     )

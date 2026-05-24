@@ -48,14 +48,10 @@ impl<'a> EngineOps<'a> {
         match world_ops::read_world(self.core, &permit)
             .map_err(|err| read_error_to_engine(err, Some(world.as_str())))?
         {
-            world_ops::ReadOutcome::Found { stage, etag } => Ok(Some(ReadResult {
-                representation: Representation {
-                    body: Bytes::from(stage.body),
-                    content_type: stage.content_type,
-                    headers: stage.headers,
-                },
+            world_ops::ReadOutcome::Found { stage, etag } => Ok(Some(ReadResult::new(
+                Representation::new(Bytes::from(stage.body), stage.content_type, stage.headers),
                 etag,
-            })),
+            ))),
             world_ops::ReadOutcome::Missing => Ok(None),
         }
     }
@@ -362,22 +358,22 @@ impl From<Preconditions> for etag::Preconditions {
 impl From<etag::Preconditions> for Preconditions {
     fn from(value: etag::Preconditions) -> Self {
         let (if_match, if_none_match) = value.into_parts();
-        Self {
-            if_match: if_match.into_iter().map(Into::into).collect(),
-            if_none_match: if_none_match.into_iter().map(Into::into).collect(),
-        }
+        Self::new(
+            if_match.into_iter().map(Into::into).collect(),
+            if_none_match.into_iter().map(Into::into).collect(),
+        )
     }
 }
 
 impl From<world_ops::WriteOutcome> for WriteResult {
     fn from(value: world_ops::WriteOutcome) -> Self {
-        Self {
-            kind: match value.status_kind {
+        Self::new(
+            match value.status_kind {
                 world_ops::WriteStatusKind::Created => WriteKind::Created,
                 world_ops::WriteStatusKind::Updated => WriteKind::Updated,
             },
-            etag: value.etag,
-        }
+            value.etag,
+        )
     }
 }
 
@@ -581,11 +577,7 @@ mod tests {
         engine
             .replace(
                 &world,
-                Representation {
-                    body: Bytes::from_static(b"alive"),
-                    content_type: "text/plain".to_owned(),
-                    headers: Vec::new(),
-                },
+                Representation::new(Bytes::from_static(b"alive"), "text/plain", Vec::new()),
                 Preconditions::none(),
                 AccessTier::Write,
             )
@@ -629,11 +621,7 @@ mod tests {
         engine
             .replace(
                 &world,
-                Representation {
-                    body: Bytes::from_static(b"event"),
-                    content_type: "text/plain".to_owned(),
-                    headers: Vec::new(),
-                },
+                Representation::new(Bytes::from_static(b"event"), "text/plain", Vec::new()),
                 Preconditions::none(),
                 AccessTier::Write,
             )
@@ -726,11 +714,7 @@ mod tests {
             engine
                 .replace(
                     &world,
-                    Representation {
-                        body: Bytes::from_static(b"event"),
-                        content_type: "text/plain".to_owned(),
-                        headers: Vec::new(),
-                    },
+                    Representation::new(Bytes::from_static(b"event"), "text/plain", Vec::new()),
                     Preconditions::none(),
                     AccessTier::Write,
                 )

@@ -225,18 +225,18 @@ pub(crate) fn etag_header(etag: &str) -> HeaderValue {
 }
 
 pub(crate) fn request_preconditions(headers: &HeaderMap) -> Preconditions {
-    Preconditions {
-        if_match: headers
+    Preconditions::new(
+        headers
             .get(header::IF_MATCH)
             .and_then(|v| v.to_str().ok())
             .map(parse_public_etag_matchers)
             .unwrap_or_default(),
-        if_none_match: headers
+        headers
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
             .map(parse_public_etag_matchers)
             .unwrap_or_default(),
-    }
+    )
 }
 
 #[cfg(test)]
