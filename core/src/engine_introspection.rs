@@ -86,10 +86,21 @@ pub struct PoolSnapshot {
     /// Tombstoned entries waiting on in-flight reads to drain.
     pub read_cache_tombstones: usize,
     /// Cache hits since process start.
+    ///
+    /// A hit means a Phase 1 cached slot returned a definitive answer:
+    /// `Some` from a Ready slot, or `None` from Tombstone. Opening and
+    /// Evicted retry signals are not hits.
     pub read_cache_hits: usize,
     /// Cache misses since process start.
+    ///
+    /// Counted at most once per external read, even if internal retry loops run
+    /// more than once. Under races, one external read may independently count a
+    /// miss and later a hit if another reader installs the target slot first.
     pub read_cache_misses: usize,
-    /// Times a read was admitted with a transient slot (cache was at cap).
+    /// Times a read saw the cache at cap after a miss.
+    ///
+    /// Counted at most once per external read. The read may still evict a
+    /// sampled cold slot instead of falling back to a transient slot.
     pub read_cache_capped: usize,
     /// Successful cap-full read-cache evictions since process start. Failed
     /// eviction attempts fall back to transient reads and are not counted.

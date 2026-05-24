@@ -74,7 +74,42 @@ const READ_CONN_BUSY_TIMEOUT_MS: u64 = 1000;
 /// cache-wide ordering structure. On cap-full misses we inspect a small sample,
 /// try the oldest evictable slot first, and fall back to a transient read when
 /// no candidate can be drained safely.
+///
+/// Current sampling is deliberately cheap: a rotating offset over DashMap's
+/// bucket-order iterator, not a random sample. That avoids pinning eviction to
+/// the same prefix forever while keeping correctness tied to the transient-read
+/// fallback and the drain-before-remove safety gate.
 const READ_CACHE_EVICTION_SAMPLE_SIZE: usize = 8;
+
+/// Defensive cap on internal retry loops.
+///
+/// Normal reads should converge in one or two passes. This budget is only a
+/// fail-safe for future state-machine regressions or extreme contention: when
+/// it fires, tracked reads degrade to the safe transient path rather than
+/// spinning. Transient reads return a SQLite BUSY error if their own retry
+/// budget is exhausted.
+const READ_CACHE_RETRY_BUDGET: usize = 16;
+
+fn log_read_cache_retry_budget_exhausted(world: &str, mode: &str) {
+    #[cfg(feature = "unstable-engine")]
+    tracing::warn!(
+        world,
+        mode,
+        "read cache retry budget exhausted; falling back"
+    );
+
+    #[cfg(not(feature = "unstable-engine"))]
+    eprintln!("elastik-core internal read cache {mode} retry budget exhausted for {world}");
+}
+
+fn read_cache_retry_budget_error(world: &str, mode: &str) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        Some(format!(
+            "read cache {mode} retry budget exhausted for {world}"
+        )),
+    )
+}
 
 /// Newtype around `rusqlite::Connection` that gates read access at
 /// the type level. The only constructor (`from_raw`) is reachable
@@ -124,8 +159,19 @@ enum SlotState {
     Tombstone,
 }
 
+/// Result envelope from a slot probe.
+///
+/// `Done(None)` is a definitive cache answer (currently Tombstone only).
+/// `Opening` and `Evicted` are retry signals, not absence: the world may exist
+/// on disk or become Ready once the owner finishes opening the connection.
+/// Production inserts take the slot's write guard before publishing `Opening`,
+/// so external readers should block until a final state is visible. The
+/// `Opening` variant is a defensive backstop for white-box tests and future
+/// state-machine regressions.
+#[cfg_attr(test, derive(Debug))]
 enum SlotRead<R> {
     Done(Option<R>),
+    Opening,
     Evicted,
 }
 
@@ -138,7 +184,9 @@ struct ReadSlot {
     ///
     /// This is not a synchronization primitive. `Relaxed` reads/writes are
     /// enough because eviction will treat it as a best-effort ordering signal,
-    /// never as proof that a slot is safe to remove.
+    /// never as proof that a slot is safe to remove. The safety proof is still
+    /// `try_evict_ready_slot`: take the write guard, require Ready, replace
+    /// with Evicted, then remove the same Arc from the map.
     last_access: AtomicU64,
 }
 
@@ -227,7 +275,19 @@ pub(crate) struct ReadCacheMetrics {
 /// observability surface -- never the slots themselves.
 pub(crate) struct ReadCache {
     read_conns: DashMap<String, Arc<ReadSlot>>,
+    /// Cache-global monotonic recency clock.
+    ///
+    /// This stays `AtomicU64` even though it is an internal hint. A 32-bit
+    /// counter can wrap within weeks under sustained reads and invert the
+    /// approximate-LRU ordering; a 64-bit clock makes wraparound irrelevant for
+    /// practical deployments.
     access_clock: AtomicU64,
+    /// Rotating cursor for approximate-LRU sampling.
+    ///
+    /// DashMap iteration is bucket ordered. A cursor keeps cap-full misses from
+    /// repeatedly sampling the same prefix while still avoiding a cache-wide
+    /// ordering structure.
+    eviction_cursor: AtomicUsize,
     pub(crate) max_entries: usize,
     pub(crate) metrics: ReadCacheMetrics,
 }
@@ -237,6 +297,7 @@ impl ReadCache {
         Self {
             read_conns: DashMap::new(),
             access_clock: AtomicU64::new(0),
+            eviction_cursor: AtomicUsize::new(0),
             max_entries,
             metrics: ReadCacheMetrics::default(),
         }
@@ -258,12 +319,19 @@ impl ReadCache {
             .store(self.next_access_tick(), Ordering::Relaxed);
     }
 
-    fn remove_evicted_entry(&self, world: &str, arc: &Arc<ReadSlot>) {
+    fn remove_evicted_entry(&self, world: &str, arc: &Arc<ReadSlot>) -> bool {
         self.read_conns
-            .remove_if(world, |_k, v| Arc::ptr_eq(v, arc));
+            .remove_if(world, |_k, v| Arc::ptr_eq(v, arc))
+            .is_some()
     }
 
     /// Best-effort eviction primitive for cap-full misses.
+    ///
+    /// This is the safety gate. `last_access` only chooses candidates; a slot
+    /// is actually evicted only if this method proves no reader holds the slot
+    /// guard, replaces Ready with Evicted, and removes the same Arc from the
+    /// map. If `remove_if` loses a race to a replacement entry, the stale Arc is
+    /// drained but the eviction is not reported as successful.
     fn try_evict_ready_slot(&self, world: &str, arc: &Arc<ReadSlot>) -> bool {
         let Ok(mut guard) = arc.inner.try_write() else {
             return false;
@@ -274,19 +342,55 @@ impl ReadCache {
         let old = std::mem::replace(&mut *guard, SlotState::Evicted);
         drop(old);
         drop(guard);
-        self.remove_evicted_entry(world, arc);
-        true
+        self.remove_evicted_entry(world, arc)
     }
 
-    fn try_evict_oldest_sample(&self) -> bool {
+    /// Try to evict the oldest Ready slot from a small rotating sample.
+    ///
+    /// `target_world` is excluded so we do not evict the world this external
+    /// read is trying to obtain; a concurrent installer may have placed it in
+    /// cache between our Phase 1 miss and this sample. Candidate order is only
+    /// a quality hint; actual safety is delegated to
+    /// `try_evict_ready_slot`.
+    fn try_evict_oldest_sample(&self, target_world: &str) -> bool {
+        let len = self.read_conns.len();
+        if len == 0 {
+            return false;
+        }
+        let start = self
+            .eviction_cursor
+            .fetch_add(READ_CACHE_EVICTION_SAMPLE_SIZE, Ordering::Relaxed)
+            % len;
         let mut candidates = Vec::with_capacity(READ_CACHE_EVICTION_SAMPLE_SIZE);
-        for entry in self.read_conns.iter().take(READ_CACHE_EVICTION_SAMPLE_SIZE) {
+        for entry in self.read_conns.iter().skip(start) {
+            if candidates.len() >= READ_CACHE_EVICTION_SAMPLE_SIZE {
+                break;
+            }
+            if entry.key().as_str() == target_world {
+                continue;
+            }
             let slot = entry.value().clone();
             candidates.push((
                 entry.key().clone(),
                 slot.last_access.load(Ordering::Relaxed),
                 slot,
             ));
+        }
+        if candidates.len() < READ_CACHE_EVICTION_SAMPLE_SIZE && start > 0 {
+            for entry in self.read_conns.iter().take(start) {
+                if candidates.len() >= READ_CACHE_EVICTION_SAMPLE_SIZE {
+                    break;
+                }
+                if entry.key().as_str() == target_world {
+                    continue;
+                }
+                let slot = entry.value().clone();
+                candidates.push((
+                    entry.key().clone(),
+                    slot.last_access.load(Ordering::Relaxed),
+                    slot,
+                ));
+            }
         }
         candidates.sort_by_key(|(_world, last_access, _slot)| *last_access);
 
@@ -299,6 +403,23 @@ impl ReadCache {
             }
         }
         false
+    }
+
+    /// Best-effort trim for temporary overshoot caused by concurrent misses.
+    ///
+    /// The pre-insert cap check prevents ordinary growth, but multiple readers
+    /// can all observe room and publish slots concurrently. Trimming after a
+    /// successful read keeps the cache close to its cap without blocking the
+    /// read on a global reservation lock.
+    fn best_effort_trim_over_cap(&self, target_world: &str) {
+        for _ in 0..READ_CACHE_RETRY_BUDGET {
+            if self.read_conns.len() <= self.max_entries {
+                return;
+            }
+            if !self.try_evict_oldest_sample(target_world) {
+                return;
+            }
+        }
     }
 
     /// Read body + meta + latest hmac via the cached read path.
@@ -351,15 +472,17 @@ impl ReadCache {
         let mut counted_miss = false;
         let mut counted_capped = false;
 
-        loop {
+        for _ in 0..READ_CACHE_RETRY_BUDGET {
             // PHASE 1 -- Cache hit (any state).
             if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
                 self.touch_slot(&arc);
                 match self.invoke_via_slot(arc.clone(), &mut f)? {
                     SlotRead::Done(value) => {
+                        self.best_effort_trim_over_cap(world);
                         self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
                         return Ok(value);
                     }
+                    SlotRead::Opening => continue,
                     SlotRead::Evicted => {
                         self.remove_evicted_entry(world, &arc);
                         continue;
@@ -374,7 +497,8 @@ impl ReadCache {
                 counted_miss = true;
             }
 
-            // PHASE 2 -- Cache miss + cap reached: transient tracked slot.
+            // PHASE 2 -- Cache miss + cap reached: approximate eviction, or
+            // transient tracked slot fallback.
             if self.read_conns.len() >= self.max_entries {
                 if !counted_capped {
                     self.metrics
@@ -382,7 +506,7 @@ impl ReadCache {
                         .fetch_add(1, Ordering::Relaxed);
                     counted_capped = true;
                 }
-                if self.try_evict_oldest_sample() {
+                if self.try_evict_oldest_sample(world) {
                     continue;
                 }
                 return self.invoke_transient(&path, world, f.take().expect("read closure"));
@@ -399,16 +523,25 @@ impl ReadCache {
             }
 
             let new_slot = self.new_slot(SlotState::Opening);
+            // Cache the pointer up front so we can compare after the
+            // `or_insert_with` closure moves `insert_slot` into DashMap.
+            // Equivalent to `Arc::ptr_eq(&arc, &new_slot)`.
+            let new_slot_ptr = Arc::as_ptr(&new_slot);
+            let insert_slot = new_slot.clone();
+            // Take the write guard before publishing the Opening slot. Any
+            // racing reader that sees our slot will block until it is Ready,
+            // Tombstone, or Evicted instead of observing Opening as absence.
+            let new_guard = new_slot.inner.write().unwrap_or_else(|p| p.into_inner());
             let arc = self
                 .read_conns
                 .entry(world.to_string())
-                .or_insert_with(|| new_slot.clone())
+                .or_insert_with(move || insert_slot)
                 .value()
                 .clone();
-            let we_own_slot = Arc::ptr_eq(&arc, &new_slot);
+            let we_own_slot = Arc::as_ptr(&arc) == new_slot_ptr;
 
             if we_own_slot {
-                let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
+                let mut g = new_guard;
                 if matches!(&*g, SlotState::Opening) {
                     let transition = OpeningTransition::new(&mut g);
                     let init: rusqlite::Result<Connection> = (|| {
@@ -437,16 +570,32 @@ impl ReadCache {
                         }
                     }
                 }
+            } else {
+                drop(new_guard);
             }
 
             self.touch_slot(&arc);
             match self.invoke_via_slot(arc.clone(), &mut f)? {
-                SlotRead::Done(value) => return Ok(value),
+                SlotRead::Done(value) => {
+                    self.best_effort_trim_over_cap(world);
+                    return Ok(value);
+                }
+                SlotRead::Opening => {}
                 SlotRead::Evicted => {
                     self.remove_evicted_entry(world, &arc);
                 }
             }
         }
+
+        log_read_cache_retry_budget_exhausted(world, "tracked");
+        self.invoke_transient(
+            &path,
+            world,
+            f.take().expect(
+                "read cache retry budget exhausted with no closure; \
+                 SlotRead::Done should have returned before budget fallback",
+            ),
+        )
     }
 
     fn invoke_transient<F, R>(
@@ -459,14 +608,18 @@ impl ReadCache {
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
         let mut f = Some(f);
-        loop {
+        for _ in 0..READ_CACHE_RETRY_BUDGET {
             // Fast-path: slot already exists (concurrent reader installed
             // one, DELETE installed a tombstone, or eviction has not removed
             // the map entry yet).
             if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
                 self.touch_slot(&arc);
                 match self.invoke_via_slot(arc.clone(), &mut f)? {
-                    SlotRead::Done(value) => return Ok(value),
+                    SlotRead::Done(value) => {
+                        self.best_effort_trim_over_cap(world);
+                        return Ok(value);
+                    }
+                    SlotRead::Opening => continue,
                     SlotRead::Evicted => {
                         self.remove_evicted_entry(world, &arc);
                         continue;
@@ -475,16 +628,28 @@ impl ReadCache {
             }
 
             let transient_slot = self.new_slot(SlotState::Opening);
+            // Cache the pointer up front so we can compare after the
+            // `or_insert_with` closure moves `insert_slot` into DashMap.
+            // Equivalent to `Arc::ptr_eq(&arc, &transient_slot)`.
+            let transient_slot_ptr = Arc::as_ptr(&transient_slot);
+            let insert_slot = transient_slot.clone();
+            // Publish Opening only after its write guard is held; otherwise a
+            // racing reader can see Opening and mistake "not ready yet" for
+            // absence.
+            let new_guard = transient_slot
+                .inner
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
             let arc = self
                 .read_conns
                 .entry(world.to_string())
-                .or_insert_with(|| transient_slot.clone())
+                .or_insert_with(move || insert_slot)
                 .value()
                 .clone();
-            let we_own_slot = Arc::ptr_eq(&arc, &transient_slot);
+            let we_own_slot = Arc::as_ptr(&arc) == transient_slot_ptr;
 
             if we_own_slot {
-                let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
+                let mut g = new_guard;
                 if matches!(&*g, SlotState::Opening) {
                     let transition = OpeningTransition::new(&mut g);
                     let init: rusqlite::Result<Connection> = (|| {
@@ -513,11 +678,14 @@ impl ReadCache {
                         }
                     }
                 }
+            } else {
+                drop(new_guard);
             }
 
             self.touch_slot(&arc);
             let result = match self.invoke_via_slot(arc.clone(), &mut f)? {
                 SlotRead::Done(value) => Ok(value),
+                SlotRead::Opening => continue,
                 SlotRead::Evicted => {
                     self.remove_evicted_entry(world, &arc);
                     continue;
@@ -539,8 +707,12 @@ impl ReadCache {
                 self.read_conns
                     .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
             }
+            self.best_effort_trim_over_cap(world);
             return result;
         }
+
+        log_read_cache_retry_budget_exhausted(world, "transient");
+        Err(read_cache_retry_budget_error(world, "transient"))
     }
 
     fn invoke_via_slot<F, R>(
@@ -555,11 +727,15 @@ impl ReadCache {
         match &*read_guard {
             SlotState::Ready(tracked_mutex) => {
                 let mut tracked = tracked_mutex.lock().unwrap_or_else(|p| p.into_inner());
-                let f = f.take().expect("read closure invoked once");
+                let f = f.take().expect(
+                    "invoke_via_slot closure slot is empty; SlotRead::Opening \
+                     and SlotRead::Evicted may re-enter with the closure intact, \
+                     and SlotRead::Done must return immediately",
+                );
                 f(&mut tracked).map(|value| SlotRead::Done(Some(value)))
             }
             SlotState::Tombstone => Ok(SlotRead::Done(None)),
-            SlotState::Opening => Ok(SlotRead::Done(None)),
+            SlotState::Opening => Ok(SlotRead::Opening),
             SlotState::Evicted => Ok(SlotRead::Evicted),
         }
     }
@@ -585,15 +761,13 @@ impl ReadCache {
         self.read_conns.remove(world);
     }
 
-    /// Snapshot accessors for /proc/pool. Marked `dead_code`-allow
-    /// because the `/proc/pool` endpoint that consumes them lands
-    /// in the next PR (PR 3, observability).
-    #[allow(dead_code)]
+    /// Snapshot accessor for `/proc/pool`; exposes count only, never slots.
     pub(crate) fn snapshot_entries(&self) -> usize {
         self.read_conns.len()
     }
 
-    #[allow(dead_code)]
+    /// Snapshot accessor for `/proc/pool`; tombstones are DELETE state, not
+    /// eviction candidates.
     pub(crate) fn snapshot_tombstones(&self) -> usize {
         self.read_conns
             .iter()
@@ -798,6 +972,82 @@ mod tests {
     }
 
     #[test]
+    fn cache_size_one_evicts_on_every_new_world() {
+        let dir = scratch_dir("cap-one-serial");
+        let worlds = ["home/a", "home/b", "home/c", "home/d", "home/e"];
+        for (idx, w) in worlds.iter().enumerate() {
+            let _c = world::open(&dir, w).unwrap();
+            world::write(&dir, w, &[b'a' + idx as u8], "text/plain", &[]).unwrap();
+        }
+
+        let cache = ReadCache::new(1);
+        for (idx, w) in worlds.iter().enumerate() {
+            let read = cache.cached_read_with_hmac(&dir, w).unwrap();
+            let (stage, _hmac) = read.expect("existing world must not look missing at cap=1");
+            assert_eq!(stage.body, vec![b'a' + idx as u8]);
+            assert!(
+                cache.read_conns.get(*w).is_some(),
+                "the latest world should occupy the single cache slot"
+            );
+            assert!(
+                cache.read_conns.len() <= 1,
+                "cache size 1 must never retain multiple slots"
+            );
+        }
+
+        assert_eq!(cache.metrics.read_cache_hits.load(Ordering::Relaxed), 0);
+        assert_eq!(cache.metrics.read_cache_misses.load(Ordering::Relaxed), 5);
+        assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 4);
+        assert_eq!(
+            cache.metrics.read_cache_evictions.load(Ordering::Relaxed),
+            4,
+            "after the first install, each new world must evict the previous slot"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_size_one_concurrent_readers_never_report_false_404() {
+        use std::sync::Arc as StdArc;
+        use std::thread;
+
+        let dir = StdArc::new(scratch_dir("cap-one-concurrent"));
+        let worlds = ["home/a", "home/b", "home/c", "home/d"];
+        for (idx, w) in worlds.iter().enumerate() {
+            let _c = world::open(&dir, w).unwrap();
+            world::write(&dir, w, &[b'a' + idx as u8], "text/plain", &[]).unwrap();
+        }
+
+        let cache = StdArc::new(ReadCache::new(1));
+        let mut handles = Vec::new();
+        for (idx, world) in worlds.into_iter().enumerate() {
+            let dir = dir.clone();
+            let cache = cache.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..8 {
+                    let read = cache
+                        .cached_read_with_hmac(&dir, world)
+                        .expect("cache-size-one concurrent read");
+                    let (stage, _hmac) =
+                        read.expect("existing world must not look missing at cache size 1");
+                    assert_eq!(stage.body, vec![b'a' + idx as u8]);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("reader thread");
+        }
+        assert!(
+            cache.read_conns.len() <= 1,
+            "cache size 1 must remain capped under concurrent churn"
+        );
+
+        let _ = std::fs::remove_dir_all(&*dir);
+    }
+
+    #[test]
     fn cache_hit_serves_from_cache_even_at_cap() {
         let dir = scratch_dir("cap-hit");
         for w in ["home/a", "home/b"] {
@@ -886,6 +1136,194 @@ mod tests {
             cache.read_conns.get(world).is_some(),
             "busy eviction refusal must leave the cached slot installed"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_evict_ready_slot_removes_idle_ready_entry() {
+        let dir = scratch_dir("evict-ready-success");
+        let world = "home/idle";
+        let _c = world::open(&dir, world).unwrap();
+        world::write(&dir, world, b"idle", "text/plain", &[]).unwrap();
+
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+        let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let arc = cache.read_conns.get(world).unwrap().value().clone();
+
+        assert!(
+            cache.try_evict_ready_slot(world, &arc),
+            "idle Ready slot should be evictable"
+        );
+        assert!(
+            cache.read_conns.get(world).is_none(),
+            "successful eviction must remove the map entry"
+        );
+        let guard = arc.inner.read().unwrap();
+        assert!(matches!(&*guard, SlotState::Evicted));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_evict_ready_slot_reports_false_when_map_entry_changed() {
+        let dir = scratch_dir("evict-stale-arc");
+        let world = "home/stale";
+        let _c = world::open(&dir, world).unwrap();
+        world::write(&dir, world, b"stale", "text/plain", &[]).unwrap();
+
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+        let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let stale_arc = cache.read_conns.get(world).unwrap().value().clone();
+        cache
+            .read_conns
+            .insert(world.to_string(), cache.new_slot(SlotState::Tombstone));
+
+        assert!(
+            !cache.try_evict_ready_slot(world, &stale_arc),
+            "evicting a stale Arc must not count as a successful map eviction"
+        );
+        assert!(
+            cache.read_conns.get(world).is_some(),
+            "replacement entry must not be removed by stale Arc eviction"
+        );
+        assert_eq!(
+            cache.metrics.read_cache_evictions.load(Ordering::Relaxed),
+            0
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tombstone_done_none_counts_as_hit_but_opening_is_retry() {
+        let dir = scratch_dir("done-none-and-opening");
+        let world = "home/done-none";
+        let _c = world::open(&dir, world).unwrap();
+        world::write(&dir, world, b"x", "text/plain", &[]).unwrap();
+
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+        cache.install_tombstone_blocking(world);
+        let tombstone = cache.cached_read_with_hmac(&dir, world).unwrap();
+        assert!(tombstone.is_none());
+        assert_eq!(
+            cache.metrics.read_cache_hits.load(Ordering::Relaxed),
+            1,
+            "Tombstone is a definitive cached absence answer"
+        );
+        assert_eq!(cache.metrics.read_cache_misses.load(Ordering::Relaxed), 0);
+
+        let opening_world = "home/opening";
+        let opening_slot = cache.new_slot(SlotState::Opening);
+        cache
+            .read_conns
+            .insert(opening_world.to_string(), opening_slot.clone());
+        let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
+            panic!("Opening must be a retry signal, not a readable slot")
+        });
+        let opening = cache.invoke_via_slot(opening_slot, &mut f).unwrap();
+        assert!(
+            matches!(opening, SlotRead::Opening),
+            "Opening is not a definitive absence answer"
+        );
+        assert!(f.is_some(), "Opening retry must leave FnOnce intact");
+        assert_eq!(
+            cache.metrics.read_cache_hits.load(Ordering::Relaxed),
+            1,
+            "Opening must not be counted as a hit"
+        );
+        assert_eq!(cache.metrics.read_cache_misses.load(Ordering::Relaxed), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stuck_opening_returns_busy_after_retry_budget() {
+        let dir = scratch_dir("stuck-opening-budget");
+        let world = "home/stuck-opening";
+        let _c = world::open(&dir, world).unwrap();
+        world::write(&dir, world, b"still here", "text/plain", &[]).unwrap();
+
+        let cache = ReadCache::new(1);
+        cache
+            .read_conns
+            .insert(world.to_string(), cache.new_slot(SlotState::Opening));
+
+        let err = match cache.cached_read_with_hmac(&dir, world) {
+            Ok(Some(_)) => panic!("stuck Opening must not resolve as a body"),
+            Ok(None) => panic!("stuck Opening must not report a false 404"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(ErrorCode::DatabaseBusy),
+            "retry-budget exhaustion should surface as transient SQLite busy"
+        );
+        assert_eq!(
+            cache.metrics.read_cache_hits.load(Ordering::Relaxed),
+            0,
+            "Opening retries must not count as hits"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lru_eviction_skips_tombstone_and_evicts_ready_slot() {
+        let dir = scratch_dir("evict-skip-tombstone");
+        for w in ["home/ready", "home/tomb"] {
+            let _c = world::open(&dir, w).unwrap();
+            world::write(&dir, w, b"x", "text/plain", &[]).unwrap();
+        }
+
+        let cache = ReadCache::new(2);
+        let _ = cache.cached_read_with_hmac(&dir, "home/ready").unwrap();
+        cache.install_tombstone_blocking("home/tomb");
+
+        assert!(
+            cache.try_evict_oldest_sample("home/new"),
+            "sample should skip Tombstone and evict the idle Ready candidate"
+        );
+        assert!(cache.read_conns.get("home/ready").is_none());
+        assert!(
+            cache.read_conns.get("home/tomb").is_some(),
+            "Tombstone is DELETE state, not an LRU eviction candidate"
+        );
+        let tombstone_read = cache.cached_read_with_hmac(&dir, "home/tomb").unwrap();
+        assert!(tombstone_read.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eviction_sample_excludes_requested_world() {
+        let dir = scratch_dir("evict-exclude-target");
+        for w in ["home/a", "home/b", "home/c"] {
+            let _c = world::open(&dir, w).unwrap();
+            world::write(&dir, w, b"x", "text/plain", &[]).unwrap();
+        }
+
+        let cache = ReadCache::new(3);
+        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, "home/c").unwrap();
+
+        let a_arc = cache.read_conns.get("home/a").unwrap().value().clone();
+        let b_arc = cache.read_conns.get("home/b").unwrap().value().clone();
+        let a_guard = a_arc.inner.read().unwrap();
+        let b_guard = b_arc.inner.read().unwrap();
+
+        assert!(
+            !cache.try_evict_oldest_sample("home/c"),
+            "the target world must not be evicted just because older candidates are busy"
+        );
+        assert!(cache.read_conns.get("home/c").is_some());
+        assert_eq!(
+            cache.metrics.read_cache_evictions.load(Ordering::Relaxed),
+            0
+        );
+        drop(a_guard);
+        drop(b_guard);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
