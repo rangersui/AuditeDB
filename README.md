@@ -87,7 +87,7 @@ async fn main() {
         AccessTier::Write,
     ).await.unwrap();
 
-    let read = engine.read(&world, AccessTier::Read).await.unwrap();
+    let read = engine.read(&world, AccessTier::Read).unwrap();
     assert!(read.is_some());
 }
 ```
@@ -113,6 +113,11 @@ API shapes may change between minor versions until that gate is removed.
 | `append`    | `Engine::append`     | Extend body; headers untouched.                      |
 | `delete`    | `Engine::delete`     | Unlink the world; audit chain advances.              |
 | `subscribe` | `Engine::subscribe`  | Replay-then-live `ChangeEvent` stream.               |
+
+In the Rust API, `read` and introspection calls are synchronous. Mutating
+operations (`replace`, `append`, `delete`) are async; `subscribe` returns a
+subscription synchronously, and `EngineSubscription::recv().await` waits for
+events.
 
 The binary's HTTP surface (world `GET / HEAD / PUT / POST / DELETE` plus
 `/listen/*` SSE) and the CoAP surface are two possible mappings. The library
