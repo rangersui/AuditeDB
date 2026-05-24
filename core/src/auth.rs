@@ -190,9 +190,13 @@ pub fn env_set_but_empty(name: &str) -> bool {
     }
 }
 
-/// Constant-time byte equality. Manual loop — avoids pulling `subtle`
-/// for one operation. Length differences leak via early-return, which
-/// is fine for token compare (the length space is public).
+/// Equal-length byte comparison without early exit.
+///
+/// `auth.rs` deliberately keeps credential parsing, validation, comparison,
+/// and wipe-on-drop on `std` primitives only. `subtle` is already present
+/// through RustCrypto, but this small auth boundary stays locally auditable:
+/// length mismatches return early, and equal-length token bytes are compared
+/// by XOR accumulation without per-byte early return.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
