@@ -95,7 +95,9 @@ impl LedgerWriter {
             *guard = Some(conn);
             self.inits.fetch_add(1, Ordering::Relaxed);
         }
-        let conn = guard.as_mut().expect("ledger connection initialized above");
+        let Some(conn) = guard.as_mut() else {
+            return Err(BlockingSqliteError::Worker);
+        };
         let append = if created_ledger {
             audit::append_with_conn_genesis
         } else {
