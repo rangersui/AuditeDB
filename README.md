@@ -58,6 +58,42 @@ Common binary environment variables:
 | `ELASTIK_READ_CACHE_MAX_ENTRIES` | `5000` | Read-cache entry cap. |
 | `ELASTIK_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set. |
 
+### `/proc/*` introspection (binary HTTP adapter)
+
+The binary exposes text-shaped `/proc/*` endpoints over HTTP. These are adapter
+renderings of Engine snapshots, not storage worlds. `/proc/version` is public
+and is the quickest liveness probe. The other read-only `/proc/*` endpoints
+require `ELASTIK_READ_TOKEN` when a read token is configured. `OPTIONS` is
+always policy-free capability discovery.
+
+| Endpoint | Methods | Auth | Purpose |
+|----------|---------|------|---------|
+| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `elastik-core 8.0.0 (rust)`. |
+| `/proc/worlds` | `GET`, `HEAD`, `OPTIONS` | read-gated | Canonical world list, one `home/foo`-style key per line. |
+| `/proc/du` | `GET`, `HEAD`, `OPTIONS` | read-gated | Per-world byte usage. This is an unpaginated management view. |
+| `/proc/df` | `GET`, `HEAD`, `OPTIONS` | read-gated | Storage and memory quota snapshot plus world count. |
+| `/proc/pool` | `GET`, `HEAD`, `OPTIONS` | read-gated | Read-cache, tombstone, and ledger-writer counters/gauges. |
+| `/proc/audit/<world>/verify` | `GET`, `HEAD`, `OPTIONS` | read-gated | Verify the durable world's HMAC audit chain. Memory worlds return not-applicable. |
+
+For audit verification, `<world>` is still a normal canonical world key:
+`/proc/audit/home/note/verify` verifies `home/note`. It does not create or read
+a `proc/audit/...` storage world. The HTTP adapter parses that path, validates
+`home/note`, calls `Engine::verify_audit`, then renders the typed result back
+as HTTP status and audit headers.
+
+Library embedders call typed Engine methods instead of HTTP `/proc/*` paths:
+
+| Engine method | Return shape |
+|---------------|--------------|
+| `Engine::list_worlds` | `Vec<ValidatedWorldPath>` |
+| `Engine::du` | `Vec<WorldUsage>` |
+| `Engine::df` | `DfSnapshot` |
+| `Engine::pool` | `PoolSnapshot` |
+| `Engine::verify_audit` | `AuditVerify` |
+
+There is no Engine `/proc/version` method; version banners are binary-adapter
+surface, while the library version comes from the Rust crate metadata.
+
 ## Quick start — library
 
 ```rust
