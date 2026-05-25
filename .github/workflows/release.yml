@@ -194,6 +194,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: verify ffi version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' ffi/Cargo.toml | head -n1)"
+          if [[ "$manifest_version" != "$version" ]]; then
+            echo "::error::tag v${version} does not match ffi/Cargo.toml version ${manifest_version}"
+            exit 1
+          fi
+
       - name: build ffi library
         run: cargo build --release --manifest-path ffi/Cargo.toml
 

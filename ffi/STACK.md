@@ -45,6 +45,8 @@ HTTP server, routes, status codes, or `/proc/*` paths.
 6. **Release Integration**
    - Attach FFI artifacts to tagged releases once the CI artifact shape is
      validated.
+   - Fail tagged releases if `ffi/Cargo.toml` does not match the tag version,
+     so `ffi_version()` and attached native libraries cannot drift.
    - Add FFI packages to release checksum manifests.
    - Document OpenWrt/MIPS as a cross-toolchain target, not a guaranteed
      GitHub-hosted runner output.
