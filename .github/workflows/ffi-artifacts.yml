@@ -70,6 +70,7 @@ jobs:
           import os
           import pathlib
           import shutil
+          import sqlite3
           import sys
           import tempfile
 
@@ -113,6 +114,21 @@ jobs:
           assert event.kind == e.FfiSubscriptionNextKind.EVENT, event.kind
           assert event.event.verb == e.FfiChangeVerb.APPEND, event.event.verb
           assert event.event.path == "home/ffi", event.event.path
+          engine.delete_with_metadata("home/ffi", e.FfiDeleteMetadata(
+              content_type="text/plain; charset=utf-8",
+              headers=[e.FfiHeader(name="x-meta-author", value="ci")],
+          ), none, e.FfiAccessTier.APPROVE)
+          assert engine.read("home/ffi", e.FfiAccessTier.READ) is None
+          ledger = root / "var%2Flog%2Fdeletes" / "universe.db"
+          with sqlite3.connect(ledger) as conn:
+              row = conn.execute(
+                  "SELECT content_type FROM events WHERE event_type='delete_intent'"
+              ).fetchone()
+              assert row == ("text/plain; charset=utf-8",), row
+              row = conn.execute(
+                  "SELECT COUNT(*) FROM event_headers WHERE name='x-meta-author' AND value='ci'"
+              ).fetchone()
+              assert row == (2,), row
 
           engine.shutdown()
           closed = subscription.next(5_000)
