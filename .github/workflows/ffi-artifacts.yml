@@ -118,6 +118,10 @@ jobs:
               content_type="text/plain; charset=utf-8",
               headers=[e.FfiHeader(name="x-meta-author", value="ci")],
           ), none, e.FfiAccessTier.APPROVE)
+          deleted = subscription.next(5_000)
+          assert deleted.kind == e.FfiSubscriptionNextKind.EVENT, deleted.kind
+          assert deleted.event.verb == e.FfiChangeVerb.DELETE, deleted.event.verb
+          assert deleted.event.path == "home/ffi", deleted.event.path
           assert engine.read("home/ffi", e.FfiAccessTier.READ) is None
           ledger = root / "var%2Flog%2Fdeletes" / "universe.db"
           with sqlite3.connect(ledger) as conn:
