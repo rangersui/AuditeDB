@@ -396,6 +396,14 @@ impl Engine {
         self.inner.core.tokens.check_token_bytes(token).into()
     }
 
+    /// Returns whether `tier` satisfies the engine's configured read gate.
+    ///
+    /// Adapters use this for non-world read-only surfaces that still need to
+    /// mirror `/proc/*` read policy, such as protocol-local metrics.
+    pub fn allows_read(&self, tier: AccessTier) -> bool {
+        crate::can_read(self.core(), tier.into())
+    }
+
     /// Starts orderly shutdown.
     ///
     /// Sets the engine-owned shutdown signal so subscribers

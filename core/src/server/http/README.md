@@ -85,6 +85,7 @@ always policy-free capability discovery.
 | `/proc/du` | `GET`, `HEAD`, `OPTIONS` | read-gated | Per-world byte usage. This is an unpaginated management view. |
 | `/proc/df` | `GET`, `HEAD`, `OPTIONS` | read-gated | Storage and memory quota snapshot plus world count. |
 | `/proc/pool` | `GET`, `HEAD`, `OPTIONS` | read-gated | Read-cache, tombstone, and ledger-writer counters/gauges. |
+| `/proc/mqtt/metrics` | `GET`, `HEAD`, `OPTIONS` | read-gated | MQTT adapter counters and gauges when MQTT is enabled. |
 | `/proc/audit/<world>/verify` | `GET`, `HEAD`, `OPTIONS` | read-gated | Verify the durable world's HMAC audit chain. Memory worlds return not-applicable. |
 
 For audit verification, `<world>` is still a normal canonical world key:

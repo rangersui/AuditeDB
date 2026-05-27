@@ -25,6 +25,8 @@ pub(crate) struct ServerState {
     max_world_bytes: usize,
     persist_header_allowlist: Arc<HeaderAllowlist>,
     persist_header_user_deny: Arc<HeaderAllowlist>,
+    #[cfg(feature = "mqtt")]
+    mqtt_metrics: Option<Arc<crate::mqtt::MqttMetrics>>,
     next_request: Arc<AtomicUsize>,
 }
 
@@ -40,6 +42,8 @@ impl ServerState {
             max_world_bytes,
             persist_header_allowlist: Arc::new(persist_header_allowlist),
             persist_header_user_deny: Arc::new(persist_header_user_deny),
+            #[cfg(feature = "mqtt")]
+            mqtt_metrics: None,
             next_request: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -59,6 +63,19 @@ impl ServerState {
     /// Returns the protocol-neutral Engine used by server adapters.
     pub(crate) fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn with_mqtt_metrics(mut self, metrics: Arc<crate::mqtt::MqttMetrics>) -> Self {
+        self.mqtt_metrics = Some(metrics);
+        self
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn mqtt_metrics(&self) -> Option<Arc<crate::mqtt::MqttMetrics>> {
+        self.mqtt_metrics.clone()
     }
 
     #[cfg_attr(test, allow(dead_code))]

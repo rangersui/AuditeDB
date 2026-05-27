@@ -121,3 +121,23 @@ Bad credentials fail at CONNECT with a CONNACK failure code.
 | `ELASTIK_MQTT_MAX_PACKET_BYTES` | parsed `ELASTIK_MAX_WORLD_BYTES + 1024` | Maximum MQTT packet size accepted by the adapter. |
 | `ELASTIK_MQTT_MAX_CONNECTIONS` | `1024` | Maximum concurrent MQTT TCP sessions. |
 | `ELASTIK_MQTT_MAX_PENDING_QOS2_BYTES` | `1048576` | Maximum buffered, uncommitted QoS 2 payload bytes per MQTT session. |
+
+## Metrics
+
+When MQTT is enabled, the HTTP adapter exposes read-gated MQTT counters at
+`/proc/mqtt/metrics`:
+
+```text
+mqtt_active_connections <n> snapshot
+mqtt_total_connections <n> counter
+mqtt_auth_failures <n> counter
+mqtt_retained_publishes <n> counter
+mqtt_keep_alive_timeouts <n> counter
+mqtt_retained_replay_failures <n> counter
+mqtt_retained_replay_messages <n> counter
+mqtt_retained_replay_worlds_scanned <n> counter
+mqtt_fanout_drops <n> counter
+mqtt_qos2_pending_messages <n> snapshot
+mqtt_qos2_pending_bytes <n> snapshot
+mqtt_qos2_pending_bytes_peak <n> snapshot
+```

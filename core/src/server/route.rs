@@ -22,17 +22,22 @@ use crate::{
     proc_reserved, proc_version, proc_worlds, root_hint, server::ServerState, WORLD_ALLOW,
 };
 
+#[cfg(feature = "mqtt")]
+use crate::proc_mqtt_metrics;
+
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn build_app(state: ServerState) -> Router {
-    Router::new()
+    let app = Router::new()
         .route("/", any(root_hint))
         .route("/listen/*pattern", any(listen::handler))
         .route("/proc/version", any(proc_version))
         .route("/proc/worlds", any(proc_worlds))
         .route("/proc/du", any(proc_du))
         .route("/proc/df", any(proc_df))
-        .route("/proc/pool", any(proc_pool))
-        .route("/proc/audit/*audit_path", any(proc_audit_verify))
+        .route("/proc/pool", any(proc_pool));
+    #[cfg(feature = "mqtt")]
+    let app = app.route("/proc/mqtt/metrics", any(proc_mqtt_metrics));
+    app.route("/proc/audit/*audit_path", any(proc_audit_verify))
         .route("/proc", any(proc_reserved))
         .route("/proc/*reserved", any(proc_reserved))
         .route("/*world", any(world_handler))

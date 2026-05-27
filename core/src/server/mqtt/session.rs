@@ -24,6 +24,7 @@ use crate::{
 
 use super::{
     codec::send_packet,
+    observability::{warn as mqtt_warn, MqttMetrics},
     topic::{mqtt_filter_to_route, publish_qos_pkid, publish_topic_to_world, MqttSubscribeRoute},
     MqttReject,
 };
@@ -41,6 +42,7 @@ pub(super) struct MqttSession {
     qos2: HashMap<u16, PendingQos2Publish>,
     qos2_pending_bytes: usize,
     max_pending_qos2_bytes: usize,
+    metrics: Arc<MqttMetrics>,
 }
 
 #[derive(Clone)]
@@ -56,11 +58,28 @@ struct PreparedSubscription {
 }
 
 impl MqttSession {
+    #[cfg(test)]
     pub(super) fn new(
         engine: Engine,
         tier: AccessTier,
         outbound: mpsc::Sender<Packet>,
         max_pending_qos2_bytes: usize,
+    ) -> Self {
+        Self::new_with_metrics(
+            engine,
+            tier,
+            outbound,
+            max_pending_qos2_bytes,
+            MqttMetrics::shared(),
+        )
+    }
+
+    pub(super) fn new_with_metrics(
+        engine: Engine,
+        tier: AccessTier,
+        outbound: mpsc::Sender<Packet>,
+        max_pending_qos2_bytes: usize,
+        metrics: Arc<MqttMetrics>,
     ) -> Self {
         Self {
             engine,
@@ -70,6 +89,7 @@ impl MqttSession {
             qos2: HashMap::new(),
             qos2_pending_bytes: 0,
             max_pending_qos2_bytes,
+            metrics,
         }
     }
 
@@ -136,6 +156,7 @@ impl MqttSession {
         };
         match self.replace_payload(&world, publish.payload.clone()).await {
             Ok(_) => {
+                self.record_retained_publish(&world);
                 if qos == QoS::AtLeastOnce {
                     send_packet(
                         &self.outbound,
@@ -180,6 +201,7 @@ impl MqttSession {
                 payload: publish.payload.clone(),
             });
             self.qos2_pending_bytes = new_pending_bytes;
+            self.metrics.qos2_pending_added(payload_len);
         }
         send_packet(
             &self.outbound,
@@ -197,7 +219,9 @@ impl MqttSession {
 
     pub(super) async fn handle_pubrel(&mut self, pkid: u16) -> Result<bool, String> {
         let Some(pending) = self.qos2.get(&pkid).cloned() else {
-            eprintln!("mqtt: PUBREL without pending QoS2 publish pkid={pkid}; replying PUBCOMP");
+            mqtt_warn(format_args!(
+                "mqtt: PUBREL without pending QoS2 publish pkid={pkid}; replying PUBCOMP"
+            ));
             return send_pubcomp(&self.outbound, pkid).await;
         };
         if self
@@ -205,14 +229,18 @@ impl MqttSession {
             .await
             .is_err()
         {
-            eprintln!("mqtt: QoS2 commit failed for pkid={pkid}; closing without PUBCOMP");
+            mqtt_warn(format_args!(
+                "mqtt: QoS2 commit failed for pkid={pkid}; closing without PUBCOMP"
+            ));
             return Ok(false);
         }
         let removed = self.qos2.remove(&pkid);
         debug_assert!(removed.is_some());
+        self.record_retained_publish(&pending.world);
         self.qos2_pending_bytes = self
             .qos2_pending_bytes
             .saturating_sub(pending.payload.len());
+        self.metrics.qos2_pending_removed(pending.payload.len());
         send_pubcomp(&self.outbound, pkid).await
     }
 
@@ -226,6 +254,12 @@ impl MqttSession {
             .replace(world, representation, Preconditions::none(), self.tier)
             .await?;
         Ok(())
+    }
+
+    fn record_retained_publish(&self, world: &ValidatedWorldPath) {
+        if world.as_str().starts_with("home/") {
+            self.metrics.retained_published();
+        }
     }
 
     pub(super) async fn handle_subscribe(
@@ -278,8 +312,14 @@ impl MqttSession {
         )
         .await?;
         for item in prepared {
-            let replayed =
-                send_retained_replay(&self.engine, self.tier, &item.route, &self.outbound).await?;
+            let replayed = send_retained_replay(
+                &self.engine,
+                self.tier,
+                &item.route,
+                &self.outbound,
+                &self.metrics,
+            )
+            .await?;
             self.install_subscription(item, replayed);
         }
         Ok(true)
@@ -320,6 +360,7 @@ impl MqttSession {
                 self.outbound.clone(),
                 prepared.route.clone(),
                 replayed.clone(),
+                self.metrics.clone(),
             )));
         }
         self.subscriptions.insert(prepared.filter, tasks);
@@ -350,6 +391,8 @@ fn abort_handles(tasks: Vec<JoinHandle<()>>) {
 
 impl Drop for MqttSession {
     fn drop(&mut self) {
+        self.metrics
+            .qos2_pending_removed_many(self.qos2.len(), self.qos2_pending_bytes);
         self.abort_subscriptions();
     }
 }
@@ -361,13 +404,16 @@ pub(super) async fn subscription_loop(
     outbound: mpsc::Sender<Packet>,
     route: MqttSubscribeRoute,
     replayed: RetainedReplayEtags,
+    metrics: Arc<MqttMetrics>,
 ) {
     let mut dropped_fanout = 0_u64;
     loop {
         let change = match subscription.recv().await {
             Ok(change) => change,
             Err(SubscriptionRecvError::Lagged { skipped }) => {
-                eprintln!("mqtt: subscription lagged; skipped {skipped} events");
+                mqtt_warn(format_args!(
+                    "mqtt: subscription lagged; skipped {skipped} events"
+                ));
                 continue;
             }
             Err(SubscriptionRecvError::Closed) => break,
@@ -389,11 +435,12 @@ pub(super) async fn subscription_loop(
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 dropped_fanout = dropped_fanout.saturating_add(1);
+                let total = metrics.fanout_dropped();
                 if dropped_fanout == 1 || dropped_fanout.is_power_of_two() {
-                    eprintln!(
-                        "mqtt: outbound queue full; dropped {dropped_fanout} QoS0 fanout messages; latest {}",
+                    mqtt_warn(format_args!(
+                        "mqtt: outbound queue full; dropped {dropped_fanout} QoS0 fanout messages on this subscription; total_fanout_drops={total}; latest {}",
                         change.path.as_str()
-                    );
+                    ));
                 }
             }
             Err(TrySendError::Closed(_)) => break,
@@ -406,28 +453,41 @@ async fn send_retained_replay(
     tier: AccessTier,
     route: &MqttSubscribeRoute,
     outbound: &mpsc::Sender<Packet>,
+    metrics: &MqttMetrics,
 ) -> Result<HashMap<ValidatedWorldPath, String>, String> {
     let mut replayed = HashMap::new();
     if let Some(world) = route.retained_exact() {
-        replay_retained_world(engine, tier, route, outbound, world, &mut replayed).await?;
+        metrics.retained_replay_scanned(1);
+        replay_retained_world(engine, tier, route, outbound, metrics, world, &mut replayed).await?;
         return Ok(replayed);
     }
 
     let worlds = match engine.list_worlds_with_prefix(route.retained_prefix(), tier) {
         Ok(worlds) => worlds,
         Err(err) => {
-            eprintln!(
-                "mqtt: retained replay list failed for prefix {}; err={err:?}",
+            let total = metrics.retained_replay_failed();
+            mqtt_warn(format_args!(
+                "mqtt: retained replay list failed for prefix {}; failures={total}; err={err:?}",
                 route.retained_prefix()
-            );
+            ));
             return Ok(HashMap::new());
         }
     };
+    metrics.retained_replay_scanned(worlds.len());
     for world in worlds {
         if !route.matches_retained_world(&world) {
             continue;
         }
-        replay_retained_world(engine, tier, route, outbound, &world, &mut replayed).await?;
+        replay_retained_world(
+            engine,
+            tier,
+            route,
+            outbound,
+            metrics,
+            &world,
+            &mut replayed,
+        )
+        .await?;
     }
     Ok(replayed)
 }
@@ -437,6 +497,7 @@ async fn replay_retained_world(
     tier: AccessTier,
     route: &MqttSubscribeRoute,
     outbound: &mpsc::Sender<Packet>,
+    metrics: &MqttMetrics,
     world: &ValidatedWorldPath,
     replayed: &mut HashMap<ValidatedWorldPath, String>,
 ) -> Result<(), String> {
@@ -444,15 +505,20 @@ async fn replay_retained_world(
         Ok(Some(read)) if !read.representation.body.is_empty() => read,
         Ok(_) => return Ok(()),
         Err(err) => {
-            eprintln!(
-                "mqtt: retained replay read failed for {}; err={err:?}",
+            let total = metrics.retained_replay_failed();
+            mqtt_warn(format_args!(
+                "mqtt: retained replay read failed for {}; failures={total}; err={err:?}",
                 world.as_str()
-            );
+            ));
             return Ok(());
         }
     };
     let publish = Publish::new(route.topic_for_world(world), read.representation.body, true);
-    send_packet(outbound, Packet::Publish(publish, None)).await?;
+    if let Err(err) = send_packet(outbound, Packet::Publish(publish, None)).await {
+        metrics.retained_replay_failed();
+        return Err(err);
+    }
+    metrics.retained_replay_sent();
     replayed.insert(world.clone(), read.etag);
     Ok(())
 }

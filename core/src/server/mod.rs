@@ -64,6 +64,10 @@ pub(crate) async fn run_from_env() {
     let coap_bind = coap_bind_from_env();
     #[cfg(feature = "mqtt")]
     let mqtt_bind = mqtt_bind_from_env(&host);
+    #[cfg(feature = "mqtt")]
+    let mqtt_metrics = mqtt_bind
+        .as_ref()
+        .map(|_| crate::mqtt::MqttMetrics::shared());
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
@@ -119,6 +123,12 @@ pub(crate) async fn run_from_env() {
         persist_header_allowlist,
         persist_header_user_deny,
     );
+    #[cfg(feature = "mqtt")]
+    let state = if let Some(metrics) = mqtt_metrics.clone() {
+        state.with_mqtt_metrics(metrics)
+    } else {
+        state
+    };
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
@@ -151,6 +161,8 @@ pub(crate) async fn run_from_env() {
         }
         let mqtt_engine = engine.clone();
         let mqtt_shutdown = mqtt_engine.shutdown_receiver();
+        let mqtt_metrics =
+            mqtt_metrics.expect("MQTT metrics should exist when MQTT bind is configured");
         tokio::spawn(async move {
             crate::mqtt::serve(
                 mqtt_engine,
@@ -159,6 +171,7 @@ pub(crate) async fn run_from_env() {
                 mqtt_max_packet_bytes,
                 mqtt_max_connections,
                 mqtt_max_pending_qos2_bytes,
+                mqtt_metrics,
             )
             .await;
         });

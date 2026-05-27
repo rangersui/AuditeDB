@@ -6,6 +6,7 @@
 //! protocol-neutral Engine as HTTP and CoAP.
 
 mod codec;
+mod observability;
 mod session;
 mod topic;
 
@@ -26,8 +27,11 @@ use crate::{
 
 use self::{
     codec::{send_packet, write_loop, PacketReadError, PacketReader},
+    observability::{info as mqtt_info, warn as mqtt_warn, MqttConnectionGuard},
     session::MqttSession,
 };
+
+pub(crate) use observability::{MqttMetrics, MqttMetricsSnapshot};
 
 const OUTBOUND_QUEUE: usize = 128;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -54,44 +58,47 @@ pub(crate) async fn serve(
     max_packet_bytes: usize,
     max_connections: usize,
     max_pending_qos2_bytes: usize,
+    metrics: Arc<MqttMetrics>,
 ) {
     let listener = match TcpListener::bind(&bind).await {
         Ok(listener) => listener,
         Err(e) => {
-            eprintln!("mqtt: failed to bind mqtt://{bind}/: {e}");
+            mqtt_warn(format_args!("mqtt: failed to bind mqtt://{bind}/: {e}"));
             return;
         }
     };
-    eprintln!("mqtt: listening on mqtt://{bind}/");
-    eprintln!("mqtt: CONNECT password maps to elastik token tier; username-only token auth is legacy fallback");
+    mqtt_info(format_args!("mqtt: listening on mqtt://{bind}/"));
+    mqtt_info(format_args!("mqtt: CONNECT password maps to elastik token tier; username-only token auth is legacy fallback"));
     let permits = Arc::new(Semaphore::new(max_connections));
+    let runtime = MqttRuntime::new(max_packet_bytes, max_pending_qos2_bytes, metrics);
 
     loop {
         tokio::select! {
             _ = shutdown.wait() => {
-                eprintln!("mqtt: shutdown signal received");
+                mqtt_info(format_args!("mqtt: shutdown signal received"));
                 return;
             }
             accepted = listener.accept() => {
                 let (stream, peer) = match accepted {
                     Ok(v) => v,
                     Err(e) => {
-                        eprintln!("mqtt: accept: {e}");
+                        mqtt_warn(format_args!("mqtt: accept: {e}"));
                         continue;
                     }
                 };
                 let permit = match permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
-                        eprintln!("mqtt: connection limit reached; rejecting {peer}");
+                        mqtt_warn(format_args!("mqtt: connection limit reached; rejecting {peer}"));
                         continue;
                     }
                 };
                 let engine = engine.clone();
                 let conn_shutdown = engine.shutdown_receiver();
+                let runtime = runtime.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(engine, stream, peer, max_packet_bytes, max_pending_qos2_bytes, conn_shutdown, permit).await {
-                        eprintln!("mqtt: connection {peer}: {e}");
+                    if let Err(e) = handle_connection(engine, stream, peer, conn_shutdown, permit, runtime).await {
+                        mqtt_warn(format_args!("mqtt: connection {peer}: {e}"));
                     }
                 });
             }
@@ -103,15 +110,15 @@ async fn handle_connection(
     engine: Engine,
     stream: TcpStream,
     peer: SocketAddr,
-    max_packet_bytes: usize,
-    max_pending_qos2_bytes: usize,
     mut shutdown: ShutdownToken,
     _permit: OwnedSemaphorePermit,
+    runtime: MqttRuntime,
 ) -> Result<(), String> {
+    let _connection_guard = MqttConnectionGuard::new(runtime.metrics.clone());
     let (reader, writer) = stream.into_split();
     let (outbound, rx) = mpsc::channel(OUTBOUND_QUEUE);
     let mut writer = tokio::spawn(write_loop(writer, rx));
-    let mut reader = PacketReader::new(reader, max_packet_bytes);
+    let mut reader = PacketReader::new(reader, runtime.max_packet_bytes);
 
     let first = tokio::select! {
         _ = shutdown.wait() => return Ok(()),
@@ -124,6 +131,12 @@ async fn handle_connection(
     let connect = match connect_session(&engine, &first) {
         Ok(connect) => connect,
         Err(reject) => {
+            if reject.code == Some(ConnectReturnCode::BadUserNamePassword) {
+                let total = runtime.metrics.auth_failed();
+                mqtt_warn(format_args!(
+                    "mqtt: auth failed for {peer}; total_auth_failures={total}"
+                ));
+            }
             if let Some(code) = reject.code {
                 let _ = send_connack(&outbound, code).await;
             }
@@ -134,7 +147,13 @@ async fn handle_connection(
     };
     send_connack(&outbound, ConnectReturnCode::Success).await?;
 
-    let mut session = MqttSession::new(engine, connect.tier, outbound, max_pending_qos2_bytes);
+    let mut session = MqttSession::new_with_metrics(
+        engine,
+        connect.tier,
+        outbound,
+        runtime.max_pending_qos2_bytes,
+        runtime.metrics.clone(),
+    );
     let mut connection_error = None;
 
     loop {
@@ -144,6 +163,14 @@ async fn handle_connection(
                 let packet = match packet {
                     Ok(packet) => packet,
                     Err(PacketReadError::Closed) => break,
+                    Err(PacketReadError::KeepAliveTimeout) => {
+                        let total = runtime.metrics.keep_alive_timed_out();
+                        mqtt_warn(format_args!(
+                            "mqtt: keep-alive timeout for {peer}; total_keep_alive_timeouts={total}"
+                        ));
+                        connection_error = Some(PacketReadError::KeepAliveTimeout.to_string());
+                        break;
+                    }
                     Err(e) => {
                         connection_error = Some(e.to_string());
                         break;
@@ -164,10 +191,31 @@ async fn handle_connection(
     session.abort_subscriptions();
     drop(session);
     finish_writer(peer, &mut writer).await;
-    eprintln!("mqtt: disconnected {peer}");
+    mqtt_info(format_args!("mqtt: disconnected {peer}"));
     match connection_error {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+#[derive(Clone)]
+struct MqttRuntime {
+    max_packet_bytes: usize,
+    max_pending_qos2_bytes: usize,
+    metrics: Arc<MqttMetrics>,
+}
+
+impl MqttRuntime {
+    fn new(
+        max_packet_bytes: usize,
+        max_pending_qos2_bytes: usize,
+        metrics: Arc<MqttMetrics>,
+    ) -> Self {
+        Self {
+            max_packet_bytes,
+            max_pending_qos2_bytes,
+            metrics,
+        }
     }
 }
 
@@ -175,7 +223,9 @@ async fn finish_writer(peer: SocketAddr, writer: &mut JoinHandle<()>) {
     match timeout(WRITE_SHUTDOWN_TIMEOUT, &mut *writer).await {
         Ok(_) => {}
         Err(_) => {
-            eprintln!("mqtt: writer shutdown timeout for {peer}; aborting writer task");
+            mqtt_warn(format_args!(
+                "mqtt: writer shutdown timeout for {peer}; aborting writer task"
+            ));
             writer.abort();
             let _ = writer.await;
         }
@@ -1034,6 +1084,7 @@ mod tests {
             outbound,
             route,
             Arc::new(Mutex::new(replayed)),
+            MqttMetrics::shared(),
         ));
 
         assert!(
@@ -1114,10 +1165,9 @@ mod tests {
                 server_engine.clone(),
                 stream,
                 peer,
-                1024 * 1024,
-                1024 * 1024,
                 server_engine.shutdown_receiver(),
                 Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+                MqttRuntime::new(1024 * 1024, 1024 * 1024, MqttMetrics::shared()),
             )
             .await
         });
@@ -1221,10 +1271,9 @@ mod tests {
                 server_engine.clone(),
                 stream,
                 peer,
-                1024 * 1024,
-                1024 * 1024,
                 server_engine.shutdown_receiver(),
                 Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+                MqttRuntime::new(1024 * 1024, 1024 * 1024, MqttMetrics::shared()),
             )
             .await
         });
@@ -1273,10 +1322,9 @@ mod tests {
                 server_engine.clone(),
                 stream,
                 peer,
-                1024 * 1024,
-                1024 * 1024,
                 server_engine.shutdown_receiver(),
                 Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+                MqttRuntime::new(1024 * 1024, 1024 * 1024, MqttMetrics::shared()),
             )
             .await
         });
