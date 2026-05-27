@@ -14,7 +14,7 @@ const LIVE_MQTT_NAMESPACE: &str = "tmp";
 pub(super) struct MqttSubscribeRoute {
     live_patterns: Vec<SubscribePattern>,
     retained_pattern: SubscribePattern,
-    retained_prefix: String,
+    retained_prefix: Option<String>,
     retained_exact: Option<ValidatedWorldPath>,
 }
 
@@ -24,11 +24,14 @@ impl MqttSubscribeRoute {
     }
 
     pub(super) fn matches_retained_world(&self, world: &ValidatedWorldPath) -> bool {
+        if self.retained_exact.as_ref() == Some(world) {
+            return true;
+        }
         matches_pattern(&self.retained_pattern, world)
     }
 
-    pub(super) fn retained_prefix(&self) -> &str {
-        &self.retained_prefix
+    pub(super) fn retained_prefix(&self) -> Option<&str> {
+        self.retained_prefix.as_deref()
     }
 
     pub(super) fn retained_exact(&self) -> Option<&ValidatedWorldPath> {
@@ -81,17 +84,24 @@ pub(super) fn mqtt_filter_to_route(filter: &str) -> Result<MqttSubscribeRoute, M
     }
     if let Some(prefix) = filter.strip_suffix("/#") {
         validate_filter_prefix(prefix)?;
+        let live_exact = ValidatedWorldPath::new(world_path_for_topic(LIVE_MQTT_NAMESPACE, prefix))
+            .map_err(|_| MqttReject::Filter)?;
+        let retained_exact =
+            ValidatedWorldPath::new(world_path_for_topic(RETAINED_MQTT_NAMESPACE, prefix))
+                .map_err(|_| MqttReject::Filter)?;
         return Ok(MqttSubscribeRoute {
             live_patterns: vec![
+                SubscribePattern::new(live_exact.as_str()),
                 SubscribePattern::new(format!("{}/{}/*", LIVE_MQTT_NAMESPACE, prefix)),
+                SubscribePattern::new(retained_exact.as_str()),
                 SubscribePattern::new(format!("{}/{}/*", RETAINED_MQTT_NAMESPACE, prefix)),
             ],
             retained_pattern: SubscribePattern::new(format!(
                 "{}/{}/*",
                 RETAINED_MQTT_NAMESPACE, prefix
             )),
-            retained_prefix: format!("{}/{}/", RETAINED_MQTT_NAMESPACE, prefix),
-            retained_exact: None,
+            retained_prefix: Some(format!("{}/{}/", RETAINED_MQTT_NAMESPACE, prefix)),
+            retained_exact: Some(retained_exact),
         });
     }
     validate_topic_shape(filter).map_err(|_| MqttReject::Filter)?;
@@ -109,7 +119,7 @@ pub(super) fn mqtt_filter_to_route(filter: &str) -> Result<MqttSubscribeRoute, M
             SubscribePattern::new(retained_world.as_str()),
         ],
         retained_pattern: SubscribePattern::new(retained_world.as_str()),
-        retained_prefix: retained_world.as_str().to_owned(),
+        retained_prefix: None,
         retained_exact: Some(retained_world),
     })
 }

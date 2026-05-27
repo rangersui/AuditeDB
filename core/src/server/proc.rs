@@ -396,24 +396,32 @@ fn mqtt_metrics_body(snapshot: &crate::mqtt::MqttMetricsSnapshot) -> String {
         "mqtt_active_connections {} snapshot\n\
          mqtt_total_connections {} counter\n\
          mqtt_auth_failures {} counter\n\
+         mqtt_publish_failures {} counter\n\
          mqtt_retained_publishes {} counter\n\
          mqtt_keep_alive_timeouts {} counter\n\
          mqtt_retained_replay_failures {} counter\n\
          mqtt_retained_replay_messages {} counter\n\
          mqtt_retained_replay_worlds_scanned {} counter\n\
+         mqtt_preauth_rejections {} counter\n\
+         mqtt_client_id_replacements {} counter\n\
          mqtt_fanout_drops {} counter\n\
+         mqtt_fanout_read_failures {} counter\n\
          mqtt_qos2_pending_messages {} snapshot\n\
          mqtt_qos2_pending_bytes {} snapshot\n\
          mqtt_qos2_pending_bytes_peak {} snapshot\n",
         snapshot.active_connections,
         snapshot.total_connections,
         snapshot.auth_failures,
+        snapshot.publish_failures,
         snapshot.retained_publishes,
         snapshot.keep_alive_timeouts,
         snapshot.retained_replay_failures,
         snapshot.retained_replay_messages,
         snapshot.retained_replay_worlds_scanned,
+        snapshot.preauth_rejections,
+        snapshot.client_id_replacements,
         snapshot.fanout_drops,
+        snapshot.fanout_read_failures,
         snapshot.qos2_pending_messages,
         snapshot.qos2_pending_bytes,
         snapshot.qos2_pending_bytes_peak

@@ -612,6 +612,16 @@ pub fn list_with_prefix(data_root: &Path, prefix: &str) -> rusqlite::Result<Vec<
     list_matching(data_root, |world| world.starts_with(prefix))
 }
 
+/// List sqlite-backed world keys with a canonical prefix, returning `None`
+/// before materializing more than `max` matches.
+pub fn list_with_prefix_bounded(
+    data_root: &Path,
+    prefix: &str,
+    max: usize,
+) -> rusqlite::Result<Option<Vec<String>>> {
+    list_matching_bounded(data_root, |world| world.starts_with(prefix), max)
+}
+
 fn list_matching(
     data_root: &Path,
     mut keep: impl FnMut(&str) -> bool,
@@ -635,6 +645,35 @@ fn list_matching(
     }
     out.sort();
     Ok(out)
+}
+
+fn list_matching_bounded(
+    data_root: &Path,
+    mut keep: impl FnMut(&str) -> bool,
+    max: usize,
+) -> rusqlite::Result<Option<Vec<String>>> {
+    let mut out = Vec::new();
+    let rd = std::fs::read_dir(data_root).map_err(create_dir_error)?;
+    for entry in rd {
+        let entry = entry.map_err(create_dir_error)?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !entry.path().join("universe.db").exists() {
+            continue;
+        }
+        let decoded = percent_encoding::percent_decode_str(&name)
+            .decode_utf8_lossy()
+            .into_owned();
+        if keep(&decoded) {
+            if out.len() >= max {
+                return Ok(None);
+            }
+            out.push(decoded);
+        }
+    }
+    out.sort();
+    Ok(Some(out))
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -25,14 +25,13 @@ use crate::{
 use super::{
     codec::send_packet,
     observability::{warn as mqtt_warn, MqttMetrics},
+    retained::{collect_retained_replay, should_skip_replayed_live, RetainedReplayEtags},
     topic::{mqtt_filter_to_route, publish_qos_pkid, publish_topic_to_world, MqttSubscribeRoute},
     MqttReject,
 };
 
 pub(super) const MAX_PENDING_QOS2_PUBLISHES: usize = 64;
-pub(super) const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 128;
-
-type RetainedReplayEtags = Arc<Mutex<HashMap<ValidatedWorldPath, String>>>;
+pub(super) const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 64;
 
 pub(super) struct MqttSession {
     engine: Engine,
@@ -43,6 +42,7 @@ pub(super) struct MqttSession {
     qos2_pending_bytes: usize,
     max_pending_qos2_bytes: usize,
     metrics: Arc<MqttMetrics>,
+    session_id: u64,
 }
 
 #[derive(Clone)]
@@ -55,6 +55,16 @@ struct PreparedSubscription {
     filter: String,
     route: MqttSubscribeRoute,
     subscriptions: Vec<EngineSubscription>,
+}
+
+pub(super) struct SubscriptionLoopCtx {
+    pub(super) engine: Engine,
+    pub(super) tier: AccessTier,
+    pub(super) outbound: mpsc::Sender<Packet>,
+    pub(super) route: MqttSubscribeRoute,
+    pub(super) replayed: RetainedReplayEtags,
+    pub(super) metrics: Arc<MqttMetrics>,
+    pub(super) session_id: u64,
 }
 
 impl MqttSession {
@@ -71,6 +81,7 @@ impl MqttSession {
             outbound,
             max_pending_qos2_bytes,
             MqttMetrics::shared(),
+            0,
         )
     }
 
@@ -80,6 +91,7 @@ impl MqttSession {
         outbound: mpsc::Sender<Packet>,
         max_pending_qos2_bytes: usize,
         metrics: Arc<MqttMetrics>,
+        session_id: u64,
     ) -> Self {
         Self {
             engine,
@@ -90,6 +102,7 @@ impl MqttSession {
             qos2_pending_bytes: 0,
             max_pending_qos2_bytes,
             metrics,
+            session_id,
         }
     }
 
@@ -145,14 +158,14 @@ impl MqttSession {
 
     pub(super) async fn handle_publish(&mut self, publish: Publish) -> Result<bool, String> {
         let Some((qos, pkid)) = publish_qos_pkid(&publish) else {
-            return Ok(false);
+            return self.fail_publish("invalid_publish_header", None);
         };
         if qos == QoS::ExactlyOnce {
             return self.handle_qos2_publish(publish, pkid).await;
         }
         let world = match publish_topic_to_world(&publish) {
             Ok(world) => world,
-            Err(_) => return Ok(false),
+            Err(_) => return self.fail_publish("invalid_topic", None),
         };
         match self.replace_payload(&world, publish.payload.clone()).await {
             Ok(_) => {
@@ -172,34 +185,36 @@ impl MqttSession {
                 }
                 Ok(true)
             }
-            Err(_) => Ok(false),
+            Err(err) => self.fail_publish("replace_failed", Some(&err)),
         }
     }
 
     async fn handle_qos2_publish(&mut self, publish: Publish, pkid: u16) -> Result<bool, String> {
         if pkid == 0 {
-            return Ok(false);
+            return self.fail_publish("qos2_zero_packet_id", None);
         }
-        let pending_count = self.qos2.len();
-        if let Entry::Vacant(entry) = self.qos2.entry(pkid) {
-            if pending_count >= MAX_PENDING_QOS2_PUBLISHES {
-                return Ok(false);
+        if !self.qos2.contains_key(&pkid) {
+            if self.qos2.len() >= MAX_PENDING_QOS2_PUBLISHES {
+                return self.fail_publish("qos2_pending_count_limit", None);
             }
             let payload_len = publish.payload.len();
             let Some(new_pending_bytes) = self.qos2_pending_bytes.checked_add(payload_len) else {
-                return Ok(false);
+                return self.fail_publish("qos2_pending_bytes_overflow", None);
             };
             if new_pending_bytes > self.max_pending_qos2_bytes {
-                return Ok(false);
+                return self.fail_publish("qos2_pending_bytes_limit", None);
             }
             let world = match publish_topic_to_world(&publish) {
                 Ok(world) => world,
-                Err(_) => return Ok(false),
+                Err(_) => return self.fail_publish("invalid_topic", None),
             };
-            entry.insert(PendingQos2Publish {
-                world,
-                payload: publish.payload.clone(),
-            });
+            self.qos2.insert(
+                pkid,
+                PendingQos2Publish {
+                    world,
+                    payload: publish.payload.clone(),
+                },
+            );
             self.qos2_pending_bytes = new_pending_bytes;
             self.metrics.qos2_pending_added(payload_len);
         }
@@ -229,8 +244,10 @@ impl MqttSession {
             .await
             .is_err()
         {
+            let total = self.metrics.publish_failed();
             mqtt_warn(format_args!(
-                "mqtt: QoS2 commit failed for pkid={pkid}; closing without PUBCOMP"
+                "mqtt: session {} QoS2 commit failed for pkid={pkid}; total_publish_failures={total}; closing without PUBCOMP",
+                self.session_id,
             ));
             return Ok(false);
         }
@@ -262,6 +279,20 @@ impl MqttSession {
         }
     }
 
+    fn fail_publish(
+        &self,
+        reason: &'static str,
+        err: Option<&EngineError>,
+    ) -> Result<bool, String> {
+        let total = self.metrics.publish_failed();
+        let detail = err.map(|err| format!("; err={err:?}")).unwrap_or_default();
+        mqtt_warn(format_args!(
+            "mqtt: session {} publish failed; reason={reason}; total_publish_failures={total}{detail}",
+            self.session_id
+        ));
+        Ok(false)
+    }
+
     pub(super) async fn handle_subscribe(
         &mut self,
         subscribe: rumqttd::protocol::Subscribe,
@@ -287,10 +318,22 @@ impl MqttSession {
             }
             match self.prepare_subscription(filter_path.clone()) {
                 Ok(item) => {
+                    let Some(replay) = collect_retained_replay(
+                        &self.engine,
+                        self.tier,
+                        &item.route,
+                        &self.metrics,
+                    )
+                    .await
+                    else {
+                        return_codes.push(SubscribeReasonCode::Failure);
+                        seen_results.insert(filter_path, SubscribeReasonCode::Failure);
+                        continue;
+                    };
                     if is_new {
                         accepted_new.insert(filter_path.clone());
                     }
-                    prepared.push(item);
+                    prepared.push((item, replay));
                     return_codes.push(SubscribeReasonCode::QoS0);
                     seen_results.insert(filter_path, SubscribeReasonCode::QoS0);
                 }
@@ -311,15 +354,8 @@ impl MqttSession {
             ),
         )
         .await?;
-        for item in prepared {
-            let replayed = send_retained_replay(
-                &self.engine,
-                self.tier,
-                &item.route,
-                &self.outbound,
-                &self.metrics,
-            )
-            .await?;
+        for (item, replay) in prepared {
+            let replayed = replay.send(&self.outbound, &self.metrics).await?;
             self.install_subscription(item, replayed);
         }
         Ok(true)
@@ -353,15 +389,16 @@ impl MqttSession {
         let mut tasks = Vec::with_capacity(prepared.subscriptions.len());
         let replayed = Arc::new(Mutex::new(replayed));
         for subscription in prepared.subscriptions {
-            tasks.push(tokio::spawn(subscription_loop(
-                self.engine.clone(),
-                self.tier,
-                subscription,
-                self.outbound.clone(),
-                prepared.route.clone(),
-                replayed.clone(),
-                self.metrics.clone(),
-            )));
+            let ctx = SubscriptionLoopCtx {
+                engine: self.engine.clone(),
+                tier: self.tier,
+                outbound: self.outbound.clone(),
+                route: prepared.route.clone(),
+                replayed: replayed.clone(),
+                metrics: self.metrics.clone(),
+                session_id: self.session_id,
+            };
+            tasks.push(tokio::spawn(subscription_loop(subscription, ctx)));
         }
         self.subscriptions.insert(prepared.filter, tasks);
     }
@@ -398,15 +435,11 @@ impl Drop for MqttSession {
 }
 
 pub(super) async fn subscription_loop(
-    engine: Engine,
-    tier: AccessTier,
     mut subscription: EngineSubscription,
-    outbound: mpsc::Sender<Packet>,
-    route: MqttSubscribeRoute,
-    replayed: RetainedReplayEtags,
-    metrics: Arc<MqttMetrics>,
+    ctx: SubscriptionLoopCtx,
 ) {
     let mut dropped_fanout = 0_u64;
+    let mut read_failures = 0_u64;
     loop {
         let change = match subscription.recv().await {
             Ok(change) => change,
@@ -420,125 +453,43 @@ pub(super) async fn subscription_loop(
             #[allow(unreachable_patterns)]
             Err(_) => continue,
         };
-        let read = match engine.read(&change.path, tier) {
+        let read = match ctx.engine.read(&change.path, ctx.tier) {
             Ok(Some(read)) => read,
             Ok(None) => continue,
-            Err(_) => continue,
+            Err(err) => {
+                read_failures = read_failures.saturating_add(1);
+                let total = ctx.metrics.fanout_read_failed();
+                if read_failures == 1 || read_failures.is_power_of_two() {
+                    mqtt_warn(format_args!(
+                        "mqtt: session {session_id} fanout read failed {read_failures} times on this subscription; total_fanout_read_failures={total}; world={}; err={err:?}",
+                        change.path.as_str(),
+                        session_id = ctx.session_id
+                    ));
+                }
+                continue;
+            }
         };
-        if should_skip_replayed_live(&replayed, &change.path, &read.etag) {
+        if should_skip_replayed_live(&ctx.replayed, &change.path, &read.etag) {
             continue;
         }
         let payload = read.representation.body;
-        let topic = route.topic_for_world(&change.path);
+        let topic = ctx.route.topic_for_world(&change.path);
         let publish = Publish::new(topic, payload, false);
-        match outbound.try_send(Packet::Publish(publish, None)) {
+        match ctx.outbound.try_send(Packet::Publish(publish, None)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 dropped_fanout = dropped_fanout.saturating_add(1);
-                let total = metrics.fanout_dropped();
+                let total = ctx.metrics.fanout_dropped();
                 if dropped_fanout == 1 || dropped_fanout.is_power_of_two() {
                     mqtt_warn(format_args!(
-                        "mqtt: outbound queue full; dropped {dropped_fanout} QoS0 fanout messages on this subscription; total_fanout_drops={total}; latest {}",
-                        change.path.as_str()
+                        "mqtt: session {session_id} outbound queue full; dropped {dropped_fanout} QoS0 fanout messages on this subscription; total_fanout_drops={total}; latest {}",
+                        change.path.as_str(),
+                        session_id = ctx.session_id
                     ));
                 }
             }
             Err(TrySendError::Closed(_)) => break,
         }
-    }
-}
-
-async fn send_retained_replay(
-    engine: &Engine,
-    tier: AccessTier,
-    route: &MqttSubscribeRoute,
-    outbound: &mpsc::Sender<Packet>,
-    metrics: &MqttMetrics,
-) -> Result<HashMap<ValidatedWorldPath, String>, String> {
-    let mut replayed = HashMap::new();
-    if let Some(world) = route.retained_exact() {
-        metrics.retained_replay_scanned(1);
-        replay_retained_world(engine, tier, route, outbound, metrics, world, &mut replayed).await?;
-        return Ok(replayed);
-    }
-
-    let worlds = match engine.list_worlds_with_prefix(route.retained_prefix(), tier) {
-        Ok(worlds) => worlds,
-        Err(err) => {
-            let total = metrics.retained_replay_failed();
-            mqtt_warn(format_args!(
-                "mqtt: retained replay list failed for prefix {}; failures={total}; err={err:?}",
-                route.retained_prefix()
-            ));
-            return Ok(HashMap::new());
-        }
-    };
-    metrics.retained_replay_scanned(worlds.len());
-    for world in worlds {
-        if !route.matches_retained_world(&world) {
-            continue;
-        }
-        replay_retained_world(
-            engine,
-            tier,
-            route,
-            outbound,
-            metrics,
-            &world,
-            &mut replayed,
-        )
-        .await?;
-    }
-    Ok(replayed)
-}
-
-async fn replay_retained_world(
-    engine: &Engine,
-    tier: AccessTier,
-    route: &MqttSubscribeRoute,
-    outbound: &mpsc::Sender<Packet>,
-    metrics: &MqttMetrics,
-    world: &ValidatedWorldPath,
-    replayed: &mut HashMap<ValidatedWorldPath, String>,
-) -> Result<(), String> {
-    let read = match engine.read(world, tier) {
-        Ok(Some(read)) if !read.representation.body.is_empty() => read,
-        Ok(_) => return Ok(()),
-        Err(err) => {
-            let total = metrics.retained_replay_failed();
-            mqtt_warn(format_args!(
-                "mqtt: retained replay read failed for {}; failures={total}; err={err:?}",
-                world.as_str()
-            ));
-            return Ok(());
-        }
-    };
-    let publish = Publish::new(route.topic_for_world(world), read.representation.body, true);
-    if let Err(err) = send_packet(outbound, Packet::Publish(publish, None)).await {
-        metrics.retained_replay_failed();
-        return Err(err);
-    }
-    metrics.retained_replay_sent();
-    replayed.insert(world.clone(), read.etag);
-    Ok(())
-}
-
-fn should_skip_replayed_live(
-    replayed: &RetainedReplayEtags,
-    path: &ValidatedWorldPath,
-    etag: &str,
-) -> bool {
-    match replayed
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .entry(path.clone())
-    {
-        Entry::Occupied(entry) if entry.get() == etag => true,
-        Entry::Occupied(entry) => {
-            entry.remove();
-            false
-        }
-        Entry::Vacant(_) => false,
     }
 }
 

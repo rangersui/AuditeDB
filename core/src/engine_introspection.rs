@@ -294,6 +294,39 @@ impl EngineOps<'_> {
             .collect()
     }
 
+    pub(crate) fn list_worlds_with_prefix_bounded(
+        &self,
+        prefix: &str,
+        tier: auth::Tier,
+        max: usize,
+    ) -> Result<Option<Vec<ValidatedWorldPath>>, EngineError> {
+        if !crate::can_read(self.core(), tier) {
+            return Err(EngineError::Auth(AuthGate::Read));
+        }
+        let limit = max.saturating_add(1);
+        let Some(mut names) = world::list_with_prefix_bounded(&self.core().data, prefix, limit)
+            .map_err(|err| {
+                storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
+            })?
+        else {
+            return Ok(None);
+        };
+        let Some(mem_names) = self.core().mem.list_with_prefix_bounded(prefix, limit) else {
+            return Ok(None);
+        };
+        names.extend(mem_names);
+        names.sort();
+        names.dedup();
+        if names.len() > max {
+            return Ok(None);
+        }
+        names
+            .into_iter()
+            .map(validated_world_from_storage)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
     pub(crate) fn du(
         &self,
         path: &ValidatedProcPath,
@@ -460,6 +493,20 @@ impl Engine {
         tier: AccessTier,
     ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
         EngineOps::new(self.core()).list_worlds_with_prefix(prefix, tier.into())
+    }
+
+    /// Lists canonical worlds with the supplied canonical prefix, returning
+    /// `Ok(None)` if more than `max` distinct worlds match.
+    ///
+    /// This is intended for adapter-internal bounded scans. It uses the same
+    /// read-tier gate as [`Engine::list_worlds_with_prefix`].
+    pub fn list_worlds_with_prefix_bounded(
+        &self,
+        prefix: &str,
+        tier: AccessTier,
+        max: usize,
+    ) -> Result<Option<Vec<ValidatedWorldPath>>, EngineError> {
+        EngineOps::new(self.core()).list_worlds_with_prefix_bounded(prefix, tier.into(), max)
     }
 
     /// Returns per-world body byte size, `du`-style.

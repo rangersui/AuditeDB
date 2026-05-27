@@ -17,7 +17,8 @@ pub(crate) use crate::defaults::{
 };
 #[cfg(all(not(test), feature = "mqtt"))]
 pub(crate) use crate::defaults::{
-    DEFAULT_MQTT_MAX_CONNECTIONS, DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+    DEFAULT_MQTT_CONNECT_TIMEOUT_MS, DEFAULT_MQTT_MAX_CONNECTIONS,
+    DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES, DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
 };
 
 pub(crate) fn env_usize(name: &str, default: usize) -> usize {

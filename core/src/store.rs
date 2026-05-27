@@ -232,6 +232,22 @@ impl MemoryStore {
         out
     }
 
+    pub fn list_with_prefix_bounded(&self, prefix: &str, max: usize) -> Option<Vec<String>> {
+        let mut out = Vec::new();
+        for world in self
+            .map_guard()
+            .keys()
+            .filter(|world| world.starts_with(prefix))
+        {
+            if out.len() >= max {
+                return None;
+            }
+            out.push(world.clone());
+        }
+        out.sort();
+        Some(out)
+    }
+
     pub fn total_bytes(&self) -> usize {
         self.map_guard()
             .values()

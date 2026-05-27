@@ -30,6 +30,8 @@ pub(crate) use state::ServerState;
 use std::net::IpAddr;
 #[cfg(not(test))]
 use std::path::PathBuf;
+#[cfg(all(not(test), feature = "mqtt"))]
+use std::time::Duration;
 
 #[cfg(all(not(test), feature = "coap"))]
 use crate::config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
@@ -41,8 +43,9 @@ use crate::config::{
 };
 #[cfg(all(not(test), feature = "mqtt"))]
 use crate::config::{
-    mqtt_bind_from_env, mqtt_max_packet_default, DEFAULT_MQTT_MAX_CONNECTIONS,
-    DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+    mqtt_bind_from_env, mqtt_max_packet_default, DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
+    DEFAULT_MQTT_MAX_CONNECTIONS, DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+    DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
 };
 #[cfg(not(test))]
 use crate::{
@@ -93,6 +96,16 @@ pub(crate) async fn run_from_env() {
     let mqtt_max_pending_qos2_bytes = env_nonzero_usize(
         "ELASTIK_MQTT_MAX_PENDING_QOS2_BYTES",
         DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+    );
+    #[cfg(feature = "mqtt")]
+    let mqtt_connect_timeout_ms = env_nonzero_usize(
+        "ELASTIK_MQTT_CONNECT_TIMEOUT_MS",
+        DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
+    );
+    #[cfg(feature = "mqtt")]
+    let mqtt_max_preauth_per_ip = env_nonzero_usize(
+        "ELASTIK_MQTT_MAX_PREAUTH_PER_IP",
+        DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
     );
     let read_cache_max_entries = env_nonzero_usize(
         "ELASTIK_READ_CACHE_MAX_ENTRIES",
@@ -168,9 +181,13 @@ pub(crate) async fn run_from_env() {
                 mqtt_engine,
                 mqtt_addr,
                 mqtt_shutdown,
-                mqtt_max_packet_bytes,
-                mqtt_max_connections,
-                mqtt_max_pending_qos2_bytes,
+                crate::mqtt::MqttServeConfig {
+                    max_packet_bytes: mqtt_max_packet_bytes,
+                    max_connections: mqtt_max_connections,
+                    max_pending_qos2_bytes: mqtt_max_pending_qos2_bytes,
+                    connect_timeout: Duration::from_millis(mqtt_connect_timeout_ms as u64),
+                    max_preauth_per_ip: mqtt_max_preauth_per_ip,
+                },
                 mqtt_metrics,
             )
             .await;
