@@ -16,7 +16,7 @@ mod server_path;
 
 #[cfg(not(test))]
 mod engine {
-    #[cfg(feature = "coap")]
+    #[cfg(any(feature = "coap", feature = "mqtt"))]
     pub(crate) use elastik_core::ShutdownToken;
     pub(crate) use elastik_core::{Engine, EngineBuilder, EngineError};
 }
@@ -33,6 +33,8 @@ mod engine_trace {
 
 #[cfg(not(test))]
 mod engine_types {
+    #[cfg(feature = "mqtt")]
+    pub(crate) use elastik_core::EngineSubscription;
     pub(crate) use elastik_core::{
         parse_etag_matchers, AccessTier, ChangeEvent, EtagMatcher, Preconditions, Representation,
         SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind,
@@ -49,6 +51,8 @@ pub(crate) use pipeline::*;
 pub(crate) use proc::*;
 #[cfg(not(test))]
 pub(crate) use response::*;
+#[cfg(all(not(test), feature = "mqtt"))]
+pub(crate) use server::mqtt;
 #[cfg(all(not(test), feature = "coap"))]
 pub(crate) use server::{coap, coap_errors};
 #[cfg(not(test))]

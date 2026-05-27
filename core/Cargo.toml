@@ -29,12 +29,14 @@ percent-encoding = "2"
 dashmap = "6"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, default-features = false, features = ["fmt", "ansi", "std"] }
+rumqttd = { version = "=0.20.0", optional = true, default-features = false }
 
 [features]
 default = ["bundled-sqlite", "coap", "multi-thread", "unstable-engine-bin"]
 bundled-sqlite = ["rusqlite/bundled"]
 coap = []
 multi-thread = ["tokio/rt-multi-thread"]
+mqtt = ["dep:rumqttd", "tokio/io-util", "tokio/net", "unstable-engine-bin"]
 unstable-engine = ["dep:tracing"]
 unstable-engine-bin = [
     "unstable-engine",

@@ -13,6 +13,8 @@ pub(crate) mod handler;
 pub(crate) mod listen;
 #[cfg(not(test))]
 pub(crate) mod middleware;
+#[cfg(all(not(test), feature = "mqtt"))]
+pub(crate) mod mqtt;
 #[cfg(not(test))]
 pub(crate) mod pipeline;
 #[cfg(not(test))]
@@ -37,6 +39,11 @@ use crate::config::{
     should_warn_public_read, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
     DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
 };
+#[cfg(all(not(test), feature = "mqtt"))]
+use crate::config::{
+    mqtt_bind_from_env, mqtt_max_packet_default, DEFAULT_MQTT_MAX_CONNECTIONS,
+    DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+};
 #[cfg(not(test))]
 use crate::{
     engine::{Engine, EngineBuilder},
@@ -55,6 +62,8 @@ pub(crate) async fn run_from_env() {
         .unwrap_or(3105);
     #[cfg(feature = "coap")]
     let coap_bind = coap_bind_from_env();
+    #[cfg(feature = "mqtt")]
+    let mqtt_bind = mqtt_bind_from_env(&host);
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
@@ -68,6 +77,19 @@ pub(crate) async fn run_from_env() {
     #[cfg(feature = "coap")]
     let coap_max_in_flight =
         env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT);
+    #[cfg(feature = "mqtt")]
+    let mqtt_max_packet_bytes = env_nonzero_usize(
+        "ELASTIK_MQTT_MAX_PACKET_BYTES",
+        mqtt_max_packet_default(max_world_bytes),
+    );
+    #[cfg(feature = "mqtt")]
+    let mqtt_max_connections =
+        env_nonzero_usize("ELASTIK_MQTT_MAX_CONNECTIONS", DEFAULT_MQTT_MAX_CONNECTIONS);
+    #[cfg(feature = "mqtt")]
+    let mqtt_max_pending_qos2_bytes = env_nonzero_usize(
+        "ELASTIK_MQTT_MAX_PENDING_QOS2_BYTES",
+        DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+    );
     let read_cache_max_entries = env_nonzero_usize(
         "ELASTIK_READ_CACHE_MAX_ENTRIES",
         DEFAULT_READ_CACHE_MAX_ENTRIES,
@@ -113,6 +135,32 @@ pub(crate) async fn run_from_env() {
         let coap_shutdown = coap_engine.shutdown_receiver();
         tokio::spawn(async move {
             crate::coap::serve(coap_engine, coap_addr, coap_shutdown, coap_max_in_flight).await;
+        });
+    }
+    #[cfg(feature = "mqtt")]
+    if let Some((mqtt_host, mqtt_port)) = mqtt_bind {
+        let mqtt_addr = listen_addr(&mqtt_host, mqtt_port);
+        if mqtt_host
+            .parse::<IpAddr>()
+            .map(|ip| !ip.is_loopback())
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "  WARNING: MQTT listens on non-loopback {mqtt_host}:{mqtt_port} without built-in TLS; terminate TLS before exposing it."
+            );
+        }
+        let mqtt_engine = engine.clone();
+        let mqtt_shutdown = mqtt_engine.shutdown_receiver();
+        tokio::spawn(async move {
+            crate::mqtt::serve(
+                mqtt_engine,
+                mqtt_addr,
+                mqtt_shutdown,
+                mqtt_max_packet_bytes,
+                mqtt_max_connections,
+                mqtt_max_pending_qos2_bytes,
+            )
+            .await;
         });
     }
     let app = route::build_app(state);

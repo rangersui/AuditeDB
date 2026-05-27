@@ -221,6 +221,17 @@ impl MemoryStore {
         out
     }
 
+    pub fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .map_guard()
+            .keys()
+            .filter(|world| world.starts_with(prefix))
+            .cloned()
+            .collect();
+        out.sort();
+        out
+    }
+
     pub fn total_bytes(&self) -> usize {
         self.map_guard()
             .values()

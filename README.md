@@ -8,80 +8,29 @@ everything. Authenticate everything. Subscribe to changes.
 *SQLite für Dateien. Bytes an Pfaden. Alles auditiert. Änderungen abonniert.*
 
 ```
-┌─ engine (library) ─────────────────────────┐    ┌─ adapter (binary) ──────┐
-│ paths + bytes + ETags + HMAC chain + auth  │ ←─ │ HTTP / CoAP / SSE /     │
-│ no HTTP, no sockets, no env vars           │    │ env vars / signal pipe  │
-└────────────────────────────────────────────┘    └─────────────────────────┘
+┌─ engine (library) ─────────────────────────┐
+│ paths + bytes + ETags + HMAC chain + auth  │
+│ no HTTP, no sockets, no env vars           │
+└────────────────────────────────────────────┘
 ```
 
 ---
 
-## Quick start — binary
+## Documentation map
 
-```bash
-export ELASTIK_KEY=secret
-export ELASTIK_WRITE_TOKEN=secret
-cargo run --bin elastik-core
-# elastik-core v8.0.1 on http://127.0.0.1:3105/
+This README is the Engine/library reference: storage model, trust tiers, audit
+chain, namespaces, and the Rust `Engine` API. Protocol adapters have their own
+README files so wire-specific behaviour does not get mistaken for Engine
+physics.
 
-curl                  http://127.0.0.1:3105/proc/version     # -> elastik-core 8.0.1 (rust)
-curl -X PUT -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
-  -d 'hi'          http://127.0.0.1:3105/home/hello
-curl              http://127.0.0.1:3105/home/hello           # -> hi
-curl              http://127.0.0.1:3105/proc/worlds          # -> home/hello
-curl -N           http://127.0.0.1:3105/listen/home/*        # SSE stream
-```
-
-The binary refuses to build without `unstable-engine-bin` (cargo will say so).
-The library does not need that feature.
-
-Common binary environment variables:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `ELASTIK_KEY` | required | HMAC audit-chain key; startup refuses empty or missing keys. |
-| `ELASTIK_READ_TOKEN` | unset | Gates reads, `/proc/*`, and `/listen/*`; unset means public reads. |
-| `ELASTIK_WRITE_TOKEN` | unset | Enables ordinary PUT/POST writes in user namespaces such as `home/`. |
-| `ELASTIK_APPROVE_TOKEN` | unset | Enables DELETE and writes in protected namespaces such as `etc/` and `var/log/`. |
-| `ELASTIK_TOKEN` | unset | Deprecated alias for `ELASTIK_WRITE_TOKEN`. |
-| `ELASTIK_DATA` | `./data` | SQLite data root. |
-| `ELASTIK_HOST` | `127.0.0.1` | HTTP bind host. |
-| `ELASTIK_PORT` | `3105` | HTTP bind port. |
-| `ELASTIK_COAP_HOST` | `127.0.0.1` | CoAP bind host when CoAP is enabled. |
-| `ELASTIK_COAP_PORT` | unset | Enables the CoAP UDP surface on this port. |
-| `ELASTIK_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent CoAP requests. |
-| `ELASTIK_PERSIST_HEADERS` | unset | Comma-separated custom response headers to preserve, e.g. `x-author,x-meta-*`. |
-| `ELASTIK_DENY_HEADERS` | unset | Subtracts headers from the persist allowlist. |
-| `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum body size for one world. |
-| `ELASTIK_MAX_MEMORY_BYTES` | `268435456` | Total in-memory quota for `tmp/`, `dev/`, and `sys/` worlds. |
-| `ELASTIK_MAX_STORAGE_BYTES` | unset | Optional durable SQLite-backed storage quota. |
-| `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE subscriptions. |
-| `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Replay ring size for reconnecting SSE clients. |
-| `ELASTIK_READ_CACHE_MAX_ENTRIES` | `5000` | Read-cache entry cap. |
-| `ELASTIK_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set. |
-
-### `/proc/*` introspection (binary HTTP adapter)
-
-The binary exposes text-shaped `/proc/*` endpoints over HTTP. These are adapter
-renderings of Engine snapshots, not storage worlds. `/proc/version` is public
-and is the quickest liveness probe. The other read-only `/proc/*` endpoints
-require `ELASTIK_READ_TOKEN` when a read token is configured. `OPTIONS` is
-always policy-free capability discovery.
-
-| Endpoint | Methods | Auth | Purpose |
-|----------|---------|------|---------|
-| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `elastik-core 8.0.1 (rust)`. |
-| `/proc/worlds` | `GET`, `HEAD`, `OPTIONS` | read-gated | Canonical world list, one `home/foo`-style key per line. |
-| `/proc/du` | `GET`, `HEAD`, `OPTIONS` | read-gated | Per-world byte usage. This is an unpaginated management view. |
-| `/proc/df` | `GET`, `HEAD`, `OPTIONS` | read-gated | Storage and memory quota snapshot plus world count. |
-| `/proc/pool` | `GET`, `HEAD`, `OPTIONS` | read-gated | Read-cache, tombstone, and ledger-writer counters/gauges. |
-| `/proc/audit/<world>/verify` | `GET`, `HEAD`, `OPTIONS` | read-gated | Verify the durable world's HMAC audit chain. Memory worlds return not-applicable. |
-
-For audit verification, `<world>` is still a normal canonical world key:
-`/proc/audit/home/note/verify` verifies `home/note`. It does not create or read
-a `proc/audit/...` storage world. The HTTP adapter parses that path, validates
-`home/note`, calls `Engine::verify_audit`, then renders the typed result back
-as HTTP status and audit headers.
+| Surface | README | Scope |
+|---------|--------|-------|
+| Engine library | this file | Protocol-neutral paths, bytes, ETags, audit, auth, subscriptions. |
+| HTTP binary adapter | [`core/src/server/http/README.md`](core/src/server/http/README.md) | `elastik-core` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
+| MQTT binary adapter | [`core/src/server/mqtt/README.md`](core/src/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
+| CoAP binary adapter | [`core/src/server/coap/README.md`](core/src/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
+| Python SDK | [`sdk/README.md`](sdk/README.md) | Python client surface. |
+| JavaScript SDK | [`sdk-js/README.md`](sdk-js/README.md) | JS client surface. |
 
 Library embedders call typed Engine methods instead of HTTP `/proc/*` paths:
 
@@ -157,9 +106,8 @@ operations (`replace`, `append`, `delete`) are async; `subscribe` returns a
 subscription synchronously, and `EngineSubscription::recv().await` waits for
 events.
 
-The binary's HTTP surface (world `GET / HEAD / PUT / POST / DELETE` plus
-`/listen/*` SSE) and the CoAP surface are two possible mappings. The library
-does not know about either; it knows about the five verbs.
+HTTP, CoAP, MQTT, and SSE are adapter mappings over these verbs. The library
+does not know about those protocols; it knows about the five verbs.
 
 ## Four trust tiers
 
@@ -168,10 +116,10 @@ tier it requires; the engine refuses with `EngineError::Auth(...)` below it.
 
 | Tier      | Source                  | Allowed                                                     |
 |-----------|-------------------------|-------------------------------------------------------------|
-| `Anon`    | no token                | public reads, when no read token is configured              |
-| `Read`    | `ELASTIK_READ_TOKEN`    | read, list, subscribe, audit verify                         |
-| `Write`   | `ELASTIK_WRITE_TOKEN`   | everything `Read` + ordinary replace/append (`home/`, `tmp/`, `dev/`, `sys/`, non-log `var/`) |
-| `Approve` | `ELASTIK_APPROVE_TOKEN` | everything `Write` + delete + writes in protected namespaces (`etc/`, `lib/`, `boot/`, `usr/`, `var/log/`) |
+| `Anon`    | caller supplies no credential | public reads, when the configured policy allows them |
+| `Read`    | caller proves read tier       | read, list, subscribe, audit verify |
+| `Write`   | caller proves write tier      | everything `Read` + ordinary replace/append (`home/`, `tmp/`, `dev/`, `sys/`, non-log `var/`) |
+| `Approve` | caller proves approve tier    | everything `Write` + delete + writes in protected namespaces (`etc/`, `lib/`, `boot/`, `usr/`, `var/log/`) |
 
 ---
 
@@ -193,13 +141,9 @@ downstream operations cannot drift.
 | `sys/`    | memory   | no      | no      | `Write` | service-info ephemeral |
 
 Bare names (`foo`) and wire paths (`/foo`) are rejected by the library. The
-binary's adapter-side canonicalisation maps HTTP `/foo` to `home/foo` before
-constructing the validated path.
-
-The canonical key is also MQTT-topic-shaped: no leading slash, slash-separated
-hierarchy, and no query string. An MQTT adapter can map topic
-`home/sensor/temp` to world `home/sensor/temp` without inventing another
-routing grammar; HTTP and CoAP are adapter skins over the same validated key.
+binary adapters may apply wire-specific canonicalisation before constructing a
+validated path. Those adapter rules live in the adapter README files linked
+above.
 
 ---
 
@@ -207,6 +151,7 @@ routing grammar; HTTP and CoAP are adapter skins over the same validated key.
 
 | Feature                | Default | Pulls in                                                       | Purpose                            |
 |------------------------|:-------:|---------------------------------------------------------------|------------------------------------|
+| `mqtt`                 |         | `rumqttd`, Tokio I/O + net, `unstable-engine-bin`              | binary's MQTT adapter              |
 | `bundled-sqlite`       |    ✓    | `rusqlite/bundled`                                            | static SQLite link                 |
 | `coap`                 |    ✓    | —                                                              | binary's CoAP adapter              |
 | `multi-thread`         |    ✓    | `tokio/rt-multi-thread`                                       | binary's multi-thread runtime      |
@@ -220,7 +165,7 @@ cargo build --lib --no-default-features --features bundled-sqlite,unstable-engin
 ```
 
 The resulting dependency tree has zero `axum`, `hyper`, `tower`,
-`tokio-stream`, `futures-util`, or `base64`.
+`tokio-stream`, `futures-util`, `rumqttd`, or `base64`.
 
 ---
 
@@ -230,10 +175,10 @@ PR 5 + PR 6 split the codebase into two crate targets sharing one Cargo
 package:
 
 - **Library** (`src/lib.rs` + `engine*.rs` + storage primitives): the
-  protocol-neutral Engine. No HTTP, no CoAP, no SSE, no env vars, no sockets.
+  protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars, no sockets.
   Safe to embed in any Rust context.
 - **Binary** (`src/main.rs` + `src/server/...` + adapter-side `config`,
-  `http_range`, `http_semantics`, `path`): the HTTP + CoAP server. Owns
+  `http_range`, `http_semantics`, `path`): the HTTP + CoAP + MQTT server. Owns
   Authorization parsing, request lifecycle, response rendering, graceful
   shutdown. Consumes the library through the public `Engine` facade only.
 

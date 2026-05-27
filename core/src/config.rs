@@ -15,6 +15,10 @@ pub(crate) use crate::defaults::{
     DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
     DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
 };
+#[cfg(all(not(test), feature = "mqtt"))]
+pub(crate) use crate::defaults::{
+    DEFAULT_MQTT_MAX_CONNECTIONS, DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+};
 
 pub(crate) fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -42,6 +46,11 @@ pub(crate) fn env_nonzero_usize(name: &str, default: usize) -> usize {
         0 => default,
         value => value,
     }
+}
+
+#[cfg(feature = "mqtt")]
+pub(crate) fn mqtt_max_packet_default(max_world_bytes: usize) -> usize {
+    max_world_bytes.saturating_add(1024)
 }
 
 /// Parse `ELASTIK_PERSIST_HEADERS` into the user-configured
@@ -84,6 +93,25 @@ pub(crate) fn coap_bind_from_env() -> Option<(String, u16)> {
         }
     };
     let host = std::env::var("ELASTIK_COAP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    Some((host, port))
+}
+
+#[cfg(feature = "mqtt")]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn mqtt_bind_from_env(default_host: &str) -> Option<(String, u16)> {
+    let raw = std::env::var("ELASTIK_MQTT_PORT").unwrap_or_else(|_| "1883".into());
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "0" {
+        return None;
+    }
+    let port: u16 = match raw.parse() {
+        Ok(port) => port,
+        Err(_) => {
+            eprintln!("  warning: invalid ELASTIK_MQTT_PORT={raw:?}; MQTT surface disabled.");
+            return None;
+        }
+    };
+    let host = std::env::var("ELASTIK_MQTT_HOST").unwrap_or_else(|_| default_host.to_owned());
     Some((host, port))
 }
 

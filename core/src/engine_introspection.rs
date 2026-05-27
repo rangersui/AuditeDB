@@ -274,6 +274,26 @@ impl EngineOps<'_> {
             .collect()
     }
 
+    pub(crate) fn list_worlds_with_prefix(
+        &self,
+        prefix: &str,
+        tier: auth::Tier,
+    ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
+        if !crate::can_read(self.core(), tier) {
+            return Err(EngineError::Auth(AuthGate::Read));
+        }
+        let mut names = world::list_with_prefix(&self.core().data, prefix).map_err(|err| {
+            storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
+        })?;
+        names.extend(self.core().mem.list_with_prefix(prefix));
+        names.sort();
+        names.dedup();
+        names
+            .into_iter()
+            .map(validated_world_from_storage)
+            .collect()
+    }
+
     pub(crate) fn du(
         &self,
         path: &ValidatedProcPath,
@@ -423,6 +443,23 @@ impl Engine {
     ///   [`EngineError::InsufficientStorage`] for storage failures.
     pub fn list_worlds(&self, tier: AccessTier) -> Result<Vec<ValidatedWorldPath>, EngineError> {
         EngineOps::new(self.core()).list_worlds(&ValidatedProcPath::worlds(), tier.into())
+    }
+
+    /// Lists canonical worlds with the supplied canonical prefix.
+    ///
+    /// This is intended for adapters that need a bounded namespace view (for
+    /// example MQTT retained replay) without materializing the full `/proc/worlds`
+    /// set first. It applies the read gate directly and intentionally bypasses
+    /// proc-path authorization; do not expose it directly as a network endpoint.
+    ///
+    /// # Errors
+    /// Same authorization and storage failures as [`Engine::list_worlds`].
+    pub fn list_worlds_with_prefix(
+        &self,
+        prefix: &str,
+        tier: AccessTier,
+    ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
+        EngineOps::new(self.core()).list_worlds_with_prefix(prefix, tier.into())
     }
 
     /// Returns per-world body byte size, `du`-style.

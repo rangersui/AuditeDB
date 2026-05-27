@@ -604,6 +604,18 @@ fn release_wal_files(data_root: &Path, world: &str) {
 /// List all sqlite-backed world keys by scanning the data dir.
 /// Returns canonical (decoded) names.
 pub fn list(data_root: &Path) -> rusqlite::Result<Vec<String>> {
+    list_matching(data_root, |_| true)
+}
+
+/// List sqlite-backed world keys with a canonical prefix.
+pub fn list_with_prefix(data_root: &Path, prefix: &str) -> rusqlite::Result<Vec<String>> {
+    list_matching(data_root, |world| world.starts_with(prefix))
+}
+
+fn list_matching(
+    data_root: &Path,
+    mut keep: impl FnMut(&str) -> bool,
+) -> rusqlite::Result<Vec<String>> {
     let mut out = Vec::new();
     let rd = std::fs::read_dir(data_root).map_err(create_dir_error)?;
     for entry in rd {
@@ -617,7 +629,9 @@ pub fn list(data_root: &Path) -> rusqlite::Result<Vec<String>> {
         let decoded = percent_encoding::percent_decode_str(&name)
             .decode_utf8_lossy()
             .into_owned();
-        out.push(decoded);
+        if keep(&decoded) {
+            out.push(decoded);
+        }
     }
     out.sort();
     Ok(out)

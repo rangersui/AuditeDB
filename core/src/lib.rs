@@ -56,16 +56,19 @@
 //!
 //! ## What the library does *not* do
 //!
-//! No HTTP, no CoAP, no SSE, no server runtime. Those live in the
+//! No HTTP, no CoAP, no MQTT, no SSE, no server runtime. Those live in the
 //! `elastik-core` binary and consume this library through the unstable public
 //! [`Engine`] API. In a minimal library-only build, the library does not read
 //! environment variables, does not bind sockets, and does not depend on `axum`,
-//! `hyper`, `tower`, `tokio-stream`, `futures-util`, or `base64`.
+//! `hyper`, `tower`, `tokio-stream`, `futures-util`, `rumqttd`, or `base64`.
 //!
 //! ## Feature flags
 //!
 //! - `bundled-sqlite` *(default)* — link a bundled SQLite via `rusqlite/bundled`.
 //! - `coap` *(default)* — enable the CoAP adapter inside the binary.
+//! - `mqtt` — enable the MQTT adapter inside the binary. MQTT uses `rumqttd`
+//!   protocol parsing, maps CONNECT username bytes through [`Engine::verify_token`],
+//!   maps PUBLISH to [`Engine::replace`], and maps SUBSCRIBE to [`Engine::subscribe`].
 //! - `multi-thread` *(default)* — enable Tokio's multi-thread runtime for the
 //!   binary.
 //! - `unstable-engine` — expose the public [`Engine`] facade. **The API shape
@@ -111,6 +114,10 @@ mod listen;
 #[cfg(test)]
 #[path = "server/middleware.rs"]
 mod middleware;
+#[cfg(test)]
+#[cfg(feature = "mqtt")]
+#[path = "server/mqtt/mod.rs"]
+mod mqtt;
 mod path;
 #[cfg(test)]
 #[path = "server/pipeline.rs"]
@@ -289,6 +296,8 @@ mod tests {
         env_nonzero_usize, env_optional_usize, hmac_key_from_env_value, listen_addr,
         should_warn_public_read,
     };
+    #[cfg(feature = "mqtt")]
+    use crate::config::{mqtt_bind_from_env, mqtt_max_packet_default};
     use crate::etag as et;
     use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
     use crate::http_semantics as hs;
@@ -370,6 +379,36 @@ mod tests {
             match &self.port {
                 Some(v) => std::env::set_var("ELASTIK_COAP_PORT", v),
                 None => std::env::remove_var("ELASTIK_COAP_PORT"),
+            }
+        }
+    }
+
+    #[cfg(feature = "mqtt")]
+    struct MqttEnvGuard {
+        host: Option<String>,
+        port: Option<String>,
+    }
+
+    #[cfg(feature = "mqtt")]
+    impl MqttEnvGuard {
+        fn capture() -> Self {
+            Self {
+                host: std::env::var("ELASTIK_MQTT_HOST").ok(),
+                port: std::env::var("ELASTIK_MQTT_PORT").ok(),
+            }
+        }
+    }
+
+    #[cfg(feature = "mqtt")]
+    impl Drop for MqttEnvGuard {
+        fn drop(&mut self) {
+            match &self.host {
+                Some(v) => std::env::set_var("ELASTIK_MQTT_HOST", v),
+                None => std::env::remove_var("ELASTIK_MQTT_HOST"),
+            }
+            match &self.port {
+                Some(v) => std::env::set_var("ELASTIK_MQTT_PORT", v),
+                None => std::env::remove_var("ELASTIK_MQTT_PORT"),
             }
         }
     }
@@ -700,6 +739,40 @@ mod tests {
 
         std::env::set_var("ELASTIK_COAP_PORT", "not-a-port");
         assert_eq!(coap_bind_from_env(), None);
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn mqtt_bind_defaults_to_port_1883_and_can_be_disabled() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = MqttEnvGuard::capture();
+        std::env::remove_var("ELASTIK_MQTT_HOST");
+        std::env::remove_var("ELASTIK_MQTT_PORT");
+
+        assert_eq!(
+            mqtt_bind_from_env("127.0.0.1"),
+            Some(("127.0.0.1".to_owned(), 1883))
+        );
+
+        std::env::set_var("ELASTIK_MQTT_HOST", "0.0.0.0");
+        std::env::set_var("ELASTIK_MQTT_PORT", "1884");
+        assert_eq!(
+            mqtt_bind_from_env("127.0.0.1"),
+            Some(("0.0.0.0".to_owned(), 1884))
+        );
+
+        std::env::set_var("ELASTIK_MQTT_PORT", "0");
+        assert_eq!(mqtt_bind_from_env("127.0.0.1"), None);
+
+        std::env::set_var("ELASTIK_MQTT_PORT", "not-a-port");
+        assert_eq!(mqtt_bind_from_env("127.0.0.1"), None);
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn mqtt_packet_default_tracks_runtime_world_limit() {
+        assert_eq!(mqtt_max_packet_default(4096), 5120);
+        assert_eq!(mqtt_max_packet_default(usize::MAX), usize::MAX);
     }
 
     #[test]

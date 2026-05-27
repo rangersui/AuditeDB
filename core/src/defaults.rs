@@ -6,4 +6,8 @@ pub(crate) const DEFAULT_LISTEN_REPLAY_MAX: usize = 1024;
 pub(crate) const DEFAULT_MAX_LISTEN_CONNECTIONS: usize = 1024;
 #[allow(dead_code)]
 pub(crate) const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_MQTT_MAX_CONNECTIONS: usize = 1024;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_READ_CACHE_MAX_ENTRIES: usize = 5000;
