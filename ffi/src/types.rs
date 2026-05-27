@@ -1,7 +1,8 @@
 use std::fmt;
 
 use elastik_core::{
-    AccessTier, AuditVerify, DfSnapshot, EngineBuildError, EngineError, PoolSnapshot, WriteKind,
+    AccessTier, AuditVerify, AuthGate, DfSnapshot, EngineBuildError, EngineError, PoolSnapshot,
+    WriteKind,
 };
 
 /// Engine construction options for the FFI adapter.
@@ -42,7 +43,33 @@ pub enum FfiAccessTier {
     Read,
     Write,
     Approve,
+    /// The Engine returned a tier this FFI binding does not yet recognize.
+    /// Treat as deny-by-default and upgrade the binding.
     Unknown,
+}
+
+/// Engine auth gate that rejected an FFI operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiAuthGate {
+    Read,
+    Write,
+    WriteApprove,
+    Delete,
+    /// The Engine returned an auth gate this FFI binding does not yet recognize.
+    /// Treat as deny-by-default and upgrade the binding.
+    Unknown,
+}
+
+impl fmt::Display for FfiAuthGate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::WriteApprove => "write-approve",
+            Self::Delete => "delete",
+            Self::Unknown => "unknown",
+        })
+    }
 }
 
 /// Stored metadata header pair.
@@ -72,6 +99,8 @@ pub struct FfiReadResult {
 pub enum FfiWriteKind {
     Created,
     Updated,
+    /// The Engine returned a write kind this FFI binding does not yet recognize.
+    /// Treat as successful but unknown and upgrade the binding.
     Unknown,
 }
 
@@ -82,11 +111,22 @@ pub struct FfiWriteResult {
     pub etag: String,
 }
 
+/// Engine verb that produced a subscription change event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiChangeVerb {
+    Replace,
+    Append,
+    Delete,
+    /// The Engine returned a change verb this FFI binding does not yet recognize.
+    /// Treat as an unknown change and upgrade the binding.
+    Unknown,
+}
+
 /// Future subscription event DTO.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiChangeEvent {
     pub id: u64,
-    pub method: String,
+    pub verb: FfiChangeVerb,
     pub path: String,
     pub etag: String,
 }
@@ -131,48 +171,122 @@ pub struct FfiAuditBroken {
     pub actual: String,
 }
 
-/// Audit verification DTO. Exactly one detail field is populated.
-#[derive(Clone, Debug, uniffi::Record)]
-pub struct FfiAuditVerify {
-    pub kind: FfiAuditVerifyKind,
-    pub valid: Option<FfiAuditValid>,
-    pub broken: Option<FfiAuditBroken>,
-}
-
-/// Audit verification result kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum FfiAuditVerifyKind {
-    Valid,
-    Broken,
+/// Audit verification result.
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum FfiAuditVerify {
+    Valid {
+        valid: FfiAuditValid,
+    },
+    Broken {
+        broken: FfiAuditBroken,
+    },
     NotApplicable,
+    /// The Engine returned an audit state this FFI binding does not yet recognize.
+    /// Treat as indeterminate and upgrade the binding.
     Unknown,
 }
 
 /// Errors raised by the FFI adapter.
 #[derive(Debug, uniffi::Error)]
 pub enum FfiError {
-    InvalidConfig { message: String },
-    InvalidSecret { message: String },
-    BuildFailed { message: String },
-    RuntimeInitFailed { message: String },
-    EngineFailed { message: String },
+    InvalidConfig {
+        message: String,
+    },
+    InvalidSecret {
+        message: String,
+    },
+    BuildDataRootIo {
+        message: String,
+    },
+    BuildDataRootLockHeld {
+        path: String,
+    },
+    BuildHmacKeyMissing,
+    BuildAuditChainCorrupted {
+        world: String,
+        detail: String,
+    },
+    BuildStorage {
+        sqlite_code: Option<i32>,
+        detail: String,
+    },
+    /// Unmapped Engine build error variant. Indicates this FFI binding is
+    /// older than the core that produced the error.
+    UnknownBuildError {
+        detail: String,
+    },
+    RuntimeInitFailed {
+        message: String,
+    },
+    Auth {
+        gate: FfiAuthGate,
+    },
+    InvalidWorldName,
+    NotFound,
+    AppendOnly,
+    PayloadTooLarge {
+        max: u64,
+    },
+    PreconditionFailed {
+        message: String,
+    },
+    QuotaExceeded {
+        used: u64,
+        quota: u64,
+        projected: u64,
+    },
+    TransientStorage {
+        sqlite_code: Option<i32>,
+    },
+    InsufficientStorage {
+        sqlite_code: Option<i32>,
+    },
+    Storage {
+        sqlite_code: Option<i32>,
+    },
+    SubscriptionLimit,
+    ShuttingDown,
+    InternalInvariant {
+        message: String,
+    },
+    /// Unmapped Engine error variant. Indicates this FFI binding is older than
+    /// the core that produced the error.
+    UnknownEngineError {
+        detail: String,
+    },
 }
 
 impl FfiEngineConfig {
     pub(crate) fn summary(&self) -> FfiEngineConfigSummary {
         FfiEngineConfigSummary {
             data_root: self.data_root.clone(),
-            has_read_token: self.read_token.is_some(),
-            has_write_token: self.write_token.is_some(),
-            has_approve_token: self.approve_token.is_some(),
+            has_read_token: token_configured(&self.read_token),
+            has_write_token: token_configured(&self.write_token),
+            has_approve_token: token_configured(&self.approve_token),
             max_world_bytes: self.max_world_bytes,
             max_memory_bytes: self.max_memory_bytes,
-            max_storage_bytes: self.max_storage_bytes,
-            max_listen_connections: self.max_listen_connections,
-            listen_replay_max: self.listen_replay_max,
-            read_cache_max_entries: self.read_cache_max_entries,
+            max_storage_bytes: nonzero_override(self.max_storage_bytes),
+            max_listen_connections: nonzero_override(self.max_listen_connections),
+            listen_replay_max: nonzero_override(self.listen_replay_max),
+            read_cache_max_entries: nonzero_override(self.read_cache_max_entries),
         }
     }
+}
+
+fn token_configured(token: &Option<Vec<u8>>) -> bool {
+    token
+        .as_deref()
+        .map(|bytes| {
+            !bytes.is_empty()
+                && std::str::from_utf8(bytes)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(true)
+        })
+        .unwrap_or(false)
+}
+
+fn nonzero_override(value: Option<u64>) -> Option<u64> {
+    value.filter(|value| *value > 0)
 }
 
 impl From<AccessTier> for FfiAccessTier {
@@ -182,6 +296,18 @@ impl From<AccessTier> for FfiAccessTier {
             AccessTier::Read => Self::Read,
             AccessTier::Write => Self::Write,
             AccessTier::Approve => Self::Approve,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<AuthGate> for FfiAuthGate {
+    fn from(value: AuthGate) -> Self {
+        match value {
+            AuthGate::Read => Self::Read,
+            AuthGate::Write => Self::Write,
+            AuthGate::WriteApprove => Self::WriteApprove,
+            AuthGate::Delete => Self::Delete,
             _ => Self::Unknown,
         }
     }
@@ -228,50 +354,86 @@ impl From<PoolSnapshot> for FfiPoolSnapshot {
 impl From<AuditVerify> for FfiAuditVerify {
     fn from(value: AuditVerify) -> Self {
         match value {
-            AuditVerify::Valid(valid) => Self {
-                kind: FfiAuditVerifyKind::Valid,
-                valid: Some(FfiAuditValid {
+            AuditVerify::Valid(valid) => Self::Valid {
+                valid: FfiAuditValid {
                     events: valid.events as u64,
                     genesis: valid.genesis,
                     latest: valid.latest,
-                }),
-                broken: None,
+                },
             },
-            AuditVerify::Broken(broken) => Self {
-                kind: FfiAuditVerifyKind::Broken,
-                valid: None,
-                broken: Some(FfiAuditBroken {
+            AuditVerify::Broken(broken) => Self::Broken {
+                broken: FfiAuditBroken {
                     break_at: broken.break_at as u64,
                     expected: broken.expected,
                     actual: broken.actual,
-                }),
+                },
             },
-            AuditVerify::NotApplicable => Self {
-                kind: FfiAuditVerifyKind::NotApplicable,
-                valid: None,
-                broken: None,
-            },
-            _ => Self {
-                kind: FfiAuditVerifyKind::Unknown,
-                valid: None,
-                broken: None,
-            },
+            AuditVerify::NotApplicable => Self::NotApplicable,
+            _ => Self::Unknown,
         }
     }
 }
 
 impl From<EngineBuildError> for FfiError {
     fn from(value: EngineBuildError) -> Self {
-        Self::BuildFailed {
-            message: format!("{value:?}"),
+        match value {
+            EngineBuildError::DataRootIo(err) => Self::BuildDataRootIo {
+                message: err.to_string(),
+            },
+            EngineBuildError::DataRootLockHeld { path } => Self::BuildDataRootLockHeld {
+                path: path.to_string_lossy().into_owned(),
+            },
+            EngineBuildError::HmacKeyMissing => Self::BuildHmacKeyMissing,
+            EngineBuildError::AuditChainCorrupted { world, detail } => {
+                Self::BuildAuditChainCorrupted { world, detail }
+            }
+            EngineBuildError::Storage {
+                sqlite_code,
+                detail,
+            } => Self::BuildStorage {
+                sqlite_code,
+                detail,
+            },
+            _ => Self::UnknownBuildError {
+                detail: "unknown engine build error".to_owned(),
+            },
         }
     }
 }
 
 impl From<EngineError> for FfiError {
     fn from(value: EngineError) -> Self {
-        Self::EngineFailed {
-            message: format!("{value:?}"),
+        match value {
+            EngineError::Auth(gate) => Self::Auth { gate: gate.into() },
+            EngineError::InvalidWorldName => Self::InvalidWorldName,
+            EngineError::NotFound => Self::NotFound,
+            EngineError::AppendOnly => Self::AppendOnly,
+            EngineError::PayloadTooLarge { max } => Self::PayloadTooLarge { max: max as u64 },
+            EngineError::PreconditionFailed { message } => Self::PreconditionFailed {
+                message: message.to_owned(),
+            },
+            EngineError::QuotaExceeded {
+                used,
+                quota,
+                projected,
+            } => Self::QuotaExceeded {
+                used: used as u64,
+                quota: quota as u64,
+                projected: projected as u64,
+            },
+            EngineError::TransientStorage { sqlite_code } => Self::TransientStorage { sqlite_code },
+            EngineError::InsufficientStorage { sqlite_code } => {
+                Self::InsufficientStorage { sqlite_code }
+            }
+            EngineError::Storage { sqlite_code } => Self::Storage { sqlite_code },
+            EngineError::SubscriptionLimit => Self::SubscriptionLimit,
+            EngineError::ShuttingDown => Self::ShuttingDown,
+            EngineError::InternalInvariant(message) => Self::InternalInvariant {
+                message: message.to_owned(),
+            },
+            _ => Self::UnknownEngineError {
+                detail: "unknown engine error".to_owned(),
+            },
         }
     }
 }
@@ -281,11 +443,64 @@ impl fmt::Display for FfiError {
         match self {
             Self::InvalidConfig { message }
             | Self::InvalidSecret { message }
-            | Self::BuildFailed { message }
             | Self::RuntimeInitFailed { message }
-            | Self::EngineFailed { message } => f.write_str(message),
+            | Self::BuildDataRootIo { message }
+            | Self::PreconditionFailed { message }
+            | Self::InternalInvariant { message } => f.write_str(message),
+            Self::UnknownBuildError { detail } | Self::UnknownEngineError { detail } => {
+                f.write_str(detail)
+            }
+            Self::BuildDataRootLockHeld { path } => {
+                write!(f, "data root writer lock is held: {path}")
+            }
+            Self::BuildHmacKeyMissing => f.write_str("hmac key missing"),
+            Self::BuildAuditChainCorrupted { world, detail } => {
+                write!(f, "audit chain corrupted for {world}: {detail}")
+            }
+            Self::BuildStorage {
+                sqlite_code,
+                detail,
+            } => write!(
+                f,
+                "storage build failed ({}): {detail}",
+                code_label(*sqlite_code)
+            ),
+            Self::Auth { gate } => write!(f, "auth gate rejected operation: {gate}"),
+            Self::InvalidWorldName => f.write_str("invalid world name"),
+            Self::NotFound => f.write_str("world not found"),
+            Self::AppendOnly => f.write_str("world is append-only"),
+            Self::PayloadTooLarge { max } => write!(f, "payload too large (max {max} bytes)"),
+            Self::QuotaExceeded {
+                used,
+                quota,
+                projected,
+            } => write!(
+                f,
+                "storage quota exceeded (used {used}, quota {quota}, projected {projected})"
+            ),
+            Self::TransientStorage { sqlite_code } => {
+                write!(
+                    f,
+                    "storage temporarily unavailable ({})",
+                    code_label(*sqlite_code)
+                )
+            }
+            Self::InsufficientStorage { sqlite_code } => {
+                write!(f, "insufficient storage ({})", code_label(*sqlite_code))
+            }
+            Self::Storage { sqlite_code } => {
+                write!(f, "storage failed ({})", code_label(*sqlite_code))
+            }
+            Self::SubscriptionLimit => f.write_str("subscription limit reached"),
+            Self::ShuttingDown => f.write_str("engine is shutting down"),
         }
     }
+}
+
+fn code_label(sqlite_code: Option<i32>) -> String {
+    sqlite_code
+        .map(|code| format!("code {code}"))
+        .unwrap_or_else(|| "no sqlite code".to_owned())
 }
 
 impl std::error::Error for FfiError {}
