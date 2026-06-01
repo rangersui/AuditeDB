@@ -46,7 +46,7 @@ jobs:
             npm-platform: win32
             npm-arch: x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: add rust target
         if: matrix.rust-target != ''
@@ -109,13 +109,13 @@ jobs:
           files: ${{ matrix.asset-name }}
 
       - name: upload core asset artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-asset-${{ matrix.name }}
           path: ${{ matrix.asset-name }}
           if-no-files-found: error
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           node-version: "22"
@@ -153,7 +153,7 @@ jobs:
 
       - name: upload npm platform package artifact
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-platform-${{ matrix.name }}
           path: npm-packages/*.tgz
@@ -184,8 +184,8 @@ jobs:
             wheel-platform-tag: ""
             wheel-platform-regex: "win_amd64"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -193,7 +193,7 @@ jobs:
         run: python -c "import platform, sys; print(sys.platform, platform.machine())"
 
       - name: download core asset
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: core-asset-${{ matrix.name }}
           path: core-asset
@@ -295,7 +295,7 @@ jobs:
           PY
 
       - name: upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: elastik-wheel-${{ matrix.name }}
           path: sdk/dist/*.whl
@@ -311,7 +311,7 @@ jobs:
       id-token: write
     steps:
       - name: download wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: elastik-wheel-*
           path: dist
@@ -332,7 +332,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: publish elastik-core to crates.io
         shell: bash
@@ -378,8 +378,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -417,7 +417,7 @@ jobs:
         working-directory: sdk-js
 
       - name: upload npm client package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-client
           path: npm-packages/*.tgz
@@ -435,7 +435,7 @@ jobs:
       contents: write
     steps:
       - name: download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -573,7 +573,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
