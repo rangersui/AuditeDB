@@ -27,7 +27,7 @@ jobs:
             wheel-platform-tag: "macosx_11_0_arm64"
             wheel-platform-regex: "macosx_.*_arm64"
           - name: windows-x64
-            os: windows-latest
+            os: windows-2025-vs2026
             wheel-platform-tag: ""
             wheel-platform-regex: "win_amd64"
     steps:
