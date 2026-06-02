@@ -184,13 +184,13 @@ jobs:
             library-path: target/release/libelastik_ffi.dylib
             asset-name: elastik-ffi-darwin-arm64.zip
           - name: windows-x64
-            os: windows-latest
+            os: windows-2025-vs2026
             library-path: target/release/elastik_ffi.dll
             asset-name: elastik-ffi-win32-x64.zip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -320,7 +320,7 @@ jobs:
           files: ffi/${{ matrix.asset-name }}
 
       - name: upload ffi asset artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ffi-asset-${{ matrix.name }}
           path: ffi/${{ matrix.asset-name }}
