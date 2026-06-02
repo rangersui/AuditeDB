@@ -319,7 +319,9 @@ impl FfiSubscription {
     ///
     /// This is a blocking receive, not busy polling. A timeout returns
     /// `Timeout` so foreign callers can periodically check their own
-    /// cancellation condition without crossing a callback boundary.
+    /// cancellation condition without crossing a callback boundary. Calling
+    /// `close()` wakes a blocked `next()` by closing the internal event
+    /// receiver; callers do not need to wait for `timeout_ms` to elapse.
     pub fn next(&self, timeout_ms: u64) -> FfiSubscriptionNext {
         match self.runtime.block_on(async {
             let mut events = self.events.lock().await;
@@ -451,7 +453,8 @@ mod tests {
     use elastik_core::{AuditVerify, EngineBuildError, EngineError};
     use std::{
         path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
+        sync::mpsc as std_mpsc,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -881,6 +884,30 @@ mod tests {
             .subscribe("*".to_owned(), FfiAccessTier::Read, None)
             .expect("explicit close releases listen slot");
         replacement.close();
+    }
+
+    #[test]
+    fn subscription_close_wakes_blocking_next() {
+        let engine = test_engine("subscribe-close-wakes-blocking-next");
+        let subscription = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("subscription opens");
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let waiting = Arc::clone(&subscription);
+
+        let handle = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal next waiter started");
+            waiting.next(1_000)
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("next waiter should start");
+
+        subscription.close();
+
+        let closed = handle.join().expect("next waiter should join");
+        assert_eq!(closed.kind, FfiSubscriptionNextKind::Closed);
+        assert!(closed.event.is_none());
     }
 
     #[test]

@@ -22,7 +22,8 @@ crate are sibling adapters.
 - `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection
 - `engine.subscribe(pattern, tier, since)` — blocking `FfiSubscription.next(timeout_ms)`
   receiver with explicit `close()` for deterministic slot release in
-  garbage-collected languages
+  garbage-collected languages; `close()` wakes a currently blocked `next()`
+  instead of waiting for the timeout window
 - subscription events expose Engine verbs (`Replace`, `Append`, `Delete`), not
   HTTP method strings
 - `engine.shutdown()` — orderly Engine shutdown (also called automatically on drop)
