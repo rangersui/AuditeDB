@@ -14,7 +14,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
 #[cfg(test)]
 use crate::Core;
-use crate::{engine::Engine, engine_types::AccessTier, http_semantics::HeaderAllowlist};
+use crate::{engine::Engine, engine_types::AccessTier, server::http::semantics::HeaderAllowlist};
 
 const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
 

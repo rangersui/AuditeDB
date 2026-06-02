@@ -12,9 +12,9 @@ use crate::{
 #[cfg(test)]
 use crate::{precondition_failed, storage_error, Core};
 
-pub(crate) use crate::http_range::effective_range;
+pub(crate) use super::range::effective_range;
 #[cfg(test)]
-pub(crate) use crate::http_range::parse_range;
+pub(crate) use super::range::parse_range;
 
 /// Entries are normalized to lowercase. A trailing `*` makes an
 /// entry a prefix match (e.g. `x-my-*` matches `x-my-anything`).

@@ -9,6 +9,7 @@ pub(crate) mod coap;
 pub(crate) mod coap_errors;
 #[cfg(not(test))]
 pub(crate) mod handler;
+pub(crate) mod http;
 #[cfg(not(test))]
 pub(crate) mod listen;
 #[cfg(not(test))]

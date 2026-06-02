@@ -52,7 +52,9 @@ def python_cmd(code: str) -> str:
 
 def check_header_blacklist_parity() -> None:
     """FakeElastik must reject the same persisted headers as the Rust core."""
-    rs = (ROOT / "core" / "src" / "http_semantics.rs").read_text(encoding="utf-8")
+    rs = (
+        ROOT / "core" / "src" / "server" / "http" / "semantics.rs"
+    ).read_text(encoding="utf-8")
     arm = re.search(r"matches!\(\s*name,\s*(.*?)\s*\)", rs, re.DOTALL)
     assert arm, "could not find Rust header blacklist"
     rust_set = set(re.findall(r'"([a-z0-9-]+)"', arm.group(1)))

@@ -57,14 +57,14 @@ pub(crate) fn mqtt_max_packet_default(max_world_bytes: usize) -> usize {
 /// Parse `ELASTIK_PERSIST_HEADERS` into the user-configured
 /// allowlist (Layer 3 of the persist policy). Comma-separated;
 /// trailing `*` = prefix match. See
-/// `crate::http_semantics::HeaderAllowlist` for the matching
+/// `crate::server::http::semantics::HeaderAllowlist` for the matching
 /// semantics. An unset, empty, or all-whitespace value yields
 /// `HeaderAllowlist::empty()`, which means "no custom headers
 /// beyond the built-in default-allow set."
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn header_allowlist_from_env() -> crate::http_semantics::HeaderAllowlist {
+pub(crate) fn header_allowlist_from_env() -> crate::server::http::semantics::HeaderAllowlist {
     let raw = std::env::var("ELASTIK_PERSIST_HEADERS").unwrap_or_default();
-    crate::http_semantics::HeaderAllowlist::parse(&raw)
+    crate::server::http::semantics::HeaderAllowlist::parse(&raw)
 }
 
 /// Parse `ELASTIK_DENY_HEADERS` into the user-configured deny set
@@ -74,9 +74,9 @@ pub(crate) fn header_allowlist_from_env() -> crate::http_semantics::HeaderAllowl
 /// (e.g. "this deployment doesn't want `cache-control` round-tripping").
 /// L1 hard-deny still wins over this; this beats L2 default and L3 allow.
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn header_user_deny_from_env() -> crate::http_semantics::HeaderAllowlist {
+pub(crate) fn header_user_deny_from_env() -> crate::server::http::semantics::HeaderAllowlist {
     let raw = std::env::var("ELASTIK_DENY_HEADERS").unwrap_or_default();
-    crate::http_semantics::HeaderAllowlist::parse(&raw)
+    crate::server::http::semantics::HeaderAllowlist::parse(&raw)
 }
 
 #[cfg(feature = "coap")]

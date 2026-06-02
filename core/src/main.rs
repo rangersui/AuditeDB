@@ -2,11 +2,6 @@
 mod config;
 #[cfg(not(test))]
 mod defaults;
-#[cfg(not(test))]
-mod http_range;
-#[cfg(not(test))]
-mod http_semantics;
-#[cfg(not(test))]
 mod path;
 #[cfg(not(test))]
 mod server;

@@ -103,10 +103,6 @@ mod event;
 #[cfg(test)]
 #[path = "server/handler.rs"]
 mod handler;
-#[cfg(test)]
-mod http_range;
-#[cfg(test)]
-mod http_semantics;
 mod ledger;
 #[cfg(test)]
 #[path = "server/listen.rs"]
@@ -300,9 +296,9 @@ mod tests {
     use crate::config::{mqtt_bind_from_env, mqtt_max_packet_default};
     use crate::etag as et;
     use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
-    use crate::http_semantics as hs;
     use crate::middleware::{add_server_response_headers, stamp_core_response_headers};
     use crate::route::world_handler;
+    use crate::server::http::semantics as hs;
     use axum::body::Bytes;
     use axum::extract::{Path as AxPath, State};
     use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
