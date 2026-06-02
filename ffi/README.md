@@ -16,6 +16,9 @@ crate are sibling adapters.
   fields that treat zero as "use the default"
 - `engine.verify_token(token)` — check caller access tier without side effects
 - `engine.read`, `replace`, `append`, `delete` — Engine verbs bound directly
+- `delete_with_metadata()` preserves representation content-type and metadata
+  headers in the Engine delete audit ledger; plain `delete()` remains the
+  empty-metadata convenience wrapper
 - `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection
 - `engine.subscribe(pattern, tier, since)` — blocking `FfiSubscription.next(timeout_ms)`
   receiver with explicit `close()` for deterministic slot release in

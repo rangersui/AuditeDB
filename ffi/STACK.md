@@ -18,6 +18,9 @@ HTTP server, routes, status codes, or `/proc/*` paths.
 
 3. **Engine Verbs + Introspection**
    - Bind `read`, `replace`, `append`, and `delete`.
+   - Bind `delete_with_metadata` for adapters that need DELETE audit rows to
+     preserve representation content-type and metadata headers. Plain
+     `delete` intentionally records empty metadata, matching `Engine::delete`.
    - Bind typed introspection: `worlds`, `du`, `df`, `pool`,
      `audit_verify(world)`.
    - Do not expose `HEAD`, HTTP methods, HTTP responses, or `/proc/*` route

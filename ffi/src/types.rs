@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, fmt};
 
 use elastik_core::{
-    is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, DfSnapshot, EngineBuildError,
-    EngineError, EtagMatcher, PoolSnapshot, Preconditions, ReadResult, Representation, WorldUsage,
-    WriteKind, WriteResult,
+    is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, DeleteMetadata, DfSnapshot,
+    EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions, ReadResult,
+    Representation, WorldUsage, WriteKind, WriteResult,
 };
 
 /// Engine construction options for the FFI adapter.
@@ -104,6 +104,13 @@ pub struct FfiPreconditions {
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiRepresentation {
     pub body: Vec<u8>,
+    pub content_type: String,
+    pub headers: Vec<FfiHeader>,
+}
+
+/// Representation metadata recorded in DELETE audit intent/commit events.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FfiDeleteMetadata {
     pub content_type: String,
     pub headers: Vec<FfiHeader>,
 }
@@ -430,6 +437,15 @@ impl From<FfiRepresentation> for Representation {
             value.body,
             value.content_type,
             representation_headers(value.headers),
+        )
+    }
+}
+
+impl From<FfiDeleteMetadata> for DeleteMetadata {
+    fn from(value: FfiDeleteMetadata) -> Self {
+        Self::new(
+            value.content_type,
+            value.headers.into_iter().map(Into::into).collect(),
         )
     }
 }

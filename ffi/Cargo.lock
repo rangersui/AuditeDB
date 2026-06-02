@@ -261,6 +261,7 @@ name = "elastik-ffi"
 version = "8.0.1"
 dependencies = [
  "elastik-core",
+ "rusqlite",
  "tokio",
  "uniffi",
 ]

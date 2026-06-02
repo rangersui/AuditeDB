@@ -11,7 +11,8 @@
 use std::{sync::Arc, time::Duration};
 
 use elastik_core::{
-    ChangeEvent, Engine, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
+    ChangeEvent, Engine, EngineDeleteTraceHooks, SecretBytes, SubscribePattern,
+    SubscriptionRecvError, ValidatedWorldPath,
 };
 use tokio::{
     runtime::{Builder as RuntimeBuilder, Runtime},
@@ -44,6 +45,10 @@ pub struct FfiSubscription {
 }
 
 const FFI_SUBSCRIPTION_BUFFER: usize = 1024;
+
+struct NoopDeleteTrace;
+
+impl EngineDeleteTraceHooks for NoopDeleteTrace {}
 
 #[uniffi::export]
 impl FfiEngine {
@@ -189,6 +194,24 @@ impl FfiEngine {
             &world,
             preconditions.into(),
             tier.try_into()?,
+        ))?)
+    }
+
+    /// Deletes a world while preserving representation metadata in delete audit rows.
+    pub fn delete_with_metadata(
+        &self,
+        world: String,
+        metadata: FfiDeleteMetadata,
+        preconditions: FfiPreconditions,
+        tier: FfiAccessTier,
+    ) -> Result<(), FfiError> {
+        let world = validated_world(world)?;
+        Ok(self.runtime.block_on(self.engine.delete_traced(
+            &world,
+            metadata.into(),
+            preconditions.into(),
+            tier.try_into()?,
+            &NoopDeleteTrace,
         ))?)
     }
 
@@ -426,7 +449,10 @@ fn subscription_next_from_recv(
 mod tests {
     use super::*;
     use elastik_core::{AuditVerify, EngineBuildError, EngineError};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     #[allow(deprecated)]
@@ -614,6 +640,92 @@ mod tests {
             .read("home/doc".to_owned(), FfiAccessTier::Read)
             .expect("read deleted succeeds")
             .is_none());
+    }
+
+    #[test]
+    fn delete_with_metadata_preserves_delete_audit_metadata() {
+        let dir = unique_test_dir("delete-meta");
+        let engine = FfiEngine::open(FfiEngineConfig {
+            data_root: dir.clone(),
+            hmac_key: b"ffi-test-key".to_vec(),
+            read_token: None,
+            write_token: None,
+            approve_token: None,
+            max_world_bytes: None,
+            max_memory_bytes: None,
+            max_storage_bytes: None,
+            max_listen_connections: None,
+            listen_replay_max: None,
+            read_cache_max_entries: Some(2),
+        })
+        .expect("engine opens");
+        let none = FfiPreconditions {
+            if_match: Vec::new(),
+            if_none_match: Vec::new(),
+        };
+
+        engine
+            .replace(
+                "home/delete-meta".to_owned(),
+                FfiRepresentation {
+                    body: b"delete me".to_vec(),
+                    content_type: "application/octet-stream".to_owned(),
+                    headers: Vec::new(),
+                },
+                none.clone(),
+                FfiAccessTier::Write,
+            )
+            .expect("replace succeeds");
+        engine
+            .delete_with_metadata(
+                "home/delete-meta".to_owned(),
+                FfiDeleteMetadata {
+                    content_type: "text/plain; charset=utf-8".to_owned(),
+                    headers: vec![FfiHeader {
+                        name: "x-meta-author".to_owned(),
+                        value: "ranger".to_owned(),
+                    }],
+                },
+                none,
+                FfiAccessTier::Approve,
+            )
+            .expect("delete succeeds");
+
+        let ledger = rusqlite::Connection::open(test_world_db(&dir, "var/log/deletes"))
+            .expect("delete ledger opens");
+        let rows = ledger
+            .prepare(
+                "SELECT event_type, content_type FROM events \
+                 WHERE event_type IN ('delete_intent', 'delete_commit') ORDER BY id",
+            )
+            .expect("prepare event query")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query event rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect event rows");
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "delete_intent".to_owned(),
+                    "text/plain; charset=utf-8".to_owned()
+                ),
+                (
+                    "delete_commit".to_owned(),
+                    "text/plain; charset=utf-8".to_owned()
+                ),
+            ]
+        );
+        let author_rows: i64 = ledger
+            .query_row(
+                "SELECT COUNT(*) FROM event_headers WHERE name='x-meta-author' AND value='ranger'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata header rows exist");
+        assert_eq!(author_rows, 2);
     }
 
     #[test]
@@ -913,6 +1025,12 @@ mod tests {
             .join(format!("elastik-ffi-{label}-{nanos}"))
             .to_string_lossy()
             .into_owned()
+    }
+
+    fn test_world_db(data_root: &str, world: &str) -> PathBuf {
+        Path::new(data_root)
+            .join(world.replace('/', "%2F"))
+            .join("universe.db")
     }
 
     fn test_engine(label: &str) -> Arc<FfiEngine> {

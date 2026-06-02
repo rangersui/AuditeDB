@@ -18,6 +18,9 @@ elastik-core = { path = "../core", default-features = false, features = ["bundle
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 uniffi = { version = "0.31.1", features = ["cli"] }
 
+[dev-dependencies]
+rusqlite = { version = "0.31", default-features = false }
+
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
