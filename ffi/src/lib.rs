@@ -16,6 +16,7 @@ use elastik_core::{
 use tokio::{
     runtime::{Builder as RuntimeBuilder, Runtime},
     sync::{mpsc, watch, Mutex},
+    task::JoinHandle,
     time::timeout,
 };
 
@@ -38,6 +39,7 @@ pub struct FfiEngine {
 pub struct FfiSubscription {
     events: Mutex<mpsc::Receiver<FfiSubscriptionNext>>,
     cancel: watch::Sender<bool>,
+    pump: Mutex<Option<JoinHandle<()>>>,
     runtime: Arc<Runtime>,
 }
 
@@ -248,7 +250,7 @@ impl FfiEngine {
         let mut subscription = self.engine.subscribe(&pattern, tier.try_into()?, since)?;
         let (events_tx, events_rx) = mpsc::channel(FFI_SUBSCRIPTION_BUFFER);
         let (cancel, mut cancel_rx) = watch::channel(false);
-        self.runtime.spawn(async move {
+        let pump = self.runtime.spawn(async move {
             loop {
                 tokio::select! {
                     changed = cancel_rx.changed() => {
@@ -274,6 +276,7 @@ impl FfiEngine {
         Ok(Arc::new(FfiSubscription {
             events: Mutex::new(events_rx),
             cancel,
+            pump: Mutex::new(Some(pump)),
             runtime: Arc::clone(&self.runtime),
         }))
     }
@@ -304,11 +307,32 @@ impl FfiSubscription {
             },
         }
     }
+
+    /// Closes the subscription and releases the underlying Engine listen slot.
+    ///
+    /// Foreign-language callers should use this for deterministic cleanup
+    /// instead of waiting for GC/finalization to drop the object.
+    pub fn close(&self) {
+        let _ = self.cancel.send(true);
+        self.runtime.block_on(async {
+            if let Some(pump) = self.pump.lock().await.take() {
+                let _ = pump.await;
+            }
+            let mut events = self.events.lock().await;
+            events.close();
+            while events.try_recv().is_ok() {}
+        });
+    }
 }
 
 impl Drop for FfiSubscription {
     fn drop(&mut self) {
         let _ = self.cancel.send(true);
+        if let Ok(mut pump) = self.pump.try_lock() {
+            if let Some(pump) = pump.take() {
+                pump.abort();
+            }
+        }
     }
 }
 
@@ -385,7 +409,7 @@ fn subscription_next_from_recv(
                 event: None,
                 skipped: None,
             },
-            false,
+            true,
         ),
     }
 }
@@ -700,6 +724,43 @@ mod tests {
         let closed = subscription.next(1_000);
         assert_eq!(closed.kind, FfiSubscriptionNextKind::Closed);
         assert!(closed.event.is_none());
+    }
+
+    #[test]
+    fn subscription_close_releases_receiver_without_waiting_for_drop() {
+        let engine = FfiEngine::open(FfiEngineConfig {
+            data_root: unique_test_dir("subscribe-explicit-close"),
+            hmac_key: b"ffi-test-key".to_vec(),
+            read_token: None,
+            write_token: None,
+            approve_token: None,
+            max_world_bytes: None,
+            max_memory_bytes: None,
+            max_storage_bytes: None,
+            max_listen_connections: Some(1),
+            listen_replay_max: None,
+            read_cache_max_entries: Some(2),
+        })
+        .expect("engine opens");
+
+        let subscription = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("first subscription opens");
+        assert!(
+            engine
+                .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+                .is_err(),
+            "listen slot cap should be held while subscription is open"
+        );
+
+        subscription.close();
+        let closed = subscription.next(100);
+        assert_eq!(closed.kind, FfiSubscriptionNextKind::Closed);
+
+        let replacement = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("explicit close releases listen slot");
+        replacement.close();
     }
 
     #[test]
