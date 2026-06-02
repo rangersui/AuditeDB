@@ -390,8 +390,8 @@ impl From<EngineBuildError> for FfiError {
                 sqlite_code,
                 detail,
             },
-            _ => Self::UnknownBuildError {
-                detail: "unknown engine build error".to_owned(),
+            other => Self::UnknownBuildError {
+                detail: format!("{other:?}"),
             },
         }
     }
@@ -427,8 +427,8 @@ impl From<EngineError> for FfiError {
             EngineError::InternalInvariant(message) => Self::InternalInvariant {
                 message: message.to_owned(),
             },
-            _ => Self::UnknownEngineError {
-                detail: "unknown engine error".to_owned(),
+            other => Self::UnknownEngineError {
+                detail: format!("{other:?}"),
             },
         }
     }
