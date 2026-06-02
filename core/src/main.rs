@@ -1,7 +1,6 @@
 #[cfg(not(test))]
-mod config;
-#[cfg(not(test))]
 mod defaults;
+#[cfg(not(test))]
 mod path;
 #[cfg(not(test))]
 mod server;

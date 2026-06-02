@@ -7,6 +7,7 @@
 pub(crate) mod coap;
 #[cfg(all(not(test), feature = "coap"))]
 pub(crate) mod coap_errors;
+pub(crate) mod config;
 #[cfg(not(test))]
 pub(crate) mod handler;
 pub(crate) mod http;
@@ -34,25 +35,25 @@ use std::path::PathBuf;
 #[cfg(all(not(test), feature = "mqtt"))]
 use std::time::Duration;
 
-#[cfg(all(not(test), feature = "coap"))]
-use crate::config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
-#[cfg(not(test))]
-use crate::config::{
-    env_nonzero_usize, env_optional_usize, env_usize, hmac_key_from_env_value, listen_addr,
-    should_warn_public_read, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
-    DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
-};
-#[cfg(all(not(test), feature = "mqtt"))]
-use crate::config::{
-    mqtt_bind_from_env, mqtt_max_packet_default, DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
-    DEFAULT_MQTT_MAX_CONNECTIONS, DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
-    DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
-};
 #[cfg(not(test))]
 use crate::{
     engine::{Engine, EngineBuilder},
     engine_types::SecretBytes,
     VERSION,
+};
+#[cfg(all(not(test), feature = "coap"))]
+use config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
+#[cfg(not(test))]
+use config::{
+    env_nonzero_usize, env_optional_usize, env_usize, hmac_key_from_env_value, listen_addr,
+    should_warn_public_read, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
+    DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
+};
+#[cfg(all(not(test), feature = "mqtt"))]
+use config::{
+    mqtt_bind_from_env, mqtt_max_packet_default, DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
+    DEFAULT_MQTT_MAX_CONNECTIONS, DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
+    DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
 };
 
 #[cfg(not(test))]
@@ -116,8 +117,8 @@ pub(crate) async fn run_from_env() {
         "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
     );
     let tokens = ServerTokens::from_env();
-    let persist_header_allowlist = crate::config::header_allowlist_from_env();
-    let persist_header_user_deny = crate::config::header_user_deny_from_env();
+    let persist_header_allowlist = config::header_allowlist_from_env();
+    let persist_header_user_deny = config::header_user_deny_from_env();
     let engine = build_engine_from_env(
         data,
         hmac_key,

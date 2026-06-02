@@ -89,8 +89,6 @@ mod coap;
 #[cfg(feature = "coap")]
 #[path = "server/coap_errors.rs"]
 mod coap_errors;
-#[cfg(test)]
-mod config;
 mod defaults;
 mod delete_ops;
 mod engine;
@@ -286,18 +284,18 @@ pub(crate) fn can_read(core: &Core, tier: auth::Tier) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "coap")]
-    use crate::config::coap_bind_from_env;
-    use crate::config::{
-        env_nonzero_usize, env_optional_usize, hmac_key_from_env_value, listen_addr,
-        should_warn_public_read,
-    };
-    #[cfg(feature = "mqtt")]
-    use crate::config::{mqtt_bind_from_env, mqtt_max_packet_default};
     use crate::etag as et;
     use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
     use crate::middleware::{add_server_response_headers, stamp_core_response_headers};
     use crate::route::world_handler;
+    #[cfg(feature = "coap")]
+    use crate::server::config::coap_bind_from_env;
+    use crate::server::config::{
+        env_nonzero_usize, env_optional_usize, hmac_key_from_env_value, listen_addr,
+        should_warn_public_read,
+    };
+    #[cfg(feature = "mqtt")]
+    use crate::server::config::{mqtt_bind_from_env, mqtt_max_packet_default};
     use crate::server::http::semantics as hs;
     use axum::body::Bytes;
     use axum::extract::{Path as AxPath, State};

@@ -28,9 +28,9 @@ pub(crate) struct HeaderAllowlist {
 impl HeaderAllowlist {
     /// Empty allowlist (default-deny custom headers). Used by
     /// test fixtures and as the inert state for `Core` constructors
-    /// that don't read environment. The production startup path
-    /// uses `config::header_allowlist_from_env()` instead, which
-    /// returns an `empty()` for an unset env var anyway.
+    /// that don't read environment. The production startup path uses
+    /// `server::config::header_allowlist_from_env()` instead, which returns
+    /// an `empty()` for an unset env var anyway.
     #[allow(dead_code)]
     pub(crate) fn empty() -> Self {
         Self::default()
