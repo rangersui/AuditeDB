@@ -74,6 +74,16 @@ impl NonEmptyBytes {
     }
 }
 
+/// Returns true when raw token bytes can represent a configured or candidate
+/// Engine token.
+///
+/// Empty and UTF-8 whitespace-only values are invalid. Non-UTF-8 bytes are
+/// allowed so language runtimes can pass opaque credential bytes without
+/// losing information.
+pub fn is_valid_token(bytes: &[u8]) -> bool {
+    NonEmptyBytes::is_valid(bytes)
+}
+
 impl Drop for NonEmptyBytes {
     fn drop(&mut self) {
         wipe_vec_allocation(&mut self.0);
@@ -313,6 +323,14 @@ mod tests {
         assert_eq!(tokens.check(Some("Bearer \t\r\n")), Tier::Anon);
         assert_eq!(tokens.check(Some(&bearer("\u{2003}"))), Tier::Anon);
         assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
+    }
+
+    #[test]
+    fn public_token_validity_matches_core_token_gate() {
+        assert!(is_valid_token(b"reader"));
+        assert!(is_valid_token(&[0xff, 0xfe]));
+        assert!(!is_valid_token(b""));
+        assert!(!is_valid_token(b" \t\r\n"));
     }
 
     #[test]

@@ -153,10 +153,10 @@ pub(crate) use crate::proc::*;
 pub(crate) use crate::response::*;
 pub(crate) use crate::state::*;
 pub(crate) use crate::storage_class::*;
-#[cfg(feature = "unstable-engine")]
-pub use auth::AuthGate;
 #[cfg(not(feature = "unstable-engine"))]
 pub(crate) use auth::AuthGate;
+#[cfg(feature = "unstable-engine")]
+pub use auth::{is_valid_token, AuthGate};
 #[cfg(feature = "unstable-engine")]
 #[doc(hidden)]
 pub use engine::ShutdownToken;

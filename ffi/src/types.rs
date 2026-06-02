@@ -1,8 +1,8 @@
 use std::fmt;
 
 use elastik_core::{
-    AccessTier, AuditVerify, AuthGate, DfSnapshot, EngineBuildError, EngineError, PoolSnapshot,
-    WriteKind,
+    is_valid_token, AccessTier, AuditVerify, AuthGate, DfSnapshot, EngineBuildError, EngineError,
+    PoolSnapshot, WriteKind,
 };
 
 /// Engine construction options for the FFI adapter.
@@ -263,8 +263,12 @@ impl FfiEngineConfig {
             has_read_token: token_configured(&self.read_token),
             has_write_token: token_configured(&self.write_token),
             has_approve_token: token_configured(&self.approve_token),
+            // World and memory byte caps are literal Engine caps, so Some(0)
+            // remains visible as an explicit "zero bytes allowed" override.
             max_world_bytes: self.max_world_bytes,
             max_memory_bytes: self.max_memory_bytes,
+            // These builder knobs define zero as "use the Engine default" or
+            // "no durable quota"; the summary reports the normalized setting.
             max_storage_bytes: nonzero_override(self.max_storage_bytes),
             max_listen_connections: nonzero_override(self.max_listen_connections),
             listen_replay_max: nonzero_override(self.listen_replay_max),
@@ -274,15 +278,7 @@ impl FfiEngineConfig {
 }
 
 fn token_configured(token: &Option<Vec<u8>>) -> bool {
-    token
-        .as_deref()
-        .map(|bytes| {
-            !bytes.is_empty()
-                && std::str::from_utf8(bytes)
-                    .map(|value| !value.trim().is_empty())
-                    .unwrap_or(true)
-        })
-        .unwrap_or(false)
+    token.as_deref().map(is_valid_token).unwrap_or(false)
 }
 
 fn nonzero_override(value: Option<u64>) -> Option<u64> {
