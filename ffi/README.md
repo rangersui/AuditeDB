@@ -11,7 +11,9 @@ crate are sibling adapters.
 - `crate-type = ["lib", "cdylib"]`
 - UniFFI scaffolding compiles
 - `FfiEngine.open(config)` — construct an Engine with an embedded Tokio runtime
-- `engine.config_summary()` — non-secret configuration accepted by the adapter
+- `engine.config_summary()` — normalized, non-secret configuration accepted by
+  the adapter: empty tokens are unset, and `0` is normalized only for Engine
+  fields that treat zero as "use the default"
 - `engine.verify_token(token)` — check caller access tier without side effects
 - `engine.read`, `replace`, `append`, `delete` — Engine verbs bound directly
 - `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection

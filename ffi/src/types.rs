@@ -23,6 +23,11 @@ pub struct FfiEngineConfig {
 }
 
 /// Non-secret Engine settings accepted by the FFI adapter.
+///
+/// Optional numeric fields are overrides: `None` means the Engine default (or
+/// unlimited storage for `max_storage_bytes`). Zero values are normalized to
+/// `None` only for Engine fields that treat zero as "use the default";
+/// `max_world_bytes` and `max_memory_bytes` keep literal zero caps.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiEngineConfigSummary {
     pub data_root: String,
