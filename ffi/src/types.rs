@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use elastik_core::{
     is_valid_token, AccessTier, AuditVerify, AuthGate, DfSnapshot, EngineBuildError, EngineError,
@@ -376,6 +376,14 @@ impl From<FfiHeader> for (String, String) {
     }
 }
 
+fn representation_headers(headers: Vec<FfiHeader>) -> Vec<(String, String)> {
+    let mut out = BTreeMap::new();
+    for header in headers {
+        out.insert(header.name.to_ascii_lowercase(), header.value);
+    }
+    out.into_iter().collect()
+}
+
 /// Converts an FFI representation into the Engine's protocol-neutral form.
 ///
 /// Headers pass through without filtering. This is intentional: the Engine
@@ -384,6 +392,11 @@ impl From<FfiHeader> for (String, String) {
 /// Non-browser adapters such as FFI, MQTT, and CoAP treat headers as plain
 /// key-value metadata with no execution semantics.
 ///
+/// Header names are still normalized and de-duplicated with deterministic
+/// last-wins semantics so durable storage never sees duplicate `meta_headers`
+/// primary keys. This mirrors the HTTP adapter's storage-facing shape without
+/// importing HTTP allow/deny policy into FFI.
+///
 /// The HTTP read path applies its L1 hard-deny output filter before serving any
 /// stored header to a browser, regardless of which adapter originally wrote it.
 impl From<FfiRepresentation> for Representation {
@@ -391,7 +404,7 @@ impl From<FfiRepresentation> for Representation {
         Self::new(
             value.body,
             value.content_type,
-            value.headers.into_iter().map(Into::into).collect(),
+            representation_headers(value.headers),
         )
     }
 }
@@ -629,3 +642,38 @@ fn code_label(sqlite_code: Option<i32>) -> String {
 }
 
 impl std::error::Error for FfiError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn representation_headers_deduplicate_names_last_wins() {
+        let representation = Representation::from(FfiRepresentation {
+            body: b"body".to_vec(),
+            content_type: "text/plain".to_owned(),
+            headers: vec![
+                FfiHeader {
+                    name: "X-Custom".to_owned(),
+                    value: "old".to_owned(),
+                },
+                FfiHeader {
+                    name: "x-other".to_owned(),
+                    value: "kept".to_owned(),
+                },
+                FfiHeader {
+                    name: "x-custom".to_owned(),
+                    value: "new".to_owned(),
+                },
+            ],
+        });
+
+        assert_eq!(
+            representation.headers,
+            vec![
+                ("x-custom".to_owned(), "new".to_owned()),
+                ("x-other".to_owned(), "kept".to_owned()),
+            ]
+        );
+    }
+}
