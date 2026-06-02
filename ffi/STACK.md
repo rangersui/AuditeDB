@@ -56,3 +56,18 @@ Forbidden:
 - HTTP status codes as the public FFI result model
 - server/router/handler types
 - adapter-specific auth/header/pipeline concepts
+
+## Coverage Discipline
+
+FFI should keep a strict coverage habit from layer 1 onward. The coverage goal
+applies to hand-written library code and exported adapter behavior, not to
+generated UniFFI scaffolding.
+
+- Every hand-written `#[uniffi::export]` function must have a direct Rust test.
+- Every Engine-bound export must cover success and failure paths.
+- Every FFI error conversion must be tested so errors stay typed and are not
+  collapsed into strings.
+- `cargo llvm-cov --manifest-path ffi/Cargo.toml --lib --fail-under-lines 100`
+  is the intended gate for hand-written library code.
+- Generated UniFFI scaffolding, macro expansion, and the `uniffi-bindgen` CLI
+  smoke entry are not part of the 100% line-coverage promise.
