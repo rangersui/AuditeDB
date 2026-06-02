@@ -25,20 +25,29 @@ HTTP server, routes, status codes, or `/proc/*` paths.
 
 4. **Subscribe Receiver**
    - Bind `subscribe(pattern, tier, since) -> FfiSubscription`.
-   - Expose `next(timeout_ms) -> Option<ChangeEvent>` and `close`.
+   - Expose `next(timeout_ms) -> FfiSubscriptionNext` with typed `Event`,
+     `Timeout`, `Lagged`, `Closed`, and `Unknown` states.
+   - Let dropping the subscription object release the Engine slot; avoid a
+     callback-first ABI.
    - Avoid callback-first FFI; language wrappers can build iterators or async
      streams on top of `next`.
 
-5. **Build + Distribution Matrix**
-   - Add CI/release jobs for native FFI libraries:
-     - `x86_64-unknown-linux-gnu`
-     - `aarch64-unknown-linux-gnu`
-     - `x86_64-apple-darwin`
-     - `aarch64-apple-darwin`
-     - `x86_64-pc-windows-msvc`
+5. **Artifact CI Matrix**
+   - Build and smoke native FFI libraries plus generated Python UniFFI binding:
+     - Linux x64 (`.so`)
+     - Linux ARM64 (`.so`)
+     - macOS x64 (`.dylib`)
+     - macOS ARM64 (`.dylib`)
+     - Windows x64 (`.dll`)
+   - Upload zipped CI artifacts containing the native library, generated
+     `elastik_ffi.py`, and a manifest with the native library hash.
+
+6. **Release Integration**
+   - Attach FFI artifacts to tagged releases once the CI artifact shape is
+     validated.
+   - Add FFI packages to release checksum manifests.
    - Document OpenWrt/MIPS as a cross-toolchain target, not a guaranteed
      GitHub-hosted runner output.
-   - Generate and package language bindings after the Engine surface is stable.
 
 ## Boundary Rules
 
