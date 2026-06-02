@@ -254,6 +254,12 @@ jobs:
           read = engine.read("home/ffi", e.FfiAccessTier.READ)
           assert read is not None
           assert read.representation.body == b"release"
+          subscription = engine.subscribe("home/*", e.FfiAccessTier.READ, None)
+          engine.append("home/ffi", b" asset", none, e.FfiAccessTier.WRITE)
+          event = subscription.next(5_000)
+          assert event.kind == e.FfiSubscriptionNextKind.EVENT, event.kind
+          assert event.event.verb == e.FfiChangeVerb.APPEND, event.event.verb
+          assert event.event.path == "home/ffi", event.event.path
           engine.shutdown()
           print("ffi release smoke ok", e.ffi_version(), root)
           PY
