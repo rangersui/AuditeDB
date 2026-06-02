@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, fmt};
 
 use elastik_core::{
-    is_valid_token, AccessTier, AuditVerify, AuthGate, DfSnapshot, EngineBuildError, EngineError,
-    EtagMatcher, PoolSnapshot, Preconditions, ReadResult, Representation, WorldUsage, WriteKind,
-    WriteResult,
+    is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, DfSnapshot, EngineBuildError,
+    EngineError, EtagMatcher, PoolSnapshot, Preconditions, ReadResult, Representation, WorldUsage,
+    WriteKind, WriteResult,
 };
 
 /// Engine construction options for the FFI adapter.
@@ -138,13 +138,33 @@ pub enum FfiChangeVerb {
     Unknown,
 }
 
-/// Future subscription event DTO.
+/// Subscription event DTO returned by Engine subscriptions.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiChangeEvent {
     pub id: u64,
     pub verb: FfiChangeVerb,
     pub path: String,
     pub etag: String,
+}
+
+/// Result kind returned by `FfiSubscription.next`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiSubscriptionNextKind {
+    Event,
+    Timeout,
+    Lagged,
+    Closed,
+    /// The Engine returned a subscription state this FFI binding does not yet
+    /// recognize. Treat as indeterminate and upgrade the binding.
+    Unknown,
+}
+
+/// Blocking subscription receive result.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FfiSubscriptionNext {
+    pub kind: FfiSubscriptionNextKind,
+    pub event: Option<FfiChangeEvent>,
+    pub skipped: Option<u64>,
 }
 
 /// Per-world body byte usage DTO.
@@ -447,6 +467,26 @@ impl From<WorldUsage> for FfiWorldUsage {
             world: value.world.to_string(),
             bytes: value.bytes as u64,
         }
+    }
+}
+
+impl From<ChangeEvent> for FfiChangeEvent {
+    fn from(value: ChangeEvent) -> Self {
+        Self {
+            id: value.id,
+            verb: change_verb(value.method),
+            path: value.path.to_string(),
+            etag: value.etag,
+        }
+    }
+}
+
+fn change_verb(method: &str) -> FfiChangeVerb {
+    match method {
+        "PUT" => FfiChangeVerb::Replace,
+        "POST" => FfiChangeVerb::Append,
+        "DELETE" => FfiChangeVerb::Delete,
+        _ => FfiChangeVerb::Unknown,
     }
 }
 

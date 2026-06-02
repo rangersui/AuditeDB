@@ -8,10 +8,17 @@
 // The deprecation remains part of the generated ABI for downstream consumers.
 #![allow(deprecated)]
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use elastik_core::{Engine, SecretBytes, ValidatedWorldPath};
-use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
+use elastik_core::{
+    ChangeEvent, Engine, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
+};
+use tokio::{
+    runtime::{Builder as RuntimeBuilder, Runtime},
+    sync::{mpsc, watch, Mutex},
+    task::JoinHandle,
+    time::timeout,
+};
 
 mod types;
 
@@ -23,9 +30,20 @@ uniffi::setup_scaffolding!();
 #[derive(uniffi::Object)]
 pub struct FfiEngine {
     engine: Engine,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     config: FfiEngineConfigSummary,
 }
+
+/// UniFFI-owned blocking receiver for Engine subscription events.
+#[derive(uniffi::Object)]
+pub struct FfiSubscription {
+    events: Mutex<mpsc::Receiver<FfiSubscriptionNext>>,
+    cancel: watch::Sender<bool>,
+    pump: Mutex<Option<JoinHandle<()>>>,
+    runtime: Arc<Runtime>,
+}
+
+const FFI_SUBSCRIPTION_BUFFER: usize = 1024;
 
 #[uniffi::export]
 impl FfiEngine {
@@ -73,13 +91,15 @@ impl FfiEngine {
         }
 
         let engine = builder.build()?;
-        let runtime = RuntimeBuilder::new_multi_thread()
-            .enable_all()
-            .thread_name("elastik-ffi")
-            .build()
-            .map_err(|err| FfiError::RuntimeInitFailed {
-                message: err.to_string(),
-            })?;
+        let runtime = Arc::new(
+            RuntimeBuilder::new_multi_thread()
+                .enable_all()
+                .thread_name("elastik-ffi")
+                .build()
+                .map_err(|err| FfiError::RuntimeInitFailed {
+                    message: err.to_string(),
+                })?,
+        );
 
         Ok(Arc::new(Self {
             engine,
@@ -215,6 +235,105 @@ impl FfiEngine {
         let world = validated_world(world)?;
         Ok(self.engine.verify_audit(&world, tier.try_into()?)?.into())
     }
+
+    /// Opens a protocol-neutral Engine subscription.
+    ///
+    /// `pattern` is an Engine subscription pattern such as `*` or
+    /// `home/tasks/*`; it is not a `/listen/*` HTTP route.
+    pub fn subscribe(
+        &self,
+        pattern: String,
+        tier: FfiAccessTier,
+        since: Option<u64>,
+    ) -> Result<Arc<FfiSubscription>, FfiError> {
+        let pattern = SubscribePattern::new(pattern);
+        let mut subscription = self.engine.subscribe(&pattern, tier.try_into()?, since)?;
+        let (events_tx, events_rx) = mpsc::channel(FFI_SUBSCRIPTION_BUFFER);
+        let (cancel, mut cancel_rx) = watch::channel(false);
+        let pump = self.runtime.spawn(async move {
+            loop {
+                tokio::select! {
+                    changed = cancel_rx.changed() => {
+                        let _ = changed;
+                        break;
+                    }
+                    item = subscription.recv() => {
+                        let (next, terminal) = subscription_next_from_recv(item);
+                        let sent = tokio::select! {
+                            changed = cancel_rx.changed() => {
+                                let _ = changed;
+                                break;
+                            }
+                            sent = events_tx.send(next) => sent,
+                        };
+                        if sent.is_err() || terminal {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(Arc::new(FfiSubscription {
+            events: Mutex::new(events_rx),
+            cancel,
+            pump: Mutex::new(Some(pump)),
+            runtime: Arc::clone(&self.runtime),
+        }))
+    }
+}
+
+#[uniffi::export]
+impl FfiSubscription {
+    /// Blocks until the next event, timeout, lag, or close.
+    ///
+    /// This is a blocking receive, not busy polling. A timeout returns
+    /// `Timeout` so foreign callers can periodically check their own
+    /// cancellation condition without crossing a callback boundary.
+    pub fn next(&self, timeout_ms: u64) -> FfiSubscriptionNext {
+        match self.runtime.block_on(async {
+            let mut events = self.events.lock().await;
+            timeout(Duration::from_millis(timeout_ms), events.recv()).await
+        }) {
+            Ok(Some(next)) => next,
+            Ok(None) => FfiSubscriptionNext {
+                kind: FfiSubscriptionNextKind::Closed,
+                event: None,
+                skipped: None,
+            },
+            Err(_) => FfiSubscriptionNext {
+                kind: FfiSubscriptionNextKind::Timeout,
+                event: None,
+                skipped: None,
+            },
+        }
+    }
+
+    /// Closes the subscription and releases the underlying Engine listen slot.
+    ///
+    /// Foreign-language callers should use this for deterministic cleanup
+    /// instead of waiting for GC/finalization to drop the object.
+    pub fn close(&self) {
+        let _ = self.cancel.send(true);
+        self.runtime.block_on(async {
+            if let Some(pump) = self.pump.lock().await.take() {
+                let _ = pump.await;
+            }
+            let mut events = self.events.lock().await;
+            events.close();
+            while events.try_recv().is_ok() {}
+        });
+    }
+}
+
+impl Drop for FfiSubscription {
+    fn drop(&mut self) {
+        let _ = self.cancel.send(true);
+        if let Ok(mut pump) = self.pump.try_lock() {
+            if let Some(pump) = pump.take() {
+                pump.abort();
+            }
+        }
+    }
 }
 
 impl Drop for FfiEngine {
@@ -254,6 +373,45 @@ fn validated_world(world: String) -> Result<ValidatedWorldPath, FfiError> {
     ValidatedWorldPath::new(world.clone()).map_err(|err| FfiError::InvalidWorld {
         message: format!("{err}: {world}"),
     })
+}
+
+fn subscription_next_from_recv(
+    result: Result<ChangeEvent, SubscriptionRecvError>,
+) -> (FfiSubscriptionNext, bool) {
+    match result {
+        Ok(event) => (
+            FfiSubscriptionNext {
+                kind: FfiSubscriptionNextKind::Event,
+                event: Some(event.into()),
+                skipped: None,
+            },
+            false,
+        ),
+        Err(SubscriptionRecvError::Lagged { skipped }) => (
+            FfiSubscriptionNext {
+                kind: FfiSubscriptionNextKind::Lagged,
+                event: None,
+                skipped: Some(skipped),
+            },
+            false,
+        ),
+        Err(SubscriptionRecvError::Closed) => (
+            FfiSubscriptionNext {
+                kind: FfiSubscriptionNextKind::Closed,
+                event: None,
+                skipped: None,
+            },
+            true,
+        ),
+        Err(_) => (
+            FfiSubscriptionNext {
+                kind: FfiSubscriptionNextKind::Unknown,
+                event: None,
+                skipped: None,
+            },
+            true,
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -505,6 +663,122 @@ mod tests {
             )
             .expect_err("stale If-Match rejected");
         assert!(matches!(err, FfiError::PreconditionFailed { .. }));
+    }
+
+    #[test]
+    fn subscription_next_drains_replay_then_live_events() {
+        let engine = test_engine("subscribe");
+        let none = FfiPreconditions {
+            if_match: Vec::new(),
+            if_none_match: Vec::new(),
+        };
+        engine
+            .replace(
+                "home/events/a".to_owned(),
+                FfiRepresentation {
+                    body: b"first".to_vec(),
+                    content_type: "text/plain".to_owned(),
+                    headers: Vec::new(),
+                },
+                none.clone(),
+                FfiAccessTier::Write,
+            )
+            .expect("first write succeeds");
+
+        let subscription = engine
+            .subscribe("home/events/*".to_owned(), FfiAccessTier::Read, Some(0))
+            .expect("subscription opens");
+        let replay = subscription.next(1_000);
+        assert_eq!(replay.kind, FfiSubscriptionNextKind::Event);
+        let event = replay.event.expect("replay event");
+        assert_eq!(event.verb, FfiChangeVerb::Replace);
+        assert_eq!(event.path, "home/events/a");
+
+        let timeout = subscription.next(1);
+        assert_eq!(timeout.kind, FfiSubscriptionNextKind::Timeout);
+        assert!(timeout.event.is_none());
+
+        engine
+            .append(
+                "home/events/a".to_owned(),
+                b" live".to_vec(),
+                none,
+                FfiAccessTier::Write,
+            )
+            .expect("append succeeds");
+        let live = subscription.next(1_000);
+        assert_eq!(live.kind, FfiSubscriptionNextKind::Event);
+        let event = live.event.expect("live event");
+        assert_eq!(event.verb, FfiChangeVerb::Append);
+        assert_eq!(event.path, "home/events/a");
+    }
+
+    #[test]
+    fn subscription_next_reports_closed_after_shutdown() {
+        let engine = test_engine("subscribe-closed");
+        let subscription = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("subscription opens");
+        engine.shutdown();
+
+        let closed = subscription.next(1_000);
+        assert_eq!(closed.kind, FfiSubscriptionNextKind::Closed);
+        assert!(closed.event.is_none());
+    }
+
+    #[test]
+    fn subscription_close_releases_receiver_without_waiting_for_drop() {
+        let engine = FfiEngine::open(FfiEngineConfig {
+            data_root: unique_test_dir("subscribe-explicit-close"),
+            hmac_key: b"ffi-test-key".to_vec(),
+            read_token: None,
+            write_token: None,
+            approve_token: None,
+            max_world_bytes: None,
+            max_memory_bytes: None,
+            max_storage_bytes: None,
+            max_listen_connections: Some(1),
+            listen_replay_max: None,
+            read_cache_max_entries: Some(2),
+        })
+        .expect("engine opens");
+
+        let subscription = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("first subscription opens");
+        assert!(
+            engine
+                .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+                .is_err(),
+            "listen slot cap should be held while subscription is open"
+        );
+
+        subscription.close();
+        let closed = subscription.next(100);
+        assert_eq!(closed.kind, FfiSubscriptionNextKind::Closed);
+
+        let replacement = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("explicit close releases listen slot");
+        replacement.close();
+    }
+
+    #[test]
+    fn subscription_next_survives_engine_handle_drop() {
+        let engine = test_engine("subscribe-drop-engine");
+        let subscription = engine
+            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .expect("subscription opens");
+
+        drop(engine);
+
+        let next = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subscription.next(10)))
+            .expect("subscription next must not panic after engine handle drop");
+        assert!(matches!(
+            next.kind,
+            FfiSubscriptionNextKind::Closed | FfiSubscriptionNextKind::Timeout
+        ));
+        assert!(next.event.is_none());
     }
 
     #[test]
