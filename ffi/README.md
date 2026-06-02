@@ -11,11 +11,21 @@ crate are sibling adapters.
 - `crate-type = ["lib", "cdylib"]`
 - UniFFI scaffolding compiles
 - `FfiEngine.open(config)` — construct an Engine with an embedded Tokio runtime
-- `engine.config_summary()` — non-secret configuration accepted by the adapter
+- `engine.config_summary()` — normalized, non-secret configuration accepted by
+  the adapter: empty tokens are unset, and `0` is normalized only for Engine
+  fields that treat zero as "use the default"
 - `engine.verify_token(token)` — check caller access tier without side effects
 - `engine.read`, `replace`, `append`, `delete` — Engine verbs bound directly
+- `delete_with_metadata()` preserves representation content-type and metadata
+  headers in the Engine delete audit ledger; plain `delete()` remains the
+  empty-metadata convenience wrapper
 - `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection
-- `engine.subscribe(pattern, tier, since)` — blocking `FfiSubscription.next(timeout_ms)` receiver
+- `engine.subscribe(pattern, tier, since)` — blocking `FfiSubscription.next(timeout_ms)`
+  receiver with explicit `close()` for deterministic slot release in
+  garbage-collected languages; `close()` wakes a currently blocked `next()`
+  instead of waiting for the timeout window
+- subscription events expose Engine verbs (`Replace`, `Append`, `Delete`), not
+  HTTP method strings
 - `engine.shutdown()` — orderly Engine shutdown (also called automatically on drop)
 - 24-variant `FfiError` with structured payloads (quota numbers, sqlite codes,
   auth gate identity) — errors cross the FFI boundary without information loss
@@ -95,5 +105,12 @@ Python bindings for:
 - macOS ARM64 (`libelastik_ffi.dylib`)
 - Windows x64 (`elastik_ffi.dll`)
 
-Tagged-release attachment and checksum integration belong to the next stack
-layer after the CI artifact shape is validated.
+Tagged-release attachment and checksum integration live in the release workflow
+stack layer after the CI artifact shape is validated.
+
+## OpenWrt / MIPS
+
+OpenWrt/MIPS is not part of the hosted FFI artifact matrix yet. It needs an
+OpenWrt SDK or equivalent cross toolchain, Rust standard-library support for
+the selected MIPS target, and a QEMU or hardware smoke path before it can be a
+release artifact. See [OPENWRT.md](OPENWRT.md).

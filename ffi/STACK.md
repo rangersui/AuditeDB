@@ -18,6 +18,9 @@ HTTP server, routes, status codes, or `/proc/*` paths.
 
 3. **Engine Verbs + Introspection**
    - Bind `read`, `replace`, `append`, and `delete`.
+   - Bind `delete_with_metadata` for adapters that need DELETE audit rows to
+     preserve representation content-type and metadata headers. Plain
+     `delete` intentionally records empty metadata, matching `Engine::delete`.
    - Bind typed introspection: `worlds`, `du`, `df`, `pool`,
      `audit_verify(world)`.
    - Do not expose `HEAD`, HTTP methods, HTTP responses, or `/proc/*` route
@@ -27,8 +30,12 @@ HTTP server, routes, status codes, or `/proc/*` paths.
    - Bind `subscribe(pattern, tier, since) -> FfiSubscription`.
    - Expose `next(timeout_ms) -> FfiSubscriptionNext` with typed `Event`,
      `Timeout`, `Lagged`, `Closed`, and `Unknown` states.
+   - Translate core event method strings into Engine verbs
+     (`Replace`/`Append`/`Delete`) before crossing the FFI boundary.
    - Let dropping the subscription object release the Engine slot; avoid a
      callback-first ABI.
+   - Expose `close()` so garbage-collected language bindings can release the
+     Engine slot deterministically instead of waiting for finalization.
    - Avoid callback-first FFI; language wrappers can build iterators or async
      streams on top of `next`.
 
@@ -45,9 +52,19 @@ HTTP server, routes, status codes, or `/proc/*` paths.
 6. **Release Integration**
    - Attach FFI artifacts to tagged releases once the CI artifact shape is
      validated.
+   - Fail tagged releases if `ffi/Cargo.toml` does not match the tag version,
+     so `ffi_version()` and attached native libraries cannot drift.
    - Add FFI packages to release checksum manifests.
    - Document OpenWrt/MIPS as a cross-toolchain target, not a guaranteed
      GitHub-hosted runner output.
+
+7. **OpenWrt/MIPS Cross-Toolchain Boundary**
+   - Keep MIPS out of the hosted artifact matrix until a real OpenWrt SDK,
+     Rust standard-library support, and a QEMU or hardware smoke path exist.
+   - Document the proof chain required before an OpenWrt `.so` can be attached
+     to a release.
+   - Do not treat Linux ARM64 as a proxy for MIPS; it proves the hosted ARM64
+     runner only.
 
 ## Boundary Rules
 
