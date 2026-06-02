@@ -27,8 +27,12 @@ HTTP server, routes, status codes, or `/proc/*` paths.
    - Bind `subscribe(pattern, tier, since) -> FfiSubscription`.
    - Expose `next(timeout_ms) -> FfiSubscriptionNext` with typed `Event`,
      `Timeout`, `Lagged`, `Closed`, and `Unknown` states.
+   - Translate core event method strings into Engine verbs
+     (`Replace`/`Append`/`Delete`) before crossing the FFI boundary.
    - Let dropping the subscription object release the Engine slot; avoid a
      callback-first ABI.
+   - Expose `close()` so garbage-collected language bindings can release the
+     Engine slot deterministically instead of waiting for finalization.
    - Avoid callback-first FFI; language wrappers can build iterators or async
      streams on top of `next`.
 

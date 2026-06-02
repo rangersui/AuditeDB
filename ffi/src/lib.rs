@@ -284,6 +284,14 @@ impl FfiEngine {
 
 #[uniffi::export]
 impl FfiSubscription {
+    /// Requests cancellation of the background Engine subscription task.
+    ///
+    /// Dropping the object also cancels, but `close()` lets garbage-collected
+    /// languages release the Engine subscription slot deterministically.
+    pub fn close(&self) {
+        let _ = self.cancel.send(true);
+    }
+
     /// Blocks until the next event, timeout, lag, or close.
     ///
     /// This is a blocking receive, not busy polling. A timeout returns

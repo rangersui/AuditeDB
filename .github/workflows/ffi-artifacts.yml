@@ -111,6 +111,7 @@ jobs:
           engine.append("home/ffi", b" world", none, e.FfiAccessTier.WRITE)
           event = subscription.next(5_000)
           assert event.kind == e.FfiSubscriptionNextKind.EVENT, event.kind
+          assert event.event.verb == e.FfiChangeVerb.APPEND, event.event.verb
           assert event.event.path == "home/ffi", event.event.path
 
           engine.shutdown()

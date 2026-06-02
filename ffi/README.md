@@ -17,7 +17,11 @@ crate are sibling adapters.
 - `engine.verify_token(token)` — check caller access tier without side effects
 - `engine.read`, `replace`, `append`, `delete` — Engine verbs bound directly
 - `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection
-- `engine.subscribe(pattern, tier, since)` — blocking `FfiSubscription.next(timeout_ms)` receiver
+- `engine.subscribe(pattern, tier, since)` — blocking `FfiSubscription.next(timeout_ms)`
+  receiver with explicit `close()` for deterministic slot release in
+  garbage-collected languages
+- subscription events expose Engine verbs (`Replace`, `Append`, `Delete`), not
+  HTTP method strings
 - `engine.shutdown()` — orderly Engine shutdown (also called automatically on drop)
 - 24-variant `FfiError` with structured payloads (quota numbers, sqlite codes,
   auth gate identity) — errors cross the FFI boundary without information loss
