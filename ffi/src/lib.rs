@@ -1,8 +1,8 @@
 //! UniFFI adapter for Elastik's protocol-neutral Engine.
 //!
 //! This crate is intentionally separate from `elastik-core`: it is an adapter
-//! peer of HTTP and CoAP, not a new core surface. This layer adds the
-//! Engine-owned FFI handle; later stack layers bind Engine methods.
+//! peer of HTTP and CoAP, not a new core surface. This stack binds Engine
+//! methods directly and keeps HTTP route/status vocabulary out of the ABI.
 
 // UniFFI's export macro references deprecated smoke exports inside this crate.
 // The deprecation remains part of the generated ABI for downstream consumers.
@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use elastik_core::{Engine, SecretBytes};
+use elastik_core::{Engine, SecretBytes, ValidatedWorldPath};
 use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
 
 mod types;
@@ -110,6 +110,111 @@ impl FfiEngine {
         let _ = self.runtime.handle();
         "embedded Tokio runtime; async Engine verbs block inside the FFI handle".to_owned()
     }
+
+    /// Reads a world's full representation.
+    pub fn read(
+        &self,
+        world: String,
+        tier: FfiAccessTier,
+    ) -> Result<Option<FfiReadResult>, FfiError> {
+        let world = validated_world(world)?;
+        Ok(self.engine.read(&world, tier.try_into()?)?.map(Into::into))
+    }
+
+    /// Replaces a world with the provided representation.
+    pub fn replace(
+        &self,
+        world: String,
+        representation: FfiRepresentation,
+        preconditions: FfiPreconditions,
+        tier: FfiAccessTier,
+    ) -> Result<FfiWriteResult, FfiError> {
+        let world = validated_world(world)?;
+        let result = self.runtime.block_on(self.engine.replace(
+            &world,
+            representation.into(),
+            preconditions.into(),
+            tier.try_into()?,
+        ))?;
+        Ok(result.into())
+    }
+
+    /// Appends bytes to a world's body.
+    pub fn append(
+        &self,
+        world: String,
+        body: Vec<u8>,
+        preconditions: FfiPreconditions,
+        tier: FfiAccessTier,
+    ) -> Result<FfiWriteResult, FfiError> {
+        let world = validated_world(world)?;
+        let result = self.runtime.block_on(self.engine.append(
+            &world,
+            body.into(),
+            preconditions.into(),
+            tier.try_into()?,
+        ))?;
+        Ok(result.into())
+    }
+
+    /// Deletes a world.
+    pub fn delete(
+        &self,
+        world: String,
+        preconditions: FfiPreconditions,
+        tier: FfiAccessTier,
+    ) -> Result<(), FfiError> {
+        let world = validated_world(world)?;
+        Ok(self.runtime.block_on(self.engine.delete(
+            &world,
+            preconditions.into(),
+            tier.try_into()?,
+        ))?)
+    }
+
+    /// Lists every canonical world known to the Engine.
+    ///
+    /// Returned strings are canonical Engine worlds that round-trip through
+    /// `read`, `replace`, `append`, `delete`, and `audit_verify` without
+    /// validation failure.
+    pub fn worlds(&self, tier: FfiAccessTier) -> Result<Vec<String>, FfiError> {
+        Ok(self
+            .engine
+            .list_worlds(tier.try_into()?)?
+            .into_iter()
+            .map(|world| world.to_string())
+            .collect())
+    }
+
+    /// Returns per-world byte usage.
+    pub fn du(&self, tier: FfiAccessTier) -> Result<Vec<FfiWorldUsage>, FfiError> {
+        Ok(self
+            .engine
+            .du(tier.try_into()?)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Returns aggregate storage and memory usage.
+    pub fn df(&self, tier: FfiAccessTier) -> Result<FfiDfSnapshot, FfiError> {
+        Ok(self.engine.df(tier.try_into()?)?.into())
+    }
+
+    /// Returns read-cache and ledger-writer counters.
+    pub fn pool(&self, tier: FfiAccessTier) -> Result<FfiPoolSnapshot, FfiError> {
+        Ok(self.engine.pool(tier.try_into()?)?.into())
+    }
+
+    /// Verifies one world's HMAC audit chain.
+    pub fn audit_verify(
+        &self,
+        world: String,
+        tier: FfiAccessTier,
+    ) -> Result<FfiAuditVerify, FfiError> {
+        let world = validated_world(world)?;
+        Ok(self.engine.verify_audit(&world, tier.try_into()?)?.into())
+    }
 }
 
 impl Drop for FfiEngine {
@@ -126,9 +231,8 @@ pub fn ffi_version() -> String {
 
 /// Names the architectural boundary this adapter is allowed to cross.
 ///
-/// This smoke export exists to make Layer 1 reviewable without binding any
-/// Engine verbs yet. Future layers should replace this with real Engine-bound
-/// types and keep HTTP/server vocabulary out of the FFI API.
+/// This smoke export remains as a cheap boundary check alongside the real
+/// Engine-bound methods: HTTP/server vocabulary must stay out of the FFI API.
 #[allow(deprecated)]
 #[deprecated(note = "Layer 1/2 smoke export only; use real Engine-bound FFI methods.")]
 #[uniffi::export]
@@ -144,6 +248,12 @@ fn optional_usize(name: &'static str, value: Option<u64>) -> Result<Option<usize
             })
         })
         .transpose()
+}
+
+fn validated_world(world: String) -> Result<ValidatedWorldPath, FfiError> {
+    ValidatedWorldPath::new(world).map_err(|err| FfiError::InvalidWorld {
+        message: err.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -253,6 +363,142 @@ mod tests {
         };
 
         assert_eq!(event.verb, FfiChangeVerb::Replace);
+    }
+
+    #[test]
+    fn engine_verbs_roundtrip_bytes_and_introspection() {
+        let engine = test_engine("verbs");
+        let none = FfiPreconditions {
+            if_match: Vec::new(),
+            if_none_match: Vec::new(),
+        };
+
+        assert!(engine
+            .read("home/doc".to_owned(), FfiAccessTier::Read)
+            .expect("read missing succeeds")
+            .is_none());
+
+        let created = engine
+            .replace(
+                "home/doc".to_owned(),
+                FfiRepresentation {
+                    body: b"hello".to_vec(),
+                    content_type: "text/plain".to_owned(),
+                    headers: vec![FfiHeader {
+                        name: "x-meta".to_owned(),
+                        value: "one".to_owned(),
+                    }],
+                },
+                none.clone(),
+                FfiAccessTier::Write,
+            )
+            .expect("replace succeeds");
+        assert_eq!(created.kind, FfiWriteKind::Created);
+
+        let appended = engine
+            .append(
+                "home/doc".to_owned(),
+                b" world".to_vec(),
+                none.clone(),
+                FfiAccessTier::Write,
+            )
+            .expect("append succeeds");
+        assert_eq!(appended.kind, FfiWriteKind::Updated);
+
+        let read = engine
+            .read("home/doc".to_owned(), FfiAccessTier::Read)
+            .expect("read succeeds")
+            .expect("world exists");
+        assert_eq!(read.representation.body, b"hello world");
+        assert_eq!(read.representation.content_type, "text/plain");
+
+        assert_eq!(
+            engine.worlds(FfiAccessTier::Read).expect("worlds"),
+            vec!["home/doc".to_owned()]
+        );
+        for world in engine.worlds(FfiAccessTier::Read).expect("worlds") {
+            assert!(engine
+                .read(world, FfiAccessTier::Read)
+                .expect("listed world round-trips")
+                .is_some());
+        }
+        assert_eq!(
+            engine.du(FfiAccessTier::Read).expect("du")[0].world,
+            "home/doc"
+        );
+        assert_eq!(engine.df(FfiAccessTier::Read).expect("df").worlds, 1);
+        assert_eq!(
+            engine
+                .pool(FfiAccessTier::Read)
+                .expect("pool")
+                .read_cache_max_entries,
+            2
+        );
+        assert!(matches!(
+            engine
+                .audit_verify("home/doc".to_owned(), FfiAccessTier::Read)
+                .expect("audit verify"),
+            FfiAuditVerify::Valid { .. }
+        ));
+
+        engine
+            .delete("home/doc".to_owned(), none, FfiAccessTier::Approve)
+            .expect("delete succeeds");
+        assert!(engine
+            .read("home/doc".to_owned(), FfiAccessTier::Read)
+            .expect("read deleted succeeds")
+            .is_none());
+    }
+
+    #[test]
+    fn engine_verbs_reject_noncanonical_worlds() {
+        let engine = test_engine("invalid-world");
+        let err = engine
+            .read("/home/doc".to_owned(), FfiAccessTier::Read)
+            .expect_err("wire paths are not Engine worlds");
+        assert!(matches!(err, FfiError::InvalidWorld { .. }));
+    }
+
+    #[test]
+    fn unknown_tier_is_rejected_at_boundary() {
+        let engine = test_engine("unknown-tier");
+        let err = engine
+            .read("home/doc".to_owned(), FfiAccessTier::Unknown)
+            .expect_err("unknown tier must not silently downgrade");
+        assert!(matches!(err, FfiError::InvalidConfig { .. }));
+    }
+
+    #[test]
+    fn write_preconditions_reject_stale_etags() {
+        let engine = test_engine("precondition-if-match");
+        let none = FfiPreconditions {
+            if_match: Vec::new(),
+            if_none_match: Vec::new(),
+        };
+        engine
+            .replace(
+                "home/doc".to_owned(),
+                small_representation(b"first"),
+                none,
+                FfiAccessTier::Write,
+            )
+            .expect("create succeeds");
+
+        let stale = FfiPreconditions {
+            if_match: vec![FfiEtagMatcher::Strong {
+                etag: "\"wrong-etag\"".to_owned(),
+            }],
+            if_none_match: Vec::new(),
+        };
+        let err = engine
+            .replace(
+                "home/doc".to_owned(),
+                small_representation(b"second"),
+                stale,
+                FfiAccessTier::Write,
+            )
+            .expect_err("stale If-Match rejected");
+        assert!(matches!(err, FfiError::PreconditionFailed { .. }));
     }
 
     #[test]
@@ -379,5 +625,30 @@ mod tests {
             .join(format!("elastik-ffi-{label}-{nanos}"))
             .to_string_lossy()
             .into_owned()
+    }
+
+    fn test_engine(label: &str) -> Arc<FfiEngine> {
+        FfiEngine::open(FfiEngineConfig {
+            data_root: unique_test_dir(label),
+            hmac_key: b"ffi-test-key".to_vec(),
+            read_token: None,
+            write_token: None,
+            approve_token: None,
+            max_world_bytes: None,
+            max_memory_bytes: None,
+            max_storage_bytes: None,
+            max_listen_connections: None,
+            listen_replay_max: None,
+            read_cache_max_entries: Some(2),
+        })
+        .expect("engine opens")
+    }
+
+    fn small_representation(body: &[u8]) -> FfiRepresentation {
+        FfiRepresentation {
+            body: body.to_vec(),
+            content_type: "text/plain".to_owned(),
+            headers: Vec::new(),
+        }
     }
 }

@@ -2,7 +2,8 @@ use std::fmt;
 
 use elastik_core::{
     is_valid_token, AccessTier, AuditVerify, AuthGate, DfSnapshot, EngineBuildError, EngineError,
-    PoolSnapshot, WriteKind,
+    EtagMatcher, PoolSnapshot, Preconditions, ReadResult, Representation, WorldUsage, WriteKind,
+    WriteResult,
 };
 
 /// Engine construction options for the FFI adapter.
@@ -79,7 +80,22 @@ pub struct FfiHeader {
     pub value: String,
 }
 
-/// Stored representation for future write/read bindings.
+/// ETag matcher used by FFI write preconditions.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiEtagMatcher {
+    Any,
+    Strong { etag: String },
+    Weak { etag: String },
+}
+
+/// Protocol-neutral write preconditions.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FfiPreconditions {
+    pub if_match: Vec<FfiEtagMatcher>,
+    pub if_none_match: Vec<FfiEtagMatcher>,
+}
+
+/// Stored representation passed through Engine read/write verbs.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiRepresentation {
     pub body: Vec<u8>,
@@ -87,14 +103,14 @@ pub struct FfiRepresentation {
     pub headers: Vec<FfiHeader>,
 }
 
-/// Future read result DTO.
+/// Read result DTO returned by Engine read.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiReadResult {
     pub representation: FfiRepresentation,
     pub etag: String,
 }
 
-/// Future write result kind.
+/// Write result kind returned by Engine write verbs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum FfiWriteKind {
     Created,
@@ -104,7 +120,7 @@ pub enum FfiWriteKind {
     Unknown,
 }
 
-/// Future write result DTO.
+/// Write result DTO returned by Engine write verbs.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiWriteResult {
     pub kind: FfiWriteKind,
@@ -129,6 +145,13 @@ pub struct FfiChangeEvent {
     pub verb: FfiChangeVerb,
     pub path: String,
     pub etag: String,
+}
+
+/// Per-world body byte usage DTO.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FfiWorldUsage {
+    pub world: String,
+    pub bytes: u64,
 }
 
 /// Aggregate storage/memory snapshot DTO.
@@ -193,6 +216,9 @@ pub enum FfiError {
         message: String,
     },
     InvalidSecret {
+        message: String,
+    },
+    InvalidWorld {
         message: String,
     },
     BuildDataRootIo {
@@ -285,6 +311,22 @@ fn nonzero_override(value: Option<u64>) -> Option<u64> {
     value.filter(|value| *value > 0)
 }
 
+impl TryFrom<FfiAccessTier> for AccessTier {
+    type Error = FfiError;
+
+    fn try_from(value: FfiAccessTier) -> Result<Self, Self::Error> {
+        match value {
+            FfiAccessTier::Anon => Ok(Self::Anon),
+            FfiAccessTier::Read => Ok(Self::Read),
+            FfiAccessTier::Write => Ok(Self::Write),
+            FfiAccessTier::Approve => Ok(Self::Approve),
+            FfiAccessTier::Unknown => Err(FfiError::InvalidConfig {
+                message: "unknown access tier".to_owned(),
+            }),
+        }
+    }
+}
+
 impl From<AccessTier> for FfiAccessTier {
     fn from(value: AccessTier) -> Self {
         match value {
@@ -305,6 +347,82 @@ impl From<AuthGate> for FfiAuthGate {
             AuthGate::WriteApprove => Self::WriteApprove,
             AuthGate::Delete => Self::Delete,
             _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<FfiEtagMatcher> for EtagMatcher {
+    fn from(value: FfiEtagMatcher) -> Self {
+        match value {
+            FfiEtagMatcher::Any => Self::Any,
+            FfiEtagMatcher::Strong { etag } => Self::Strong(etag),
+            FfiEtagMatcher::Weak { etag } => Self::Weak(etag),
+        }
+    }
+}
+
+impl From<FfiPreconditions> for Preconditions {
+    fn from(value: FfiPreconditions) -> Self {
+        Self::new(
+            value.if_match.into_iter().map(Into::into).collect(),
+            value.if_none_match.into_iter().map(Into::into).collect(),
+        )
+    }
+}
+
+impl From<FfiHeader> for (String, String) {
+    fn from(value: FfiHeader) -> Self {
+        (value.name, value.value)
+    }
+}
+
+impl From<FfiRepresentation> for Representation {
+    fn from(value: FfiRepresentation) -> Self {
+        Self::new(
+            value.body,
+            value.content_type,
+            value.headers.into_iter().map(Into::into).collect(),
+        )
+    }
+}
+
+impl From<Representation> for FfiRepresentation {
+    fn from(value: Representation) -> Self {
+        Self {
+            body: value.body.to_vec(),
+            content_type: value.content_type,
+            headers: value
+                .headers
+                .into_iter()
+                .map(|(name, value)| FfiHeader { name, value })
+                .collect(),
+        }
+    }
+}
+
+impl From<ReadResult> for FfiReadResult {
+    fn from(value: ReadResult) -> Self {
+        Self {
+            representation: value.representation.into(),
+            etag: value.etag,
+        }
+    }
+}
+
+impl From<WriteResult> for FfiWriteResult {
+    fn from(value: WriteResult) -> Self {
+        Self {
+            kind: value.kind.into(),
+            etag: value.etag,
+        }
+    }
+}
+
+impl From<WorldUsage> for FfiWorldUsage {
+    fn from(value: WorldUsage) -> Self {
+        Self {
+            world: value.world.to_string(),
+            bytes: value.bytes as u64,
         }
     }
 }
@@ -439,6 +557,7 @@ impl fmt::Display for FfiError {
         match self {
             Self::InvalidConfig { message }
             | Self::InvalidSecret { message }
+            | Self::InvalidWorld { message }
             | Self::RuntimeInitFailed { message }
             | Self::BuildDataRootIo { message }
             | Self::PreconditionFailed { message }
