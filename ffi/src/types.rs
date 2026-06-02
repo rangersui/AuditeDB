@@ -376,6 +376,16 @@ impl From<FfiHeader> for (String, String) {
     }
 }
 
+/// Converts an FFI representation into the Engine's protocol-neutral form.
+///
+/// Headers pass through without filtering. This is intentional: the Engine
+/// treats headers as opaque metadata, while the HTTP adapter applies persistence
+/// filtering because browsers execute response headers as security policy.
+/// Non-browser adapters such as FFI, MQTT, and CoAP treat headers as plain
+/// key-value metadata with no execution semantics.
+///
+/// The HTTP read path applies its L1 hard-deny output filter before serving any
+/// stored header to a browser, regardless of which adapter originally wrote it.
 impl From<FfiRepresentation> for Representation {
     fn from(value: FfiRepresentation) -> Self {
         Self::new(

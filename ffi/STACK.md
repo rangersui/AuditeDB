@@ -57,6 +57,23 @@ Forbidden:
 - server/router/handler types
 - adapter-specific auth/header/pipeline concepts
 
+## Header Persistence
+
+The FFI adapter passes representation headers through to the Engine without
+filtering. This is by design:
+
+- The Engine treats headers as opaque metadata.
+- Only the HTTP adapter applies a persistence allowlist because browsers
+  interpret response headers as security directives.
+- The HTTP read path applies an L1 hard-deny filter on output regardless of
+  which adapter wrote the data.
+- Non-browser consumers (FFI, MQTT, CoAP) treat headers as plain key-value
+  metadata with no execution semantics.
+
+FFI callers are responsible for the content they store. If an FFI-written
+header is later served through the HTTP adapter, the HTTP output filter is the
+safety net, not the FFI write path.
+
 ## Coverage Discipline
 
 FFI should keep a strict coverage habit from layer 1 onward. The coverage goal

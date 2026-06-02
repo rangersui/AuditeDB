@@ -78,6 +78,11 @@ pub struct Representation {
     pub content_type: String,
     /// Arbitrary metadata header pairs. Header-name de-duplication and
     /// allow/deny policy belong to the adapter that constructs this struct.
+    ///
+    /// The HTTP adapter applies a layered filter at write time and an L1
+    /// hard-deny filter at read time because browsers execute response headers
+    /// as security policy. Non-browser adapters (FFI, MQTT, CoAP) may pass
+    /// headers through as opaque key-value metadata.
     pub headers: Vec<(String, String)>,
 }
 

@@ -251,8 +251,8 @@ fn optional_usize(name: &'static str, value: Option<u64>) -> Result<Option<usize
 }
 
 fn validated_world(world: String) -> Result<ValidatedWorldPath, FfiError> {
-    ValidatedWorldPath::new(world).map_err(|err| FfiError::InvalidWorld {
-        message: err.to_string(),
+    ValidatedWorldPath::new(world.clone()).map_err(|err| FfiError::InvalidWorld {
+        message: format!("{err}: {world}"),
     })
 }
 
@@ -456,7 +456,13 @@ mod tests {
         let err = engine
             .read("/home/doc".to_owned(), FfiAccessTier::Read)
             .expect_err("wire paths are not Engine worlds");
-        assert!(matches!(err, FfiError::InvalidWorld { .. }));
+        match err {
+            FfiError::InvalidWorld { message } => {
+                assert!(message.contains("invalid world path"));
+                assert!(message.contains("/home/doc"));
+            }
+            other => panic!("expected invalid world error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -486,7 +492,7 @@ mod tests {
 
         let stale = FfiPreconditions {
             if_match: vec![FfiEtagMatcher::Strong {
-                etag: "\"wrong-etag\"".to_owned(),
+                etag: "wrong-etag".to_owned(),
             }],
             if_none_match: Vec::new(),
         };
