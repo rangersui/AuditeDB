@@ -1,7 +1,8 @@
 # Contributing
 
-Elastik is a small HTTP byte engine. The contribution model is intentionally
-small too: one coherent change, one pull request.
+Elastik is an Audi-ted L5 storage engine with HTTP, CoAP, MQTT, SDK, and FFI
+adapters. The contribution model is intentionally small too: one coherent
+change, one pull request.
 
 ## Before You Start
 
