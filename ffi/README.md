@@ -42,14 +42,16 @@ cargo run --bin uniffi-bindgen -- generate target\debug\elastik_ffi.dll --langua
 
 ## Python-Shaped Usage
 
-Names can vary slightly by generated binding language. This example sticks to
-the handle-level calls every binding exposes the same way; verb and subscription
-DTOs are generated from the same UniFFI surface.
+Names can vary slightly by generated binding language. All examples assume an
+open Engine:
 
 ```python
-from elastik_ffi import FfiAccessTier, FfiEngine, FfiEngineConfig
+from elastik_ffi import (
+    FfiAccessTier, FfiEngine, FfiEngineConfig, FfiError,
+    FfiDeleteMetadata, FfiHeader, FfiPreconditions, FfiRepresentation,
+    FfiSubscriptionNextKind,
+)
 
-# Open an Engine
 engine = FfiEngine.open(FfiEngineConfig(
     data_root="/var/lib/elastik",
     hmac_key=b"my-secret-key",
@@ -63,29 +65,99 @@ engine = FfiEngine.open(FfiEngineConfig(
     listen_replay_max=None,
     read_cache_max_entries=None,
 ))
+```
 
-# Inspect non-secret configuration
+### Handle
+
+```python
 summary = engine.config_summary()
 assert summary.has_read_token is True
 
-# Verify a caller token
 tier = engine.verify_token(b"reader")
 assert tier == FfiAccessTier.READ
 
 tier = engine.verify_token(b"wrong")
 assert tier == FfiAccessTier.ANON
+```
 
-# Shutdown (also happens automatically when the object is collected)
+### CRUD
+
+```python
+none = FfiPreconditions(if_match=[], if_none_match=[])
+
+# Replace (create or overwrite)
+result = engine.replace("home/doc", FfiRepresentation(
+    body=b"hello",
+    content_type="text/plain",
+    headers=[],
+), none, FfiAccessTier.WRITE)
+etag = result.etag
+
+# Read
+read = engine.read("home/doc", FfiAccessTier.READ)
+assert read is not None
+assert read.representation.body == b"hello"
+
+# Append
+engine.append("home/doc", b" world", none, FfiAccessTier.WRITE)
+
+# Delete with audit metadata
+engine.delete_with_metadata("home/doc", FfiDeleteMetadata(
+    content_type="text/plain; charset=utf-8",
+    headers=[FfiHeader(name="x-meta-author", value="ffi-example")],
+), none, FfiAccessTier.APPROVE)
+
+# Plain delete is the empty-metadata convenience wrapper.
+engine.replace("home/plain-doc", FfiRepresentation(
+    body=b"temporary",
+    content_type="text/plain",
+    headers=[],
+), none, FfiAccessTier.WRITE)
+engine.delete("home/plain-doc", none, FfiAccessTier.APPROVE)
+```
+
+### Subscription
+
+```python
+sub = engine.subscribe("home/*", FfiAccessTier.READ, None)
+
+engine.replace("home/sub-doc", FfiRepresentation(
+    body=b"update",
+    content_type="text/plain",
+    headers=[],
+), none, FfiAccessTier.WRITE)
+
+event = sub.next(5_000)  # blocks up to 5 seconds
+assert event.kind == FfiSubscriptionNextKind.EVENT
+assert event.event.path == "home/sub-doc"
+
+# Deterministic cleanup (don't wait for GC)
+sub.close()
+```
+
+### Introspection
+
+```python
+worlds = engine.worlds(FfiAccessTier.READ)       # list of canonical paths
+usage  = engine.du(FfiAccessTier.READ)            # per-world byte usage
+snap   = engine.df(FfiAccessTier.READ)            # aggregate storage/memory
+pool   = engine.pool(FfiAccessTier.READ)          # cache and writer counters
+engine.replace("home/audit-doc", FfiRepresentation(
+    body=b"audited",
+    content_type="text/plain",
+    headers=[],
+), none, FfiAccessTier.WRITE)
+audit  = engine.audit_verify("home/audit-doc", FfiAccessTier.READ)
+
+# When the host is done with the Engine.
 engine.shutdown()
 ```
 
-## Error Handling
+### Error Handling
 
 Errors carry structured data, not flattened strings:
 
 ```python
-from elastik_ffi import FfiEngine, FfiError
-
 try:
     engine = FfiEngine.open(bad_config)
 except FfiError.InvalidSecret as e:

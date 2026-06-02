@@ -29,6 +29,7 @@ physics.
 | HTTP binary adapter | [`core/src/server/http/README.md`](core/src/server/http/README.md) | `elastik-core` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
 | MQTT binary adapter | [`core/src/server/mqtt/README.md`](core/src/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
 | CoAP binary adapter | [`core/src/server/coap/README.md`](core/src/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
+| FFI adapter | [`ffi/README.md`](ffi/README.md) | UniFFI binding: Python, Kotlin, Swift. Blocking pull, same Engine verbs. |
 | Python SDK | [`sdk/README.md`](sdk/README.md) | Python client surface. |
 | JavaScript SDK | [`sdk-js/README.md`](sdk-js/README.md) | JS client surface. |
 
