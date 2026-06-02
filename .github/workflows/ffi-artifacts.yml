@@ -33,15 +33,15 @@ jobs:
             os: macos-14
             library-path: target/release/libelastik_ffi.dylib
           - name: windows-x64
-            os: windows-latest
+            os: windows-2025-vs2026
             library-path: target/release/elastik_ffi.dll
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -175,7 +175,7 @@ jobs:
           PY
 
       - name: upload FFI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: elastik-ffi-${{ matrix.name }}
           path: ffi/elastik-ffi-${{ matrix.name }}.zip
