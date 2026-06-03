@@ -424,3 +424,52 @@ fn classify_write_storage_error(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::test_core;
+
+    fn world_path(world: &str) -> ValidatedWorldPath {
+        ValidatedWorldPath::new(world).unwrap()
+    }
+
+    #[tokio::test]
+    async fn write_permit_is_bound_to_one_world() {
+        struct NoopTrace;
+        impl WriteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("permit-bound");
+        let world = world_path("home/permit-a");
+        let permit = authorize_write(&world, auth::Tier::Write)
+            .expect("write token tier should authorize home writes");
+        let req = ReplaceRequest {
+            body: Bytes::from_static(b"right-door"),
+            content_type: "text/plain; charset=utf-8".to_owned(),
+            headers: Vec::new(),
+            preconditions: etag::Preconditions::default(),
+        };
+
+        replace_write(&core, &permit, req, &NoopTrace)
+            .await
+            .expect("permit writes only its bound world");
+
+        assert_eq!(
+            core.read_world("home/permit-a").unwrap().unwrap().body,
+            b"right-door"
+        );
+        assert!(core.read_world("home/permit-b").unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_permit_preserves_path_based_approve_gate() {
+        assert!(matches!(
+            authorize_write(&world_path("etc/config"), auth::Tier::Write),
+            Err(WriteError::Auth(AuthGate::WriteApprove))
+        ));
+        assert!(authorize_write(&world_path("etc/config"), auth::Tier::Approve).is_ok());
+        assert!(authorize_write(&world_path("home/config"), auth::Tier::Write).is_ok());
+    }
+}
