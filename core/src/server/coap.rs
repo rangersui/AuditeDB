@@ -473,7 +473,6 @@ mod tests {
     use super::*;
     use crate::{
         audit, auth,
-        engine::Engine,
         server::{handler, state::test_support::server_state_for_tests, Phase, TraceCtx},
         test_support, Core,
     };
@@ -495,8 +494,8 @@ mod tests {
         (core, dir)
     }
 
-    fn test_engine(core: &Core) -> Engine {
-        Engine::from_core_for_tests(Arc::new(core.clone()))
+    fn test_engine(core: &Core) -> crate::engine::Engine {
+        test_support::test_engine_for_tests(core)
     }
 
     #[test]

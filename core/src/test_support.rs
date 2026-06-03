@@ -12,6 +12,7 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES,
     },
+    engine::Engine,
     store, Core,
 };
 
@@ -73,6 +74,10 @@ pub(crate) fn world_db_path_for_tests(
     world: &str,
 ) -> PathBuf {
     crate::world::world_db(data_root.as_ref(), world)
+}
+
+pub(crate) fn test_engine_for_tests(core: &Core) -> Engine {
+    Engine::from_core_for_tests(Arc::new(core.clone()))
 }
 
 pub(crate) fn write_audited_world_for_tests(
