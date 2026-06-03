@@ -221,26 +221,6 @@ async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
-fn var_log_requires_approve_token() {
-    assert!(!can_write("var/log", auth::Tier::Anon));
-    assert!(!can_write("var/log", auth::Tier::Read));
-    assert!(!can_write("var/log", auth::Tier::Write));
-    assert!(can_write("var/log", auth::Tier::Approve));
-    assert!(!can_write("var/log/deletes", auth::Tier::Anon));
-    assert!(!can_write("var/log/deletes", auth::Tier::Read));
-    assert!(!can_write("var/log/deletes", auth::Tier::Write));
-    assert!(can_write("var/log/deletes", auth::Tier::Approve));
-}
-
-#[test]
-fn delete_requires_approve_token() {
-    assert!(!can_delete(auth::Tier::Anon));
-    assert!(!can_delete(auth::Tier::Read));
-    assert!(!can_delete(auth::Tier::Write));
-    assert!(can_delete(auth::Tier::Approve));
-}
-
 #[tokio::test]
 async fn put_and_post_enforce_world_size_cap() {
     let (mut core, dir) = test_core("world-size-cap");
@@ -331,38 +311,6 @@ async fn memory_backend_enforces_total_quota() {
         .await,
     );
     assert_eq!(third.status(), StatusCode::PAYLOAD_TOO_LARGE);
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn system_namespace_roots_require_approve_even_if_called_directly() {
-    for name in ["lib", "etc", "boot", "usr"] {
-        assert!(!can_write(name, auth::Tier::Anon), "{name}");
-        assert!(!can_write(name, auth::Tier::Read), "{name}");
-        assert!(!can_write(name, auth::Tier::Write), "{name}");
-        assert!(can_write(name, auth::Tier::Approve), "{name}");
-    }
-}
-
-#[test]
-fn non_log_var_still_accepts_auth_token() {
-    assert!(!can_write("var/cache/rag", auth::Tier::Anon));
-    assert!(!can_write("var/cache/rag", auth::Tier::Read));
-    assert!(can_write("var/cache/rag", auth::Tier::Write));
-    assert!(can_write("var/cache/rag", auth::Tier::Approve));
-}
-
-#[test]
-fn read_token_is_optional_but_gates_reads_when_set() {
-    let (mut core, dir) = test_core("read-token");
-    assert!(can_read(&core, auth::Tier::Anon));
-
-    core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
-    assert!(!can_read(&core, auth::Tier::Anon));
-    assert!(can_read(&core, auth::Tier::Read));
-    assert!(can_read(&core, auth::Tier::Write));
-    assert!(can_read(&core, auth::Tier::Approve));
 
     let _ = std::fs::remove_dir_all(dir);
 }

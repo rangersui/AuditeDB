@@ -224,6 +224,7 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{can_delete, can_read, can_write, test_support::test_core};
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -323,6 +324,58 @@ mod tests {
         assert_eq!(tokens.check(Some("Bearer \t\r\n")), Tier::Anon);
         assert_eq!(tokens.check(Some(&bearer("\u{2003}"))), Tier::Anon);
         assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
+    }
+
+    #[test]
+    fn var_log_requires_approve_token() {
+        assert!(!can_write("var/log", Tier::Anon));
+        assert!(!can_write("var/log", Tier::Read));
+        assert!(!can_write("var/log", Tier::Write));
+        assert!(can_write("var/log", Tier::Approve));
+        assert!(!can_write("var/log/deletes", Tier::Anon));
+        assert!(!can_write("var/log/deletes", Tier::Read));
+        assert!(!can_write("var/log/deletes", Tier::Write));
+        assert!(can_write("var/log/deletes", Tier::Approve));
+    }
+
+    #[test]
+    fn delete_requires_approve_token() {
+        assert!(!can_delete(Tier::Anon));
+        assert!(!can_delete(Tier::Read));
+        assert!(!can_delete(Tier::Write));
+        assert!(can_delete(Tier::Approve));
+    }
+
+    #[test]
+    fn system_namespace_roots_require_approve_even_if_called_directly() {
+        for name in ["lib", "etc", "boot", "usr"] {
+            assert!(!can_write(name, Tier::Anon), "{name}");
+            assert!(!can_write(name, Tier::Read), "{name}");
+            assert!(!can_write(name, Tier::Write), "{name}");
+            assert!(can_write(name, Tier::Approve), "{name}");
+        }
+    }
+
+    #[test]
+    fn non_log_var_still_accepts_auth_token() {
+        assert!(!can_write("var/cache/rag", Tier::Anon));
+        assert!(!can_write("var/cache/rag", Tier::Read));
+        assert!(can_write("var/cache/rag", Tier::Write));
+        assert!(can_write("var/cache/rag", Tier::Approve));
+    }
+
+    #[test]
+    fn read_token_is_optional_but_gates_reads_when_set() {
+        let (mut core, dir) = test_core("read-token");
+        assert!(can_read(&core, Tier::Anon));
+
+        core.tokens.read = NonEmptyBytes::new(b"reader".to_vec());
+        assert!(!can_read(&core, Tier::Anon));
+        assert!(can_read(&core, Tier::Read));
+        assert!(can_read(&core, Tier::Write));
+        assert!(can_read(&core, Tier::Approve));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
