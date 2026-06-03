@@ -32,7 +32,7 @@ impl HeaderAllowlist {
     /// Empty allowlist (default-deny custom headers). Used by
     /// test fixtures and as the inert state for `Core` constructors
     /// that don't read environment. The production startup path uses
-    /// `server::config::header_allowlist_from_env()` instead, which returns
+    /// `header_allowlist_from_env()` instead, which returns
     /// an `empty()` for an unset env var anyway.
     #[allow(dead_code)]
     pub(crate) fn empty() -> Self {
@@ -69,6 +69,29 @@ impl HeaderAllowlist {
     pub(crate) fn is_empty(&self) -> bool {
         self.exact.is_empty() && self.prefixes.is_empty()
     }
+}
+
+/// Parse `ELASTIK_PERSIST_HEADERS` into the user-configured
+/// allowlist (Layer 3 of the persist policy). Comma-separated;
+/// trailing `*` = prefix match. An unset, empty, or all-whitespace
+/// value yields `HeaderAllowlist::empty()`, which means "no custom
+/// headers beyond the built-in default-allow set."
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn header_allowlist_from_env() -> HeaderAllowlist {
+    let raw = std::env::var("ELASTIK_PERSIST_HEADERS").unwrap_or_default();
+    HeaderAllowlist::parse(&raw)
+}
+
+/// Parse `ELASTIK_DENY_HEADERS` into the user-configured deny set
+/// (Layer 1.5 of the persist policy). Same matcher shape as
+/// `header_allowlist_from_env`; lets the operator subtract a header
+/// from the built-in `DEFAULT_PERSIST_HEADERS` allow set (e.g. "this
+/// deployment doesn't want `cache-control` round-tripping"). L1
+/// hard-deny still wins over this; this beats L2 default and L3 allow.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn header_user_deny_from_env() -> HeaderAllowlist {
+    let raw = std::env::var("ELASTIK_DENY_HEADERS").unwrap_or_default();
+    HeaderAllowlist::parse(&raw)
 }
 
 /// Layer 2 -- built-in default allow. Standard representation

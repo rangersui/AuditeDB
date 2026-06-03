@@ -61,6 +61,8 @@ use config::{
     DEFAULT_MQTT_MAX_CONNECTIONS, DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
     DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
 };
+#[cfg(not(test))]
+use http::semantics::{header_allowlist_from_env, header_user_deny_from_env};
 
 #[cfg(not(test))]
 pub(crate) async fn run_from_env() {
@@ -121,8 +123,8 @@ pub(crate) async fn run_from_env() {
         "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
     );
     let tokens = ServerTokens::from_env();
-    let persist_header_allowlist = config::header_allowlist_from_env();
-    let persist_header_user_deny = config::header_user_deny_from_env();
+    let persist_header_allowlist = header_allowlist_from_env();
+    let persist_header_user_deny = header_user_deny_from_env();
     let engine = build_engine_from_env(
         data,
         hmac_key,
