@@ -559,18 +559,28 @@ mod tests {
 
     #[tokio::test]
     async fn proc_audit_verify_reports_valid_chain_in_headers() {
-        let (core, dir) = test_core("proc-audit-valid");
-        let h = write_audited_world_for_tests(
-            &core,
-            "home/audit-ok",
-            b"hello",
-            "text/plain",
-            &[("x-meta-author".to_owned(), "ranger".to_owned())],
-        )
-        .unwrap();
-        let state = Arc::new(core);
+        let (engine, dir) = test_engine_for_server("proc-audit-valid");
+        let world = world_path("home/audit-ok");
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"hello"),
+                    "text/plain",
+                    vec![("x-meta-author".to_owned(), "ranger".to_owned())],
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let expected = match engine.verify_audit(&world, AccessTier::Read).unwrap() {
+            AuditVerify::Valid(valid) => valid,
+            _ => panic!("expected valid audit chain"),
+        };
+        let state = server_state_for_engine_for_tests(engine);
         let resp = proc_audit_verify(
-            State(server_state_for_tests(state)),
+            State(state),
             Method::HEAD,
             AxPath("home/audit-ok/verify".to_owned()),
             HeaderMap::new(),
@@ -582,7 +592,7 @@ mod tests {
         assert_eq!(resp.headers().get("x-audit-events").unwrap(), "1");
         assert_eq!(
             resp.headers().get("x-audit-latest").unwrap(),
-            &format!("hmac-{h}")
+            expected.latest.as_str()
         );
         assert_eq!(resp.headers().get(header::CONTENT_LENGTH).unwrap(), "0");
 
