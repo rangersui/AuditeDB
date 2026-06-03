@@ -11,7 +11,6 @@ use crate::{
     Core,
 };
 use axum::response::Response;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 fn world_path(world: &str) -> ValidatedWorldPath {
@@ -830,26 +829,24 @@ async fn concurrent_puts_to_distinct_worlds_do_not_overshoot_quota() {
     // race. This test fires N concurrent PUTs each just under the
     // quota and asserts that ANY mix of accept/reject keeps the
     // counter coherent and never overshoots.
-    let (mut core, dir) = test_core("quota-race");
     let quota = 100;
-    core.max_storage_bytes = Some(quota);
-    let core = Arc::new(core);
+    let (engine, dir) = test_engine_for_server_with_storage_quota("quota-race", quota);
 
     let workers = 16;
     let body_len = 12; // 16 * 12 = 192 > quota: definitely contention
     let mut handles = Vec::with_capacity(workers);
     for i in 0..workers {
-        let core = core.clone();
+        let engine = engine.clone();
         handles.push(tokio::spawn(async move {
             let path = format!("home/race/{i}");
             let body = Bytes::copy_from_slice(&vec![b'x'; body_len]);
             unwrap_response(
-                execute_put_with_test_state(
+                execute_put_with_engine_state(
                     HeaderMap::new(),
                     body,
                     AccessTier::Write,
                     world_path(&path),
-                    &core,
+                    &engine,
                     &TraceCtx::disabled(),
                 )
                 .await,
@@ -867,7 +864,7 @@ async fn concurrent_puts_to_distinct_worlds_do_not_overshoot_quota() {
         }
     }
 
-    let used = core.storage_body_bytes.load(Ordering::Relaxed);
+    let used = engine.df(AccessTier::Read).unwrap().storage_used;
     let counted = accepted * body_len;
     assert_eq!(used, counted, "counter must equal sum of accepted bodies");
     assert![
