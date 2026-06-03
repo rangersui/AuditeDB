@@ -359,7 +359,7 @@ fn validate_path(
     tier: AccessTier,
 ) -> Phase {
     let world = canonicalize_path(&path);
-    if let Err(reason) = crate::validate_world_name(&world) {
+    if let Err(reason) = crate::path::validate_world_name(&world) {
         return Phase::Error {
             resp: bad_request(reason),
             reason: ErrorReason::PathInvalid(reason),

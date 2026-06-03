@@ -67,9 +67,9 @@ pub(crate) fn validate_world_name(world_name: &str) -> Result<(), &'static str> 
 /// of a namespace through URL encoding tricks. Decoded paths AND raw
 /// percent-encoded paths are both rejected.
 ///
-/// Module-private: only `validate_world_name` calls it. Keeping it
-/// out of `pub(crate) use crate::path::*;` prevents sibling modules
-/// from acquiring an accidental dependency on this internal helper.
+/// Module-private: only `validate_world_name` calls it. Keeping it private
+/// prevents sibling modules from acquiring an accidental dependency on this
+/// internal helper.
 fn is_dot_segment(segment: &str) -> bool {
     let Some(rest) = strip_dot_token(segment) else {
         return false;

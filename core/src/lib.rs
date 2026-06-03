@@ -107,8 +107,6 @@ mod world_ops;
 // Re-export protocol-neutral helpers at the crate root. HTTP adapter modules
 // are only compiled here for legacy white-box tests; production binary builds
 // own their adapter helpers from `main.rs`.
-#[cfg(test)]
-pub(crate) use crate::path::*;
 pub(crate) use crate::state::*;
 pub(crate) use crate::storage_class::*;
 #[cfg(not(feature = "unstable-engine"))]

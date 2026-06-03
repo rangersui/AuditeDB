@@ -34,8 +34,6 @@ mod engine_types {
 
 #[cfg(not(test))]
 pub(crate) use elastik_core::AuthGate;
-#[cfg(not(test))]
-pub(crate) use path::*;
 
 #[cfg_attr(feature = "multi-thread", tokio::main)]
 #[cfg_attr(not(feature = "multi-thread"), tokio::main(flavor = "current_thread"))]
