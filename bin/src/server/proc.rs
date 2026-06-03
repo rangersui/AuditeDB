@@ -839,9 +839,8 @@ mod tests {
         // hits + misses correctly. After a DELETE the
         // `ledger_writer_inits` counter must bump from 0 to 1
         // (lazy-init fired exactly once).
-        let (core, dir) = test_core("proc-pool-metrics");
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state.clone());
+        let (engine, dir) = test_engine_for_server("proc-pool-metrics");
+        let server_state = server_state_for_engine_for_tests(engine);
         let headers = HeaderMap::new();
 
         let put = unwrap_response(
