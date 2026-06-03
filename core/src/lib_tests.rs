@@ -3,7 +3,7 @@ use crate::etag as et;
 use crate::handler::{execute_delete, execute_get, execute_post, execute_put};
 use crate::test_support::test_core;
 use axum::body::Bytes;
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -307,35 +307,6 @@ async fn memory_backend_enforces_total_quota() {
         .await,
     );
     assert_eq!(third.status(), StatusCode::PAYLOAD_TOO_LARGE);
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test]
-async fn options_and_405_advertise_allow_headers() {
-    // PR 4c: `handle_world_method` was retired. OPTIONS is now
-    // answered directly in `world_handler` (policy-free, never
-    // enters the FSM); PATCH and any other unsupported method
-    // are rejected by `pipeline::dispatch` with `MethodNotAllowed`.
-    let (core, dir) = test_core("allow");
-    let core = std::sync::Arc::new(core);
-    let state = server_state_for_tests(core.clone());
-
-    let options = options_response(WORLD_ALLOW);
-    assert_eq!(options.status(), StatusCode::NO_CONTENT);
-    assert_eq!(options.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
-
-    let patch = pipeline::run(
-        Method::PATCH,
-        "home/allow".to_string(),
-        HeaderMap::new(),
-        Bytes::new(),
-        &state,
-        0,
-    )
-    .await;
-    assert_eq!(patch.status(), StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(patch.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
 
     let _ = std::fs::remove_dir_all(dir);
 }

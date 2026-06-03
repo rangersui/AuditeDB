@@ -838,6 +838,35 @@ mod tests {
     // transition-only tests; only e2e_blackbox would surface it.
 
     #[tokio::test]
+    async fn options_and_405_advertise_allow_headers() {
+        // PR 4c: `handle_world_method` was retired. OPTIONS is now
+        // answered directly in `world_handler` (policy-free, never
+        // enters the FSM); PATCH and any other unsupported method
+        // are rejected by `pipeline::dispatch` with `MethodNotAllowed`.
+        let (core, dir) = test_core("allow");
+        let core = Arc::new(core);
+        let state = server_state_for_tests(core.clone());
+
+        let options = crate::options_response(WORLD_ALLOW);
+        assert_eq!(options.status(), StatusCode::NO_CONTENT);
+        assert_eq!(options.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
+
+        let patch = run(
+            Method::PATCH,
+            "home/allow".to_string(),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            0,
+        )
+        .await;
+        assert_eq!(patch.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(patch.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn pipeline_get_existing_world_returns_200_with_body() {
         let (core, dir) = test_core("pipeline-get-200");
         core.write_world("home/hello", b"hello world", "text/plain", &[])
