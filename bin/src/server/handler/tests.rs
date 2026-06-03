@@ -4,8 +4,8 @@ use crate::{
     engine_types::{Preconditions, Representation, WriteResult},
     server::test_support::{
         server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
-        test_engine_for_server_with_read_token, world_db_path_for_server_tests,
-        write_text_world_for_tests,
+        test_engine_for_server_with_read_token, test_engine_for_server_with_storage_quota,
+        world_db_path_for_server_tests, write_text_world_for_tests,
     },
     test_support::test_core,
     Core,
@@ -755,17 +755,16 @@ async fn post_audit_uses_existing_representation_metadata() {
 
 #[tokio::test]
 async fn durable_storage_quota_returns_507_without_writing() {
-    let (mut core, dir) = test_core("storage-quota");
-    core.max_storage_bytes = Some(4);
+    let (engine, dir) = test_engine_for_server_with_storage_quota("storage-quota", 4);
     let headers = HeaderMap::new();
 
     let first = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"1234"),
             AccessTier::Write,
             world_path("home/a"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -773,12 +772,12 @@ async fn durable_storage_quota_returns_507_without_writing() {
     assert_eq!(first.status(), StatusCode::CREATED);
 
     let over = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,
             world_path("home/b"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -787,15 +786,18 @@ async fn durable_storage_quota_returns_507_without_writing() {
     assert_eq!(over.headers().get("x-storage-usage").unwrap(), "4");
     assert_eq!(over.headers().get("x-storage-quota").unwrap(), "4");
     assert_eq!(over.headers().get("x-storage-needed").unwrap(), "1");
-    assert!(core.read_world("home/b").unwrap().is_none());
+    assert!(engine
+        .read(&world_path("home/b"), AccessTier::Read)
+        .unwrap()
+        .is_none());
 
     let append = unwrap_response(
-        execute_post_with_test_state(
+        execute_post_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,
             world_path("home/a"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -805,8 +807,14 @@ async fn durable_storage_quota_returns_507_without_writing() {
     assert_eq!(append.headers().get("x-storage-quota").unwrap(), "4");
     assert_eq!(append.headers().get("x-storage-needed").unwrap(), "1");
     assert_eq!(
-        core.read_world("home/a").unwrap().unwrap().body,
-        b"1234".to_vec()
+        engine
+            .read(&world_path("home/a"), AccessTier::Read)
+            .unwrap()
+            .unwrap()
+            .representation
+            .body
+            .as_ref(),
+        b"1234"
     );
 
     let _ = std::fs::remove_dir_all(dir);
