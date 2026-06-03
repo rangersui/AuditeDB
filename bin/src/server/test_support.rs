@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 use axum::body::Bytes;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
@@ -11,7 +8,6 @@ use crate::{
     engine::Engine,
     engine_types::{AccessTier, Preconditions, Representation, SecretBytes, ValidatedWorldPath},
     server::{http::semantics::HeaderAllowlist, ServerState},
-    Core,
 };
 
 const TEST_DISK_ENCODE: &AsciiSet = &CONTROLS
@@ -27,22 +23,6 @@ const TEST_DISK_ENCODE: &AsciiSet = &CONTROLS
     .add(b'>')
     .add(b'|')
     .add(b' ');
-
-pub(crate) fn server_state_for_tests(core: Arc<Core>) -> ServerState {
-    server_state_with_max_world_bytes_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
-}
-
-pub(crate) fn server_state_with_max_world_bytes_for_tests(
-    core: Arc<Core>,
-    max_world_bytes: usize,
-) -> ServerState {
-    ServerState::new(
-        Engine::from_core_for_tests(core),
-        max_world_bytes,
-        HeaderAllowlist::empty(),
-        HeaderAllowlist::empty(),
-    )
-}
 
 pub(crate) fn server_state_for_engine_for_tests(engine: Engine) -> ServerState {
     server_state_with_max_world_bytes_for_engine_for_tests(engine, DEFAULT_MAX_WORLD_BYTES)

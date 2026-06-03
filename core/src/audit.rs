@@ -424,11 +424,6 @@ fn verify_event(
     None
 }
 
-#[cfg(test)]
-pub(crate) fn meta_sha256(content_type: &str, headers: &[(String, String)]) -> String {
-    meta_sha256_canonical(content_type, &canonical_headers(headers))
-}
-
 fn meta_sha256_canonical(content_type: &str, headers: &[(String, String)]) -> String {
     let mut h = Sha256::new();
     h.update(b"content-type\0");
