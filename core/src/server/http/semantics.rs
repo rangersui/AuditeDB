@@ -7,10 +7,13 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::{
     engine_types::{EtagMatcher, Preconditions},
-    to_header_map, unsatisfied_range_value,
+    server::{to_header_map, unsatisfied_range_value},
 };
 #[cfg(test)]
-use crate::{precondition_failed, storage_error, Core};
+use crate::{
+    server::{precondition_failed, storage_error},
+    Core,
+};
 
 pub(crate) use super::range::effective_range;
 #[cfg(test)]

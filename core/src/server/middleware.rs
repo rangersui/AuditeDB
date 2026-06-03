@@ -5,7 +5,7 @@
 //!
 //! 1. Allocates a per-request id from server-owned state and
 //!    inserts it into the request extensions as
-//!    `crate::pipeline::RequestId`. The FSM driver (`pipeline::run`)
+//!    `crate::server::pipeline::RequestId`. The FSM driver (`pipeline::run`)
 //!    pulls the SAME id out of extensions, so trace output and the
 //!    `x-request-id` response header agree. Without this, the
 //!    middleware and `pipeline::run` each independently allocated ids.
@@ -38,7 +38,7 @@ pub(crate) async fn add_server_response_headers(
     // each call `next_request_id()` and produce off-by-one
     // ids -- trace says `req-43` while the response says `42`.
     req.extensions_mut()
-        .insert(crate::pipeline::RequestId(request_id));
+        .insert(crate::server::pipeline::RequestId(request_id));
     let start = Instant::now();
     let mut response = next.run(req).await;
     stamp_core_response_headers(

@@ -3,7 +3,7 @@
 //! `build_app(state)` returns the fully wired
 //! `Router` that `main()` serves. The route table itself is short
 //! (root, listen, proc/*, `/<world>`) and adding a new top-level
-//! route happens here. Per-verb logic lives in `crate::handler`;
+//! route happens here. Per-verb logic lives in `crate::server::handler`;
 //! `world_handler` only routes OPTIONS to a static response and
 //! every other method into `pipeline::run`.
 
@@ -17,13 +17,13 @@ use axum::{
     Router,
 };
 
-use crate::{
+use crate::server::{
     listen, options_response, pipeline, proc_audit_verify, proc_df, proc_du, proc_pool,
-    proc_reserved, proc_version, proc_worlds, root_hint, server::ServerState, WORLD_ALLOW,
+    proc_reserved, proc_version, proc_worlds, root_hint, ServerState, WORLD_ALLOW,
 };
 
 #[cfg(feature = "mqtt")]
-use crate::proc_mqtt_metrics;
+use crate::server::proc_mqtt_metrics;
 
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn build_app(state: ServerState) -> Router {
@@ -45,14 +45,14 @@ pub(crate) fn build_app(state: ServerState) -> Router {
         .layer(DefaultBodyLimit::max(state.max_world_bytes()))
         .layer(from_fn_with_state(
             state,
-            crate::middleware::add_server_response_headers,
+            crate::server::middleware::add_server_response_headers,
         ))
 }
 
 pub(crate) async fn world_handler(
     State(state): State<ServerState>,
-    axum::Extension(crate::pipeline::RequestId(req_id)): axum::Extension<
-        crate::pipeline::RequestId,
+    axum::Extension(crate::server::pipeline::RequestId(req_id)): axum::Extension<
+        crate::server::pipeline::RequestId,
     >,
     method: Method,
     AxPath(path): AxPath<String>,
@@ -120,7 +120,7 @@ mod tests {
             .route("/*world", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
-                crate::middleware::add_server_response_headers,
+                crate::server::middleware::add_server_response_headers,
             ))
             .with_state(state);
 
@@ -167,7 +167,7 @@ mod tests {
             .route("/*world", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
-                crate::middleware::add_server_response_headers,
+                crate::server::middleware::add_server_response_headers,
             ))
             .with_state(state);
 

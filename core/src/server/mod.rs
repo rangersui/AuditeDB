@@ -8,25 +8,29 @@ pub(crate) mod coap;
 #[cfg(all(not(test), feature = "coap"))]
 pub(crate) mod coap_errors;
 pub(crate) mod config;
-#[cfg(not(test))]
 pub(crate) mod handler;
 pub(crate) mod http;
-#[cfg(not(test))]
 pub(crate) mod listen;
-#[cfg(not(test))]
 pub(crate) mod middleware;
 #[cfg(all(not(test), feature = "mqtt"))]
 pub(crate) mod mqtt;
-#[cfg(not(test))]
 pub(crate) mod pipeline;
-#[cfg(not(test))]
 pub(crate) mod proc;
-#[cfg(not(test))]
 pub(crate) mod response;
-#[cfg(not(test))]
 pub(crate) mod route;
 mod state;
+pub(crate) use pipeline::{ErrorReason, Phase, TraceCtx, Verb};
+#[cfg(feature = "mqtt")]
+pub(crate) use proc::proc_mqtt_metrics;
+pub(crate) use proc::{
+    proc_audit_verify, proc_df, proc_du, proc_pool, proc_reserved, proc_version, proc_worlds,
+    root_hint,
+};
+pub(crate) use response::*;
 pub(crate) use state::ServerState;
+
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 
 #[cfg(not(test))]
 use std::net::IpAddr;
@@ -39,7 +43,6 @@ use std::time::Duration;
 use crate::{
     engine::{Engine, EngineBuilder},
     engine_types::SecretBytes,
-    VERSION,
 };
 #[cfg(all(not(test), feature = "coap"))]
 use config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
@@ -58,7 +61,7 @@ use config::{
 
 #[cfg(not(test))]
 pub(crate) async fn run_from_env() {
-    crate::pipeline::init_trace_from_env();
+    pipeline::init_trace_from_env();
 
     let host = std::env::var("ELASTIK_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port: u16 = std::env::var("ELASTIK_PORT")

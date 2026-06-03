@@ -6,7 +6,7 @@
 //! `audit_append_blocking`) -- live in their own file. This is the
 //! first of two post-PR-4c extractions that bring `handler.rs`
 //! back under the 500-line ceiling; the second
-//! (`crate::handler::post`) lands the same shape.
+//! (`crate::server::handler::post`) lands the same shape.
 //!
 //! `pub(crate) use` re-exports `execute_delete` from `handler.rs`
 //! so callers (`handler::execute(verb=Delete, ...)` and the
@@ -22,11 +22,11 @@ use crate::{
     engine::EngineError,
     engine_trace::{DeleteMetadata, EngineDeleteTraceHooks},
     engine_types::{AccessTier, ValidatedWorldPath},
-    insufficient_storage, not_found,
-    server::http::semantics as hs,
-    server::ServerState,
-    server_error, storage_temporarily_unavailable, unauthorized, AuthGate, ErrorReason, Phase,
-    TraceCtx,
+    server::{
+        http::semantics as hs, insufficient_storage, not_found, precondition_failed, server_error,
+        storage_temporarily_unavailable, unauthorized, ErrorReason, Phase, ServerState, TraceCtx,
+    },
+    AuthGate,
 };
 
 pub(crate) async fn execute_delete(
@@ -206,7 +206,7 @@ fn delete_error_phase(err: EngineError, last_step: DeleteStep) -> Phase {
             reason: ErrorReason::Auth(gate),
         },
         EngineError::PreconditionFailed { message } => Phase::Error {
-            resp: crate::precondition_failed(message),
+            resp: precondition_failed(message),
             reason: ErrorReason::PreconditionFailed,
         },
         EngineError::NotFound => Phase::Error {
@@ -321,7 +321,7 @@ fn invariant_delete_error_phase(message: &'static str, last_step: DeleteStep) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{audit, etag as et, handler::execute_put, test_support::test_core, world};
+    use crate::{audit, etag as et, server::handler::execute_put, test_support::test_core, world};
     use axum::body::{to_bytes, Bytes};
     use axum::{http::HeaderValue, response::Response};
     use std::sync::Arc;

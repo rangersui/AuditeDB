@@ -49,11 +49,10 @@ use axum::{
 };
 
 use crate::{
-    bad_request, canonicalize_path,
+    canonicalize_path,
     engine_types::{AccessTier, ValidatedWorldPath},
-    method_not_allowed,
-    server::ServerState,
-    AuthGate, WORLD_ALLOW,
+    server::{bad_request, method_not_allowed, ServerState, WORLD_ALLOW},
+    AuthGate,
 };
 
 /// Request ID stamped onto each incoming request by the
@@ -491,7 +490,10 @@ pub(crate) async fn run(
                 body,
                 tier,
                 world,
-            } => crate::handler::execute(verb, headers, body, tier, world, state, &trace).await,
+            } => {
+                crate::server::handler::execute(verb, headers, body, tier, world, state, &trace)
+                    .await
+            }
 
             Phase::ExecutedRead(resp) | Phase::CommittedWrite(resp) => Phase::Done(resp),
 
@@ -847,7 +849,7 @@ mod tests {
         let core = Arc::new(core);
         let state = server_state_for_tests(core.clone());
 
-        let options = crate::options_response(WORLD_ALLOW);
+        let options = crate::server::options_response(WORLD_ALLOW);
         assert_eq!(options.status(), StatusCode::NO_CONTENT);
         assert_eq!(options.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
 
@@ -1076,7 +1078,7 @@ mod tests {
         // Phase::Error{RangeNotSatisfiable} variant.
         let mut headers2 = HeaderMap::new();
         headers2.insert(header::RANGE, HeaderValue::from_static("bytes=999-"));
-        let phase = crate::handler::execute(
+        let phase = crate::server::handler::execute(
             Verb::Get,
             headers2,
             Bytes::new(),

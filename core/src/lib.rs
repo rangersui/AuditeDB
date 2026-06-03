@@ -99,34 +99,13 @@ mod engine_trace;
 mod engine_types;
 mod etag;
 mod event;
-#[cfg(test)]
-#[path = "server/handler.rs"]
-mod handler;
 mod ledger;
-#[cfg(test)]
-#[path = "server/listen.rs"]
-mod listen;
-#[cfg(test)]
-#[path = "server/middleware.rs"]
-mod middleware;
 #[cfg(test)]
 #[cfg(feature = "mqtt")]
 #[path = "server/mqtt/mod.rs"]
 mod mqtt;
 mod path;
-#[cfg(test)]
-#[path = "server/pipeline.rs"]
-mod pipeline;
-#[cfg(test)]
-#[path = "server/proc.rs"]
-mod proc;
 mod read_cache;
-#[cfg(test)]
-#[path = "server/response.rs"]
-mod response;
-#[cfg(test)]
-#[path = "server/route.rs"]
-mod route;
 #[cfg(test)]
 mod server;
 mod state;
@@ -142,12 +121,6 @@ mod world_ops;
 // own their adapter helpers from `main.rs`.
 #[cfg(test)]
 pub(crate) use crate::path::*;
-#[cfg(test)]
-pub(crate) use crate::pipeline::*;
-#[cfg(test)]
-pub(crate) use crate::proc::*;
-#[cfg(test)]
-pub(crate) use crate::response::*;
 pub(crate) use crate::state::*;
 pub(crate) use crate::storage_class::*;
 #[cfg(not(feature = "unstable-engine"))]
@@ -173,26 +146,6 @@ pub use engine_types::{
     InvalidWorldPath, Preconditions, ReadResult, Representation, SecretBytes, SubscribePattern,
     SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
 };
-
-#[cfg(test)]
-pub(crate) use crate::defaults::{
-    DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
-    DEFAULT_MAX_WORLD_BYTES,
-};
-
-// Test-only HTTP constants for legacy white-box tests. Production constants
-// live on the binary side.
-#[cfg(test)]
-pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-#[cfg(test)]
-pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
-
-// Legacy white-box tests still compile the HTTP route modules through this
-// library crate. Production builds compile those modules only from `main.rs`.
-
-// ─── /<world> all five methods ──────────────────────────────────────
-// Path validation lives in `path.rs`. Adapter-side canonicalization lives in
-// `server/path.rs` and is not part of the production library.
 
 // ─── helpers ────────────────────────────────────────────────────────
 

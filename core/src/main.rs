@@ -39,25 +39,12 @@ mod engine_types {
 pub(crate) use elastik_core::AuthGate;
 #[cfg(not(test))]
 pub(crate) use path::*;
-#[cfg(not(test))]
-pub(crate) use pipeline::*;
-#[cfg(not(test))]
-pub(crate) use proc::*;
-#[cfg(not(test))]
-pub(crate) use response::*;
 #[cfg(all(not(test), feature = "mqtt"))]
 pub(crate) use server::mqtt;
 #[cfg(all(not(test), feature = "coap"))]
 pub(crate) use server::{coap, coap_errors};
 #[cfg(not(test))]
-pub(crate) use server::{handler, listen, middleware, pipeline, proc, response};
-#[cfg(not(test))]
 pub(crate) use server_path::canonicalize_path;
-
-#[cfg(not(test))]
-pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-#[cfg(not(test))]
-pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 
 #[cfg_attr(feature = "multi-thread", tokio::main)]
 #[cfg_attr(not(feature = "multi-thread"), tokio::main(flavor = "current_thread"))]

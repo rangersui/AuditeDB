@@ -23,8 +23,7 @@ use axum::{
 use super::{write_error_phase, HandlerEngineState, HttpWriteTrace};
 use crate::{
     engine_types::{AccessTier, ValidatedWorldPath},
-    server::http::semantics as hs,
-    Phase, TraceCtx,
+    server::{http::semantics as hs, Phase, TraceCtx},
 };
 
 pub(crate) async fn execute_post<S: HandlerEngineState>(

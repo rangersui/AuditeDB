@@ -472,9 +472,14 @@ fn media_type_to_cf(value: &str) -> Option<u16> {
 mod tests {
     use super::*;
     use crate::{
-        audit, auth, engine::Engine, handler, store, Core, Phase, TraceCtx,
-        DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
-        DEFAULT_MAX_WORLD_BYTES,
+        audit, auth,
+        defaults::{
+            DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
+            DEFAULT_MAX_WORLD_BYTES,
+        },
+        engine::Engine,
+        server::{handler, Phase, TraceCtx},
+        store, Core,
     };
     use axum::body::Bytes;
     use axum::http::{HeaderMap, StatusCode};

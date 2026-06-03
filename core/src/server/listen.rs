@@ -9,9 +9,7 @@ use std::time::Duration;
 use crate::{
     engine::EngineError,
     engine_types::{ChangeEvent as EngineChangeEvent, SubscribePattern, SubscriptionRecvError},
-    method_not_allowed, options_response,
-    server::ServerState,
-    server_error, unauthorized,
+    server::{method_not_allowed, options_response, server_error, unauthorized, ServerState},
 };
 
 pub(crate) const ALLOW: &str = "GET, OPTIONS";
@@ -176,7 +174,7 @@ mod tests {
             delete_ledger_created: Arc::new(AtomicBool::new(false)),
             events,
             listen_slots: Arc::new(Semaphore::new(0)),
-            listen_replay_max: crate::DEFAULT_LISTEN_REPLAY_MAX,
+            listen_replay_max: crate::defaults::DEFAULT_LISTEN_REPLAY_MAX,
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: crate::state::new_event_counter(),
@@ -218,8 +216,10 @@ mod tests {
             durable_world_count: Arc::new(AtomicUsize::new(0)),
             delete_ledger_created: Arc::new(AtomicBool::new(false)),
             events,
-            listen_slots: Arc::new(Semaphore::new(crate::DEFAULT_MAX_LISTEN_CONNECTIONS)),
-            listen_replay_max: crate::DEFAULT_LISTEN_REPLAY_MAX,
+            listen_slots: Arc::new(Semaphore::new(
+                crate::defaults::DEFAULT_MAX_LISTEN_CONNECTIONS,
+            )),
+            listen_replay_max: crate::defaults::DEFAULT_LISTEN_REPLAY_MAX,
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: crate::state::new_event_counter(),
@@ -270,8 +270,10 @@ mod tests {
             durable_world_count: Arc::new(AtomicUsize::new(0)),
             delete_ledger_created: Arc::new(AtomicBool::new(false)),
             events,
-            listen_slots: Arc::new(Semaphore::new(crate::DEFAULT_MAX_LISTEN_CONNECTIONS)),
-            listen_replay_max: crate::DEFAULT_LISTEN_REPLAY_MAX,
+            listen_slots: Arc::new(Semaphore::new(
+                crate::defaults::DEFAULT_MAX_LISTEN_CONNECTIONS,
+            )),
+            listen_replay_max: crate::defaults::DEFAULT_LISTEN_REPLAY_MAX,
             event_log: Arc::new(StdMutex::new(VecDeque::new())),
             shutdown: watch::channel(false).1,
             next_event: crate::state::new_event_counter(),
