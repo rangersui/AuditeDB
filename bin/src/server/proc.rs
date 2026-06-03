@@ -437,16 +437,14 @@ mod tests {
         server::{
             handler::{execute_delete, execute_get, execute_put},
             test_support::{
-                server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
+                server_state_for_engine_for_tests, test_engine_for_server,
                 test_engine_for_server_with_read_cache_max, test_engine_for_server_with_read_token,
                 test_engine_for_server_with_storage_quota, world_db_path_for_server_tests,
             },
             Phase, TraceCtx,
         },
-        test_support::test_core,
     };
     use axum::body::{to_bytes, Bytes};
-    use std::sync::Arc;
 
     fn world_path(world: &str) -> ValidatedWorldPath {
         ValidatedWorldPath::new(world).unwrap()
@@ -962,12 +960,12 @@ mod tests {
         // ledger writer internals -- match the auth-deny coverage of
         // /proc/du and /proc/df. With a read token configured, an
         // unauthenticated GET must return 401, not leak metrics.
-        let (mut core, dir) = test_core("proc-pool-read-token");
-        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
-        let state = Arc::new(core);
+        let (engine, dir) =
+            test_engine_for_server_with_read_token("proc-pool-read-token", b"reader");
+        let state = server_state_for_engine_for_tests(engine);
         let headers = HeaderMap::new();
 
-        let resp = proc_pool(State(server_state_for_tests(state)), Method::GET, headers).await;
+        let resp = proc_pool(State(state), Method::GET, headers).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
         let _ = std::fs::remove_dir_all(dir);
