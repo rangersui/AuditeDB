@@ -438,8 +438,10 @@ mod tests {
             state::test_support::server_state_for_tests,
             Phase, TraceCtx,
         },
-        test_support::{test_core, test_core_with_read_cache_max, world_db_path_for_tests},
-        world,
+        test_support::{
+            test_core, test_core_with_read_cache_max, world_db_path_for_tests,
+            write_audited_world_for_tests,
+        },
     };
     use axum::body::{to_bytes, Bytes};
     use std::sync::Arc;
@@ -562,13 +564,12 @@ mod tests {
     #[tokio::test]
     async fn proc_audit_verify_reports_valid_chain_in_headers() {
         let (core, dir) = test_core("proc-audit-valid");
-        let h = world::write_with_audit(
-            &core.data,
+        let h = write_audited_world_for_tests(
+            &core,
             "home/audit-ok",
             b"hello",
             "text/plain",
             &[("x-meta-author".to_owned(), "ranger".to_owned())],
-            &core.hmac_key,
         )
         .unwrap();
         let state = Arc::new(core);
@@ -595,15 +596,8 @@ mod tests {
     #[tokio::test]
     async fn proc_audit_verify_reports_broken_chain_in_headers() {
         let (core, dir) = test_core("proc-audit-broken");
-        world::write_with_audit(
-            &core.data,
-            "home/audit-broken",
-            b"hello",
-            "text/plain",
-            &[],
-            &core.hmac_key,
-        )
-        .unwrap();
+        write_audited_world_for_tests(&core, "home/audit-broken", b"hello", "text/plain", &[])
+            .unwrap();
         let db = world_db_path_for_tests(&core.data, "home/audit-broken");
         let c = rusqlite::Connection::open(db).unwrap();
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
@@ -629,15 +623,8 @@ mod tests {
     #[tokio::test]
     async fn proc_audit_verify_escapes_tampered_header_values() {
         let (core, dir) = test_core("proc-audit-header-escape");
-        world::write_with_audit(
-            &core.data,
-            "home/audit-escaped",
-            b"hello",
-            "text/plain",
-            &[],
-            &core.hmac_key,
-        )
-        .unwrap();
+        write_audited_world_for_tests(&core, "home/audit-escaped", b"hello", "text/plain", &[])
+            .unwrap();
         let db = world_db_path_for_tests(&core.data, "home/audit-escaped");
         let c = rusqlite::Connection::open(db).unwrap();
         c.execute(

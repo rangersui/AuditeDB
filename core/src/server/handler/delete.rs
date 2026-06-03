@@ -324,8 +324,7 @@ mod tests {
     use crate::{
         audit, etag as et,
         server::handler::execute_put,
-        test_support::{test_core, world_db_path_for_tests},
-        world,
+        test_support::{test_core, world_db_path_for_tests, write_audited_world_for_tests},
     };
     use axum::body::{to_bytes, Bytes};
     use axum::{http::HeaderValue, response::Response};
@@ -411,13 +410,12 @@ mod tests {
         let (core, dir) = test_core("delete-if-match");
         let core = Arc::new(core);
         let state = server_state_for_tests(core.clone());
-        let h = world::write_with_audit(
-            &core.data,
+        let h = write_audited_world_for_tests(
+            &core,
             "home/delete-cas",
             b"alive",
             "text/plain; charset=utf-8",
             &[],
-            &core.hmac_key,
         )
         .unwrap();
 
@@ -458,9 +456,9 @@ mod tests {
             core.cached_verify_chain("var/log/deletes").unwrap(),
             Some(audit::VerifyReport::Valid(_))
         ));
-        let ledger = world::open_existing(&core.data, "var/log/deletes")
-            .unwrap()
-            .unwrap();
+        let ledger =
+            rusqlite::Connection::open(world_db_path_for_tests(&core.data, "var/log/deletes"))
+                .unwrap();
         let mut stmt = ledger
             .prepare("SELECT event_type FROM events ORDER BY id")
             .unwrap();
@@ -481,15 +479,8 @@ mod tests {
         let state = server_state_for_tests(core.clone());
         core.write_world("home/delete-degraded", b"alive", "text/plain", &[])
             .unwrap();
-        world::write_with_audit(
-            &core.data,
-            "var/log/deletes",
-            b"ledger",
-            "text/plain",
-            &[],
-            &core.hmac_key,
-        )
-        .unwrap();
+        write_audited_world_for_tests(&core, "var/log/deletes", b"ledger", "text/plain", &[])
+            .unwrap();
         core.delete_ledger_created.store(true, Ordering::Relaxed);
         {
             let c =
@@ -521,9 +512,9 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(core.read_world("home/delete-degraded").unwrap().is_none());
-        let ledger = world::open_existing(&core.data, "var/log/deletes")
-            .unwrap()
-            .unwrap();
+        let ledger =
+            rusqlite::Connection::open(world_db_path_for_tests(&core.data, "var/log/deletes"))
+                .unwrap();
         let events = ledger
             .prepare("SELECT event_type FROM events ORDER BY id")
             .unwrap()
@@ -541,22 +532,20 @@ mod tests {
         let (core, dir) = test_core("delete-policy");
         let core = Arc::new(core);
         let state = server_state_for_tests(core.clone());
-        world::write_with_audit(
-            &core.data,
+        write_audited_world_for_tests(
+            &core,
             "home/delete-policy",
             b"alive",
             "text/plain; charset=utf-8",
             &[],
-            &core.hmac_key,
         )
         .unwrap();
-        world::write_with_audit(
-            &core.data,
+        write_audited_world_for_tests(
+            &core,
             "var/log/deletes",
             b"ledger",
             "text/plain; charset=utf-8",
             &[],
-            &core.hmac_key,
         )
         .unwrap();
         let headers = HeaderMap::new();

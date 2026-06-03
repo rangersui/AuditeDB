@@ -74,3 +74,27 @@ pub(crate) fn world_db_path_for_tests(
 ) -> PathBuf {
     crate::world::world_db(data_root.as_ref(), world)
 }
+
+pub(crate) fn write_audited_world_for_tests(
+    core: &Core,
+    world: &str,
+    body: &[u8],
+    content_type: &str,
+    headers: &[(String, String)],
+) -> rusqlite::Result<String> {
+    crate::world::write_with_audit(
+        &core.data,
+        world,
+        body,
+        content_type,
+        headers,
+        &core.hmac_key,
+    )
+}
+
+pub(crate) fn audit_meta_sha256_for_tests(
+    content_type: &str,
+    headers: &[(String, String)],
+) -> String {
+    crate::audit::meta_sha256(content_type, headers)
+}

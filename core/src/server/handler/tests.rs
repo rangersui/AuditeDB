@@ -1,8 +1,11 @@
 use super::*;
 use crate::{
     etag as et,
-    test_support::{test_core, world_db_path_for_tests},
-    world, Core,
+    test_support::{
+        audit_meta_sha256_for_tests, test_core, world_db_path_for_tests,
+        write_audited_world_for_tests,
+    },
+    Core,
 };
 use axum::response::Response;
 use std::sync::atomic::Ordering;
@@ -295,15 +298,8 @@ async fn stale_if_range_returns_full_body() {
 #[tokio::test]
 async fn get_and_head_honor_if_none_match_cache_revalidation() {
     let (core, dir) = test_core("read-if-none-match");
-    let h = world::write_with_audit(
-        &core.data,
-        "home/cache",
-        b"cached body",
-        "text/plain",
-        &[],
-        &core.hmac_key,
-    )
-    .unwrap();
+    let h = write_audited_world_for_tests(&core, "home/cache", b"cached body", "text/plain", &[])
+        .unwrap();
     let etag = format!("\"{}\"", et::hmac_etag(&h));
     let mut headers = HeaderMap::new();
     headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
@@ -539,15 +535,9 @@ async fn unicode_world_get_preserves_body_headers_and_monitor_link() {
 #[tokio::test]
 async fn put_and_post_honor_write_preconditions_at_handler_level() {
     let (core, dir) = test_core("write-preconditions");
-    let h = world::write_with_audit(
-        &core.data,
-        "home/cas",
-        b"one",
-        "text/plain; charset=utf-8",
-        &[],
-        &core.hmac_key,
-    )
-    .unwrap();
+    let h =
+        write_audited_world_for_tests(&core, "home/cas", b"one", "text/plain; charset=utf-8", &[])
+            .unwrap();
 
     let mut stale = HeaderMap::new();
     stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
@@ -605,13 +595,12 @@ async fn post_audit_uses_existing_representation_metadata() {
         ("content-encoding".to_string(), "gzip".to_string()),
         ("x-meta-author".to_string(), "ranger".to_string()),
     ];
-    world::write_with_audit(
-        &core.data,
+    write_audited_world_for_tests(
+        &core,
         "home/post-audit-meta",
         b"hello",
         "text/plain",
         &headers,
-        &core.hmac_key,
     )
     .unwrap();
 
@@ -646,7 +635,7 @@ async fn post_audit_uses_existing_representation_metadata() {
     assert_eq!(content_type, "text/plain");
     assert_eq!(
         meta_sha256,
-        crate::audit::meta_sha256("text/plain", &headers)
+        audit_meta_sha256_for_tests("text/plain", &headers)
     );
 
     let language_count: i64 = c
