@@ -83,10 +83,15 @@ mod tests {
         body::{to_bytes, Body},
         http::{header, Request as HttpRequest, StatusCode},
     };
-    use std::sync::Arc;
     use tower::ServiceExt;
 
-    use crate::{server::test_support::server_state_for_tests, test_support::test_core};
+    use crate::{
+        engine::Engine,
+        engine_types::{
+            AccessTier, Preconditions, Representation, SecretBytes, ValidatedWorldPath,
+        },
+        server::{http::semantics::HeaderAllowlist, ServerState},
+    };
 
     async fn response_text(resp: Response) -> String {
         let bytes = to_bytes(resp.into_body(), usize::MAX)
@@ -104,11 +109,9 @@ mod tests {
     /// the response.
     #[tokio::test]
     async fn world_handler_get_routes_through_pipeline() {
-        let (core, dir) = test_core("world-handler-get");
-        core.write_world("home/hello", b"hello world", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine("world-handler-get");
+        write_text_world(&engine, "home/hello", "hello world").await;
+        let state = server_state_for_engine(engine);
 
         let app = Router::new()
             .route("/*world", any(world_handler))
@@ -151,11 +154,9 @@ mod tests {
     /// Method::HEAD)` short-circuit covers HEAD too, not just GET.
     #[tokio::test]
     async fn world_handler_head_routes_through_pipeline() {
-        let (core, dir) = test_core("world-handler-head");
-        core.write_world("home/hello", b"hello world", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine("world-handler-head");
+        write_text_world(&engine, "home/hello", "hello world").await;
+        let state = server_state_for_engine(engine);
 
         let app = Router::new()
             .route("/*world", any(world_handler))
@@ -184,5 +185,48 @@ mod tests {
         assert_eq!(response_text(resp).await, "");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn test_engine(label: &str) -> (Engine, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "elastik-bin-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock should be after unix epoch")
+                .as_nanos()
+        ));
+        let engine = Engine::builder()
+            .data_root(dir.clone())
+            .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+            .build()
+            .expect("test engine should build");
+        (engine, dir)
+    }
+
+    fn server_state_for_engine(engine: Engine) -> ServerState {
+        ServerState::new(
+            engine,
+            1024,
+            HeaderAllowlist::empty(),
+            HeaderAllowlist::empty(),
+        )
+    }
+
+    async fn write_text_world(engine: &Engine, world: &str, body: &'static str) {
+        let world = ValidatedWorldPath::new(world).expect("test world path should validate");
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(body.as_bytes()),
+                    "text/plain",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .expect("test write should succeed");
     }
 }
