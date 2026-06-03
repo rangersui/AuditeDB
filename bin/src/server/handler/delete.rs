@@ -330,7 +330,7 @@ mod tests {
                 test_engine_for_server_with_auth_tokens, world_db_path_for_server_tests,
             },
         },
-        test_support::{test_core, world_db_path_for_tests, write_audited_world_for_tests},
+        test_support::test_core,
     };
     use axum::body::{to_bytes, Bytes};
     use axum::{http::HeaderValue, response::Response};
@@ -487,17 +487,31 @@ mod tests {
 
     #[tokio::test]
     async fn delete_returns_500_when_commit_audit_fails_after_physical_delete() {
-        let (core, dir) = test_core("delete-commit-audit-fail");
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
-        core.write_world("home/delete-degraded", b"alive", "text/plain", &[])
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-commit-audit-fail");
+        let state = server_state_for_engine_for_tests(engine.clone());
+        let world = world_path("home/delete-degraded");
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"alive"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
             .unwrap();
-        write_audited_world_for_tests(&core, "var/log/deletes", b"ledger", "text/plain", &[])
+        let delete_ledger = world_path("var/log/deletes");
+        engine
+            .replace(
+                &delete_ledger,
+                Representation::new(Bytes::from_static(b"ledger"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Approve,
+            )
+            .await
             .unwrap();
-        core.delete_ledger_created.store(true, Ordering::Relaxed);
         {
             let c =
-                rusqlite::Connection::open(world_db_path_for_tests(&core.data, "var/log/deletes"))
+                rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "var/log/deletes"))
                     .unwrap();
             c.execute_batch(
                 r#"
@@ -524,9 +538,9 @@ mod tests {
         );
 
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(core.read_world("home/delete-degraded").unwrap().is_none());
+        assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
         let ledger =
-            rusqlite::Connection::open(world_db_path_for_tests(&core.data, "var/log/deletes"))
+            rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "var/log/deletes"))
                 .unwrap();
         let events = ledger
             .prepare("SELECT event_type FROM events ORDER BY id")
