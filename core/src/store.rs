@@ -279,3 +279,84 @@ pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<Str
     out.dedup();
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{audit, test_support::test_core};
+
+    #[test]
+    fn worlds_store_content_type_not_private_extensions() {
+        let (core, dir) = test_core("content-type");
+        core.write_world("home/pdf", b"%PDF-1.7", "application/pdf", &[])
+            .unwrap();
+
+        let stage = core.read_world("home/pdf").unwrap().unwrap();
+        assert_eq!(stage.content_type, "application/pdf");
+        assert_eq!(stage.body, b"%PDF-1.7");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn storage_prefix_routes_memory_and_disk_modes() {
+        assert!(!is_memory_world("home/report"));
+        assert!(!is_memory_world("etc/config"));
+        assert!(is_memory_world("tmp/scratch"));
+        assert!(is_memory_world("dev/fb0"));
+        assert!(is_memory_world("sys/status"));
+        assert!(is_persistent("home/report"));
+        assert!(!is_persistent("tmp/scratch"));
+    }
+
+    #[test]
+    fn memory_worlds_do_not_create_sqlite_files_or_audit_chain() {
+        let (core, dir) = test_core("memory-world");
+        core.write_world(
+            "tmp/scratch",
+            b"draft",
+            "text/plain; charset=utf-8",
+            &[("x-meta-owner".to_string(), "agent".to_string())],
+        )
+        .unwrap();
+
+        let stage = core.read_world("tmp/scratch").unwrap().unwrap();
+        assert_eq!(stage.body, b"draft");
+        assert_eq!(stage.content_type, "text/plain; charset=utf-8");
+        assert_eq!(
+            stage.headers,
+            vec![("x-meta-owner".to_string(), "agent".to_string())]
+        );
+        assert!(!world::world_db(&core.data, "tmp/scratch").exists());
+        assert!(audit::latest_hmac(&core.data, "tmp/scratch").is_none());
+
+        let names = list_all(&core.data, &core.mem);
+        assert_eq!(names.unwrap(), vec!["tmp/scratch".to_string()]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn disk_worlds_create_sqlite_files_and_audit_chain_when_using_audit_path() {
+        let (core, dir) = test_core("disk-world");
+        let h = world::write_with_audit(
+            &core.data,
+            "home/report",
+            b"final",
+            "text/plain; charset=utf-8",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+
+        let stage = core.read_world("home/report").unwrap().unwrap();
+        assert_eq!(stage.body, b"final");
+        assert!(world::world_db(&core.data, "home/report").exists());
+        assert_eq!(audit::latest_hmac(&core.data, "home/report"), Some(h));
+
+        let names = list_all(&core.data, &core.mem);
+        assert_eq!(names.unwrap(), vec!["home/report".to_string()]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
