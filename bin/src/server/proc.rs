@@ -673,12 +673,20 @@ mod tests {
 
     #[tokio::test]
     async fn proc_audit_verify_reports_memory_world_not_applicable() {
-        let (core, dir) = test_core("proc-audit-memory");
-        core.write_world("tmp/scratch", b"draft", "text/plain", &[])
+        let (engine, dir) = test_engine_for_server("proc-audit-memory");
+        let world = world_path("tmp/scratch");
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"draft"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
             .unwrap();
-        let state = Arc::new(core);
+        let state = server_state_for_engine_for_tests(engine);
         let resp = proc_audit_verify(
-            State(server_state_for_tests(state)),
+            State(state),
             Method::HEAD,
             AxPath("tmp/scratch/verify".to_owned()),
             HeaderMap::new(),
