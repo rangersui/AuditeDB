@@ -46,18 +46,25 @@ pub(crate) fn test_engine_for_server(label: &str) -> (Engine, std::path::PathBuf
     test_engine_for_server_with_listen_slots(label, DEFAULT_MAX_LISTEN_CONNECTIONS)
 }
 
+pub(crate) fn test_engine_for_server_with_read_token(
+    label: &str,
+    token: impl Into<Vec<u8>>,
+) -> (Engine, std::path::PathBuf) {
+    let dir = test_data_root(label);
+    let engine = Engine::builder()
+        .data_root(dir.clone())
+        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .read_token(token)
+        .build()
+        .expect("test engine should build");
+    (engine, dir)
+}
+
 pub(crate) fn test_engine_for_server_with_listen_slots(
     label: &str,
     max_listen_connections: usize,
 ) -> (Engine, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!(
-        "elastik-bin-{label}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test clock should be after unix epoch")
-            .as_nanos()
-    ));
+    let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
         .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
@@ -65,6 +72,17 @@ pub(crate) fn test_engine_for_server_with_listen_slots(
         .build()
         .expect("test engine should build");
     (engine, dir)
+}
+
+fn test_data_root(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "elastik-bin-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock should be after unix epoch")
+            .as_nanos()
+    ))
 }
 
 pub(crate) async fn write_text_world_for_tests(engine: &Engine, world: &str, body: &'static str) {

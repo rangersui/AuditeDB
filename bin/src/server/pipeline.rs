@@ -532,20 +532,21 @@ pub(crate) async fn run(
 // 4a tests cover individual transition functions and the trace API.
 // End-to-end driver tests (Phase::Received all the way through to a
 // real handler response) come in 4b once `handler::execute` exists
-// and `Core` can be constructed in a shared test-support module.
+// and an `Engine` can be constructed in a shared test-support module.
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        engine_types::ValidatedWorldPath,
+        server::test_support::{
+            server_state_for_engine_for_tests, test_engine_for_server,
+            test_engine_for_server_with_read_token, write_text_world_for_tests,
+        },
+    };
     use axum::{
         body::to_bytes,
         http::{header, HeaderValue},
-    };
-    use std::sync::Arc;
-
-    use crate::{
-        engine_types::ValidatedWorldPath, server::test_support::server_state_for_tests,
-        test_support::test_core,
     };
 
     fn world_path(world: &str) -> ValidatedWorldPath {
@@ -827,7 +828,7 @@ mod tests {
     // ── pipeline route-level coverage (PR 4b/4c) ───────────────
     //
     // The white-box tests above cover individual transition functions.
-    // The tests below call `pipeline::run` with the same Core fixture,
+    // The tests below call `pipeline::run` with the same Engine fixture,
     // exercising the `world_handler -> pipeline::run -> handler::execute`
     // route that every real request now takes. Without these, a bug in
     // pipeline wiring (path canonicalization, auth threading, dispatch,
@@ -840,9 +841,8 @@ mod tests {
         // answered directly in `world_handler` (policy-free, never
         // enters the FSM); PATCH and any other unsupported method
         // are rejected by `pipeline::dispatch` with `MethodNotAllowed`.
-        let (core, dir) = test_core("allow");
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("allow");
+        let state = server_state_for_engine_for_tests(engine);
 
         let options = crate::server::options_response(WORLD_ALLOW);
         assert_eq!(options.status(), StatusCode::NO_CONTENT);
@@ -865,11 +865,9 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_get_existing_world_returns_200_with_body() {
-        let (core, dir) = test_core("pipeline-get-200");
-        core.write_world("home/hello", b"hello world", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("pipeline-get-200");
+        write_text_world_for_tests(&engine, "home/hello", "hello world").await;
+        let state = server_state_for_engine_for_tests(engine);
 
         let resp = run(
             Method::GET,
@@ -895,11 +893,9 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_head_existing_world_returns_headers_no_body() {
-        let (core, dir) = test_core("pipeline-head-200");
-        core.write_world("home/hello", b"hello world", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("pipeline-head-200");
+        write_text_world_for_tests(&engine, "home/hello", "hello world").await;
+        let state = server_state_for_engine_for_tests(engine);
 
         let resp = run(
             Method::HEAD,
@@ -926,9 +922,8 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_get_nonexistent_world_returns_404() {
-        let (core, dir) = test_core("pipeline-get-404");
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("pipeline-get-404");
+        let state = server_state_for_engine_for_tests(engine);
 
         let resp = run(
             Method::GET,
@@ -947,9 +942,8 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_get_invalid_dot_segment_returns_400() {
-        let (core, dir) = test_core("pipeline-get-400");
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("pipeline-get-400");
+        let state = server_state_for_engine_for_tests(engine);
 
         let resp = run(
             Method::GET,
@@ -968,12 +962,10 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_get_with_read_token_required_rejects_anon() {
-        let (mut core, dir) = test_core("pipeline-get-401");
-        core.tokens.read = crate::auth::NonEmptyBytes::new(b"reader".to_vec());
-        core.write_world("home/secret", b"shhh", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) =
+            test_engine_for_server_with_read_token("pipeline-get-401", b"reader".to_vec());
+        write_text_world_for_tests(&engine, "home/secret", "shhh").await;
+        let state = server_state_for_engine_for_tests(engine);
 
         let resp = run(
             Method::GET,
@@ -995,11 +987,9 @@ mod tests {
     /// `Phase::ExecutedRead(304)`.
     #[tokio::test]
     async fn pipeline_get_if_none_match_returns_304() {
-        let (core, dir) = test_core("pipeline-304");
-        core.write_world("home/cached", b"cached body", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("pipeline-304");
+        write_text_world_for_tests(&engine, "home/cached", "cached body").await;
+        let state = server_state_for_engine_for_tests(engine);
 
         // First GET to discover the current etag.
         let first = run(
@@ -1049,11 +1039,9 @@ mod tests {
     /// would slip through and quietly poison trace / metrics.
     #[tokio::test]
     async fn pipeline_get_out_of_range_returns_416_with_reason() {
-        let (core, dir) = test_core("pipeline-416");
-        core.write_world("home/short", b"abc", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("pipeline-416");
+        write_text_world_for_tests(&engine, "home/short", "abc").await;
+        let state = server_state_for_engine_for_tests(engine);
 
         // 1) Production path: pipeline::run surfaces 416 to the wire.
         let mut headers = HeaderMap::new();
@@ -1098,11 +1086,9 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_get_range_returns_206_with_chunk() {
-        let (core, dir) = test_core("pipeline-get-range");
-        core.write_world("home/range", b"abcdef", "text/plain", &[])
-            .unwrap();
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server("pipeline-get-range");
+        write_text_world_for_tests(&engine, "home/range", "abcdef").await;
+        let state = server_state_for_engine_for_tests(engine);
 
         let mut headers = HeaderMap::new();
         headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
