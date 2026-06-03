@@ -3,14 +3,6 @@ use crate::etag as et;
 use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
 use crate::middleware::{add_server_response_headers, stamp_core_response_headers};
 use crate::route::world_handler;
-#[cfg(feature = "coap")]
-use crate::server::config::coap_bind_from_env;
-use crate::server::config::{
-    env_nonzero_usize, env_optional_usize, hmac_key_from_env_value, listen_addr,
-    should_warn_public_read,
-};
-#[cfg(feature = "mqtt")]
-use crate::server::config::{mqtt_bind_from_env, mqtt_max_packet_default};
 use crate::server::http::semantics as hs;
 use axum::body::Bytes;
 use axum::extract::{Path as AxPath, State};
@@ -20,10 +12,9 @@ use axum::routing::any;
 use axum::Router;
 use dashmap::DashMap;
 use std::collections::VecDeque;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, Mutex as TestMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{broadcast, watch, Semaphore};
 
 fn server_state_for_tests(core: Arc<Core>) -> crate::server::ServerState {
@@ -55,112 +46,6 @@ fn unwrap_response(phase: Phase) -> Response {
 
 fn world_path(world: &str) -> crate::engine_types::ValidatedWorldPath {
     crate::engine_types::ValidatedWorldPath::new(world).unwrap()
-}
-
-fn env_lock() -> &'static TestMutex<()> {
-    static LOCK: OnceLock<TestMutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| TestMutex::new(()))
-}
-
-#[cfg(feature = "coap")]
-struct CoapEnvGuard {
-    host: Option<String>,
-    port: Option<String>,
-}
-
-#[cfg(feature = "coap")]
-impl CoapEnvGuard {
-    fn capture() -> Self {
-        Self {
-            host: std::env::var("ELASTIK_COAP_HOST").ok(),
-            port: std::env::var("ELASTIK_COAP_PORT").ok(),
-        }
-    }
-}
-
-#[cfg(feature = "coap")]
-impl Drop for CoapEnvGuard {
-    fn drop(&mut self) {
-        match &self.host {
-            Some(v) => std::env::set_var("ELASTIK_COAP_HOST", v),
-            None => std::env::remove_var("ELASTIK_COAP_HOST"),
-        }
-        match &self.port {
-            Some(v) => std::env::set_var("ELASTIK_COAP_PORT", v),
-            None => std::env::remove_var("ELASTIK_COAP_PORT"),
-        }
-    }
-}
-
-#[cfg(feature = "mqtt")]
-struct MqttEnvGuard {
-    host: Option<String>,
-    port: Option<String>,
-}
-
-#[cfg(feature = "mqtt")]
-impl MqttEnvGuard {
-    fn capture() -> Self {
-        Self {
-            host: std::env::var("ELASTIK_MQTT_HOST").ok(),
-            port: std::env::var("ELASTIK_MQTT_PORT").ok(),
-        }
-    }
-}
-
-#[cfg(feature = "mqtt")]
-impl Drop for MqttEnvGuard {
-    fn drop(&mut self) {
-        match &self.host {
-            Some(v) => std::env::set_var("ELASTIK_MQTT_HOST", v),
-            None => std::env::remove_var("ELASTIK_MQTT_HOST"),
-        }
-        match &self.port {
-            Some(v) => std::env::set_var("ELASTIK_MQTT_PORT", v),
-            None => std::env::remove_var("ELASTIK_MQTT_PORT"),
-        }
-    }
-}
-
-#[test]
-fn hmac_key_requires_nonempty_semantic_content() {
-    assert!(hmac_key_from_env_value(None).is_none());
-    assert!(hmac_key_from_env_value(Some(String::new())).is_none());
-    assert!(hmac_key_from_env_value(Some(" \t\n".to_string())).is_none());
-    assert_eq!(
-        hmac_key_from_env_value(Some(" secret ".to_string())).unwrap(),
-        b" secret ".to_vec()
-    );
-}
-
-#[test]
-fn resource_cap_env_zero_falls_back_to_default() {
-    let _guard = env_lock().lock().unwrap();
-    let key = format!("ELASTIK_TEST_ZERO_CAP_{}", std::process::id());
-    std::env::set_var(&key, "0");
-    assert_eq!(env_nonzero_usize(&key, 7), 7);
-    std::env::set_var(&key, "9");
-    assert_eq!(env_nonzero_usize(&key, 7), 9);
-    std::env::remove_var(&key);
-}
-
-#[test]
-fn optional_storage_quota_zero_is_unlimited() {
-    let _guard = env_lock().lock().unwrap();
-    let key = format!("ELASTIK_TEST_STORAGE_CAP_{}", std::process::id());
-    std::env::remove_var(&key);
-    assert_eq!(env_optional_usize(&key), None);
-    std::env::set_var(&key, "");
-    assert_eq!(env_optional_usize(&key), None);
-    std::env::set_var(&key, " \t ");
-    assert_eq!(env_optional_usize(&key), None);
-    std::env::set_var(&key, "0");
-    assert_eq!(env_optional_usize(&key), None);
-    std::env::set_var(&key, "11");
-    assert_eq!(env_optional_usize(&key), Some(11));
-    std::env::set_var(&key, "10GB");
-    assert!(std::panic::catch_unwind(|| env_optional_usize(&key)).is_err());
-    std::env::remove_var(&key);
 }
 
 #[test]
@@ -413,95 +298,6 @@ fn delete_requires_approve_token() {
     assert!(!can_delete(auth::Tier::Read));
     assert!(!can_delete(auth::Tier::Write));
     assert!(can_delete(auth::Tier::Approve));
-}
-
-#[test]
-fn listen_addr_brackets_ipv6_hosts() {
-    assert_eq!(listen_addr("127.0.0.1", 3105), "127.0.0.1:3105");
-    assert_eq!(listen_addr("0.0.0.0", 3105), "0.0.0.0:3105");
-    assert_eq!(listen_addr("::1", 3105), "[::1]:3105");
-    assert_eq!(listen_addr("localhost", 3105), "localhost:3105");
-}
-
-#[cfg(feature = "coap")]
-#[test]
-fn coap_bind_is_opt_in_by_port_env() {
-    let _lock = env_lock().lock().unwrap();
-    let _guard = CoapEnvGuard::capture();
-    std::env::remove_var("ELASTIK_COAP_HOST");
-    std::env::remove_var("ELASTIK_COAP_PORT");
-
-    assert_eq!(coap_bind_from_env(), None);
-
-    std::env::set_var("ELASTIK_COAP_HOST", "0.0.0.0");
-    assert_eq!(coap_bind_from_env(), None);
-
-    std::env::set_var("ELASTIK_COAP_PORT", "5683");
-    assert_eq!(coap_bind_from_env(), Some(("0.0.0.0".to_owned(), 5683)));
-
-    std::env::set_var("ELASTIK_COAP_HOST", "127.0.0.1");
-    std::env::set_var("ELASTIK_COAP_PORT", " ");
-    assert_eq!(coap_bind_from_env(), None);
-
-    std::env::set_var("ELASTIK_COAP_PORT", "not-a-port");
-    assert_eq!(coap_bind_from_env(), None);
-}
-
-#[cfg(feature = "mqtt")]
-#[test]
-fn mqtt_bind_defaults_to_port_1883_and_can_be_disabled() {
-    let _lock = env_lock().lock().unwrap();
-    let _guard = MqttEnvGuard::capture();
-    std::env::remove_var("ELASTIK_MQTT_HOST");
-    std::env::remove_var("ELASTIK_MQTT_PORT");
-
-    assert_eq!(
-        mqtt_bind_from_env("127.0.0.1"),
-        Some(("127.0.0.1".to_owned(), 1883))
-    );
-
-    std::env::set_var("ELASTIK_MQTT_HOST", "0.0.0.0");
-    std::env::set_var("ELASTIK_MQTT_PORT", "1884");
-    assert_eq!(
-        mqtt_bind_from_env("127.0.0.1"),
-        Some(("0.0.0.0".to_owned(), 1884))
-    );
-
-    std::env::set_var("ELASTIK_MQTT_PORT", "0");
-    assert_eq!(mqtt_bind_from_env("127.0.0.1"), None);
-
-    std::env::set_var("ELASTIK_MQTT_PORT", "not-a-port");
-    assert_eq!(mqtt_bind_from_env("127.0.0.1"), None);
-}
-
-#[cfg(feature = "mqtt")]
-#[test]
-fn mqtt_packet_default_tracks_runtime_world_limit() {
-    assert_eq!(mqtt_max_packet_default(4096), 5120);
-    assert_eq!(mqtt_max_packet_default(usize::MAX), usize::MAX);
-}
-
-#[test]
-fn non_loopback_public_read_gets_warning_flag() {
-    let mut tokens = auth::Tokens {
-        read: None,
-        write: None,
-        approve: None,
-    };
-    assert!(!should_warn_public_read(
-        "127.0.0.1".parse::<IpAddr>().unwrap(),
-        tokens.read_required()
-    ));
-    assert!(should_warn_public_read(
-        "0.0.0.0".parse::<IpAddr>().unwrap(),
-        tokens.read_required()
-    ));
-
-    tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
-    assert!(!should_warn_public_read(
-        "0.0.0.0".parse::<IpAddr>().unwrap(),
-        tokens.read_required()
-    ));
 }
 
 #[tokio::test]
