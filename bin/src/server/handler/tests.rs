@@ -3,38 +3,20 @@ use crate::{
     engine::Engine,
     engine_types::{Preconditions, Representation, WriteResult},
     server::test_support::{
-        server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
+        server_state_for_engine_for_tests, test_engine_for_server,
         test_engine_for_server_with_memory_cap, test_engine_for_server_with_read_token,
         test_engine_for_server_with_storage_quota, test_engine_for_server_with_world_cap,
         world_db_path_for_server_tests, write_text_world_for_tests,
     },
-    test_support::test_core,
-    Core,
 };
 use axum::response::Response;
-use std::sync::Arc;
 
 fn world_path(world: &str) -> ValidatedWorldPath {
     ValidatedWorldPath::new(world).unwrap()
 }
 
-fn handler_state_for_tests(core: &Core) -> ServerState {
-    server_state_for_tests(Arc::new(core.clone()))
-}
-
 fn handler_state_for_engine_tests(engine: &Engine) -> ServerState {
     server_state_for_engine_for_tests(engine.clone())
-}
-
-async fn execute_get_with_test_state(
-    headers: HeaderMap,
-    tier: impl Into<AccessTier>,
-    world: ValidatedWorldPath,
-    core: &Core,
-    trace: &TraceCtx,
-) -> Phase {
-    let state = handler_state_for_tests(core);
-    execute_get(headers, tier, world, &state, trace).await
 }
 
 async fn execute_get_with_engine_state(
@@ -48,17 +30,6 @@ async fn execute_get_with_engine_state(
     execute_get(headers, tier, world, &state, trace).await
 }
 
-async fn execute_head_with_test_state(
-    headers: HeaderMap,
-    tier: impl Into<AccessTier>,
-    world: ValidatedWorldPath,
-    core: &Core,
-    trace: &TraceCtx,
-) -> Phase {
-    let state = handler_state_for_tests(core);
-    execute_head(headers, tier, world, &state, trace).await
-}
-
 async fn execute_head_with_engine_state(
     headers: HeaderMap,
     tier: impl Into<AccessTier>,
@@ -68,18 +39,6 @@ async fn execute_head_with_engine_state(
 ) -> Phase {
     let state = handler_state_for_engine_tests(engine);
     execute_head(headers, tier, world, &state, trace).await
-}
-
-async fn execute_put_with_test_state(
-    headers: HeaderMap,
-    body: Bytes,
-    tier: impl Into<AccessTier>,
-    world: ValidatedWorldPath,
-    core: &Core,
-    trace: &TraceCtx,
-) -> Phase {
-    let state = handler_state_for_tests(core);
-    execute_put(headers, body, tier, world, &state, trace).await
 }
 
 async fn execute_put_with_engine_state(
@@ -92,18 +51,6 @@ async fn execute_put_with_engine_state(
 ) -> Phase {
     let state = handler_state_for_engine_tests(engine);
     execute_put(headers, body, tier, world, &state, trace).await
-}
-
-async fn execute_post_with_test_state(
-    headers: HeaderMap,
-    body: Bytes,
-    tier: impl Into<AccessTier>,
-    world: ValidatedWorldPath,
-    core: &Core,
-    trace: &TraceCtx,
-) -> Phase {
-    let state = handler_state_for_tests(core);
-    execute_post(headers, body, tier, world, &state, trace).await
 }
 
 async fn execute_post_with_engine_state(
@@ -984,41 +931,40 @@ async fn put_and_post_enforce_world_size_cap() {
 
 #[tokio::test]
 async fn memory_backend_enforces_total_quota() {
-    let (mut core, dir) = test_core("memory-quota");
-    core.max_memory_bytes = 4;
+    let (engine, dir) = test_engine_for_server_with_memory_cap("memory-quota", 4);
     let headers = HeaderMap::new();
 
     let first = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"12"),
             AccessTier::Write,
             world_path("tmp/a"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
     );
     assert_eq!(first.status(), StatusCode::CREATED);
     let second = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"34"),
             AccessTier::Write,
             world_path("tmp/b"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
     );
     assert_eq!(second.status(), StatusCode::CREATED);
     let third = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,
             world_path("tmp/c"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
