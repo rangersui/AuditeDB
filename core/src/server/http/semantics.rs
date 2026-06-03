@@ -525,6 +525,7 @@ pub(crate) fn range_not_satisfiable(len: usize) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{audit, etag, test_support::test_core, world};
     use axum::http::{header, HeaderMap, HeaderValue};
 
     #[test]
@@ -898,6 +899,52 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0.as_str(), "x-safe");
         assert_eq!(out[0].1, "ok");
+    }
+
+    #[test]
+    fn if_none_match_star_blocks_existing_world() {
+        let (core, dir) = test_core("if-none-match-star");
+        core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+
+        assert!(check_write_preconditions(&core, "home/cas", &headers).is_err());
+        assert!(check_write_preconditions(&core, "home/new", &headers).is_ok());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn if_match_accepts_current_hmac_etag_only() {
+        let (core, dir) = test_core("if-match-hmac");
+        core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
+            .unwrap();
+        let mut conn = world::open(&core.data, "home/cas").unwrap();
+        let h = audit::append_with_conn_existing(
+            &mut conn,
+            "put",
+            "home/cas",
+            &world::sha256_hex(b"one"),
+            3,
+            "text/plain; charset=utf-8",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        drop(conn);
+        let etag = format!("\"{}\"", etag::hmac_etag(&h));
+
+        let mut good = HeaderMap::new();
+        good.insert(header::IF_MATCH, HeaderValue::from_str(&etag).unwrap());
+        assert!(check_write_preconditions(&core, "home/cas", &good).is_ok());
+
+        let mut stale = HeaderMap::new();
+        stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
+        assert!(check_write_preconditions(&core, "home/cas", &stale).is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
