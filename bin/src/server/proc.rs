@@ -790,9 +790,8 @@ mod tests {
 
     #[tokio::test]
     async fn proc_df_world_count_tracks_durable_put_and_delete() {
-        let (core, dir) = test_core("proc-df-world-count");
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state.clone());
+        let (engine, dir) = test_engine_for_server("proc-df-world-count");
+        let server_state = server_state_for_engine_for_tests(engine);
         let headers = HeaderMap::new();
 
         let put = unwrap_response(
