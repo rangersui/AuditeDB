@@ -427,3 +427,105 @@ fn mqtt_metrics_body(snapshot: &crate::mqtt::MqttMetricsSnapshot) -> String {
         snapshot.qos2_pending_bytes_peak
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{defaults::DEFAULT_MAX_WORLD_BYTES, test_support::test_core, Core};
+    use std::sync::Arc;
+
+    fn server_state_for_tests(core: Arc<Core>) -> ServerState {
+        ServerState::from_core_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
+    }
+
+    #[tokio::test]
+    async fn root_and_proc_endpoints_advertise_head_options_and_405() {
+        let root_head = root_hint(Method::HEAD).await;
+        assert_eq!(root_head.status(), StatusCode::OK);
+        assert_eq!(
+            root_head.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert!(root_head.headers().get(header::CONTENT_LENGTH).is_some());
+
+        let root_options = root_hint(Method::OPTIONS).await;
+        assert_eq!(root_options.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            root_options.headers().get(header::ALLOW).unwrap(),
+            ROOT_ALLOW
+        );
+
+        let root_post = root_hint(Method::POST).await;
+        assert_eq!(root_post.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(root_post.headers().get(header::ALLOW).unwrap(), ROOT_ALLOW);
+
+        let version_head = proc_version(Method::HEAD).await;
+        assert_eq!(version_head.status(), StatusCode::OK);
+        assert!(version_head.headers().get(header::CONTENT_LENGTH).is_some());
+
+        let version_delete = proc_version(Method::DELETE).await;
+        assert_eq!(version_delete.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            version_delete.headers().get(header::ALLOW).unwrap(),
+            PROC_ALLOW
+        );
+    }
+
+    #[tokio::test]
+    async fn proc_worlds_head_options_and_405_are_plain_http() {
+        let (core, dir) = test_core("proc-worlds-http");
+        core.write_world("home/a", b"a", "text/plain", &[]).unwrap();
+        let state = Arc::new(core);
+        let headers = HeaderMap::new();
+
+        let head = proc_worlds(
+            State(server_state_for_tests(state.clone())),
+            Method::HEAD,
+            headers.clone(),
+        )
+        .await;
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(
+            head.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert!(head.headers().get(header::CONTENT_LENGTH).is_some());
+
+        let options = proc_worlds(
+            State(server_state_for_tests(state.clone())),
+            Method::OPTIONS,
+            headers.clone(),
+        )
+        .await;
+        assert_eq!(options.status(), StatusCode::NO_CONTENT);
+        assert_eq!(options.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
+
+        let delete = proc_worlds(
+            State(server_state_for_tests(state)),
+            Method::DELETE,
+            headers,
+        )
+        .await;
+        assert_eq!(delete.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(delete.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_namespace_is_reserved_beyond_declared_endpoints() {
+        let not_found = proc_reserved(Method::GET).await;
+        assert_eq!(not_found.status(), StatusCode::NOT_FOUND);
+
+        let head = proc_reserved(Method::HEAD).await;
+        assert_eq!(head.status(), StatusCode::NOT_FOUND);
+
+        let options = proc_reserved(Method::OPTIONS).await;
+        assert_eq!(options.status(), StatusCode::NO_CONTENT);
+        assert_eq!(options.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
+
+        let put = proc_reserved(Method::PUT).await;
+        assert_eq!(put.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(put.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
+    }
+}
