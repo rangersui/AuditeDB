@@ -472,11 +472,11 @@ fn media_type_to_cf(value: &str) -> Option<u16> {
 mod tests {
     use super::*;
     use crate::{
-        audit, auth,
+        auth,
         server::{
             handler,
             test_support::{
-                server_state_for_tests, test_engine_for_server_with_auth_tokens,
+                server_state_for_engine_for_tests, test_engine_for_server_with_auth_tokens,
                 write_text_world_for_tests,
             },
             Phase, TraceCtx,
@@ -485,7 +485,6 @@ mod tests {
     };
     use axum::body::Bytes;
     use axum::http::{HeaderMap, StatusCode};
-    use std::sync::{atomic::Ordering, Arc};
 
     fn packet(bytes: &[u8]) -> Packet<'_> {
         parse_packet(bytes).unwrap()
@@ -760,9 +759,15 @@ mod tests {
 
     #[tokio::test]
     async fn http_put_and_coap_put_share_engine_semantics() {
-        let (core, dir) = test_core("cross-protocol");
-        let mut events = core.events.subscribe();
-        let http_state = server_state_for_tests(Arc::new(core.clone()));
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("cross-protocol");
+        let mut events = engine
+            .subscribe(
+                &crate::engine_types::SubscribePattern::new("home/*"),
+                AccessTier::Read,
+                None,
+            )
+            .expect("test subscription should open");
+        let http_state = server_state_for_engine_for_tests(engine.clone());
 
         let mut http_headers = HeaderMap::new();
         http_headers.insert(
@@ -785,39 +790,38 @@ mod tests {
         assert_eq!(http_response.status(), StatusCode::CREATED);
         let http_event = events.recv().await.unwrap();
         assert_eq!(http_event.method, "PUT");
-        assert_eq!(http_event.path, "/home/http-temp");
+        assert_eq!(http_event.path.as_str(), "home/http-temp");
 
         let coap_put_bytes =
             coap_put_packet(&[b"home", b"coap", b"temp"], b"23.5", Some(b"writer"));
         let coap_put = packet(&coap_put_bytes);
-        let coap_response = handle(&test_engine(&core), &coap_put).await;
+        let coap_response = handle(&engine, &coap_put).await;
         assert_eq!(coap_response[1], 65); // 2.01 Created
         let coap_event = events.recv().await.unwrap();
         assert_eq!(coap_event.method, "PUT");
-        assert_eq!(coap_event.path, "/home/coap/temp");
+        assert_eq!(coap_event.path.as_str(), "home/coap/temp");
 
-        let (http_stage, http_etag) = core
-            .read_world_with_etag("home/http-temp")
-            .unwrap()
-            .unwrap();
-        let (coap_stage, coap_etag) = core
-            .read_world_with_etag("home/coap/temp")
-            .unwrap()
-            .unwrap();
-        assert_eq!(http_stage.body, coap_stage.body);
-        assert_eq!(http_stage.content_type, coap_stage.content_type);
-        assert!(http_etag.starts_with("hmac-"));
-        assert!(coap_etag.starts_with("hmac-"));
-        assert_eq!(http_event.etag, http_etag);
-        assert_eq!(coap_event.etag, coap_etag);
-        assert_eq!(core.durable_world_count.load(Ordering::Relaxed), 2);
+        let http_world = ValidatedWorldPath::new("home/http-temp").unwrap();
+        let coap_world = ValidatedWorldPath::new("home/coap/temp").unwrap();
+        let http_read = engine.read(&http_world, AccessTier::Read).unwrap().unwrap();
+        let coap_read = engine.read(&coap_world, AccessTier::Read).unwrap().unwrap();
+        assert_eq!(http_read.representation.body, coap_read.representation.body);
+        assert_eq!(
+            http_read.representation.content_type,
+            coap_read.representation.content_type
+        );
+        assert!(http_read.etag.starts_with("hmac-"));
+        assert!(coap_read.etag.starts_with("hmac-"));
+        assert_eq!(http_event.etag, http_read.etag);
+        assert_eq!(coap_event.etag, coap_read.etag);
+        assert_eq!(engine.df(AccessTier::Read).unwrap().worlds, 2);
         assert!(matches!(
-            core.cached_verify_chain("home/http-temp").unwrap().unwrap(),
-            audit::VerifyReport::Valid(_)
+            engine.verify_audit(&http_world, AccessTier::Read).unwrap(),
+            crate::engine_introspection::AuditVerify::Valid(_)
         ));
         assert!(matches!(
-            core.cached_verify_chain("home/coap/temp").unwrap().unwrap(),
-            audit::VerifyReport::Valid(_)
+            engine.verify_audit(&coap_world, AccessTier::Read).unwrap(),
+            crate::engine_introspection::AuditVerify::Valid(_)
         ));
 
         let _ = std::fs::remove_dir_all(dir);
