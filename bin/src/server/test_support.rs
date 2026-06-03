@@ -1,6 +1,10 @@
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use axum::body::Bytes;
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 
 use crate::{
     defaults::{DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_WORLD_BYTES},
@@ -9,6 +13,20 @@ use crate::{
     server::{http::semantics::HeaderAllowlist, ServerState},
     Core,
 };
+
+const TEST_DISK_ENCODE: &AsciiSet = &CONTROLS
+    .add(b'%')
+    .add(b'.')
+    .add(b'/')
+    .add(b'\\')
+    .add(b':')
+    .add(b'*')
+    .add(b'?')
+    .add(b'"')
+    .add(b'<')
+    .add(b'>')
+    .add(b'|')
+    .add(b' ');
 
 pub(crate) fn server_state_for_tests(core: Arc<Core>) -> ServerState {
     server_state_with_max_world_bytes_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
@@ -113,4 +131,9 @@ pub(crate) async fn write_text_world_for_tests(engine: &Engine, world: &str, bod
         )
         .await
         .expect("test write should succeed");
+}
+
+pub(crate) fn world_db_path_for_server_tests(data_root: impl AsRef<Path>, world: &str) -> PathBuf {
+    let disk_name = utf8_percent_encode(world, TEST_DISK_ENCODE).to_string();
+    data_root.as_ref().join(disk_name).join("universe.db")
 }

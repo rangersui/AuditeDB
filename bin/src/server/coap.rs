@@ -471,37 +471,19 @@ fn media_type_to_cf(value: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        auth,
-        server::{
-            handler,
-            test_support::{
-                server_state_for_engine_for_tests, test_engine_for_server_with_auth_tokens,
-                write_text_world_for_tests,
-            },
-            Phase, TraceCtx,
+    use crate::server::{
+        handler,
+        test_support::{
+            server_state_for_engine_for_tests, test_engine_for_server_with_auth_tokens,
+            world_db_path_for_server_tests, write_text_world_for_tests,
         },
-        test_support, Core,
+        Phase, TraceCtx,
     };
     use axum::body::Bytes;
     use axum::http::{HeaderMap, StatusCode};
 
     fn packet(bytes: &[u8]) -> Packet<'_> {
         parse_packet(bytes).unwrap()
-    }
-
-    fn test_core(label: &str) -> (Core, std::path::PathBuf) {
-        let (mut core, dir) = test_support::test_core(label);
-        core.tokens = auth::Tokens {
-            read: auth::NonEmptyBytes::new(b"reader".to_vec()),
-            write: auth::NonEmptyBytes::new(b"writer".to_vec()),
-            approve: auth::NonEmptyBytes::new(b"approve".to_vec()),
-        };
-        (core, dir)
-    }
-
-    fn test_engine(core: &Core) -> crate::engine::Engine {
-        test_support::test_engine_for_tests(core)
     }
 
     #[test]
@@ -700,10 +682,9 @@ mod tests {
 
     #[tokio::test]
     async fn coap_get_storage_busy_maps_to_service_unavailable() {
-        let (core, dir) = test_core("busy-get");
-        core.write_world("home/busy", b"ok", "text/plain; charset=utf-8", &[])
-            .unwrap();
-        let db = test_support::world_db_path_for_tests(&core.data, "home/busy");
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("busy-get");
+        write_text_world_for_tests(&engine, "home/busy", "ok").await;
+        let db = world_db_path_for_server_tests(&dir, "home/busy");
         let holder = rusqlite::Connection::open(db).unwrap();
         holder
             .pragma_update(None, "locking_mode", "EXCLUSIVE")
@@ -711,7 +692,7 @@ mod tests {
         holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
 
         let response = handle(
-            &test_engine(&core),
+            &engine,
             &packet(&coap_get_packet(&[b"home", b"busy"], Some(b"reader"))),
         )
         .await;
@@ -777,7 +758,7 @@ mod tests {
         let http_phase = handler::execute_put(
             http_headers,
             Bytes::from_static(b"23.5"),
-            auth::Tier::Write,
+            AccessTier::Write,
             ValidatedWorldPath::new("home/http-temp").unwrap(),
             &http_state,
             &TraceCtx::disabled(),
