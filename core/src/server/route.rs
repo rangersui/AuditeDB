@@ -86,7 +86,7 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    use crate::{server::state::test_support::server_state_for_tests, test_support::test_core};
+    use crate::test_support::{server_state_for_tests, test_core};
 
     async fn response_text(resp: Response) -> String {
         let bytes = to_bytes(resp.into_body(), usize::MAX)

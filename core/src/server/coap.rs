@@ -473,8 +473,9 @@ mod tests {
     use super::*;
     use crate::{
         audit, auth,
-        server::{handler, state::test_support::server_state_for_tests, Phase, TraceCtx},
-        test_support, Core,
+        server::{handler, Phase, TraceCtx},
+        test_support::{self, server_state_for_tests},
+        Core,
     };
     use axum::body::Bytes;
     use axum::http::{HeaderMap, StatusCode};

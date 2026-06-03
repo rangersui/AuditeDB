@@ -324,15 +324,14 @@ mod tests {
     use crate::{
         audit, etag as et,
         server::handler::execute_put,
-        test_support::{test_core, world_db_path_for_tests, write_audited_world_for_tests},
+        test_support::{
+            server_state_for_tests, test_core, world_db_path_for_tests,
+            write_audited_world_for_tests,
+        },
     };
     use axum::body::{to_bytes, Bytes};
     use axum::{http::HeaderValue, response::Response};
     use std::sync::Arc;
-
-    fn server_state_for_tests(core: Arc<crate::Core>) -> ServerState {
-        ServerState::from_core_for_tests(core, crate::defaults::DEFAULT_MAX_WORLD_BYTES)
-    }
 
     fn unwrap_response(phase: Phase) -> Response {
         match phase {
