@@ -5,8 +5,8 @@ use crate::{
     server::test_support::{
         server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
         test_engine_for_server_with_memory_cap, test_engine_for_server_with_read_token,
-        test_engine_for_server_with_storage_quota, world_db_path_for_server_tests,
-        write_text_world_for_tests,
+        test_engine_for_server_with_storage_quota, test_engine_for_server_with_world_cap,
+        world_db_path_for_server_tests, write_text_world_for_tests,
     },
     test_support::test_core,
     Core,
@@ -937,17 +937,16 @@ async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
 
 #[tokio::test]
 async fn put_and_post_enforce_world_size_cap() {
-    let (mut core, dir) = test_core("world-size-cap");
-    core.max_world_bytes = 4;
+    let (engine, dir) = test_engine_for_server_with_world_cap("world-size-cap", 4);
     let headers = HeaderMap::new();
 
     let too_big = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"12345"),
             AccessTier::Write,
             world_path("home/too-big"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -955,12 +954,12 @@ async fn put_and_post_enforce_world_size_cap() {
     assert_eq!(too_big.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let ok = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"1234"),
             AccessTier::Write,
             world_path("home/four"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -968,12 +967,12 @@ async fn put_and_post_enforce_world_size_cap() {
     assert_eq!(ok.status(), StatusCode::CREATED);
 
     let append = unwrap_response(
-        execute_post_with_test_state(
+        execute_post_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,
             world_path("home/four"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
