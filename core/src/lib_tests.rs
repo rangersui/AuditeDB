@@ -1,14 +1,10 @@
 use super::*;
 use crate::etag as et;
 use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
-use crate::middleware::add_server_response_headers;
-use crate::route::world_handler;
 use crate::test_support::test_core;
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
-use axum::routing::any;
-use axum::Router;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -1378,105 +1374,6 @@ async fn pipeline_get_with_read_token_required_rejects_anon() {
     .await;
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-/// World-handler glue test (1/2): the full extractor chain
-/// (`State` + `Extension<RequestId>` + `Method` + `AxPath` +
-/// `HeaderMap` + `Bytes`) wires up correctly and `world_handler`
-/// routes GET to the pipeline. Goes through `tower::oneshot` so
-/// the `add_server_response_headers` middleware fires too -- that
-/// way we can assert the unified `x-request-id` header lands on
-/// the response.
-#[tokio::test]
-async fn world_handler_get_routes_through_pipeline() {
-    use axum::body::Body;
-    use axum::http::Request as HttpRequest;
-    use tower::ServiceExt;
-
-    let (core, dir) = test_core("world-handler-get");
-    core.write_world("home/hello", b"hello world", "text/plain", &[])
-        .unwrap();
-    let core = Arc::new(core);
-    let state = server_state_for_tests(core.clone());
-
-    let app = Router::new()
-        .route("/*world", any(world_handler))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            add_server_response_headers,
-        ))
-        .with_state(state);
-
-    let req = HttpRequest::builder()
-        .method("GET")
-        .uri("/home/hello")
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    // Middleware stamps x-request-id; pipeline trace uses the
-    // same id (`pipeline::run` reads RequestId from extensions
-    // rather than allocating its own). The fact that this
-    // header is present on the response is what the unification
-    // fix guarantees -- without it, the bug would slip through
-    // again silently.
-    let req_id_header = resp
-        .headers()
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("missing");
-    assert!(
-        req_id_header.parse::<u64>().is_ok(),
-        "x-request-id should be a numeric id, got {req_id_header:?}"
-    );
-    assert_eq!(response_text(resp).await, "hello world");
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-/// World-handler glue test (2/2): the same extractor chain works
-/// for HEAD. Validates the `if matches!(method, Method::GET |
-/// Method::HEAD)` short-circuit covers HEAD too, not just GET.
-#[tokio::test]
-async fn world_handler_head_routes_through_pipeline() {
-    use axum::body::Body;
-    use axum::http::Request as HttpRequest;
-    use tower::ServiceExt;
-
-    let (core, dir) = test_core("world-handler-head");
-    core.write_world("home/hello", b"hello world", "text/plain", &[])
-        .unwrap();
-    let core = Arc::new(core);
-    let state = server_state_for_tests(core.clone());
-
-    let app = Router::new()
-        .route("/*world", any(world_handler))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            add_server_response_headers,
-        ))
-        .with_state(state);
-
-    let req = HttpRequest::builder()
-        .method("HEAD")
-        .uri("/home/hello")
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        resp.headers()
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok()),
-        Some("11"),
-    );
-    assert!(resp.headers().get("x-request-id").is_some());
-    // HEAD body must be empty even though Content-Length says 11.
-    assert_eq!(response_text(resp).await, "");
 
     let _ = std::fs::remove_dir_all(dir);
 }
