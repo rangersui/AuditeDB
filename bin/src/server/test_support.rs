@@ -119,6 +119,20 @@ pub(crate) fn test_engine_for_server_with_memory_cap(
     (engine, dir)
 }
 
+pub(crate) fn test_engine_for_server_with_read_cache_max(
+    label: &str,
+    max_entries: usize,
+) -> (Engine, std::path::PathBuf) {
+    let dir = test_data_root(label);
+    let engine = Engine::builder()
+        .data_root(dir.clone())
+        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .read_cache_max_entries(max_entries)
+        .build()
+        .expect("test engine should build");
+    (engine, dir)
+}
+
 pub(crate) fn test_engine_for_server_with_world_cap(
     label: &str,
     max_world_bytes: usize,

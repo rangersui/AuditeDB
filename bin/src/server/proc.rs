@@ -438,12 +438,12 @@ mod tests {
             handler::{execute_delete, execute_get, execute_put},
             test_support::{
                 server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
-                test_engine_for_server_with_read_token, test_engine_for_server_with_storage_quota,
-                world_db_path_for_server_tests,
+                test_engine_for_server_with_read_cache_max, test_engine_for_server_with_read_token,
+                test_engine_for_server_with_storage_quota, world_db_path_for_server_tests,
             },
             Phase, TraceCtx,
         },
-        test_support::{test_core, test_core_with_read_cache_max},
+        test_support::test_core,
     };
     use axum::body::{to_bytes, Bytes};
     use std::sync::Arc;
@@ -909,9 +909,9 @@ mod tests {
 
     #[tokio::test]
     async fn proc_pool_reports_read_cache_eviction_values() {
-        let (core, dir) = test_core_with_read_cache_max("proc-pool-eviction-values", 2);
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state);
+        let (engine, dir) =
+            test_engine_for_server_with_read_cache_max("proc-pool-eviction-values", 2);
+        let server_state = server_state_for_engine_for_tests(engine);
         let headers = HeaderMap::new();
 
         for world in ["home/a", "home/b", "home/c"] {
