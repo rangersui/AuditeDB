@@ -81,14 +81,6 @@
 //! --features bundled-sqlite,unstable-engine`.
 mod audit;
 mod auth;
-#[cfg(test)]
-#[cfg(feature = "coap")]
-#[path = "server/coap.rs"]
-mod coap;
-#[cfg(test)]
-#[cfg(feature = "coap")]
-#[path = "server/coap_errors.rs"]
-mod coap_errors;
 mod data_lock;
 mod defaults;
 mod delete_ops;
@@ -100,10 +92,6 @@ mod engine_types;
 mod etag;
 mod event;
 mod ledger;
-#[cfg(test)]
-#[cfg(feature = "mqtt")]
-#[path = "server/mqtt/mod.rs"]
-mod mqtt;
 mod path;
 mod read_cache;
 #[cfg(test)]

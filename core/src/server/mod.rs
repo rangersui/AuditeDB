@@ -3,16 +3,16 @@
 //! Startup constructs the protocol-neutral `Engine` first and keeps HTTP
 //! adapter state beside it in `ServerState`.
 
-#[cfg(all(not(test), feature = "coap"))]
+#[cfg(feature = "coap")]
 pub(crate) mod coap;
-#[cfg(all(not(test), feature = "coap"))]
+#[cfg(feature = "coap")]
 pub(crate) mod coap_errors;
 pub(crate) mod config;
 pub(crate) mod handler;
 pub(crate) mod http;
 pub(crate) mod listen;
 pub(crate) mod middleware;
-#[cfg(all(not(test), feature = "mqtt"))]
+#[cfg(feature = "mqtt")]
 pub(crate) mod mqtt;
 pub(crate) mod pipeline;
 pub(crate) mod proc;
@@ -73,9 +73,7 @@ pub(crate) async fn run_from_env() {
     #[cfg(feature = "mqtt")]
     let mqtt_bind = mqtt_bind_from_env(&host);
     #[cfg(feature = "mqtt")]
-    let mqtt_metrics = mqtt_bind
-        .as_ref()
-        .map(|_| crate::mqtt::MqttMetrics::shared());
+    let mqtt_metrics = mqtt_bind.as_ref().map(|_| mqtt::MqttMetrics::shared());
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
@@ -162,7 +160,7 @@ pub(crate) async fn run_from_env() {
         let coap_engine = engine.clone();
         let coap_shutdown = coap_engine.shutdown_receiver();
         tokio::spawn(async move {
-            crate::coap::serve(coap_engine, coap_addr, coap_shutdown, coap_max_in_flight).await;
+            coap::serve(coap_engine, coap_addr, coap_shutdown, coap_max_in_flight).await;
         });
     }
     #[cfg(feature = "mqtt")]
@@ -182,11 +180,11 @@ pub(crate) async fn run_from_env() {
         let mqtt_metrics =
             mqtt_metrics.expect("MQTT metrics should exist when MQTT bind is configured");
         tokio::spawn(async move {
-            crate::mqtt::serve(
+            mqtt::serve(
                 mqtt_engine,
                 mqtt_addr,
                 mqtt_shutdown,
-                crate::mqtt::MqttServeConfig {
+                mqtt::MqttServeConfig {
                     max_packet_bytes: mqtt_max_packet_bytes,
                     max_connections: mqtt_max_connections,
                     max_pending_qos2_bytes: mqtt_max_pending_qos2_bytes,

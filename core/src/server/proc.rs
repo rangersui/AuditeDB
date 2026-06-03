@@ -391,7 +391,7 @@ fn pool_body(snapshot: &PoolSnapshot) -> String {
 }
 
 #[cfg(feature = "mqtt")]
-fn mqtt_metrics_body(snapshot: &crate::mqtt::MqttMetricsSnapshot) -> String {
+fn mqtt_metrics_body(snapshot: &crate::server::mqtt::MqttMetricsSnapshot) -> String {
     format!(
         "mqtt_active_connections {} snapshot\n\
          mqtt_total_connections {} counter\n\

@@ -26,7 +26,7 @@ pub(crate) struct ServerState {
     persist_header_allowlist: Arc<HeaderAllowlist>,
     persist_header_user_deny: Arc<HeaderAllowlist>,
     #[cfg(feature = "mqtt")]
-    mqtt_metrics: Option<Arc<crate::mqtt::MqttMetrics>>,
+    mqtt_metrics: Option<Arc<crate::server::mqtt::MqttMetrics>>,
     next_request: Arc<AtomicUsize>,
 }
 
@@ -67,14 +67,17 @@ impl ServerState {
 
     #[cfg(feature = "mqtt")]
     #[cfg_attr(test, allow(dead_code))]
-    pub(crate) fn with_mqtt_metrics(mut self, metrics: Arc<crate::mqtt::MqttMetrics>) -> Self {
+    pub(crate) fn with_mqtt_metrics(
+        mut self,
+        metrics: Arc<crate::server::mqtt::MqttMetrics>,
+    ) -> Self {
         self.mqtt_metrics = Some(metrics);
         self
     }
 
     #[cfg(feature = "mqtt")]
     #[cfg_attr(test, allow(dead_code))]
-    pub(crate) fn mqtt_metrics(&self) -> Option<Arc<crate::mqtt::MqttMetrics>> {
+    pub(crate) fn mqtt_metrics(&self) -> Option<Arc<crate::server::mqtt::MqttMetrics>> {
         self.mqtt_metrics.clone()
     }
 

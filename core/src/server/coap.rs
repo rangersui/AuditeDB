@@ -12,10 +12,11 @@ use tokio::net::UdpSocket;
 use tokio::sync::Semaphore;
 
 use crate::{
-    canonicalize_path, coap_errors,
+    canonicalize_path,
     engine::{Engine, ShutdownToken},
     engine_trace::EngineWriteTraceHooks,
     engine_types::{AccessTier, Preconditions, Representation, ValidatedWorldPath, WriteKind},
+    server::coap_errors,
 };
 
 const MAX_DATAGRAM: usize = 1152;
