@@ -94,9 +94,6 @@ mod event;
 mod ledger;
 mod path;
 mod read_cache;
-#[cfg(all(test, feature = "unstable-engine-bin"))]
-#[path = "bin/server/mod.rs"]
-mod server;
 mod state;
 mod storage_class;
 mod store;
@@ -105,9 +102,7 @@ mod test_support;
 mod world;
 mod world_ops;
 
-// Re-export protocol-neutral helpers at the crate root. Server adapter modules
-// are compiled here only for binary-feature white-box tests; minimal library
-// test builds stay protocol-neutral.
+// Re-export protocol-neutral helpers at the crate root.
 pub(crate) use crate::state::*;
 pub(crate) use crate::storage_class::*;
 #[cfg(not(feature = "unstable-engine"))]
