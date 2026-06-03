@@ -3,6 +3,7 @@ mod defaults;
 #[cfg(not(test))]
 mod path;
 #[cfg(not(test))]
+#[path = "bin/server/mod.rs"]
 mod server;
 
 #[cfg(not(test))]

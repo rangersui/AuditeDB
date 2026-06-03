@@ -95,6 +95,7 @@ mod ledger;
 mod path;
 mod read_cache;
 #[cfg(all(test, feature = "unstable-engine-bin"))]
+#[path = "bin/server/mod.rs"]
 mod server;
 mod state;
 mod storage_class;

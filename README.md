@@ -26,9 +26,9 @@ physics.
 | Surface | README | Scope |
 |---------|--------|-------|
 | Engine library | this file | Protocol-neutral paths, bytes, ETags, audit, auth, subscriptions. |
-| HTTP binary adapter | [`core/src/server/http/README.md`](core/src/server/http/README.md) | `elastik-core` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
-| MQTT binary adapter | [`core/src/server/mqtt/README.md`](core/src/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
-| CoAP binary adapter | [`core/src/server/coap/README.md`](core/src/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
+| HTTP binary adapter | [`core/src/bin/server/http/README.md`](core/src/bin/server/http/README.md) | `elastik-core` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
+| MQTT binary adapter | [`core/src/bin/server/mqtt/README.md`](core/src/bin/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
+| CoAP binary adapter | [`core/src/bin/server/coap/README.md`](core/src/bin/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
 | FFI adapter | [`ffi/README.md`](ffi/README.md) | UniFFI binding: Python, Kotlin, Swift. Blocking pull, same Engine verbs. |
 | Python SDK | [`sdk/README.md`](sdk/README.md) | Python client surface. |
 | JavaScript SDK | [`sdk-js/README.md`](sdk-js/README.md) | JS client surface. |
@@ -178,7 +178,7 @@ package:
 - **Library** (`src/lib.rs` + `engine*.rs` + storage primitives): the
   protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars, no sockets.
   Safe to embed in any Rust context.
-- **Binary** (`src/main.rs` + `src/server/...` + adapter-side `config`,
+- **Binary** (`src/main.rs` + `src/bin/server/...` + adapter-side `config`,
   `http_range`, `http_semantics`, `path`): the HTTP + CoAP + MQTT server. Owns
   Authorization parsing, request lifecycle, response rendering, graceful
   shutdown. Consumes the library through the public `Engine` facade only.

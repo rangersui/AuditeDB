@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--rust",
         type=Path,
-        default=root / "core" / "src" / "server" / "http" / "semantics.rs",
+        default=root / "core" / "src" / "bin" / "server" / "http" / "semantics.rs",
     )
     parser.add_argument("--python", type=Path, default=root / "sdk" / "src" / "elastik" / "sdk.py")
     parser.add_argument("--iana-url", default=DEFAULT_IANA_URL)
@@ -487,7 +487,7 @@ def write_name_file(path: Path, names: set[str]) -> None:
         # Update intentionally with:
         #   python tools/header_policy_scan.py --refresh-baseline
         #
-        # Runtime policy remains in core/src/server/http/semantics.rs. This file is a
+        # Runtime policy remains in core/src/bin/server/http/semantics.rs. This file is a
         # drift radar: new upstream names fail CI until a human classifies them.
         #
         # "*" is an IANA-registered field-name wildcard placeholder. Elastik does
