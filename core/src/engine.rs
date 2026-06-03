@@ -353,7 +353,7 @@ impl Engine {
         EngineBuilder::default()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "unstable-engine-bin"))]
     /// Test-only bypass: constructs Engine without writer lock acquisition
     /// or startup audit verification. Shutdown channel is disconnected from
     /// `core.shutdown` -- not suitable for shutdown-propagation tests.
