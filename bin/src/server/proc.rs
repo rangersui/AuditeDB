@@ -438,7 +438,8 @@ mod tests {
             handler::{execute_delete, execute_get, execute_put},
             test_support::{
                 server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
-                test_engine_for_server_with_storage_quota, world_db_path_for_server_tests,
+                test_engine_for_server_with_read_token, test_engine_for_server_with_storage_quota,
+                world_db_path_for_server_tests,
             },
             Phase, TraceCtx,
         },
@@ -766,37 +767,22 @@ mod tests {
 
     #[tokio::test]
     async fn proc_du_and_df_require_read_token_when_enabled() {
-        let (mut core, dir) = test_core("proc-du-df-read-token");
-        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
-        let state = Arc::new(core);
+        let (engine, dir) =
+            test_engine_for_server_with_read_token("proc-du-df-read-token", b"reader");
+        let state = server_state_for_engine_for_tests(engine);
         let headers = HeaderMap::new();
 
-        let du = proc_du(
-            State(server_state_for_tests(state.clone())),
-            Method::GET,
-            headers.clone(),
-        )
-        .await;
+        let du = proc_du(State(state.clone()), Method::GET, headers.clone()).await;
         assert_eq!(du.status(), StatusCode::UNAUTHORIZED);
 
-        let df = proc_df(
-            State(server_state_for_tests(state.clone())),
-            Method::GET,
-            headers,
-        )
-        .await;
+        let df = proc_df(State(state.clone()), Method::GET, headers).await;
         assert_eq!(df.status(), StatusCode::UNAUTHORIZED);
 
         let mut auth_headers = HeaderMap::new();
         let auth_value =
             HeaderValue::from_str(&format!("{} {}", "Bearer", "reader")).expect("valid test auth");
         auth_headers.insert(header::AUTHORIZATION, auth_value);
-        let authorized = proc_df(
-            State(server_state_for_tests(state)),
-            Method::GET,
-            auth_headers,
-        )
-        .await;
+        let authorized = proc_df(State(state), Method::GET, auth_headers).await;
         assert_eq!(authorized.status(), StatusCode::OK);
 
         let _ = std::fs::remove_dir_all(dir);
