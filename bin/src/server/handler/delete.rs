@@ -326,15 +326,13 @@ mod tests {
         server::{
             handler::execute_put,
             test_support::{
-                server_state_for_engine_for_tests, server_state_for_tests,
-                test_engine_for_server_with_auth_tokens, world_db_path_for_server_tests,
+                server_state_for_engine_for_tests, test_engine_for_server_with_auth_tokens,
+                world_db_path_for_server_tests,
             },
         },
-        test_support::test_core,
     };
     use axum::body::{to_bytes, Bytes};
     use axum::{http::HeaderValue, response::Response};
-    use std::sync::Arc;
 
     fn unwrap_response(phase: Phase) -> Response {
         match phase {
@@ -664,27 +662,13 @@ mod tests {
 
     #[cfg(feature = "multi-thread")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_first_deletes_increment_world_count_exactly_once() {
-        // Bug 16 race coverage. Three concurrent DELETEs on a fresh
-        // Core (delete_ledger_created starts false). The ledger gets
-        // created on the first DELETE that wins the
-        // `swap(true, AcqRel)` edge -- exactly one of them sees
-        // was_first=true and bumps `durable_world_count`. The other
-        // two see the swap-already-true and skip the bump.
-        //
-        // Setup: PUT three distinct worlds (durable_world_count = 3).
-        // Then run three concurrent DELETEs in parallel.
-        // Final state: durable_world_count = 3 + 1[ledger creation,
-        // exactly once] - 3[three deletes succeed] = 1.
-        //
-        // Without Bug 16's `swap` ordering, two or all three of the
-        // racing DELETEs would each independently observe
-        // delete_ledger_created==false (via world_exists_blocking)
-        // and each bump the counter, leading to drift. With the
-        // atomic swap, only the unique false->true transition bumps.
-        let (core, dir) = test_core("concurrent-first-deletes");
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state.clone());
+    async fn concurrent_first_deletes_create_one_valid_delete_ledger() {
+        // Bug 16 race coverage. Three concurrent DELETEs on a fresh engine
+        // create the delete ledger through the first successful DELETE only.
+        // The public invariant is that the three target worlds disappear and
+        // the single delete ledger is readable and audit-valid.
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("concurrent-first-deletes");
+        let server_state = server_state_for_engine_for_tests(engine.clone());
         let headers = HeaderMap::new();
         for w in ["home/a", "home/b", "home/c"] {
             let put = unwrap_response(
@@ -700,8 +684,11 @@ mod tests {
             );
             assert_eq!(put.status(), StatusCode::CREATED);
         }
-        assert_eq!(state.durable_world_count.load(Ordering::Relaxed), 3);
-        assert!(!state.delete_ledger_created.load(Ordering::Relaxed));
+        assert_eq!(engine.df(AccessTier::Read).unwrap().worlds, 3);
+        assert!(engine
+            .read(&world_path("var/log/deletes"), AccessTier::Read)
+            .unwrap()
+            .is_none());
 
         let s1 = server_state.clone();
         let s2 = server_state.clone();
@@ -721,10 +708,42 @@ mod tests {
         assert_eq!(unwrap_response(r2).status(), StatusCode::NO_CONTENT);
         assert_eq!(unwrap_response(r3).status(), StatusCode::NO_CONTENT);
 
-        // 3 (original) + 1 (ledger creation, exactly once) - 3 (three
-        // deletes) = 1.
-        assert_eq!(state.durable_world_count.load(Ordering::Relaxed), 1);
-        assert!(state.delete_ledger_created.load(Ordering::Relaxed));
+        let delete_ledger = world_path("var/log/deletes");
+        assert!(engine
+            .read(&delete_ledger, AccessTier::Read)
+            .unwrap()
+            .is_some());
+        assert!(matches!(
+            engine
+                .verify_audit(&delete_ledger, AccessTier::Read)
+                .unwrap(),
+            crate::engine_introspection::AuditVerify::Valid(_)
+        ));
+        let ledger =
+            rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "var/log/deletes"))
+                .unwrap();
+        let events = ledger
+            .prepare(
+                "SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY event_type",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![
+                ("delete_commit".to_string(), 3),
+                ("delete_intent".to_string(), 3)
+            ]
+        );
+        for w in ["home/a", "home/b", "home/c"] {
+            assert!(engine
+                .read(&world_path(w), AccessTier::Read)
+                .unwrap()
+                .is_none());
+        }
 
         let _ = std::fs::remove_dir_all(dir);
     }
