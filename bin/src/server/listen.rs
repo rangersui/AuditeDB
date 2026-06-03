@@ -113,9 +113,10 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
 mod tests {
     use super::*;
     use crate::{
-        engine::Engine,
-        engine_types::{AccessTier, SecretBytes},
-        server::{http::semantics::HeaderAllowlist, ServerState},
+        engine_types::AccessTier,
+        server::test_support::{
+            server_state_for_engine_for_tests, test_engine_for_server_with_listen_slots,
+        },
     };
 
     #[test]
@@ -136,18 +137,13 @@ mod tests {
 
     #[tokio::test]
     async fn handler_returns_503_when_listen_slots_are_full() {
-        let (engine, dir) = test_engine_with_one_listen_slot("listen-slots-full");
+        let (engine, dir) = test_engine_for_server_with_listen_slots("listen-slots-full", 1);
         let _held_slot = engine
             .subscribe(&SubscribePattern::new("home/held"), AccessTier::Read, None)
             .expect("first subscription should consume the only listen slot");
 
         let resp = handler(
-            State(ServerState::new(
-                engine,
-                1024,
-                HeaderAllowlist::empty(),
-                HeaderAllowlist::empty(),
-            )),
+            State(server_state_for_engine_for_tests(engine)),
             Method::GET,
             HeaderMap::new(),
             AxPath("home/task/*".to_string()),
@@ -158,23 +154,5 @@ mod tests {
         assert_eq!(resp.headers().get(header::RETRY_AFTER).unwrap(), "1");
 
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    fn test_engine_with_one_listen_slot(label: &str) -> (Engine, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "elastik-bin-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test clock should be after unix epoch")
-                .as_nanos()
-        ));
-        let engine = Engine::builder()
-            .data_root(dir.clone())
-            .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
-            .max_listen_connections(1)
-            .build()
-            .expect("test engine should build");
-        (engine, dir)
     }
 }
