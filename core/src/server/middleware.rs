@@ -70,3 +70,24 @@ pub(crate) fn stamp_core_response_headers(
         HeaderValue::from_static("nosniff"),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_response_headers_are_core_owned() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::VARY, HeaderValue::from_static("*"));
+        headers.insert("x-request-id", HeaderValue::from_static("stale"));
+        headers.insert("x-elapsed-us", HeaderValue::from_static("999"));
+        headers.insert("x-content-type-options", HeaderValue::from_static("sniff"));
+
+        stamp_core_response_headers(42, 7, &mut headers);
+
+        assert_eq!(headers.get("x-request-id").unwrap(), "42");
+        assert_eq!(headers.get("x-elapsed-us").unwrap(), "7");
+        assert_eq!(headers.get(header::VARY).unwrap(), "Authorization");
+        assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    }
+}

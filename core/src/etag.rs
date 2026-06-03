@@ -155,6 +155,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn etag_lists_match_http_strong_and_weak_rules() {
+        assert!(etag_list_strong_matches("\"hmac-abc\"", "hmac-abc"));
+        assert!(etag_list_strong_matches(
+            "\"other\", \"hmac-abc\"",
+            "hmac-abc"
+        ));
+        assert!(etag_list_strong_matches("*", "hmac-abc"));
+        assert!(!etag_list_strong_matches("W/\"hmac-abc\"", "hmac-abc"));
+        assert!(!etag_list_strong_matches("\"other\"", "hmac-abc"));
+
+        assert!(etag_list_weak_matches("W/\"hmac-abc\"", "hmac-abc"));
+    }
+
+    #[test]
     fn preconditions_can_be_checked_without_http_headermap() {
         let preconditions = Preconditions::new(
             vec![EtagMatcher::Strong("hmac-current".to_owned())],

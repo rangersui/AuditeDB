@@ -879,6 +879,28 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_persisted_headers_are_not_replayed() {
+        let mut out = Vec::new();
+        apply_meta_headers(
+            &[
+                (
+                    "x-custom".to_owned(),
+                    "evil\r\nset-cookie: admin=true".to_owned(),
+                ),
+                ("set-cookie".to_owned(), "sid=admin; Path=/".to_owned()),
+                ("clear-site-data".to_owned(), "\"cookies\"".to_owned()),
+                ("bad name".to_owned(), "ok".to_owned()),
+                ("x-safe".to_owned(), "ok".to_owned()),
+            ],
+            &mut out,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.as_str(), "x-safe");
+        assert_eq!(out[0].1, "ok");
+    }
+
+    #[test]
     fn request_meta_headers_user_allowlist_persists_custom_headers() {
         // Layer 3 (user allowlist) opens custom-header round-trip
         // on top of the default-allow set. Exact match and prefix
