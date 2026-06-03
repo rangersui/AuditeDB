@@ -442,10 +442,7 @@ mod tests {
             },
             Phase, TraceCtx,
         },
-        test_support::{
-            test_core, test_core_with_read_cache_max, world_db_path_for_tests,
-            write_audited_world_for_tests,
-        },
+        test_support::{test_core, test_core_with_read_cache_max, world_db_path_for_tests},
     };
     use axum::body::{to_bytes, Bytes};
     use std::sync::Arc;
@@ -637,10 +634,18 @@ mod tests {
 
     #[tokio::test]
     async fn proc_audit_verify_escapes_tampered_header_values() {
-        let (core, dir) = test_core("proc-audit-header-escape");
-        write_audited_world_for_tests(&core, "home/audit-escaped", b"hello", "text/plain", &[])
+        let (engine, dir) = test_engine_for_server("proc-audit-header-escape");
+        let world = world_path("home/audit-escaped");
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"hello"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
             .unwrap();
-        let db = world_db_path_for_tests(&core.data, "home/audit-escaped");
+        let db = world_db_path_for_server_tests(&dir, "home/audit-escaped");
         let c = rusqlite::Connection::open(db).unwrap();
         c.execute(
             "UPDATE events SET hmac=? WHERE id=1",
@@ -648,9 +653,9 @@ mod tests {
         )
         .unwrap();
 
-        let state = Arc::new(core);
+        let state = server_state_for_engine_for_tests(engine);
         let resp = proc_audit_verify(
-            State(server_state_for_tests(state)),
+            State(state),
             Method::HEAD,
             AxPath("home/audit-escaped/verify".to_owned()),
             HeaderMap::new(),
