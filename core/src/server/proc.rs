@@ -431,7 +431,7 @@ fn mqtt_metrics_body(snapshot: &crate::mqtt::MqttMetricsSnapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{defaults::DEFAULT_MAX_WORLD_BYTES, test_support::test_core, Core};
+    use crate::{defaults::DEFAULT_MAX_WORLD_BYTES, test_support::test_core, world, Core};
     use std::sync::Arc;
 
     fn server_state_for_tests(core: Arc<Core>) -> ServerState {
@@ -527,5 +527,151 @@ mod tests {
         let put = proc_reserved(Method::PUT).await;
         assert_eq!(put.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(put.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_reports_valid_chain_in_headers() {
+        let (core, dir) = test_core("proc-audit-valid");
+        let h = world::write_with_audit(
+            &core.data,
+            "home/audit-ok",
+            b"hello",
+            "text/plain",
+            &[("x-meta-author".to_owned(), "ranger".to_owned())],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(server_state_for_tests(state)),
+            Method::HEAD,
+            AxPath("home/audit-ok/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "true");
+        assert_eq!(resp.headers().get("x-audit-events").unwrap(), "1");
+        assert_eq!(
+            resp.headers().get("x-audit-latest").unwrap(),
+            &format!("hmac-{h}")
+        );
+        assert_eq!(resp.headers().get(header::CONTENT_LENGTH).unwrap(), "0");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_reports_broken_chain_in_headers() {
+        let (core, dir) = test_core("proc-audit-broken");
+        world::write_with_audit(
+            &core.data,
+            "home/audit-broken",
+            b"hello",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let db = world::world_db(&core.data, "home/audit-broken");
+        let c = rusqlite::Connection::open(db).unwrap();
+        c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
+            .unwrap();
+
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(server_state_for_tests(state)),
+            Method::HEAD,
+            AxPath("home/audit-broken/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "false");
+        assert_eq!(resp.headers().get("x-audit-break-at").unwrap(), "0");
+        assert_eq!(resp.headers().get("x-audit-actual").unwrap(), "hmac-bad");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_escapes_tampered_header_values() {
+        let (core, dir) = test_core("proc-audit-header-escape");
+        world::write_with_audit(
+            &core.data,
+            "home/audit-escaped",
+            b"hello",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let db = world::world_db(&core.data, "home/audit-escaped");
+        let c = rusqlite::Connection::open(db).unwrap();
+        c.execute(
+            "UPDATE events SET hmac=? WHERE id=1",
+            ["bad\nInjected: yes"],
+        )
+        .unwrap();
+
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(server_state_for_tests(state)),
+            Method::HEAD,
+            AxPath("home/audit-escaped/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            resp.headers().get("x-audit-actual").unwrap(),
+            "hmac-bad\\x0aInjected: yes"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_reports_memory_world_not_applicable() {
+        let (core, dir) = test_core("proc-audit-memory");
+        core.write_world("tmp/scratch", b"draft", "text/plain", &[])
+            .unwrap();
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(server_state_for_tests(state)),
+            Method::HEAD,
+            AxPath("tmp/scratch/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "n/a");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_missing_disk_world_does_not_create_db() {
+        let (core, dir) = test_core("proc-audit-missing-no-create");
+        let db = world::world_db(&core.data, "home/missing-audit");
+        assert!(!db.exists());
+
+        let state = Arc::new(core);
+        let resp = proc_audit_verify(
+            State(server_state_for_tests(state)),
+            Method::HEAD,
+            AxPath("home/missing-audit/verify".to_owned()),
+            HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(!db.exists());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
