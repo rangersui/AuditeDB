@@ -106,3 +106,68 @@ fn is_reserved_world_name(world_name: &str) -> bool {
         || matches!(world_name, "proc" | "var/log")
         || world_name.starts_with("proc/")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonicalize_preserves_explicit_namespaces() {
+        assert_eq!(canonicalize_path("/home/tmp/foo"), "home/tmp/foo");
+        assert_eq!(canonicalize_path("/home/etc/foo"), "home/etc/foo");
+        assert_eq!(canonicalize_path("/tmp/foo"), "tmp/foo");
+        assert_eq!(canonicalize_path("/etc/foo"), "etc/foo");
+        assert_eq!(canonicalize_path("/foo"), "home/foo");
+    }
+
+    #[test]
+    fn control_bytes_are_not_valid_world_names() {
+        assert!(valid_world_name("home/ok"));
+        assert!(!valid_world_name("home/bad\nname"));
+        assert!(!valid_world_name(""));
+    }
+
+    #[test]
+    fn dot_segments_empty_segments_and_backslashes_are_not_valid_world_names() {
+        assert!(!valid_world_name("home/../etc/secret"));
+        assert!(!valid_world_name("home/%2E%2E/etc/secret"));
+        assert!(!valid_world_name("home/./x"));
+        assert!(!valid_world_name("home//x"));
+        assert!(!valid_world_name("home/x/"));
+        assert!(!valid_world_name("home\\x"));
+        assert_eq!(
+            validate_world_name("home/%2E%2E/etc/secret"),
+            Err("world path contains dot or encoded-dot segment")
+        );
+        assert_eq!(
+            validate_world_name("home//x"),
+            Err("world path has empty segment")
+        );
+        assert_eq!(
+            validate_world_name("home\\x"),
+            Err("world path contains backslash")
+        );
+    }
+
+    #[test]
+    fn namespace_roots_and_proc_subtree_are_not_world_names() {
+        for name in [
+            "home",
+            "tmp",
+            "dev",
+            "sys",
+            "proc",
+            "proc/anything",
+            "etc",
+            "lib",
+            "boot",
+            "usr",
+            "var",
+            "var/log",
+        ] {
+            assert!(!valid_world_name(name), "{name}");
+        }
+        assert!(valid_world_name("home/x"));
+        assert!(valid_world_name("var/log/deletes"));
+    }
+}
