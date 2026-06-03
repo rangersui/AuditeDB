@@ -322,9 +322,14 @@ fn invariant_delete_error_phase(message: &'static str, last_step: DeleteStep) ->
 mod tests {
     use super::*;
     use crate::{
-        audit, etag as et,
-        server::handler::execute_put,
-        server::test_support::server_state_for_tests,
+        engine_types::{Preconditions, Representation},
+        server::{
+            handler::execute_put,
+            test_support::{
+                server_state_for_engine_for_tests, server_state_for_tests,
+                test_engine_for_server_with_auth_tokens, world_db_path_for_server_tests,
+            },
+        },
         test_support::{test_core, world_db_path_for_tests, write_audited_world_for_tests},
     };
     use axum::body::{to_bytes, Bytes};
@@ -404,17 +409,22 @@ mod tests {
 
     #[tokio::test]
     async fn delete_honors_if_match_before_audit_or_remove() {
-        let (core, dir) = test_core("delete-if-match");
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
-        let h = write_audited_world_for_tests(
-            &core,
-            "home/delete-cas",
-            b"alive",
-            "text/plain; charset=utf-8",
-            &[],
-        )
-        .unwrap();
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-if-match");
+        let state = server_state_for_engine_for_tests(engine.clone());
+        let world = world_path("home/delete-cas");
+        let write = engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"alive"),
+                    "text/plain; charset=utf-8",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
 
         let mut stale = HeaderMap::new();
         stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
@@ -429,12 +439,12 @@ mod tests {
             .await,
         );
         assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
-        assert!(core.read_world("home/delete-cas").unwrap().is_some());
+        assert!(engine.read(&world, AccessTier::Read).unwrap().is_some());
 
         let mut good = HeaderMap::new();
         good.insert(
             header::IF_MATCH,
-            HeaderValue::from_str(&format!("\"{}\"", et::hmac_etag(&h))).unwrap(),
+            HeaderValue::from_str(&format!("\"{}\"", write.etag)).unwrap(),
         );
         let resp = unwrap_response(
             execute_delete(
@@ -447,14 +457,20 @@ mod tests {
             .await,
         );
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        assert!(core.read_world("home/delete-cas").unwrap().is_none());
-        assert!(core.read_world("var/log/deletes").unwrap().is_some());
+        assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
+        let delete_ledger = world_path("var/log/deletes");
+        assert!(engine
+            .read(&delete_ledger, AccessTier::Read)
+            .unwrap()
+            .is_some());
         assert!(matches!(
-            core.cached_verify_chain("var/log/deletes").unwrap(),
-            Some(audit::VerifyReport::Valid(_))
+            engine
+                .verify_audit(&delete_ledger, AccessTier::Read)
+                .unwrap(),
+            crate::engine_introspection::AuditVerify::Valid(_)
         ));
         let ledger =
-            rusqlite::Connection::open(world_db_path_for_tests(&core.data, "var/log/deletes"))
+            rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "var/log/deletes"))
                 .unwrap();
         let mut stmt = ledger
             .prepare("SELECT event_type FROM events ORDER BY id")
@@ -526,25 +542,36 @@ mod tests {
 
     #[tokio::test]
     async fn delete_rejects_auth_token_and_append_only_ledger() {
-        let (core, dir) = test_core("delete-policy");
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
-        write_audited_world_for_tests(
-            &core,
-            "home/delete-policy",
-            b"alive",
-            "text/plain; charset=utf-8",
-            &[],
-        )
-        .unwrap();
-        write_audited_world_for_tests(
-            &core,
-            "var/log/deletes",
-            b"ledger",
-            "text/plain; charset=utf-8",
-            &[],
-        )
-        .unwrap();
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-policy");
+        let state = server_state_for_engine_for_tests(engine.clone());
+        let protected_world = world_path("home/delete-policy");
+        engine
+            .replace(
+                &protected_world,
+                Representation::new(
+                    Bytes::from_static(b"alive"),
+                    "text/plain; charset=utf-8",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let delete_ledger = world_path("var/log/deletes");
+        engine
+            .replace(
+                &delete_ledger,
+                Representation::new(
+                    Bytes::from_static(b"ledger"),
+                    "text/plain; charset=utf-8",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Approve,
+            )
+            .await
+            .unwrap();
         let headers = HeaderMap::new();
 
         let auth_delete = unwrap_response(
@@ -558,7 +585,10 @@ mod tests {
             .await,
         );
         assert_eq!(auth_delete.status(), StatusCode::UNAUTHORIZED);
-        assert!(core.read_world("home/delete-policy").unwrap().is_some());
+        assert!(engine
+            .read(&protected_world, AccessTier::Read)
+            .unwrap()
+            .is_some());
 
         let ledger_delete = unwrap_response(
             execute_delete(
@@ -586,16 +616,18 @@ mod tests {
             response_text(ledger_delete).await,
             "auth required: delete ledger is append-only\n"
         );
-        assert!(core.read_world("var/log/deletes").unwrap().is_some());
+        assert!(engine
+            .read(&delete_ledger, AccessTier::Read)
+            .unwrap()
+            .is_some());
 
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn delete_missing_world_does_not_write_delete_ledger() {
-        let (core, dir) = test_core("delete-missing");
-        let core = Arc::new(core);
-        let state = server_state_for_tests(core.clone());
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-missing");
+        let state = server_state_for_engine_for_tests(engine.clone());
         let headers = HeaderMap::new();
         let resp = unwrap_response(
             execute_delete(
@@ -608,7 +640,10 @@ mod tests {
             .await,
         );
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        assert!(core.read_world("var/log/deletes").unwrap().is_none());
+        assert!(engine
+            .read(&world_path("var/log/deletes"), AccessTier::Read)
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }
