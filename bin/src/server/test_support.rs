@@ -60,6 +60,19 @@ pub(crate) fn test_engine_for_server_with_read_token(
     (engine, dir)
 }
 
+pub(crate) fn test_engine_for_server_with_auth_tokens(label: &str) -> (Engine, std::path::PathBuf) {
+    let dir = test_data_root(label);
+    let engine = Engine::builder()
+        .data_root(dir.clone())
+        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .read_token(b"reader".to_vec())
+        .write_token(b"writer".to_vec())
+        .approve_token(b"approve".to_vec())
+        .build()
+        .expect("test engine should build");
+    (engine, dir)
+}
+
 pub(crate) fn test_engine_for_server_with_listen_slots(
     label: &str,
     max_listen_connections: usize,

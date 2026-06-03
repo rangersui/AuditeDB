@@ -473,7 +473,14 @@ mod tests {
     use super::*;
     use crate::{
         audit, auth,
-        server::{handler, test_support::server_state_for_tests, Phase, TraceCtx},
+        server::{
+            handler,
+            test_support::{
+                server_state_for_tests, test_engine_for_server_with_auth_tokens,
+                write_text_world_for_tests,
+            },
+            Phase, TraceCtx,
+        },
         test_support, Core,
     };
     use axum::body::Bytes;
@@ -524,9 +531,9 @@ mod tests {
 
     #[tokio::test]
     async fn textual_errors_carry_text_plain_content_format() {
-        let (core, dir) = test_core("error-format");
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("error-format");
         let p = packet(&[0x41, 0x63, 0x12, 0x34, 0xaa]); // unknown method code
-        let out = handle(&test_engine(&core), &p).await;
+        let out = handle(&engine, &p).await;
         assert_eq!(out[1], 133);
         assert_eq!(out[5], 0xc0); // Content-Format: text/plain
         assert_eq!(out[6], 0xff);
@@ -627,36 +634,33 @@ mod tests {
 
     #[tokio::test]
     async fn coap_put_without_auth_token_is_rejected() {
-        let (core, dir) = test_core("auth-reject");
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("auth-reject");
         let put_bytes = coap_put_packet(&[b"home", b"sensor", b"kitchen", b"temp"], b"23.5", None);
         let put = packet(&put_bytes);
 
-        let response = handle(&test_engine(&core), &put).await;
+        let response = handle(&engine, &put).await;
 
         assert_eq!(response[1], 129); // 4.01 Unauthorized
-        assert!(core
-            .read_world("home/sensor/kitchen/temp")
-            .unwrap()
-            .is_none());
+        let world = ValidatedWorldPath::new("home/sensor/kitchen/temp").unwrap();
+        assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn coap_get_honors_read_token_when_enabled() {
-        let (core, dir) = test_core("read-auth");
-        core.write_world("home/secret", b"ok", "text/plain; charset=utf-8", &[])
-            .unwrap();
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("read-auth");
+        write_text_world_for_tests(&engine, "home/secret", "ok").await;
 
         let denied = handle(
-            &test_engine(&core),
+            &engine,
             &packet(&coap_get_packet(&[b"home", b"secret"], None)),
         )
         .await;
         assert_eq!(denied[1], 129); // 4.01 Unauthorized
 
         let allowed = handle(
-            &test_engine(&core),
+            &engine,
             &packet(&coap_get_packet(&[b"home", b"secret"], Some(b"reader"))),
         )
         .await;
@@ -668,17 +672,24 @@ mod tests {
 
     #[tokio::test]
     async fn coap_get_rejects_worlds_too_large_for_one_datagram() {
-        let (core, dir) = test_core("large-get");
-        core.write_world(
-            "home/large",
-            &vec![b'x'; MAX_DATAGRAM],
-            "application/octet-stream",
-            &[],
-        )
-        .unwrap();
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("large-get");
+        let world = ValidatedWorldPath::new("home/large").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from(vec![b'x'; MAX_DATAGRAM]),
+                    "application/octet-stream",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
 
         let get_bytes = coap_get_packet(&[b"home", b"large"], Some(b"reader"));
-        let response = handle(&test_engine(&core), &packet(&get_bytes)).await;
+        let response = handle(&engine, &packet(&get_bytes)).await;
 
         assert_eq!(response[1], 141); // 4.13 Request Entity Too Large
         assert_eq!(response[5], 0xc0); // Content-Format: text/plain
@@ -717,27 +728,29 @@ mod tests {
 
     #[tokio::test]
     async fn coap_put_and_get_share_the_core_world_store() {
-        let (core, dir) = test_core("dual-transport");
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("dual-transport");
         let put_bytes = coap_put_packet(
             &[b"home", b"sensor", b"kitchen", b"temp"],
             b"23.5",
             Some(b"writer"),
         );
         let put = packet(&put_bytes);
-        let put_response = handle(&test_engine(&core), &put).await;
+        let put_response = handle(&engine, &put).await;
         assert_eq!(put_response[1], 65); // 2.01 Created
 
-        let stage = core
-            .read_world("home/sensor/kitchen/temp")
+        let world = ValidatedWorldPath::new("home/sensor/kitchen/temp").unwrap();
+        let stage = engine
+            .read(&world, AccessTier::Read)
             .unwrap()
-            .unwrap();
-        assert_eq!(stage.body, b"23.5");
+            .unwrap()
+            .representation;
+        assert_eq!(stage.body, Bytes::from_static(b"23.5"));
         assert_eq!(stage.content_type, "text/plain; charset=utf-8");
 
         let get_bytes =
             coap_get_packet(&[b"home", b"sensor", b"kitchen", b"temp"], Some(b"reader"));
         let get = packet(&get_bytes);
-        let get_response = handle(&test_engine(&core), &get).await;
+        let get_response = handle(&engine, &get).await;
         assert_eq!(get_response[1], 69); // 2.05 Content
         assert_eq!(get_response[6], 0xff);
         assert_eq!(&get_response[7..], b"23.5");
