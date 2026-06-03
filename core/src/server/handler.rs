@@ -35,6 +35,9 @@
 mod delete;
 #[path = "handler/post.rs"]
 mod post;
+#[cfg(test)]
+#[path = "handler/tests.rs"]
+mod tests;
 pub(crate) use delete::execute_delete;
 pub(crate) use post::execute_post;
 
