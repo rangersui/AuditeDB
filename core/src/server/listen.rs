@@ -112,17 +112,9 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{auth, event, server::ServerState, store, Core};
-    use dashmap::DashMap;
-    use std::{
-        collections::VecDeque,
-        path::PathBuf,
-        sync::{
-            atomic::{AtomicBool, AtomicUsize},
-            Arc, Mutex as StdMutex,
-        },
-    };
-    use tokio::sync::{broadcast, watch, Semaphore};
+    use crate::{event, server::ServerState, test_support};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
 
     #[test]
     fn patterns_are_prefix_or_exact() {
@@ -156,34 +148,9 @@ mod tests {
 
     #[tokio::test]
     async fn handler_returns_503_when_listen_slots_are_full() {
-        let (events, _) = broadcast::channel(16);
-        let core = Arc::new(Core {
-            data: PathBuf::new(),
-            tokens: auth::Tokens {
-                read: None,
-                write: None,
-                approve: None,
-            },
-            hmac_key: b"test-key".to_vec(),
-            mem: Arc::new(store::MemoryStore::new()),
-            max_world_bytes: 1024,
-            max_memory_bytes: 1024,
-            max_storage_bytes: None,
-            storage_body_bytes: Arc::new(AtomicUsize::new(0)),
-            durable_world_count: Arc::new(AtomicUsize::new(0)),
-            delete_ledger_created: Arc::new(AtomicBool::new(false)),
-            events,
-            listen_slots: Arc::new(Semaphore::new(0)),
-            listen_replay_max: crate::defaults::DEFAULT_LISTEN_REPLAY_MAX,
-            event_log: Arc::new(StdMutex::new(VecDeque::new())),
-            shutdown: watch::channel(false).1,
-            next_event: crate::state::new_event_counter(),
-            world_locks: Arc::new(DashMap::new()),
-            ledger: Arc::new(crate::ledger::LedgerWriter::new()),
-            read_cache: Arc::new(crate::read_cache::ReadCache::new(
-                crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES,
-            )),
-        });
+        let (mut core, dir) = test_support::test_core("listen-slots-full");
+        core.listen_slots = Arc::new(Semaphore::new(0));
+        let core = Arc::new(core);
 
         let resp = handler(
             State(ServerState::from_core_for_tests(core, 1024)),
@@ -195,5 +162,7 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(resp.headers().get(header::RETRY_AFTER).unwrap(), "1");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
