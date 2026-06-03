@@ -438,7 +438,7 @@ mod tests {
             handler::{execute_delete, execute_get, execute_put},
             test_support::{
                 server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
-                world_db_path_for_server_tests,
+                test_engine_for_server_with_storage_quota, world_db_path_for_server_tests,
             },
             Phase, TraceCtx,
         },
@@ -721,39 +721,42 @@ mod tests {
 
     #[tokio::test]
     async fn proc_du_and_df_report_resource_usage() {
-        let (mut core, dir) = test_core("proc-du-df");
-        core.max_storage_bytes = Some(10);
-        core.write_world("home/hello", b"hello", "text/plain", &[])
+        let (engine, dir) = test_engine_for_server_with_storage_quota("proc-du-df", 10);
+        engine
+            .replace(
+                &world_path("home/hello"),
+                Representation::new(Bytes::from_static(b"hello"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
             .unwrap();
-        core.write_world("tmp/scratch", b"data", "text/plain", &[])
+        engine
+            .replace(
+                &world_path("tmp/scratch"),
+                Representation::new(Bytes::from_static(b"data"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
             .unwrap();
-        let state = Arc::new(core);
+        let state = server_state_for_engine_for_tests(engine);
         let headers = HeaderMap::new();
 
-        let du = proc_du(
-            State(server_state_for_tests(state.clone())),
-            Method::GET,
-            headers.clone(),
-        )
-        .await;
+        let du = proc_du(State(state.clone()), Method::GET, headers.clone()).await;
         assert_eq!(du.status(), StatusCode::OK);
         let du_body = response_text(du).await;
         assert!(du_body.contains("home/hello\t5\n"));
         assert!(du_body.contains("tmp/scratch\t4\n"));
 
-        let df = proc_df(
-            State(server_state_for_tests(state.clone())),
-            Method::GET,
-            headers.clone(),
-        )
-        .await;
+        let df = proc_df(State(state.clone()), Method::GET, headers.clone()).await;
         assert_eq!(df.status(), StatusCode::OK);
         let df_body = response_text(df).await;
         assert!(df_body.contains("storage\t5\t10\t5\n"));
         assert!(df_body.contains("memory\t4\t268435456\t268435452\n"));
         assert!(df_body.contains("worlds\t2\tunlimited\tunlimited\n"));
 
-        let head = proc_du(State(server_state_for_tests(state)), Method::HEAD, headers).await;
+        let head = proc_du(State(state), Method::HEAD, headers).await;
         assert_eq!(head.status(), StatusCode::OK);
         assert_eq!(head.headers().get(header::CONTENT_LENGTH).unwrap(), "27");
         assert_eq!(response_text(head).await, "");
