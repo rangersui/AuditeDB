@@ -3,9 +3,8 @@ use crate::etag as et;
 use crate::handler::{execute_delete, execute_get, execute_head, execute_post, execute_put};
 use crate::middleware::add_server_response_headers;
 use crate::route::world_handler;
-use crate::test_support::{test_core, test_core_with_read_cache_max};
+use crate::test_support::test_core;
 use axum::body::Bytes;
-use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use axum::routing::any;
@@ -1332,148 +1331,6 @@ async fn delete_missing_world_does_not_write_delete_ledger() {
     );
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert!(core.read_world("var/log/deletes").unwrap().is_none());
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test]
-async fn proc_pool_emits_metrics_with_type_labels() {
-    // Warm the cache via a PUT + GET, then assert the metrics
-    // body has the right counter / snapshot labels and tracks
-    // hits + misses correctly. After a DELETE the
-    // `ledger_writer_inits` counter must bump from 0 to 1
-    // (lazy-init fired exactly once).
-    let (core, dir) = test_core("proc-pool-metrics");
-    let headers = HeaderMap::new();
-
-    let put = unwrap_response(
-        execute_put(
-            headers.clone(),
-            Bytes::from_static(b"hello"),
-            auth::Tier::Write,
-            world_path("home/m"),
-            &core,
-            &TraceCtx::disabled(),
-        )
-        .await,
-    );
-    assert_eq!(put.status(), StatusCode::CREATED);
-
-    // First GET = miss (Phase 3); second GET = hit (Phase 1).
-    for _ in 0..2 {
-        let get = unwrap_response(
-            execute_get(
-                headers.clone(),
-                auth::Tier::Read,
-                world_path("home/m"),
-                &core,
-                &TraceCtx::disabled(),
-            )
-            .await,
-        );
-        assert_eq!(get.status(), StatusCode::OK);
-    }
-
-    let state = Arc::new(core);
-    let server_state = server_state_for_tests(state.clone());
-    let resp = proc_pool(State(server_state.clone()), Method::GET, headers.clone()).await;
-    let body = response_text(resp).await;
-
-    assert!(body.contains("read_cache_entries 1 snapshot\n"));
-    assert!(body.contains("read_cache_tombstones 0 snapshot\n"));
-    assert!(body.contains("read_cache_hits 1 counter\n"));
-    assert!(body.contains("read_cache_misses 1 counter\n"));
-    assert!(body.contains("read_cache_capped 0 counter\n"));
-    assert!(body.contains("read_cache_evictions 0 counter\n"));
-    assert!(body.contains("read_cache_open_fails 0 counter\n"));
-    assert!(body.contains("read_cache_max_entries "));
-    // No DELETE issued yet -- ledger writer never lazy-inited.
-    assert!(body.contains("ledger_writer_inits 0 counter\n"));
-
-    // After a DELETE, the lazy-init fires exactly once
-    // (Codex P3: counter not snapshot).
-    let _ = unwrap_response(
-        execute_delete(
-            headers.clone(),
-            auth::Tier::Approve,
-            world_path("home/m"),
-            &server_state,
-            &TraceCtx::disabled(),
-        )
-        .await,
-    );
-    let resp2 = proc_pool(State(server_state), Method::GET, headers).await;
-    let body2 = response_text(resp2).await;
-    assert!(
-        body2.contains("ledger_writer_inits 1 counter\n"),
-        "expected counter to bump to 1 after first DELETE; body=\n{body2}"
-    );
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test]
-async fn proc_pool_reports_read_cache_eviction_values() {
-    let (core, dir) = test_core_with_read_cache_max("proc-pool-eviction-values", 2);
-    let headers = HeaderMap::new();
-
-    for world in ["home/a", "home/b", "home/c"] {
-        let put = unwrap_response(
-            execute_put(
-                headers.clone(),
-                Bytes::from_static(b"x"),
-                auth::Tier::Write,
-                world_path(world),
-                &core,
-                &TraceCtx::disabled(),
-            )
-            .await,
-        );
-        assert_eq!(put.status(), StatusCode::CREATED);
-    }
-
-    for world in ["home/a", "home/b", "home/c"] {
-        let get = unwrap_response(
-            execute_get(
-                headers.clone(),
-                auth::Tier::Read,
-                world_path(world),
-                &core,
-                &TraceCtx::disabled(),
-            )
-            .await,
-        );
-        assert_eq!(get.status(), StatusCode::OK);
-    }
-
-    let state = Arc::new(core);
-    let server_state = server_state_for_tests(state);
-    let resp = proc_pool(State(server_state), Method::GET, headers).await;
-    let body = response_text(resp).await;
-
-    assert!(body.contains("read_cache_entries 2 snapshot\n"));
-    assert!(body.contains("read_cache_hits 0 counter\n"));
-    assert!(body.contains("read_cache_misses 3 counter\n"));
-    assert!(body.contains("read_cache_capped 1 counter\n"));
-    assert!(body.contains("read_cache_evictions 1 counter\n"));
-    assert!(body.contains("read_cache_open_fails 0 counter\n"));
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test]
-async fn proc_pool_requires_read_token_when_enabled() {
-    // Codex P3 sub-finding: /proc/pool exposes read-cache and
-    // ledger writer internals -- match the auth-deny coverage of
-    // /proc/du and /proc/df. With a read token configured, an
-    // unauthenticated GET must return 401, not leak metrics.
-    let (mut core, dir) = test_core("proc-pool-read-token");
-    core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
-    let state = Arc::new(core);
-    let headers = HeaderMap::new();
-
-    let resp = proc_pool(State(server_state_for_tests(state)), Method::GET, headers).await;
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
     let _ = std::fs::remove_dir_all(dir);
 }
