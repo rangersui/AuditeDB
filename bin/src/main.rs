@@ -1,48 +1,71 @@
+#![cfg_attr(test, allow(dead_code))]
+
+#[path = "../../core/src/defaults.rs"]
 mod defaults;
+#[path = "../../core/src/path.rs"]
 mod path;
-#[path = "bin/server/mod.rs"]
+#[path = "server/mod.rs"]
 mod server;
 
 // Binary white-box tests need core internals while exercising the server tree.
 // Keep that test bridge here so `lib.rs` remains protocol-neutral even when
 // binary-feature tests compile.
 #[cfg(test)]
+#[path = "../../core/src/audit.rs"]
 mod audit;
 #[cfg(test)]
+#[path = "../../core/src/auth.rs"]
 mod auth;
 #[cfg(test)]
+#[path = "../../core/src/data_lock.rs"]
 mod data_lock;
 #[cfg(test)]
+#[path = "../../core/src/delete_ops.rs"]
 mod delete_ops;
 #[cfg(test)]
+#[path = "../../core/src/engine.rs"]
 mod engine;
 #[cfg(test)]
+#[path = "../../core/src/engine_introspection.rs"]
 mod engine_introspection;
 #[cfg(test)]
+#[path = "../../core/src/engine_ops.rs"]
 mod engine_ops;
 #[cfg(test)]
+#[path = "../../core/src/engine_trace.rs"]
 mod engine_trace;
 #[cfg(test)]
+#[path = "../../core/src/engine_types.rs"]
 mod engine_types;
 #[cfg(test)]
+#[path = "../../core/src/etag.rs"]
 mod etag;
 #[cfg(test)]
+#[path = "../../core/src/event.rs"]
 mod event;
 #[cfg(test)]
+#[path = "../../core/src/ledger.rs"]
 mod ledger;
 #[cfg(test)]
+#[path = "../../core/src/read_cache.rs"]
 mod read_cache;
 #[cfg(test)]
+#[path = "../../core/src/state.rs"]
 mod state;
 #[cfg(test)]
+#[path = "../../core/src/storage_class.rs"]
 mod storage_class;
 #[cfg(test)]
+#[path = "../../core/src/store.rs"]
 mod store;
 #[cfg(test)]
+#[path = "../../core/src/test_support.rs"]
 mod test_support;
 #[cfg(test)]
+#[path = "../../core/src/world.rs"]
 mod world;
 #[cfg(test)]
+#[path = "../../core/src/world_ops.rs"]
 mod world_ops;
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ Pre-flight (one-shot, in another terminal):
   $env:ELASTIK_WRITE_TOKEN = "write-token"
   $env:ELASTIK_APPROVE_TOKEN = "approve-token"
   $env:ELASTIK_PERSIST_HEADERS = "x-author,x-meta-*"
-  cargo run --manifest-path core/Cargo.toml --release
+  cargo run --manifest-path bin/Cargo.toml --release
 
 Per-row dispatch by `grader:` metadata:
   executable -> setup curls -> ask model -> extract emitted curl ->
@@ -425,7 +425,7 @@ def main() -> int:
         sys.stderr.write('  $env:ELASTIK_WRITE_TOKEN = "write-token"\n')
         sys.stderr.write('  $env:ELASTIK_APPROVE_TOKEN = "approve-token"\n')
         sys.stderr.write('  $env:ELASTIK_PERSIST_HEADERS = "x-author,x-meta-*"\n')
-        sys.stderr.write('  cargo run --manifest-path core/Cargo.toml --release\n')
+        sys.stderr.write('  cargo run --manifest-path bin/Cargo.toml --release\n')
         return 2
 
     doc = yaml.safe_load(args.prompt_file.read_text(encoding="utf-8"))

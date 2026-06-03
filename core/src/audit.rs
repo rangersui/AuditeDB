@@ -424,7 +424,7 @@ fn verify_event(
     None
 }
 
-#[cfg(all(test, feature = "unstable-engine-bin"))]
+#[cfg(test)]
 pub(crate) fn meta_sha256(content_type: &str, headers: &[(String, String)]) -> String {
     meta_sha256_canonical(content_type, &canonical_headers(headers))
 }

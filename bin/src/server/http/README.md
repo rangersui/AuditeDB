@@ -23,8 +23,8 @@ curl              http://127.0.0.1:3105/proc/worlds
 curl -N           http://127.0.0.1:3105/listen/home/*
 ```
 
-The binary refuses to build without `unstable-engine-bin`. The Engine library
-does not need that feature.
+The binary package depends on the Engine library with `unstable-engine`
+enabled. The Engine library itself still builds without the HTTP adapter stack.
 
 ## Environment
 

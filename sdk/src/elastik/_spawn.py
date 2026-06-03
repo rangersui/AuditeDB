@@ -248,9 +248,9 @@ def start(
         raise RuntimeError(
             f"bundled binary not found: {binary}\n"
             "If you're working from source, build and bundle it from the repo root:\n"
-            "  cargo build --release --manifest-path core/Cargo.toml\n"
+            "  cargo build --release --manifest-path bin/Cargo.toml\n"
             "  mkdir -p sdk/src/elastik/_bin\n"
-            "  cp core/target/release/elastik-core* sdk/src/elastik/_bin/\n"
+            "  cp bin/target/release/elastik-core* sdk/src/elastik/_bin/\n"
             f"Expected binary directory: {binary.parent}"
         )
     if not _port_is_free(host, port):

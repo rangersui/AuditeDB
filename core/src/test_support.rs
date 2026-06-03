@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Semaphore};
 
-#[cfg(all(test, feature = "unstable-engine-bin"))]
+#[cfg(test)]
 use crate::engine::Engine;
 use crate::{
     auth,
@@ -70,7 +70,7 @@ pub(crate) fn test_core_with_read_cache_max(
     )
 }
 
-#[cfg(all(test, feature = "unstable-engine-bin"))]
+#[cfg(test)]
 pub(crate) fn world_db_path_for_tests(
     data_root: impl AsRef<std::path::Path>,
     world: &str,
@@ -78,12 +78,12 @@ pub(crate) fn world_db_path_for_tests(
     crate::world::world_db(data_root.as_ref(), world)
 }
 
-#[cfg(all(test, feature = "unstable-engine-bin"))]
+#[cfg(test)]
 pub(crate) fn test_engine_for_tests(core: &Core) -> Engine {
     Engine::from_core_for_tests(Arc::new(core.clone()))
 }
 
-#[cfg(all(test, feature = "unstable-engine-bin"))]
+#[cfg(test)]
 pub(crate) fn write_audited_world_for_tests(
     core: &Core,
     world: &str,
@@ -101,7 +101,7 @@ pub(crate) fn write_audited_world_for_tests(
     )
 }
 
-#[cfg(all(test, feature = "unstable-engine-bin"))]
+#[cfg(test)]
 pub(crate) fn audit_meta_sha256_for_tests(
     content_type: &str,
     headers: &[(String, String)],

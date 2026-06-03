@@ -26,9 +26,9 @@ physics.
 | Surface | README | Scope |
 |---------|--------|-------|
 | Engine library | this file | Protocol-neutral paths, bytes, ETags, audit, auth, subscriptions. |
-| HTTP binary adapter | [`core/src/bin/server/http/README.md`](core/src/bin/server/http/README.md) | `elastik-core` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
-| MQTT binary adapter | [`core/src/bin/server/mqtt/README.md`](core/src/bin/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
-| CoAP binary adapter | [`core/src/bin/server/coap/README.md`](core/src/bin/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
+| HTTP binary adapter | [`bin/src/server/http/README.md`](bin/src/server/http/README.md) | `elastik-core` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
+| MQTT binary adapter | [`bin/src/server/mqtt/README.md`](bin/src/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
+| CoAP binary adapter | [`bin/src/server/coap/README.md`](bin/src/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
 | FFI adapter | [`ffi/README.md`](ffi/README.md) | UniFFI binding: Python, Kotlin, Swift. Blocking pull, same Engine verbs. |
 | Python SDK | [`sdk/README.md`](sdk/README.md) | Python client surface. |
 | JavaScript SDK | [`sdk-js/README.md`](sdk-js/README.md) | JS client surface. |
@@ -150,14 +150,12 @@ above.
 
 ## Feature flags
 
+`elastik-core` is now the library package only. Its feature surface is small:
+
 | Feature                | Default | Pulls in                                                       | Purpose                            |
 |------------------------|:-------:|---------------------------------------------------------------|------------------------------------|
-| `mqtt`                 |         | `rumqttd`, Tokio I/O + net, `unstable-engine-bin`              | binary's MQTT adapter              |
 | `bundled-sqlite`       |    ✓    | `rusqlite/bundled`                                            | static SQLite link                 |
-| `coap`                 |    ✓    | —                                                              | binary's CoAP adapter              |
-| `multi-thread`         |    ✓    | `tokio/rt-multi-thread`                                       | binary's multi-thread runtime      |
-| `unstable-engine`      |         | `tracing`                                                      | public `Engine` API                |
-| `unstable-engine-bin`  |    ✓    | `axum`, `base64`, `futures-util`, `tokio/net`, `tokio/signal`, `tracing-subscriber` | required by the `elastik-core` bin |
+| `unstable-engine`      |    ✓    | `tracing`                                                      | public `Engine` API                |
 
 Library-only build, no HTTP stack:
 
@@ -168,17 +166,28 @@ cargo build --lib --no-default-features --features bundled-sqlite,unstable-engin
 The resulting dependency tree has zero `axum`, `hyper`, `tower`,
 `tokio-stream`, `futures-util`, `rumqttd`, or `base64`.
 
+The binary package in [`bin/Cargo.toml`](bin/Cargo.toml) owns adapter/runtime
+features:
+
+| Feature           | Default | Pulls in                         | Purpose                       |
+|-------------------|:-------:|----------------------------------|-------------------------------|
+| `bundled-sqlite`  |    ✓    | `elastik-core/bundled-sqlite`    | static SQLite link            |
+| `coap`            |    ✓    | —                                | CoAP adapter                  |
+| `multi-thread`    |    ✓    | `tokio/rt-multi-thread`          | multi-thread runtime          |
+| `mqtt`            |         | `rumqttd`, Tokio I/O utilities   | MQTT 3.1.1 adapter            |
+| `unstable-engine` |    ✓    | `elastik-core/unstable-engine`   | Engine facade used by adapters |
+
 ---
 
 ## Architecture — library + binary split
 
-PR 5 + PR 6 split the codebase into two crate targets sharing one Cargo
-package:
+The codebase is split into two Rust packages:
 
-- **Library** (`src/lib.rs` + `engine*.rs` + storage primitives): the
+- **Library package** (`core/src/lib.rs` + `engine*.rs` + storage primitives):
+  the
   protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars, no sockets.
   Safe to embed in any Rust context.
-- **Binary** (`src/main.rs` + `src/bin/server/...` + adapter-side `config`,
+- **Binary package** (`bin/src/main.rs` + `bin/src/server/...` + adapter-side `config`,
   `http_range`, `http_semantics`, `path`): the HTTP + CoAP + MQTT server. Owns
   Authorization parsing, request lifecycle, response rendering, graceful
   shutdown. Consumes the library through the public `Engine` facade only.
@@ -188,8 +197,8 @@ The split is real, not cosmetic:
 - `cargo build --lib --no-default-features --features bundled-sqlite,unstable-engine`
   produces an embeddable Engine library whose dep tree contains **zero**
   HTTP-shaped crates.
-- `[[bin]] required-features = ["unstable-engine-bin"]` makes `cargo` refuse
-  to produce a binary without the HTTP stack — the requirement is explicit.
+- `cargo build --manifest-path bin/Cargo.toml` builds the `elastik-core`
+  binary and all server adapters from the binary package.
 
 ---
 

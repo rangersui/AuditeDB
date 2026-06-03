@@ -33,8 +33,8 @@ function Run-JsSdkAgainstCore {
         [System.Runtime.InteropServices.OSPlatform]::Windows
     )
     $suffix = if ($isWindowsHost) { ".exe" } else { "" }
-    $coreExe = Join-Path $root "core/target/debug/elastik-core$suffix"
-    Run cargo build --manifest-path core/Cargo.toml
+    $coreExe = Join-Path $root "bin/target/debug/elastik-core$suffix"
+    Run cargo build --manifest-path bin/Cargo.toml
 
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("elastik-hook-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $temp | Out-Null
@@ -116,19 +116,23 @@ if ($strict) {
 
 Step "Rust format" {
     Run cargo fmt --manifest-path core/Cargo.toml "--" --check
+    Run cargo fmt --manifest-path bin/Cargo.toml "--" --check
 }
 
 Step "Rust clippy" {
     Run cargo clippy --manifest-path core/Cargo.toml "--" "-D" warnings
+    Run cargo clippy --manifest-path bin/Cargo.toml "--" "-D" warnings
 }
 
 Step "Rust tests" {
     Run cargo test --manifest-path core/Cargo.toml
+    Run cargo test --manifest-path bin/Cargo.toml
 }
 
 if ($strict) {
     Step "Rust release tests" {
         Run cargo test --manifest-path core/Cargo.toml --release
+        Run cargo test --manifest-path bin/Cargo.toml --release
     }
 }
 

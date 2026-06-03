@@ -42,9 +42,9 @@ from collections.abc import MutableMapping
 
 ROOT = Path(__file__).resolve().parents[2]
 SDK_SRC = ROOT / "sdk" / "src"
-CORE_DIR = ROOT / "core"
+BIN_DIR = ROOT / "bin"
 BIN_NAME = "elastik-core.exe" if os.name == "nt" else "elastik-core"
-CORE_BIN = CORE_DIR / "target" / "release" / BIN_NAME
+CORE_BIN = BIN_DIR / "target" / "release" / BIN_NAME
 SDK_BIN = SDK_SRC / "elastik" / "_bin" / BIN_NAME
 
 
@@ -73,7 +73,7 @@ def free_udp_port() -> int:
 
 
 def build_and_bundle() -> None:
-    subprocess.run(["cargo", "build", "--release"], cwd=CORE_DIR, check=True)
+    subprocess.run(["cargo", "build", "--release"], cwd=BIN_DIR, check=True)
     SDK_BIN.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(CORE_BIN, SDK_BIN)
 

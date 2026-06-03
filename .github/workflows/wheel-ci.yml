@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/wheel-ci.yml"
+      - "bin/**"
       - "core/**"
       - "sdk/**"
 
@@ -41,21 +42,21 @@ jobs:
         run: python -c "import platform, sys; print(sys.platform, platform.machine())"
 
       - name: build core
-        run: cargo build --release --manifest-path core/Cargo.toml
+        run: cargo build --release --manifest-path bin/Cargo.toml
 
       - name: bundle core binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force sdk/src/elastik/_bin | Out-Null
-          Copy-Item core/target/release/elastik-core.exe sdk/src/elastik/_bin/elastik-core.exe
+          Copy-Item bin/target/release/elastik-core.exe sdk/src/elastik/_bin/elastik-core.exe
 
       - name: bundle core binary (unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p sdk/src/elastik/_bin
-          cp core/target/release/elastik-core sdk/src/elastik/_bin/elastik-core
+          cp bin/target/release/elastik-core sdk/src/elastik/_bin/elastik-core
           chmod +x sdk/src/elastik/_bin/elastik-core
 
       - name: build wheel

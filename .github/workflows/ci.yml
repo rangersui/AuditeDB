@@ -24,6 +24,9 @@ jobs:
       - name: format
         working-directory: core
         run: cargo fmt --check
+      - name: binary format
+        working-directory: bin
+        run: cargo fmt --check
       - name: core no structured data
         run: python core/no_json.py core/src
       - name: core contraband
@@ -36,18 +39,30 @@ jobs:
           core/src
       - name: core production clippy doctrine lint
         working-directory: core
-        run: cargo clippy --lib --bin elastik-core -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --lib -- -D clippy::unwrap_used -D clippy::print_stdout
+      - name: binary production clippy doctrine lint
+        working-directory: bin
+        run: cargo clippy --bin elastik-core -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: core production clippy doctrine lint minimal
         working-directory: core
-        run: cargo clippy --lib --bin elastik-core --no-default-features --features bundled-sqlite,unstable-engine-bin -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --lib --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::print_stdout
+      - name: binary production clippy doctrine lint minimal
+        working-directory: bin
+        run: cargo clippy --bin elastik-core --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: clippy
         working-directory: core
+        run: cargo clippy -- -D warnings
+      - name: binary clippy
+        working-directory: bin
         run: cargo clippy -- -D warnings
       - name: rustdoc warnings
         working-directory: core
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
       - name: unit tests
         working-directory: core
+        run: cargo test
+      - name: binary tests
+        working-directory: bin
         run: cargo test
 
   sdk-blackbox:

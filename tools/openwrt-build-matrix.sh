@@ -18,7 +18,7 @@ mkdir -p "$OUT"
 # Pin by default so matrix sizes and linker behavior stay reproducible.
 # Override with RUST_NIGHTLY=nightly-YYYY-MM-DD when refreshing the toolchain.
 RUST_NIGHTLY="${RUST_NIGHTLY:-nightly-2026-05-22}"
-OPENWRT_CARGO_FEATURES="${OPENWRT_CARGO_FEATURES:-bundled-sqlite,unstable-engine-bin}"
+OPENWRT_CARGO_FEATURES="${OPENWRT_CARGO_FEATURES:-bundled-sqlite,unstable-engine}"
 HOST_UID="${HOST_UID:-$(id -u 2>/dev/null || printf '')}"
 HOST_GID="${HOST_GID:-$(id -g 2>/dev/null || printf '')}"
 
@@ -116,6 +116,7 @@ export "AR_${target_env_lower}=${CROSS_PREFIX}-gcc-ar"
 export RUSTFLAGS="$EXTRA_RUSTFLAGS -C target-feature=-crt-static -L native=$UNWIND_SHIM -L native=$TOOLCHAIN_DIR/lib -L native=$GCC_LIB_DIR -C link-arg=-B$GCC_LIB_DIR"
 
 cargo +"$RUST_NIGHTLY" build \
+  --manifest-path /src/bin/Cargo.toml \
   -Z build-std=std,panic_abort \
   --profile rut241 \
   --target "$RUST_TARGET" \

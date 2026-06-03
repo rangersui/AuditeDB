@@ -57,25 +57,20 @@
 //! ## What the library does *not* do
 //!
 //! No HTTP, no CoAP, no MQTT, no SSE, no server runtime. Those live in the
-//! `elastik-core` binary and consume this library through the unstable public
-//! [`Engine`] API. In a minimal library-only build, the library does not read
-//! environment variables, does not bind sockets, and does not depend on `axum`,
-//! `hyper`, `tower`, `tokio-stream`, `futures-util`, `rumqttd`, or `base64`.
+//! `elastik-bin` package's `elastik-core` binary and consume this library
+//! through the unstable public [`Engine`] API. In a minimal library-only build,
+//! the library does not read environment variables, does not bind sockets, and
+//! does not depend on `axum`, `hyper`, `tower`, `tokio-stream`, `futures-util`,
+//! `rumqttd`, or `base64`.
 //!
 //! ## Feature flags
 //!
 //! - `bundled-sqlite` *(default)* — link a bundled SQLite via `rusqlite/bundled`.
-//! - `coap` *(default)* — enable the CoAP adapter inside the binary.
-//! - `mqtt` — enable the MQTT adapter inside the binary. MQTT uses `rumqttd`
-//!   protocol parsing, maps CONNECT username bytes through [`Engine::verify_token`],
-//!   maps PUBLISH to [`Engine::replace`], and maps SUBSCRIBE to [`Engine::subscribe`].
-//! - `multi-thread` *(default)* — enable Tokio's multi-thread runtime for the
-//!   binary.
 //! - `unstable-engine` — expose the public [`Engine`] facade. **The API shape
 //!   is allowed to change between minor versions while this gate stays.**
-//! - `unstable-engine-bin` *(default)* — superset that adds `axum`, `base64`,
-//!   `futures-util`, Tokio `net`/`signal`, and `tracing-subscriber`; the
-//!   `elastik-core` binary requires this feature.
+//!
+//! Binary adapter features such as `coap`, `mqtt`, and `multi-thread` live in
+//! `bin/Cargo.toml`, not in this library package.
 //!
 //! Minimal library-only build: `cargo build --lib --no-default-features
 //! --features bundled-sqlite,unstable-engine`.
