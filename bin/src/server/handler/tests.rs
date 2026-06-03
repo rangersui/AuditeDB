@@ -1,7 +1,12 @@
 use super::*;
 use crate::{
+    engine::Engine,
+    engine_types::{Preconditions, Representation, WriteResult},
     etag as et,
-    server::test_support::server_state_for_tests,
+    server::test_support::{
+        server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
+        test_engine_for_server_with_read_token, write_text_world_for_tests,
+    },
     test_support::{
         audit_meta_sha256_for_tests, test_core, world_db_path_for_tests,
         write_audited_world_for_tests,
@@ -20,6 +25,10 @@ fn handler_state_for_tests(core: &Core) -> ServerState {
     server_state_for_tests(Arc::new(core.clone()))
 }
 
+fn handler_state_for_engine_tests(engine: &Engine) -> ServerState {
+    server_state_for_engine_for_tests(engine.clone())
+}
+
 async fn execute_get_with_test_state(
     headers: HeaderMap,
     tier: impl Into<AccessTier>,
@@ -31,6 +40,17 @@ async fn execute_get_with_test_state(
     execute_get(headers, tier, world, &state, trace).await
 }
 
+async fn execute_get_with_engine_state(
+    headers: HeaderMap,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    engine: &Engine,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_engine_tests(engine);
+    execute_get(headers, tier, world, &state, trace).await
+}
+
 async fn execute_head_with_test_state(
     headers: HeaderMap,
     tier: impl Into<AccessTier>,
@@ -39,6 +59,17 @@ async fn execute_head_with_test_state(
     trace: &TraceCtx,
 ) -> Phase {
     let state = handler_state_for_tests(core);
+    execute_head(headers, tier, world, &state, trace).await
+}
+
+async fn execute_head_with_engine_state(
+    headers: HeaderMap,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    engine: &Engine,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_engine_tests(engine);
     execute_head(headers, tier, world, &state, trace).await
 }
 
@@ -79,31 +110,47 @@ fn unwrap_response(phase: Phase) -> Response {
     }
 }
 
+async fn write_representation_for_engine_tests(
+    engine: &Engine,
+    world: &str,
+    body: &'static [u8],
+    content_type: &str,
+    headers: Vec<(String, String)>,
+) -> WriteResult {
+    engine
+        .replace(
+            &world_path(world),
+            Representation::new(Bytes::from_static(body), content_type, headers),
+            Preconditions::none(),
+            AccessTier::Write,
+        )
+        .await
+        .expect("test write should succeed")
+}
+
 #[tokio::test]
 async fn get_and_head_require_read_token_when_enabled() {
-    let (mut core, dir) = test_core("read-token-handlers");
-    core.write_world("home/private", b"secret", "text/plain", &[])
-        .unwrap();
-    core.tokens.read = crate::auth::NonEmptyBytes::new(b"reader".to_vec());
+    let (engine, dir) = test_engine_for_server_with_read_token("read-token-handlers", b"reader");
+    write_text_world_for_tests(&engine, "home/private", "secret").await;
 
     let headers = HeaderMap::new();
     let get_anon = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/private"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
     );
     assert_eq!(get_anon.status(), StatusCode::UNAUTHORIZED);
     let head_reader = unwrap_response(
-        execute_head_with_test_state(
+        execute_head_with_engine_state(
             headers.clone(),
             AccessTier::Read,
             world_path("home/private"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -115,18 +162,17 @@ async fn get_and_head_require_read_token_when_enabled() {
 
 #[tokio::test]
 async fn get_and_head_honor_single_byte_range() {
-    let (core, dir) = test_core("range-handler");
-    core.write_world("home/range", b"abcdef", "text/plain", &[])
-        .unwrap();
+    let (engine, dir) = test_engine_for_server("range-handler");
+    write_text_world_for_tests(&engine, "home/range", "abcdef").await;
     let mut headers = HeaderMap::new();
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -139,11 +185,11 @@ async fn get_and_head_honor_single_byte_range() {
     assert_eq!(get.headers().get(header::CONTENT_LENGTH).unwrap(), "3");
 
     let head = unwrap_response(
-        execute_head_with_test_state(
+        execute_head_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -160,17 +206,16 @@ async fn get_and_head_honor_single_byte_range() {
 
 #[tokio::test]
 async fn get_and_head_advertise_accept_ranges_on_full_body() {
-    let (core, dir) = test_core("accept-ranges");
-    core.write_world("home/ranges", b"abcdef", "text/plain", &[])
-        .unwrap();
+    let (engine, dir) = test_engine_for_server("accept-ranges");
+    write_text_world_for_tests(&engine, "home/ranges", "abcdef").await;
     let headers = HeaderMap::new();
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/ranges"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -179,11 +224,11 @@ async fn get_and_head_advertise_accept_ranges_on_full_body() {
     assert_eq!(get.headers().get(header::ACCEPT_RANGES).unwrap(), "bytes");
 
     let head = unwrap_response(
-        execute_head_with_test_state(
+        execute_head_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/ranges"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -196,18 +241,17 @@ async fn get_and_head_advertise_accept_ranges_on_full_body() {
 
 #[tokio::test]
 async fn unsatisfied_range_returns_416_with_content_range() {
-    let (core, dir) = test_core("range-416");
-    core.write_world("home/range", b"abcdef", "text/plain", &[])
-        .unwrap();
+    let (engine, dir) = test_engine_for_server("range-416");
+    write_text_world_for_tests(&engine, "home/range", "abcdef").await;
     let mut headers = HeaderMap::new();
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=99-100"));
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -224,18 +268,17 @@ async fn unsatisfied_range_returns_416_with_content_range() {
 
 #[tokio::test]
 async fn multi_range_is_ignored_and_returns_full_body() {
-    let (core, dir) = test_core("multi-range");
-    core.write_world("home/range", b"abcdef", "text/plain", &[])
-        .unwrap();
+    let (engine, dir) = test_engine_for_server("multi-range");
+    write_text_world_for_tests(&engine, "home/range", "abcdef").await;
     let mut headers = HeaderMap::new();
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1,4-5"));
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -249,17 +292,16 @@ async fn multi_range_is_ignored_and_returns_full_body() {
 
 #[tokio::test]
 async fn world_reads_advertise_monitor_and_collection_links() {
-    let (core, dir) = test_core("link-headers");
-    core.write_world("home/links", b"hello", "text/plain", &[])
-        .unwrap();
+    let (engine, dir) = test_engine_for_server("link-headers");
+    write_text_world_for_tests(&engine, "home/links", "hello").await;
     let headers = HeaderMap::new();
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/links"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -274,11 +316,11 @@ async fn world_reads_advertise_monitor_and_collection_links() {
         .any(|v| *v == "</proc/worlds>; rel=\"collection\""));
 
     let head = unwrap_response(
-        execute_head_with_test_state(
+        execute_head_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/links"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -290,19 +332,18 @@ async fn world_reads_advertise_monitor_and_collection_links() {
 
 #[tokio::test]
 async fn stale_if_range_returns_full_body() {
-    let (core, dir) = test_core("if-range-stale");
-    core.write_world("home/range", b"abcdef", "text/plain", &[])
-        .unwrap();
+    let (engine, dir) = test_engine_for_server("if-range-stale");
+    write_text_world_for_tests(&engine, "home/range", "abcdef").await;
     let mut headers = HeaderMap::new();
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
     headers.insert(header::IF_RANGE, HeaderValue::from_static("\"hmac-stale\""));
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -316,19 +357,25 @@ async fn stale_if_range_returns_full_body() {
 
 #[tokio::test]
 async fn get_and_head_honor_if_none_match_cache_revalidation() {
-    let (core, dir) = test_core("read-if-none-match");
-    let h = write_audited_world_for_tests(&core, "home/cache", b"cached body", "text/plain", &[])
-        .unwrap();
-    let etag = format!("\"{}\"", et::hmac_etag(&h));
+    let (engine, dir) = test_engine_for_server("read-if-none-match");
+    let write = write_representation_for_engine_tests(
+        &engine,
+        "home/cache",
+        b"cached body",
+        "text/plain",
+        Vec::new(),
+    )
+    .await;
+    let etag = format!("\"{}\"", write.etag);
     let mut headers = HeaderMap::new();
     headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/cache"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -342,11 +389,11 @@ async fn get_and_head_honor_if_none_match_cache_revalidation() {
         .any(|v| v == "</listen/home/cache>; rel=\"monitor\""));
 
     let head = unwrap_response(
-        execute_head_with_test_state(
+        execute_head_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/cache"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -359,11 +406,11 @@ async fn get_and_head_honor_if_none_match_cache_revalidation() {
         HeaderValue::from_static("\"hmac-stale\""),
     );
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/cache"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -375,7 +422,7 @@ async fn get_and_head_honor_if_none_match_cache_revalidation() {
 
 #[tokio::test]
 async fn get_returns_stored_standard_representation_headers() {
-    let (core, dir) = test_core("representation-headers");
+    let (engine, dir) = test_engine_for_server("representation-headers");
     let headers = vec![
         ("content-encoding".to_string(), "gzip".to_string()),
         (
@@ -389,21 +436,22 @@ async fn get_returns_stored_standard_representation_headers() {
         ),
         ("x-frame-options".to_string(), "DENY".to_string()),
     ];
-    core.write_world(
+    write_representation_for_engine_tests(
+        &engine,
         "home/gzip",
         b"compressed bytes",
         "application/pdf",
-        &headers,
+        headers,
     )
-    .unwrap();
+    .await;
 
     let req_headers = HeaderMap::new();
     let resp = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             req_headers.clone(),
             AccessTier::Anon,
             world_path("home/gzip"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
