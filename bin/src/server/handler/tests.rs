@@ -4,12 +4,10 @@ use crate::{
     engine_types::{Preconditions, Representation, WriteResult},
     server::test_support::{
         server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
-        test_engine_for_server_with_read_token, write_text_world_for_tests,
+        test_engine_for_server_with_read_token, world_db_path_for_server_tests,
+        write_text_world_for_tests,
     },
-    test_support::{
-        audit_meta_sha256_for_tests, test_core, world_db_path_for_tests,
-        write_audited_world_for_tests,
-    },
+    test_support::test_core,
     Core,
 };
 use axum::response::Response;
@@ -686,19 +684,19 @@ async fn put_and_post_honor_write_preconditions_at_handler_level() {
 
 #[tokio::test]
 async fn post_audit_uses_existing_representation_metadata() {
-    let (core, dir) = test_core("post-audit-meta");
+    let (engine, dir) = test_engine_for_server("post-audit-meta");
     let headers = vec![
         ("content-encoding".to_string(), "gzip".to_string()),
         ("x-meta-author".to_string(), "ranger".to_string()),
     ];
-    write_audited_world_for_tests(
-        &core,
+    write_representation_for_engine_tests(
+        &engine,
         "home/post-audit-meta",
         b"hello",
         "text/plain",
-        &headers,
+        headers.clone(),
     )
-    .unwrap();
+    .await;
 
     let mut req_headers = HeaderMap::new();
     req_headers.insert(
@@ -707,32 +705,41 @@ async fn post_audit_uses_existing_representation_metadata() {
     );
     req_headers.insert(header::CONTENT_LANGUAGE, HeaderValue::from_static("zh-CN"));
     let resp = unwrap_response(
-        execute_post_with_test_state(
+        execute_post_with_engine_state(
             req_headers.clone(),
             Bytes::from_static(b" world"),
             AccessTier::Write,
             world_path("home/post-audit-meta"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
     );
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let c = rusqlite::Connection::open(world_db_path_for_tests(&core.data, "home/post-audit-meta"))
-        .unwrap();
-    let (content_type, meta_sha256): (String, String) = c
+    let c =
+        rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "home/post-audit-meta"))
+            .unwrap();
+    let content_type: String = c
         .query_row(
-            "SELECT content_type, meta_sha256 FROM events WHERE event_type='append'",
+            "SELECT content_type FROM events WHERE event_type='append'",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
         .unwrap();
     assert_eq!(content_type, "text/plain");
-    assert_eq!(
-        meta_sha256,
-        audit_meta_sha256_for_tests("text/plain", &headers)
-    );
+    let event_headers: Vec<(String, String)> = c
+        .prepare(
+            "SELECT name, value FROM event_headers \
+             WHERE event_id=(SELECT id FROM events WHERE event_type='append') \
+             ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(event_headers, headers);
 
     let language_count: i64 = c
         .query_row(
