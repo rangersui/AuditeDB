@@ -431,11 +431,42 @@ fn mqtt_metrics_body(snapshot: &crate::mqtt::MqttMetricsSnapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{defaults::DEFAULT_MAX_WORLD_BYTES, test_support::test_core, world, Core};
+    use crate::{
+        auth,
+        defaults::DEFAULT_MAX_WORLD_BYTES,
+        handler::{execute_delete, execute_put},
+        test_support::test_core,
+        world, Core, Phase, TraceCtx,
+    };
+    use axum::body::{to_bytes, Bytes};
     use std::sync::Arc;
 
     fn server_state_for_tests(core: Arc<Core>) -> ServerState {
         ServerState::from_core_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
+    }
+
+    fn world_path(world: &str) -> ValidatedWorldPath {
+        ValidatedWorldPath::new(world).unwrap()
+    }
+
+    fn unwrap_response(phase: Phase) -> Response {
+        match phase {
+            Phase::ExecutedRead(r) | Phase::CommittedWrite(r) | Phase::Done(r) => r,
+            Phase::Error { resp, .. } => resp,
+            Phase::Received { .. }
+            | Phase::Authenticated { .. }
+            | Phase::PathValidated { .. }
+            | Phase::Dispatched { .. } => {
+                panic!("execute_* returned a non-terminal Phase variant")
+            }
+        }
+    }
+
+    async fn response_text(resp: Response) -> String {
+        let bytes = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        String::from_utf8(bytes.to_vec()).unwrap()
     }
 
     #[tokio::test]
@@ -671,6 +702,131 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert!(!db.exists());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_du_and_df_report_resource_usage() {
+        let (mut core, dir) = test_core("proc-du-df");
+        core.max_storage_bytes = Some(10);
+        core.write_world("home/hello", b"hello", "text/plain", &[])
+            .unwrap();
+        core.write_world("tmp/scratch", b"data", "text/plain", &[])
+            .unwrap();
+        let state = Arc::new(core);
+        let headers = HeaderMap::new();
+
+        let du = proc_du(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
+        assert_eq!(du.status(), StatusCode::OK);
+        let du_body = response_text(du).await;
+        assert!(du_body.contains("home/hello\t5\n"));
+        assert!(du_body.contains("tmp/scratch\t4\n"));
+
+        let df = proc_df(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
+        assert_eq!(df.status(), StatusCode::OK);
+        let df_body = response_text(df).await;
+        assert!(df_body.contains("storage\t5\t10\t5\n"));
+        assert!(df_body.contains("memory\t4\t268435456\t268435452\n"));
+        assert!(df_body.contains("worlds\t2\tunlimited\tunlimited\n"));
+
+        let head = proc_du(State(server_state_for_tests(state)), Method::HEAD, headers).await;
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers().get(header::CONTENT_LENGTH).unwrap(), "27");
+        assert_eq!(response_text(head).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_du_and_df_require_read_token_when_enabled() {
+        let (mut core, dir) = test_core("proc-du-df-read-token");
+        core.tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
+        let state = Arc::new(core);
+        let headers = HeaderMap::new();
+
+        let du = proc_du(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers.clone(),
+        )
+        .await;
+        assert_eq!(du.status(), StatusCode::UNAUTHORIZED);
+
+        let df = proc_df(
+            State(server_state_for_tests(state.clone())),
+            Method::GET,
+            headers,
+        )
+        .await;
+        assert_eq!(df.status(), StatusCode::UNAUTHORIZED);
+
+        let mut auth_headers = HeaderMap::new();
+        let auth_value =
+            HeaderValue::from_str(&format!("{} {}", "Bearer", "reader")).expect("valid test auth");
+        auth_headers.insert(header::AUTHORIZATION, auth_value);
+        let authorized = proc_df(
+            State(server_state_for_tests(state)),
+            Method::GET,
+            auth_headers,
+        )
+        .await;
+        assert_eq!(authorized.status(), StatusCode::OK);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_df_world_count_tracks_durable_put_and_delete() {
+        let (core, dir) = test_core("proc-df-world-count");
+        let headers = HeaderMap::new();
+
+        let put = unwrap_response(
+            execute_put(
+                headers.clone(),
+                Bytes::from_static(b"x"),
+                auth::Tier::Write,
+                world_path("home/count"),
+                &core,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
+        assert_eq!(put.status(), StatusCode::CREATED);
+
+        let state = Arc::new(core);
+        let server_state = server_state_for_tests(state.clone());
+        let before = proc_df(State(server_state.clone()), Method::GET, headers.clone()).await;
+        assert!(response_text(before)
+            .await
+            .contains("worlds\t1\tunlimited\tunlimited\n"));
+
+        let delete = unwrap_response(
+            execute_delete(
+                headers.clone(),
+                auth::Tier::Approve,
+                world_path("home/count"),
+                &server_state,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        let after = proc_df(State(server_state), Method::GET, headers).await;
+        let after_body = response_text(after).await;
+        assert!(after_body.contains("storage\t0\tunlimited\tunlimited\n"));
+        assert!(after_body.contains("worlds\t0\tunlimited\tunlimited\n"));
 
         let _ = std::fs::remove_dir_all(dir);
     }
