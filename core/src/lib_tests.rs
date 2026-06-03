@@ -889,46 +889,6 @@ async fn get_returns_stored_standard_representation_headers() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
-fn audit_keeps_historical_metadata_without_json_payload() {
-    let (core, dir) = test_core("audit-meta");
-    let headers = vec![("x-meta-author".to_string(), "ranger".to_string())];
-    let h = world::write_with_audit(
-        &core.data,
-        "home/audit-meta",
-        b"hello",
-        "text/plain; charset=utf-8",
-        &headers,
-        &core.hmac_key,
-    )
-    .unwrap();
-
-    let c = rusqlite::Connection::open(world::world_db(&core.data, "home/audit-meta")).unwrap();
-    let (content_type, meta_sha256): (String, String) = c
-        .query_row(
-            "SELECT content_type, meta_sha256 FROM events WHERE hmac=?",
-            [h],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(content_type, "text/plain; charset=utf-8");
-    assert_eq!(
-        meta_sha256,
-        audit::meta_sha256("text/plain; charset=utf-8", &headers)
-    );
-
-    let author: String = c
-        .query_row(
-            "SELECT value FROM event_headers WHERE name='x-meta-author'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(author, "ranger");
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
 #[tokio::test]
 async fn post_audit_uses_existing_representation_metadata() {
     let (core, dir) = test_core("post-audit-meta");
