@@ -4,8 +4,9 @@ use crate::{
     engine_types::{Preconditions, Representation, WriteResult},
     server::test_support::{
         server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
-        test_engine_for_server_with_read_token, test_engine_for_server_with_storage_quota,
-        world_db_path_for_server_tests, write_text_world_for_tests,
+        test_engine_for_server_with_memory_cap, test_engine_for_server_with_read_token,
+        test_engine_for_server_with_storage_quota, world_db_path_for_server_tests,
+        write_text_world_for_tests,
     },
     test_support::test_core,
     Core,
@@ -885,26 +886,24 @@ async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
     // check + write fused under the MemoryStore HashMap mutex inside
     // write_with_quota, only the writes whose accept order keeps the
     // running total under the cap can commit.
-    let (mut core, dir) = test_core("memory-quota-race");
     let cap = 100;
-    core.max_memory_bytes = cap;
-    let core = Arc::new(core);
+    let (engine, dir) = test_engine_for_server_with_memory_cap("memory-quota-race", cap);
 
     let workers = 16;
     let body_len = 12; // 16 * 12 = 192 > cap: forced contention
     let mut handles = Vec::with_capacity(workers);
     for i in 0..workers {
-        let core = core.clone();
+        let engine = engine.clone();
         handles.push(tokio::spawn(async move {
             let path = format!("tmp/race/{i}");
             let body = Bytes::copy_from_slice(&vec![b'm'; body_len]);
             unwrap_response(
-                execute_put_with_test_state(
+                execute_put_with_engine_state(
                     HeaderMap::new(),
                     body,
                     AccessTier::Write,
                     world_path(&path),
-                    &core,
+                    &engine,
                     &TraceCtx::disabled(),
                 )
                 .await,
@@ -922,7 +921,7 @@ async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
         }
     }
 
-    let used = core.mem.total_bytes();
+    let used = engine.df(AccessTier::Read).unwrap().memory_used;
     let counted = accepted * body_len;
     assert_eq!(
         used, counted,
