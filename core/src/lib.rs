@@ -132,6 +132,8 @@ mod server;
 mod state;
 mod storage_class;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod world;
 mod world_ops;
 
