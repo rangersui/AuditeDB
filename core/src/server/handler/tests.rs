@@ -1,5 +1,9 @@
 use super::*;
-use crate::{etag as et, test_support::test_core, world, Core};
+use crate::{
+    etag as et,
+    test_support::{test_core, world_db_path_for_tests},
+    world, Core,
+};
 use axum::response::Response;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -630,8 +634,8 @@ async fn post_audit_uses_existing_representation_metadata() {
     );
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let c =
-        rusqlite::Connection::open(world::world_db(&core.data, "home/post-audit-meta")).unwrap();
+    let c = rusqlite::Connection::open(world_db_path_for_tests(&core.data, "home/post-audit-meta"))
+        .unwrap();
     let (content_type, meta_sha256): (String, String) = c
         .query_row(
             "SELECT content_type, meta_sha256 FROM events WHERE event_type='append'",

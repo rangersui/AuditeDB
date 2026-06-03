@@ -321,7 +321,12 @@ fn invariant_delete_error_phase(message: &'static str, last_step: DeleteStep) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{audit, etag as et, server::handler::execute_put, test_support::test_core, world};
+    use crate::{
+        audit, etag as et,
+        server::handler::execute_put,
+        test_support::{test_core, world_db_path_for_tests},
+        world,
+    };
     use axum::body::{to_bytes, Bytes};
     use axum::{http::HeaderValue, response::Response};
     use std::sync::Arc;
@@ -488,7 +493,8 @@ mod tests {
         core.delete_ledger_created.store(true, Ordering::Relaxed);
         {
             let c =
-                rusqlite::Connection::open(world::world_db(&core.data, "var/log/deletes")).unwrap();
+                rusqlite::Connection::open(world_db_path_for_tests(&core.data, "var/log/deletes"))
+                    .unwrap();
             c.execute_batch(
                 r#"
                 CREATE TRIGGER fail_delete_commit

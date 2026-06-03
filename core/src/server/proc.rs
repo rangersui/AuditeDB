@@ -438,7 +438,7 @@ mod tests {
             state::test_support::server_state_for_tests,
             Phase, TraceCtx,
         },
-        test_support::{test_core, test_core_with_read_cache_max},
+        test_support::{test_core, test_core_with_read_cache_max, world_db_path_for_tests},
         world,
     };
     use axum::body::{to_bytes, Bytes};
@@ -604,7 +604,7 @@ mod tests {
             &core.hmac_key,
         )
         .unwrap();
-        let db = world::world_db(&core.data, "home/audit-broken");
+        let db = world_db_path_for_tests(&core.data, "home/audit-broken");
         let c = rusqlite::Connection::open(db).unwrap();
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
             .unwrap();
@@ -638,7 +638,7 @@ mod tests {
             &core.hmac_key,
         )
         .unwrap();
-        let db = world::world_db(&core.data, "home/audit-escaped");
+        let db = world_db_path_for_tests(&core.data, "home/audit-escaped");
         let c = rusqlite::Connection::open(db).unwrap();
         c.execute(
             "UPDATE events SET hmac=? WHERE id=1",
@@ -687,7 +687,7 @@ mod tests {
     #[tokio::test]
     async fn proc_audit_verify_missing_disk_world_does_not_create_db() {
         let (core, dir) = test_core("proc-audit-missing-no-create");
-        let db = world::world_db(&core.data, "home/missing-audit");
+        let db = world_db_path_for_tests(&core.data, "home/missing-audit");
         assert!(!db.exists());
 
         let state = Arc::new(core);
