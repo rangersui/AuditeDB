@@ -32,3 +32,22 @@ pub(crate) fn matches(pattern: &str, path: &str) -> bool {
         path == pattern
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patterns_are_prefix_or_exact() {
+        assert_eq!(pattern("*"), "*");
+        assert_eq!(pattern("/"), "*");
+        assert_eq!(pattern("home/task/*"), "/home/task/*");
+        assert_eq!(pattern("home/销售/*"), "/home/销售/*");
+        assert!(matches("*", "/home/task/a"));
+        assert!(matches("/home/task/*", "/home/task/a"));
+        assert!(!matches("/home/task/*", "/home/other/a"));
+        assert!(matches("/home/销售/*", "/home/销售/报告"));
+        assert!(matches("/home/task/a", "/home/task/a"));
+        assert!(!matches("/home/task/a", "/home/task/ab"));
+    }
+}

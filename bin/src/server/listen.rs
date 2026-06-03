@@ -112,23 +112,9 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{event, server::test_support as server_test_support, test_support};
+    use crate::{server::test_support as server_test_support, test_support};
     use std::sync::Arc;
     use tokio::sync::Semaphore;
-
-    #[test]
-    fn patterns_are_prefix_or_exact() {
-        assert_eq!(event::pattern("*"), "*");
-        assert_eq!(event::pattern("/"), "*");
-        assert_eq!(event::pattern("home/task/*"), "/home/task/*");
-        assert_eq!(event::pattern("home/销售/*"), "/home/销售/*");
-        assert!(event::matches("*", "/home/task/a"));
-        assert!(event::matches("/home/task/*", "/home/task/a"));
-        assert!(!event::matches("/home/task/*", "/home/other/a"));
-        assert!(event::matches("/home/销售/*", "/home/销售/报告"));
-        assert!(event::matches("/home/task/a", "/home/task/a"));
-        assert!(!event::matches("/home/task/a", "/home/task/ab"));
-    }
 
     #[test]
     fn sse_change_event_is_control_plane_only() {
