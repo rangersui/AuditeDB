@@ -2,7 +2,6 @@ use super::*;
 use crate::{
     engine::Engine,
     engine_types::{Preconditions, Representation, WriteResult},
-    etag as et,
     server::test_support::{
         server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
         test_engine_for_server_with_read_token, write_text_world_for_tests,
@@ -106,6 +105,18 @@ async fn execute_post_with_test_state(
     trace: &TraceCtx,
 ) -> Phase {
     let state = handler_state_for_tests(core);
+    execute_post(headers, body, tier, world, &state, trace).await
+}
+
+async fn execute_post_with_engine_state(
+    headers: HeaderMap,
+    body: Bytes,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    engine: &Engine,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_engine_tests(engine);
     execute_post(headers, body, tier, world, &state, trace).await
 }
 
@@ -614,20 +625,25 @@ async fn unicode_world_get_preserves_body_headers_and_monitor_link() {
 
 #[tokio::test]
 async fn put_and_post_honor_write_preconditions_at_handler_level() {
-    let (core, dir) = test_core("write-preconditions");
-    let h =
-        write_audited_world_for_tests(&core, "home/cas", b"one", "text/plain; charset=utf-8", &[])
-            .unwrap();
+    let (engine, dir) = test_engine_for_server("write-preconditions");
+    let write = write_representation_for_engine_tests(
+        &engine,
+        "home/cas",
+        b"one",
+        "text/plain; charset=utf-8",
+        Vec::new(),
+    )
+    .await;
 
     let mut stale = HeaderMap::new();
     stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
     let put = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             stale.clone(),
             Bytes::from_static(b"two"),
             AccessTier::Write,
             world_path("home/cas"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -635,12 +651,12 @@ async fn put_and_post_honor_write_preconditions_at_handler_level() {
     assert_eq!(put.status(), StatusCode::PRECONDITION_FAILED);
 
     let post = unwrap_response(
-        execute_post_with_test_state(
+        execute_post_with_engine_state(
             stale.clone(),
             Bytes::from_static(b" plus"),
             AccessTier::Write,
             world_path("home/cas"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -650,15 +666,15 @@ async fn put_and_post_honor_write_preconditions_at_handler_level() {
     let mut good = HeaderMap::new();
     good.insert(
         header::IF_MATCH,
-        HeaderValue::from_str(&format!("\"{}\"", et::hmac_etag(&h))).unwrap(),
+        HeaderValue::from_str(&format!("\"{}\"", write.etag)).unwrap(),
     );
     let post = unwrap_response(
-        execute_post_with_test_state(
+        execute_post_with_engine_state(
             good.clone(),
             Bytes::from_static(b" plus"),
             AccessTier::Write,
             world_path("home/cas"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
