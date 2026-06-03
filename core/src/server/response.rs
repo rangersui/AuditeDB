@@ -404,4 +404,12 @@ mod tests {
             "home/a\ntmp/b\n"
         );
     }
+
+    #[test]
+    fn proc_worlds_body_preserves_unicode_world_names() {
+        assert_eq!(
+            world_list_body(&["home/销售/报告".to_owned()]),
+            "home/销售/报告\n"
+        );
+    }
 }

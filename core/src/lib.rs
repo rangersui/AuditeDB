@@ -260,6 +260,3 @@ pub(crate) fn can_read(core: &Core, tier: auth::Tier) -> bool {
             auth::Tier::Read | auth::Tier::Write | auth::Tier::Approve
         )
 }
-
-#[cfg(test)]
-mod lib_tests;

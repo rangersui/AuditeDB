@@ -458,6 +458,49 @@ async fn location_and_link_headers_percent_encode_world_urls() {
 }
 
 #[tokio::test]
+async fn unicode_world_get_preserves_body_headers_and_monitor_link() {
+    let (core, dir) = test_core("unicode-roundtrip");
+    let headers = vec![(
+        "content-disposition".to_string(),
+        "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf".to_string(),
+    )];
+    core.write_world(
+        "home/销售/报告",
+        "你好，世界".as_bytes(),
+        "text/plain; charset=utf-8",
+        &headers,
+    )
+    .unwrap();
+
+    let get = unwrap_response(
+        execute_get(
+            HeaderMap::new(),
+            AccessTier::Anon,
+            world_path("home/销售/报告"),
+            &core,
+            &TraceCtx::disabled(),
+        )
+        .await,
+    );
+    assert_eq!(get.status(), StatusCode::OK);
+    assert_eq!(
+        get.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        get.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+        "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf"
+    );
+    assert!(get
+        .headers()
+        .get_all(header::LINK)
+        .iter()
+        .any(|v| *v == "</listen/home/%E9%94%80%E5%94%AE/%E6%8A%A5%E5%91%8A>; rel=\"monitor\""));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn put_and_post_honor_write_preconditions_at_handler_level() {
     let (core, dir) = test_core("write-preconditions");
     let h = world::write_with_audit(
