@@ -5,12 +5,16 @@
 //! private bridge so the existing server white-box tests can be migrated in
 //! small PRs instead of one giant rewrite.
 
-#[cfg(test)]
-#[path = "../../core/src/defaults.rs"]
-pub(crate) mod defaults;
-#[cfg(test)]
-#[path = "../../core/src/path.rs"]
-pub(crate) mod path;
+pub(crate) mod defaults {
+    pub(crate) use elastik_core::{
+        DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
+        DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
+    };
+}
+
+pub(crate) mod path {
+    pub(crate) use elastik_core::{validate_world_name, NAMESPACE_PREFIXES};
+}
 
 #[cfg(test)]
 #[path = "../../core/src/audit.rs"]
@@ -145,19 +149,6 @@ pub(crate) mod engine_types {
         parse_etag_matchers, AccessTier, ChangeEvent, EtagMatcher, Preconditions, Representation,
         SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind,
     };
-}
-
-#[cfg(not(test))]
-pub(crate) mod defaults {
-    pub(crate) use elastik_core::{
-        DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
-        DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
-    };
-}
-
-#[cfg(not(test))]
-pub(crate) mod path {
-    pub(crate) use elastik_core::{validate_world_name, NAMESPACE_PREFIXES};
 }
 
 #[cfg(not(test))]
