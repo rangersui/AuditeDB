@@ -46,39 +46,18 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
-use std::sync::Arc;
 
 use crate::{
-    engine::{Engine, EngineError},
+    engine::EngineError,
     engine_trace::EngineWriteTraceHooks,
     engine_types::{AccessTier, Representation, ValidatedWorldPath, WriteKind},
     server::{
-        content_range_value, decimal_header_value, http::semantics as hs,
-        http::semantics::HeaderAllowlist, insufficient_storage, not_found, payload_too_large,
-        precondition_failed, server_error, storage_quota_exceeded, storage_temporarily_unavailable,
-        to_header_map, unauthorized, ErrorReason, Phase, ServerState, TraceCtx, Verb,
+        content_range_value, decimal_header_value, http::semantics as hs, insufficient_storage,
+        not_found, payload_too_large, precondition_failed, server_error, storage_quota_exceeded,
+        storage_temporarily_unavailable, to_header_map, unauthorized, ErrorReason, Phase,
+        ServerState, TraceCtx, Verb,
     },
 };
-
-pub(crate) trait HandlerEngineState {
-    fn engine(&self) -> Engine;
-    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist>;
-    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist>;
-}
-
-impl HandlerEngineState for &ServerState {
-    fn engine(&self) -> Engine {
-        ServerState::engine(self).clone()
-    }
-
-    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
-        ServerState::persist_header_allowlist(self)
-    }
-
-    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
-        ServerState::persist_header_user_deny(self)
-    }
-}
 
 /// Dispatch from `Phase::Dispatched` to the verb-specific handler.
 /// Called from inside `pipeline::run`'s match arm.
@@ -101,11 +80,11 @@ pub(crate) async fn execute(
     }
 }
 
-pub(crate) async fn execute_get<S: HandlerEngineState>(
+pub(crate) async fn execute_get(
     headers: HeaderMap,
     tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
-    state: S,
+    state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
     let tier = tier.into();
@@ -178,11 +157,11 @@ pub(crate) async fn execute_get<S: HandlerEngineState>(
     }
 }
 
-pub(crate) async fn execute_head<S: HandlerEngineState>(
+pub(crate) async fn execute_head(
     headers: HeaderMap,
     tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
-    state: S,
+    state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
     let tier = tier.into();
@@ -247,12 +226,12 @@ pub(crate) async fn execute_head<S: HandlerEngineState>(
     }
 }
 
-pub(crate) async fn execute_put<S: HandlerEngineState>(
+pub(crate) async fn execute_put(
     headers: HeaderMap,
     body: Bytes,
     tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
-    state: S,
+    state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
     let tier = tier.into();

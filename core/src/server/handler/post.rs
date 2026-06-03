@@ -20,18 +20,18 @@ use axum::{
     response::IntoResponse,
 };
 
-use super::{write_error_phase, HandlerEngineState, HttpWriteTrace};
+use super::{write_error_phase, HttpWriteTrace};
 use crate::{
     engine_types::{AccessTier, ValidatedWorldPath},
-    server::{http::semantics as hs, Phase, TraceCtx},
+    server::{http::semantics as hs, Phase, ServerState, TraceCtx},
 };
 
-pub(crate) async fn execute_post<S: HandlerEngineState>(
+pub(crate) async fn execute_post(
     headers: HeaderMap,
     body: Bytes,
     tier: impl Into<AccessTier>,
     world: ValidatedWorldPath,
-    state: S,
+    state: &ServerState,
     trace: &TraceCtx,
 ) -> Phase {
     let tier = tier.into();
