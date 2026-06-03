@@ -86,13 +86,7 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    use crate::{
-        defaults::DEFAULT_MAX_WORLD_BYTES, server::ServerState, test_support::test_core, Core,
-    };
-
-    fn server_state_for_tests(core: Arc<Core>) -> ServerState {
-        ServerState::from_core_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
-    }
+    use crate::{server::state::test_support::server_state_for_tests, test_support::test_core};
 
     async fn response_text(resp: Response) -> String {
         let bytes = to_bytes(resp.into_body(), usize::MAX)

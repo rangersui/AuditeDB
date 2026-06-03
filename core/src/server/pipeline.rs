@@ -544,13 +544,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        defaults::DEFAULT_MAX_WORLD_BYTES, engine_types::ValidatedWorldPath, server::ServerState,
-        test_support::test_core, Core,
+        engine_types::ValidatedWorldPath, server::state::test_support::server_state_for_tests,
+        test_support::test_core,
     };
-
-    fn server_state_for_tests(core: Arc<Core>) -> ServerState {
-        ServerState::from_core_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
-    }
 
     fn world_path(world: &str) -> ValidatedWorldPath {
         ValidatedWorldPath::new(world).unwrap()

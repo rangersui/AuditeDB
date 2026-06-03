@@ -433,20 +433,16 @@ mod tests {
     use super::*;
     use crate::{
         auth,
-        defaults::DEFAULT_MAX_WORLD_BYTES,
         server::{
             handler::{execute_delete, execute_get, execute_put},
+            state::test_support::server_state_for_tests,
             Phase, TraceCtx,
         },
         test_support::{test_core, test_core_with_read_cache_max},
-        world, Core,
+        world,
     };
     use axum::body::{to_bytes, Bytes};
     use std::sync::Arc;
-
-    fn server_state_for_tests(core: Arc<Core>) -> ServerState {
-        ServerState::from_core_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
-    }
 
     fn world_path(world: &str) -> ValidatedWorldPath {
         ValidatedWorldPath::new(world).unwrap()

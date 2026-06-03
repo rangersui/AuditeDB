@@ -113,12 +113,16 @@ impl ServerState {
 }
 
 #[cfg(test)]
-mod test_support {
+pub(crate) mod test_support {
     use std::sync::Arc;
 
-    use crate::Core;
+    use crate::{defaults::DEFAULT_MAX_WORLD_BYTES, Core};
 
     use super::*;
+
+    pub(crate) fn server_state_for_tests(core: Arc<Core>) -> ServerState {
+        ServerState::from_core_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
+    }
 
     impl ServerState {
         /// Test-only bypass: wraps a raw `Core` into `ServerState` via
