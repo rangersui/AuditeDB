@@ -445,7 +445,7 @@ impl EngineError {
     /// Non-storage variants (auth, not-found, append-only, precondition,
     /// quota, subscription-limit, shutting-down, internal-invariant) always
     /// return `None`. Adapters can use this for protocol-specific code
-    /// mapping (HTTP 503 vs 507 vs 500) without inspecting the variant.
+    /// mapping without inspecting the variant.
     pub fn sqlite_code(&self) -> Option<i32> {
         match self {
             Self::TransientStorage { sqlite_code }

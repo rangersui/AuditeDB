@@ -56,12 +56,12 @@
 //!
 //! ## What the library does *not* do
 //!
-//! No HTTP, no CoAP, no MQTT, no SSE, no server runtime. Those live in the
-//! `elastik-bin` package's `elastik-core` binary and consume this library
-//! through the unstable public [`Engine`] API. In a minimal library-only build,
-//! the library does not read environment variables, does not bind sockets, and
-//! does not depend on `axum`, `hyper`, `tower`, `tokio-stream`, `futures-util`,
-//! `rumqttd`, or `base64`.
+//! No protocol adapters and no server runtime. Those live in the `elastik-bin`
+//! package's `elastik-core` binary and consume this library through the
+//! unstable public [`Engine`] API. In a minimal library-only build, the library
+//! does not read environment variables, does not bind sockets, and does not
+//! depend on adapter transport crates such as `axum`, `hyper`, `tower`,
+//! `tokio-stream`, `futures-util`, `rumqttd`, or `base64`.
 //!
 //! ## Feature flags
 //!

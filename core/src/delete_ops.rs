@@ -3,7 +3,7 @@
 //! DELETE has a different physical protocol from replace/append: intent,
 //! tombstone drain, physical delete, notify, then commit or commit_failed.
 //! Keeping it here avoids turning `world_ops` into a grab bag while still
-//! letting HTTP route through Engine-owned disk semantics.
+//! letting adapters route through Engine-owned disk semantics.
 
 use std::sync::atomic::Ordering;
 

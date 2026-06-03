@@ -1,8 +1,9 @@
 //! Protocol-neutral ETag identity and precondition matching.
 //!
-//! HTTP adapters parse headers into this shape, but the matcher itself is disk
-//! physics: compare the caller's version expectation against the current world
-//! identity without knowing about `HeaderMap` or response rendering.
+//! Adapters parse protocol-specific precondition syntax into this shape. The
+//! matcher itself is disk physics: compare the caller's version expectation
+//! against the current world identity without knowing about wire headers or
+//! response rendering.
 
 use crate::world;
 
@@ -155,7 +156,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn etag_lists_match_http_strong_and_weak_rules() {
+    fn etag_lists_match_strong_and_weak_rules() {
         assert!(etag_list_strong_matches("\"hmac-abc\"", "hmac-abc"));
         assert!(etag_list_strong_matches(
             "\"other\", \"hmac-abc\"",
@@ -169,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn preconditions_can_be_checked_without_http_headermap() {
+    fn preconditions_can_be_checked_without_adapter_header_types() {
         let preconditions = Preconditions::new(
             vec![EtagMatcher::Strong("hmac-current".to_owned())],
             Vec::new(),

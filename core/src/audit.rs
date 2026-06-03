@@ -1,7 +1,7 @@
 //! HMAC event chain. One row per write, hash includes prev_hmac so
 //! tampering with any row breaks every row after it. The chain is a
 //! core storage invariant, independent of which SDK or bridge produced
-//! the HTTP write.
+//! the write.
 
 use hmac::{Hmac, Mac};
 use rusqlite::{ffi, Connection, OptionalExtension, Statement, Transaction};

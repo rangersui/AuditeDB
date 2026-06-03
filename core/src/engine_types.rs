@@ -27,9 +27,10 @@ pub struct EmptyKeyError;
 
 /// Canonical world key that passed Engine path validation.
 ///
-/// This is not an HTTP path: adapters must decode and canonicalize their own
-/// wire syntax before constructing this proof type. Bare names like `foo` and
-/// wire paths like `/foo` are rejected; HTTP maps those to `home/foo` first.
+/// This is not a wire path: adapters must decode and canonicalize their own
+/// syntax before constructing this proof type. Bare names like `foo` and
+/// wire paths like `/foo` are rejected; adapters map those to canonical worlds
+/// first.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ValidatedWorldPath(String);
 
@@ -79,10 +80,9 @@ pub struct Representation {
     /// Arbitrary metadata header pairs. Header-name de-duplication and
     /// allow/deny policy belong to the adapter that constructs this struct.
     ///
-    /// The HTTP adapter applies a layered filter at write time and an L1
-    /// hard-deny filter at read time because browsers execute response headers
-    /// as security policy. Non-browser adapters (FFI, MQTT, CoAP) may pass
-    /// headers through as opaque key-value metadata.
+    /// Browser-facing adapters apply their own filtering because clients may
+    /// execute metadata as policy. Other adapters may pass headers through as
+    /// opaque key-value metadata.
     pub headers: Vec<(String, String)>,
 }
 

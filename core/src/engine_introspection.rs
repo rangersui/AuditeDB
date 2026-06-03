@@ -1,7 +1,7 @@
 //! Protocol-neutral Engine introspection surface.
 //!
-//! This module owns the typed snapshots behind `/proc/*`. The HTTP adapter
-//! still renders text/plain bodies; Engine returns structured data.
+//! This module owns the typed snapshots behind generated `proc/*` surfaces.
+//! Engine returns structured data; adapters choose their own rendering.
 
 #![cfg_attr(not(feature = "unstable-engine"), allow(dead_code))]
 
@@ -18,8 +18,8 @@ use crate::{
 /// Validated `/proc/*` introspection endpoint.
 ///
 /// This proves the adapter selected one of the declared proc surfaces before
-/// asking Engine for metadata. Reserved or misspelled proc paths stay in the
-/// adapter as 404/405 rendering concerns.
+/// asking Engine for metadata. Reserved or misspelled proc paths stay outside
+/// the Engine as adapter rendering concerns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedProcPath {
     endpoint: ProcEndpoint,
@@ -481,7 +481,7 @@ impl Engine {
     /// Lists canonical worlds with the supplied canonical prefix.
     ///
     /// This is intended for adapters that need a bounded namespace view (for
-    /// example MQTT retained replay) without materializing the full `/proc/worlds`
+    /// example retained replay) without materializing the full proc-worlds
     /// set first. It applies the read gate directly and intentionally bypasses
     /// proc-path authorization; do not expose it directly as a network endpoint.
     ///

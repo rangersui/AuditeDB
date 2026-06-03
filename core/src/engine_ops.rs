@@ -1,8 +1,7 @@
 //! Engine operation seam over protocol-neutral world transitions.
 //!
-//! HTTP and CoAP still live inside the library crate today, so they use the
-//! crate-private `EngineOps` view. Public `Engine` methods delegate here too,
-//! keeping one path from facade to `world_ops`.
+//! Public `Engine` methods delegate here, keeping one path from facade to
+//! `world_ops`.
 
 #![cfg_attr(not(feature = "unstable-engine"), allow(dead_code))]
 

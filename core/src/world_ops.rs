@@ -3,13 +3,11 @@
 //! This module owns disk-side read / replace / append semantics:
 //! auth permits, body caps, per-world locks, tombstone clearing,
 //! preconditions, quota reservation, durable+memory writes, audit,
-//! and notify. It deliberately returns semantic outcomes instead of
-//! HTTP responses or CoAP packets. Adapters map these outcomes onto
-//! their own wire shape.
+//! and notify. It deliberately returns semantic outcomes instead of wire
+//! responses. Adapters map these outcomes onto their own shape.
 //!
-//! Not here: HTTP request lifecycle (`pipeline.rs` / `handler.rs`),
-//! CoAP framing (`coap.rs`), SSE rendering (`listen.rs`), and DELETE
-//! (which has a distinct intent/commit ledger protocol).
+//! Not here: adapter request lifecycles, stream rendering, or DELETE (which
+//! has a distinct intent/commit ledger protocol).
 
 use std::sync::atomic::Ordering;
 

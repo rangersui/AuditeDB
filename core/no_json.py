@@ -2,8 +2,8 @@
 
 This is a blunt doctrine gate, not a Rust parser:
 
-    NO SCHEMA. NO JSON. FULL HTTP.
-    HEAD = control plane. GET body = data plane. SEPARATE.
+    NO SCHEMA. NO JSON. BYTES STAY BYTES.
+    Metadata and payload stay physically separate.
 
 The scanner reads raw `.rs` text and flags structured-data imports, macros,
 derives, and exact media-type literals. It intentionally does not understand
@@ -141,7 +141,7 @@ def main(argv: list[str]) -> int:
             print(f"  line {lineno}: {msg}")
             total += 1
     print(f"\n[FAIL] {len(bad)} files have structured data, {total} violations total")
-    print("       elastik is HTTP. metadata goes in headers, not bodies.")
+    print("       elastik stores metadata separately from bodies.")
     return 1
 
 

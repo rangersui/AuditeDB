@@ -4,8 +4,8 @@
 //! attach a human-readable rejection reason. No `Core`, no I/O, no adapter
 //! wire-path normalization.
 //!
-//! HTTP/CoAP shorthand such as `/foo` -> `home/foo` lives in the binary
-//! adapter's `server/path.rs`, not in the Engine library.
+//! Wire shorthand such as `/foo` -> `home/foo` lives in binary adapters, not
+//! in the Engine library.
 
 /// Canonical Engine world namespaces.
 pub const NAMESPACE_PREFIXES: &[&str] = &[
@@ -34,10 +34,8 @@ pub(crate) fn valid_world_name(world_name: &str) -> bool {
     validate_world_name(world_name).is_ok()
 }
 
-/// Returns the specific rejection reason so HTTP callers can surface
-/// it in `400 bad_request: world path contains backslash` rather than
-/// the historic blanket `400 bad_request: control bytes`. This makes
-/// SDK-side error messages diagnostically useful.
+/// Returns the specific rejection reason so adapters can surface precise
+/// diagnostics instead of a blanket invalid-path error.
 pub fn validate_world_name(world_name: &str) -> Result<(), &'static str> {
     if world_name.is_empty() {
         return Err("world path is empty");

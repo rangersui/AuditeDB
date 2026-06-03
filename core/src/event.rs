@@ -1,7 +1,7 @@
 //! Protocol-neutral change-event ring helpers.
 //!
-//! The HTTP SSE adapter renders these as `text/event-stream`, but the engine
-//! owns event ids, replay matching, and the live broadcast stream.
+//! The engine owns event ids, replay matching, and the live broadcast stream;
+//! adapters choose how to render those events.
 
 #[derive(Clone, Debug)]
 pub(crate) struct ChangeEvent {
