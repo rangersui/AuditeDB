@@ -5,19 +5,13 @@ use axum::{
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::collections::{BTreeMap, HashSet};
 
+pub(crate) use super::range::effective_range;
+#[cfg(test)]
+pub(crate) use super::range::parse_range;
 use crate::{
     engine_types::{EtagMatcher, Preconditions},
     server::{to_header_map, unsatisfied_range_value},
 };
-#[cfg(test)]
-use crate::{
-    server::{precondition_failed, storage_error},
-    Core,
-};
-
-pub(crate) use super::range::effective_range;
-#[cfg(test)]
-pub(crate) use super::range::parse_range;
 
 /// Entries are normalized to lowercase. A trailing `*` makes an
 /// entry a prefix match (e.g. `x-my-*` matches `x-my-anything`).
@@ -30,7 +24,7 @@ pub(crate) struct HeaderAllowlist {
 
 impl HeaderAllowlist {
     /// Empty allowlist (default-deny custom headers). Used by
-    /// test fixtures and as the inert state for `Core` constructors
+    /// test fixtures and as the inert state for `ServerState` constructors
     /// that don't read environment. The production startup path uses
     /// `header_allowlist_from_env()` instead, which returns
     /// an `empty()` for an unset env var anyway.
@@ -263,37 +257,6 @@ pub(crate) fn request_preconditions(headers: &HeaderMap) -> Preconditions {
             .map(parse_public_etag_matchers)
             .unwrap_or_default(),
     )
-}
-
-#[cfg(test)]
-#[allow(clippy::result_large_err)]
-pub(crate) fn check_write_preconditions(
-    core: &Core,
-    world_name: &str,
-    req_headers: &HeaderMap,
-) -> Result<(), Response> {
-    let preconditions = crate::etag::Preconditions::new(
-        req_headers
-            .get(header::IF_MATCH)
-            .and_then(|v| v.to_str().ok())
-            .map(crate::etag::parse_etag_matchers)
-            .unwrap_or_default(),
-        req_headers
-            .get(header::IF_NONE_MATCH)
-            .and_then(|v| v.to_str().ok())
-            .map(crate::etag::parse_etag_matchers)
-            .unwrap_or_default(),
-    );
-    if preconditions.is_empty() {
-        return Ok(());
-    }
-    let current = core
-        .read_world_with_etag(world_name)
-        .map_err(|e| storage_error("precondition read", e))?;
-    let current_tag = current.as_ref().map(|(_, etag)| etag.clone());
-
-    crate::etag::check_preconditions(&preconditions, current_tag.as_deref())
-        .map_err(precondition_failed)
 }
 
 pub(crate) fn read_not_modified(req_headers: &HeaderMap, current: &str) -> bool {
@@ -551,7 +514,10 @@ pub(crate) fn range_not_satisfiable(len: usize) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_core;
+    use crate::{
+        engine_types::{AccessTier, Representation, ValidatedWorldPath},
+        server::test_support::{test_engine_for_server, write_text_world_for_tests},
+    };
     use axum::http::{header, HeaderMap, HeaderValue};
 
     #[test]
@@ -927,36 +893,73 @@ mod tests {
         assert_eq!(out[0].1, "ok");
     }
 
-    #[test]
-    fn if_none_match_star_blocks_existing_world() {
-        let (core, dir) = test_core("if-none-match-star");
-        core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
-            .unwrap();
+    #[tokio::test]
+    async fn if_none_match_star_blocks_existing_world() {
+        let (engine, dir) = test_engine_for_server("if-none-match-star");
+        write_text_world_for_tests(&engine, "home/cas", "one").await;
 
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+        let existing = ValidatedWorldPath::new("home/cas").unwrap();
+        let new = ValidatedWorldPath::new("home/new").unwrap();
 
-        assert!(check_write_preconditions(&core, "home/cas", &headers).is_err());
-        assert!(check_write_preconditions(&core, "home/new", &headers).is_ok());
+        assert!(engine
+            .replace(
+                &existing,
+                Representation::new("blocked", "text/plain", Vec::new()),
+                request_preconditions(&headers),
+                AccessTier::Write,
+            )
+            .await
+            .is_err());
+        assert!(engine
+            .replace(
+                &new,
+                Representation::new("allowed", "text/plain", Vec::new()),
+                request_preconditions(&headers),
+                AccessTier::Write,
+            )
+            .await
+            .is_ok());
 
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn if_match_accepts_current_hmac_etag_only() {
-        let (core, dir) = test_core("if-match-hmac");
-        core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
-            .unwrap();
-        let (_, etag) = core.read_world_with_etag("home/cas").unwrap().unwrap();
+    #[tokio::test]
+    async fn if_match_accepts_current_hmac_etag_only() {
+        let (engine, dir) = test_engine_for_server("if-match-hmac");
+        write_text_world_for_tests(&engine, "home/cas", "one").await;
+        let world = ValidatedWorldPath::new("home/cas").unwrap();
+        let etag = engine
+            .read(&world, AccessTier::Read)
+            .unwrap()
+            .expect("test world should exist")
+            .etag;
         let etag = format!("\"{etag}\"");
 
         let mut good = HeaderMap::new();
         good.insert(header::IF_MATCH, HeaderValue::from_str(&etag).unwrap());
-        assert!(check_write_preconditions(&core, "home/cas", &good).is_ok());
+        assert!(engine
+            .replace(
+                &world,
+                Representation::new("two", "text/plain", Vec::new()),
+                request_preconditions(&good),
+                AccessTier::Write,
+            )
+            .await
+            .is_ok());
 
         let mut stale = HeaderMap::new();
         stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
-        assert!(check_write_preconditions(&core, "home/cas", &stale).is_err());
+        assert!(engine
+            .replace(
+                &world,
+                Representation::new("three", "text/plain", Vec::new()),
+                request_preconditions(&stale),
+                AccessTier::Write,
+            )
+            .await
+            .is_err());
 
         let _ = std::fs::remove_dir_all(dir);
     }
