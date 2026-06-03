@@ -29,8 +29,8 @@ use crate::{
     server::{
         audit_broken, audit_not_applicable, audit_valid, bad_request, decimal_header_value,
         df_body, du_body, insufficient_storage, method_not_allowed, not_found, options_response,
-        proc_text_response, server_error, storage_temporarily_unavailable, to_header_map,
-        unauthorized, world_list_body, ServerState, VERSION,
+        path::canonicalize_path, proc_text_response, server_error, storage_temporarily_unavailable,
+        to_header_map, unauthorized, world_list_body, ServerState, VERSION,
     },
 };
 
@@ -277,7 +277,7 @@ pub(crate) async fn proc_audit_verify(
     if raw_world.is_empty() {
         return bad_request("audit verify requires a world path");
     }
-    let world = match ValidatedWorldPath::new(crate::canonicalize_path(raw_world)) {
+    let world = match ValidatedWorldPath::new(canonicalize_path(raw_world)) {
         Ok(world) => world,
         Err(_) => return bad_request("invalid audit verify world path"),
     };

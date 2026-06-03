@@ -49,9 +49,8 @@ use axum::{
 };
 
 use crate::{
-    canonicalize_path,
     engine_types::{AccessTier, ValidatedWorldPath},
-    server::{bad_request, method_not_allowed, ServerState, WORLD_ALLOW},
+    server::{bad_request, method_not_allowed, path::canonicalize_path, ServerState, WORLD_ALLOW},
     AuthGate,
 };
 

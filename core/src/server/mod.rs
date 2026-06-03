@@ -14,6 +14,7 @@ pub(crate) mod listen;
 pub(crate) mod middleware;
 #[cfg(feature = "mqtt")]
 pub(crate) mod mqtt;
+pub(crate) mod path;
 pub(crate) mod pipeline;
 pub(crate) mod proc;
 pub(crate) mod response;

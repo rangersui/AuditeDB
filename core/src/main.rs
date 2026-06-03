@@ -4,9 +4,6 @@ mod defaults;
 mod path;
 #[cfg(not(test))]
 mod server;
-#[cfg(not(test))]
-#[path = "server/path.rs"]
-mod server_path;
 
 #[cfg(not(test))]
 mod engine {
@@ -39,8 +36,6 @@ mod engine_types {
 pub(crate) use elastik_core::AuthGate;
 #[cfg(not(test))]
 pub(crate) use path::*;
-#[cfg(not(test))]
-pub(crate) use server_path::canonicalize_path;
 
 #[cfg_attr(feature = "multi-thread", tokio::main)]
 #[cfg_attr(not(feature = "multi-thread"), tokio::main(flavor = "current_thread"))]
