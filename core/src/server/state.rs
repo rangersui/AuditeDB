@@ -12,8 +12,6 @@ use std::sync::{
 use axum::http::{header, HeaderMap};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
-#[cfg(test)]
-use crate::Core;
 use crate::{engine::Engine, engine_types::AccessTier, server::http::semantics::HeaderAllowlist};
 
 const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
@@ -46,18 +44,6 @@ impl ServerState {
             mqtt_metrics: None,
             next_request: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    #[cfg(test)]
-    /// Test-only bypass: wraps a raw `Core` into `ServerState` via
-    /// `Engine::from_core_for_tests`. See its doc for bypass details.
-    pub(crate) fn from_core_for_tests(core: Arc<Core>, max_world_bytes: usize) -> Self {
-        Self::new(
-            Engine::from_core_for_tests(core),
-            max_world_bytes,
-            HeaderAllowlist::empty(),
-            HeaderAllowlist::empty(),
-        )
     }
 
     /// Returns the protocol-neutral Engine used by server adapters.
@@ -123,5 +109,27 @@ impl ServerState {
             }
         }
         AccessTier::Anon
+    }
+}
+
+#[cfg(test)]
+mod test_support {
+    use std::sync::Arc;
+
+    use crate::Core;
+
+    use super::*;
+
+    impl ServerState {
+        /// Test-only bypass: wraps a raw `Core` into `ServerState` via
+        /// `Engine::from_core_for_tests`. See its doc for bypass details.
+        pub(crate) fn from_core_for_tests(core: Arc<Core>, max_world_bytes: usize) -> Self {
+            Self::new(
+                Engine::from_core_for_tests(core),
+                max_world_bytes,
+                HeaderAllowlist::empty(),
+                HeaderAllowlist::empty(),
+            )
+        }
     }
 }
