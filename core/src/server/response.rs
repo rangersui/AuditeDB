@@ -337,3 +337,71 @@ pub(crate) fn world_list_body(names: &[String]) -> String {
         format!("{}\n", names.join("\n"))
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_disk_full_maps_to_507() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        );
+        assert!(is_insufficient_storage_error(&err));
+
+        let resp = storage_error("test", err);
+        assert_eq!(resp.status(), StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    #[test]
+    fn sqlite_busy_and_locked_map_to_503_retry_after() {
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+            let err = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            assert!(is_transient_storage_error(&err));
+
+            let resp = storage_error("test", err);
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                resp.headers()
+                    .get(header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok()),
+                Some("1")
+            );
+        }
+    }
+
+    #[test]
+    fn non_storage_sqlite_errors_stay_500() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        );
+        assert!(!is_insufficient_storage_error(&err));
+
+        let resp = storage_error("test", err);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn unauthorized_responses_advertise_bearer_challenge() {
+        let resp = unauthorized("read requires read token");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Bearer realm=\"elastik\""
+        );
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn proc_worlds_body_is_plain_lines() {
+        assert_eq!(world_list_body(&[]), "");
+        assert_eq!(
+            world_list_body(&["home/a".to_owned(), "tmp/b".to_owned()]),
+            "home/a\ntmp/b\n"
+        );
+    }
+}
