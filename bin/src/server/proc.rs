@@ -433,9 +433,12 @@ mod tests {
     use super::*;
     use crate::{
         auth,
+        engine_types::{AccessTier, Preconditions, Representation},
         server::{
             handler::{execute_delete, execute_get, execute_put},
-            test_support::server_state_for_tests,
+            test_support::{
+                server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
+            },
             Phase, TraceCtx,
         },
         test_support::{
@@ -505,17 +508,20 @@ mod tests {
 
     #[tokio::test]
     async fn proc_worlds_head_options_and_405_are_plain_http() {
-        let (core, dir) = test_core("proc-worlds-http");
-        core.write_world("home/a", b"a", "text/plain", &[]).unwrap();
-        let state = Arc::new(core);
+        let (engine, dir) = test_engine_for_server("proc-worlds-http");
+        engine
+            .replace(
+                &world_path("home/a"),
+                Representation::new(Bytes::from_static(b"a"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let state = server_state_for_engine_for_tests(engine);
         let headers = HeaderMap::new();
 
-        let head = proc_worlds(
-            State(server_state_for_tests(state.clone())),
-            Method::HEAD,
-            headers.clone(),
-        )
-        .await;
+        let head = proc_worlds(State(state.clone()), Method::HEAD, headers.clone()).await;
         assert_eq!(head.status(), StatusCode::OK);
         assert_eq!(
             head.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -523,21 +529,11 @@ mod tests {
         );
         assert!(head.headers().get(header::CONTENT_LENGTH).is_some());
 
-        let options = proc_worlds(
-            State(server_state_for_tests(state.clone())),
-            Method::OPTIONS,
-            headers.clone(),
-        )
-        .await;
+        let options = proc_worlds(State(state.clone()), Method::OPTIONS, headers.clone()).await;
         assert_eq!(options.status(), StatusCode::NO_CONTENT);
         assert_eq!(options.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
 
-        let delete = proc_worlds(
-            State(server_state_for_tests(state)),
-            Method::DELETE,
-            headers,
-        )
-        .await;
+        let delete = proc_worlds(State(state), Method::DELETE, headers).await;
         assert_eq!(delete.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(delete.headers().get(header::ALLOW).unwrap(), PROC_ALLOW);
 
