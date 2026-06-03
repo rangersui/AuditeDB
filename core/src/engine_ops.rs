@@ -570,6 +570,58 @@ mod tests {
         (engine, root)
     }
 
+    #[test]
+    fn replay_after_reports_ring_gap_and_replays_available_events() {
+        let (engine, root) = test_engine("replay-gap");
+        {
+            let mut log = engine.core().event_log.lock().unwrap();
+            for id in 10..=12 {
+                log.push_back(event::ChangeEvent {
+                    id,
+                    method: "PUT",
+                    path: format!("/home/task/{id}"),
+                    etag: format!("hmac-{id}"),
+                });
+            }
+        }
+
+        let pattern = SubscribePattern::new("home/task/*");
+        let (gap, replay, floor) = replay_after(engine.core(), Some(5), &pattern);
+
+        assert_eq!(gap, Some(4));
+        assert_eq!(replay.len(), 3);
+        assert_eq!(replay[0].id, 10);
+        assert_eq!(replay[0].path.as_str(), "home/task/10");
+        assert_eq!(floor, 12);
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replay_after_handles_max_last_event_id_without_overflow() {
+        let (engine, root) = test_engine("replay-max-last-id");
+        {
+            let mut log = engine.core().event_log.lock().unwrap();
+            log.push_back(event::ChangeEvent {
+                id: u64::MAX,
+                method: "PUT",
+                path: "/home/task/max".to_string(),
+                etag: "hmac-max".to_string(),
+            });
+        }
+
+        let pattern = SubscribePattern::new("home/task/*");
+        let (gap, replay, floor) = replay_after(engine.core(), Some(u64::MAX), &pattern);
+
+        assert_eq!(gap, None);
+        assert!(replay.is_empty());
+        assert_eq!(floor, u64::MAX);
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn engine_delete_requires_approve_and_removes_world() {
         let (engine, root) = test_engine("delete");
