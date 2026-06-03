@@ -528,7 +528,7 @@ pub(crate) fn range_not_satisfiable(len: usize) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{audit, etag, test_support::test_core, world};
+    use crate::test_support::test_core;
     use axum::http::{header, HeaderMap, HeaderValue};
 
     #[test]
@@ -924,20 +924,8 @@ mod tests {
         let (core, dir) = test_core("if-match-hmac");
         core.write_world("home/cas", b"one", "text/plain; charset=utf-8", &[])
             .unwrap();
-        let mut conn = world::open(&core.data, "home/cas").unwrap();
-        let h = audit::append_with_conn_existing(
-            &mut conn,
-            "put",
-            "home/cas",
-            &world::sha256_hex(b"one"),
-            3,
-            "text/plain; charset=utf-8",
-            &[],
-            &core.hmac_key,
-        )
-        .unwrap();
-        drop(conn);
-        let etag = format!("\"{}\"", etag::hmac_etag(&h));
+        let (_, etag) = core.read_world_with_etag("home/cas").unwrap().unwrap();
+        let etag = format!("\"{etag}\"");
 
         let mut good = HeaderMap::new();
         good.insert(header::IF_MATCH, HeaderValue::from_str(&etag).unwrap());
