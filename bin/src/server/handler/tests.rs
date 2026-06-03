@@ -85,6 +85,18 @@ async fn execute_put_with_test_state(
     execute_put(headers, body, tier, world, &state, trace).await
 }
 
+async fn execute_put_with_engine_state(
+    headers: HeaderMap,
+    body: Bytes,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    engine: &Engine,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_engine_tests(engine);
+    execute_put(headers, body, tier, world, &state, trace).await
+}
+
 async fn execute_post_with_test_state(
     headers: HeaderMap,
     body: Bytes,
@@ -480,15 +492,15 @@ async fn get_returns_stored_standard_representation_headers() {
 
 #[tokio::test]
 async fn put_created_returns_location() {
-    let (core, dir) = test_core("put-location");
+    let (engine, dir) = test_engine_for_server("put-location");
     let headers = HeaderMap::new();
     let resp = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"new"),
             AccessTier::Write,
             world_path("home/created"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -501,12 +513,12 @@ async fn put_created_returns_location() {
     );
 
     let resp = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"again"),
             AccessTier::Write,
             world_path("home/created"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -519,15 +531,15 @@ async fn put_created_returns_location() {
 
 #[tokio::test]
 async fn location_and_link_headers_percent_encode_world_urls() {
-    let (core, dir) = test_core("encoded-headers");
+    let (engine, dir) = test_engine_for_server("encoded-headers");
     let headers = HeaderMap::new();
     let resp = unwrap_response(
-        execute_put_with_test_state(
+        execute_put_with_engine_state(
             headers.clone(),
             Bytes::from_static(b"new"),
             AccessTier::Write,
             world_path("home/café report"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -539,11 +551,11 @@ async fn location_and_link_headers_percent_encode_world_urls() {
     );
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/café report"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
@@ -558,25 +570,26 @@ async fn location_and_link_headers_percent_encode_world_urls() {
 
 #[tokio::test]
 async fn unicode_world_get_preserves_body_headers_and_monitor_link() {
-    let (core, dir) = test_core("unicode-roundtrip");
+    let (engine, dir) = test_engine_for_server("unicode-roundtrip");
     let headers = vec![(
         "content-disposition".to_string(),
         "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf".to_string(),
     )];
-    core.write_world(
+    write_representation_for_engine_tests(
+        &engine,
         "home/销售/报告",
         "你好，世界".as_bytes(),
         "text/plain; charset=utf-8",
-        &headers,
+        headers,
     )
-    .unwrap();
+    .await;
 
     let get = unwrap_response(
-        execute_get_with_test_state(
+        execute_get_with_engine_state(
             HeaderMap::new(),
             AccessTier::Anon,
             world_path("home/销售/报告"),
-            &core,
+            &engine,
             &TraceCtx::disabled(),
         )
         .await,
