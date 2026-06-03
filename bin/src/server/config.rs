@@ -8,18 +8,21 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-#[cfg(all(not(test), feature = "coap"))]
-pub(crate) use crate::defaults::DEFAULT_COAP_MAX_IN_FLIGHT;
+#[cfg(feature = "coap")]
+pub(crate) const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
 #[cfg(not(test))]
 pub(crate) use crate::defaults::{
     DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
     DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
 };
-#[cfg(all(not(test), feature = "mqtt"))]
-pub(crate) use crate::defaults::{
-    DEFAULT_MQTT_CONNECT_TIMEOUT_MS, DEFAULT_MQTT_MAX_CONNECTIONS,
-    DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES, DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
-};
+#[cfg(feature = "mqtt")]
+pub(crate) const DEFAULT_MQTT_MAX_CONNECTIONS: usize = 1024;
+#[cfg(feature = "mqtt")]
+pub(crate) const DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES: usize = 1024 * 1024;
+#[cfg(feature = "mqtt")]
+pub(crate) const DEFAULT_MQTT_CONNECT_TIMEOUT_MS: usize = 3000;
+#[cfg(feature = "mqtt")]
+pub(crate) const DEFAULT_MQTT_MAX_PREAUTH_PER_IP: usize = 32;
 
 pub(crate) fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)

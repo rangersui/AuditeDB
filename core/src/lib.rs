@@ -106,6 +106,11 @@ pub(crate) use auth::AuthGate;
 pub use auth::{is_valid_token, AuthGate};
 pub(crate) use data_lock::acquire_data_root_writer_lock;
 #[cfg(feature = "unstable-engine")]
+pub use defaults::{
+    DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
+    DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
+};
+#[cfg(feature = "unstable-engine")]
 #[doc(hidden)]
 pub use engine::ShutdownToken;
 #[cfg(feature = "unstable-engine")]
@@ -123,6 +128,8 @@ pub use engine_types::{
     InvalidWorldPath, Preconditions, ReadResult, Representation, SecretBytes, SubscribePattern,
     SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
 };
+#[cfg(feature = "unstable-engine")]
+pub use path::{validate_world_name, NAMESPACE_PREFIXES};
 
 // ─── helpers ────────────────────────────────────────────────────────
 

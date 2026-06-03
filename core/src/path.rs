@@ -4,11 +4,11 @@
 //! attach a human-readable rejection reason. No `Core`, no I/O, no adapter
 //! wire-path normalization.
 //!
-//! HTTP/CoAP shorthand such as `/foo` -> `home/foo` lives in
-//! `server/path.rs`, not in the production library surface.
+//! HTTP/CoAP shorthand such as `/foo` -> `home/foo` lives in the binary
+//! adapter's `server/path.rs`, not in the Engine library.
 
 /// Canonical Engine world namespaces.
-pub(crate) const NAMESPACE_PREFIXES: &[&str] = &[
+pub const NAMESPACE_PREFIXES: &[&str] = &[
     "home", "tmp", "dev", "sys", "etc", "lib", "boot", "usr", "var",
 ];
 
@@ -38,7 +38,7 @@ pub(crate) fn valid_world_name(world_name: &str) -> bool {
 /// it in `400 bad_request: world path contains backslash` rather than
 /// the historic blanket `400 bad_request: control bytes`. This makes
 /// SDK-side error messages diagnostically useful.
-pub(crate) fn validate_world_name(world_name: &str) -> Result<(), &'static str> {
+pub fn validate_world_name(world_name: &str) -> Result<(), &'static str> {
     if world_name.is_empty() {
         return Err("world path is empty");
     }

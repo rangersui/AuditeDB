@@ -759,7 +759,7 @@ mod tests {
     #[test]
     fn mqtt_connect_timeout_keeps_preauth_slots_short_lived() {
         assert!(
-            Duration::from_millis(crate::defaults::DEFAULT_MQTT_CONNECT_TIMEOUT_MS as u64)
+            Duration::from_millis(crate::server::config::DEFAULT_MQTT_CONNECT_TIMEOUT_MS as u64)
                 <= Duration::from_secs(3)
         );
     }
