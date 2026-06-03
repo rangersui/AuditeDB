@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     etag as et,
-    test_support::server_state_for_tests,
+    server::test_support::server_state_for_tests,
     test_support::{
         audit_meta_sha256_for_tests, test_core, world_db_path_for_tests,
         write_audited_world_for_tests,

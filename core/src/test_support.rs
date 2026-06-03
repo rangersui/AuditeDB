@@ -13,7 +13,6 @@ use crate::{
         DEFAULT_MAX_WORLD_BYTES,
     },
     engine::Engine,
-    server::{http::semantics::HeaderAllowlist, ServerState},
     store, Core,
 };
 
@@ -79,22 +78,6 @@ pub(crate) fn world_db_path_for_tests(
 
 pub(crate) fn test_engine_for_tests(core: &Core) -> Engine {
     Engine::from_core_for_tests(Arc::new(core.clone()))
-}
-
-pub(crate) fn server_state_for_tests(core: Arc<Core>) -> ServerState {
-    server_state_with_max_world_bytes_for_tests(core, DEFAULT_MAX_WORLD_BYTES)
-}
-
-pub(crate) fn server_state_with_max_world_bytes_for_tests(
-    core: Arc<Core>,
-    max_world_bytes: usize,
-) -> ServerState {
-    ServerState::new(
-        Engine::from_core_for_tests(core),
-        max_world_bytes,
-        HeaderAllowlist::empty(),
-        HeaderAllowlist::empty(),
-    )
 }
 
 pub(crate) fn write_audited_world_for_tests(

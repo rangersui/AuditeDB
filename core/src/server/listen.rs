@@ -112,7 +112,7 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{event, test_support};
+    use crate::{event, server::test_support as server_test_support, test_support};
     use std::sync::Arc;
     use tokio::sync::Semaphore;
 
@@ -153,9 +153,7 @@ mod tests {
         let core = Arc::new(core);
 
         let resp = handler(
-            State(test_support::server_state_with_max_world_bytes_for_tests(
-                core, 1024,
-            )),
+            State(server_test_support::server_state_with_max_world_bytes_for_tests(core, 1024)),
             Method::GET,
             HeaderMap::new(),
             AxPath("home/task/*".to_string()),

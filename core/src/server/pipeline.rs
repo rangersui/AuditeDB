@@ -544,8 +544,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        engine_types::ValidatedWorldPath,
-        test_support::{server_state_for_tests, test_core},
+        engine_types::ValidatedWorldPath, server::test_support::server_state_for_tests,
+        test_support::test_core,
     };
 
     fn world_path(world: &str) -> ValidatedWorldPath {

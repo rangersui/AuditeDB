@@ -20,6 +20,8 @@ pub(crate) mod proc;
 pub(crate) mod response;
 pub(crate) mod route;
 mod state;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) use pipeline::{ErrorReason, Phase, TraceCtx, Verb};
 #[cfg(feature = "mqtt")]
 pub(crate) use proc::proc_mqtt_metrics;
