@@ -694,7 +694,7 @@ mod tests {
         let (core, dir) = test_core("busy-get");
         core.write_world("home/busy", b"ok", "text/plain; charset=utf-8", &[])
             .unwrap();
-        let db = crate::world::world_db(&core.data, "home/busy");
+        let db = test_support::world_db_path_for_tests(&core.data, "home/busy");
         let holder = rusqlite::Connection::open(db).unwrap();
         holder
             .pragma_update(None, "locking_mode", "EXCLUSIVE")

@@ -67,3 +67,10 @@ pub(crate) fn test_core_with_read_cache_max(
         dir,
     )
 }
+
+pub(crate) fn world_db_path_for_tests(
+    data_root: impl AsRef<std::path::Path>,
+    world: &str,
+) -> PathBuf {
+    crate::world::world_db(data_root.as_ref(), world)
+}

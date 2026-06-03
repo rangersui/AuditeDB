@@ -2053,7 +2053,7 @@ mod tests {
     }
 
     fn corrupt_world_schema(data_root: &std::path::Path, world: &str) {
-        let db = crate::world::world_db(data_root, world);
+        let db = crate::test_support::world_db_path_for_tests(data_root, world);
         let conn = rusqlite::Connection::open(db).unwrap();
         conn.execute_batch("DROP TABLE stage_meta;").unwrap();
     }
