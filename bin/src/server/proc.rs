@@ -438,6 +438,7 @@ mod tests {
             handler::{execute_delete, execute_get, execute_put},
             test_support::{
                 server_state_for_engine_for_tests, server_state_for_tests, test_engine_for_server,
+                world_db_path_for_server_tests,
             },
             Phase, TraceCtx,
         },
@@ -601,17 +602,25 @@ mod tests {
 
     #[tokio::test]
     async fn proc_audit_verify_reports_broken_chain_in_headers() {
-        let (core, dir) = test_core("proc-audit-broken");
-        write_audited_world_for_tests(&core, "home/audit-broken", b"hello", "text/plain", &[])
+        let (engine, dir) = test_engine_for_server("proc-audit-broken");
+        let world = world_path("home/audit-broken");
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"hello"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
             .unwrap();
-        let db = world_db_path_for_tests(&core.data, "home/audit-broken");
+        let db = world_db_path_for_server_tests(&dir, "home/audit-broken");
         let c = rusqlite::Connection::open(db).unwrap();
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
             .unwrap();
 
-        let state = Arc::new(core);
+        let state = server_state_for_engine_for_tests(engine);
         let resp = proc_audit_verify(
-            State(server_state_for_tests(state)),
+            State(state),
             Method::HEAD,
             AxPath("home/audit-broken/verify".to_owned()),
             HeaderMap::new(),
