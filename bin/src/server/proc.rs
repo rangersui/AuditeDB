@@ -442,7 +442,7 @@ mod tests {
             },
             Phase, TraceCtx,
         },
-        test_support::{test_core, test_core_with_read_cache_max, world_db_path_for_tests},
+        test_support::{test_core, test_core_with_read_cache_max},
     };
     use axum::body::{to_bytes, Bytes};
     use std::sync::Arc;
@@ -701,13 +701,12 @@ mod tests {
 
     #[tokio::test]
     async fn proc_audit_verify_missing_disk_world_does_not_create_db() {
-        let (core, dir) = test_core("proc-audit-missing-no-create");
-        let db = world_db_path_for_tests(&core.data, "home/missing-audit");
+        let (engine, dir) = test_engine_for_server("proc-audit-missing-no-create");
+        let db = world_db_path_for_server_tests(&dir, "home/missing-audit");
         assert!(!db.exists());
 
-        let state = Arc::new(core);
         let resp = proc_audit_verify(
-            State(server_state_for_tests(state)),
+            State(server_state_for_engine_for_tests(engine)),
             Method::HEAD,
             AxPath("home/missing-audit/verify".to_owned()),
             HeaderMap::new(),
