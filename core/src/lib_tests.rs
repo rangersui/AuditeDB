@@ -48,21 +48,6 @@ fn world_path(world: &str) -> crate::engine_types::ValidatedWorldPath {
     crate::engine_types::ValidatedWorldPath::new(world).unwrap()
 }
 
-#[test]
-fn data_root_writer_lock_is_exclusive() {
-    let dir = std::env::temp_dir().join(format!("elastik-data-lock-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let first = acquire_data_root_writer_lock(&dir).unwrap();
-    assert!(acquire_data_root_writer_lock(&dir).is_err());
-    drop(first);
-    let second = acquire_data_root_writer_lock(&dir).unwrap();
-    drop(second);
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
 #[tokio::test]
 async fn durable_storage_quota_returns_507_without_writing() {
     let (mut core, dir) = test_core("storage-quota");

@@ -89,6 +89,7 @@ mod coap;
 #[cfg(feature = "coap")]
 #[path = "server/coap_errors.rs"]
 mod coap_errors;
+mod data_lock;
 mod defaults;
 mod delete_ops;
 mod engine;
@@ -151,6 +152,7 @@ pub(crate) use crate::storage_class::*;
 pub(crate) use auth::AuthGate;
 #[cfg(feature = "unstable-engine")]
 pub use auth::{is_valid_token, AuthGate};
+pub(crate) use data_lock::acquire_data_root_writer_lock;
 #[cfg(feature = "unstable-engine")]
 #[doc(hidden)]
 pub use engine::ShutdownToken;
@@ -170,9 +172,6 @@ pub use engine_types::{
     SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
 };
 
-use std::path::Path;
-use std::time::Duration;
-
 #[cfg(test)]
 pub(crate) use crate::defaults::{
     DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
@@ -185,27 +184,6 @@ pub(crate) use crate::defaults::{
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(test)]
 pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
-
-fn acquire_data_root_writer_lock(data: &Path) -> rusqlite::Result<rusqlite::Connection> {
-    let c = rusqlite::Connection::open(data.join(".elastik-writer-lock.sqlite3"))?;
-    c.busy_timeout(Duration::from_millis(0))?;
-    c.execute_batch(
-        r#"
-        PRAGMA journal_mode=WAL;
-        CREATE TABLE IF NOT EXISTS writer_lock(
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            holder TEXT NOT NULL DEFAULT ''
-        );
-        INSERT OR IGNORE INTO writer_lock(id, holder) VALUES(1, '');
-        BEGIN IMMEDIATE;
-        "#,
-    )?;
-    c.execute(
-        "UPDATE writer_lock SET holder=?1 WHERE id=1",
-        [std::process::id().to_string()],
-    )?;
-    Ok(c)
-}
 
 // Legacy white-box tests still compile the HTTP route modules through this
 // library crate. Production builds compile those modules only from `main.rs`.
