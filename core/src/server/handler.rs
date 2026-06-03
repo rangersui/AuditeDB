@@ -48,8 +48,6 @@ use axum::{
 };
 use std::sync::Arc;
 
-#[cfg(test)]
-use crate::Core;
 use crate::{
     engine::{Engine, EngineError},
     engine_trace::EngineWriteTraceHooks,
@@ -79,40 +77,6 @@ impl HandlerEngineState for &ServerState {
 
     fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
         ServerState::persist_header_user_deny(self)
-    }
-}
-
-#[cfg(test)]
-impl HandlerEngineState for &Arc<Core> {
-    fn engine(&self) -> Engine {
-        Engine::from_core_for_tests((*self).clone())
-    }
-
-    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
-        // Legacy white-box tests that pass Core directly use the default HTTP
-        // adapter policy. Tests for custom policy should construct ServerState.
-        Arc::new(HeaderAllowlist::empty())
-    }
-
-    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
-        Arc::new(HeaderAllowlist::empty())
-    }
-}
-
-#[cfg(test)]
-impl HandlerEngineState for &Core {
-    fn engine(&self) -> Engine {
-        Engine::from_core_for_tests(Arc::new((*self).clone()))
-    }
-
-    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
-        // Legacy white-box tests that pass Core directly use the default HTTP
-        // adapter policy. Tests for custom policy should construct ServerState.
-        Arc::new(HeaderAllowlist::empty())
-    }
-
-    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
-        Arc::new(HeaderAllowlist::empty())
     }
 }
 

@@ -1,8 +1,40 @@
 use super::*;
-use crate::{etag as et, test_support::test_core, world};
+use crate::{etag as et, test_support::test_core, world, Core};
 use axum::response::Response;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+impl HandlerEngineState for &Arc<Core> {
+    fn engine(&self) -> Engine {
+        Engine::from_core_for_tests((*self).clone())
+    }
+
+    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
+        // Legacy white-box tests that pass Core directly use the default HTTP
+        // adapter policy. Tests for custom policy should construct ServerState.
+        Arc::new(HeaderAllowlist::empty())
+    }
+
+    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
+        Arc::new(HeaderAllowlist::empty())
+    }
+}
+
+impl HandlerEngineState for &Core {
+    fn engine(&self) -> Engine {
+        Engine::from_core_for_tests(Arc::new((*self).clone()))
+    }
+
+    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
+        // Legacy white-box tests that pass Core directly use the default HTTP
+        // adapter policy. Tests for custom policy should construct ServerState.
+        Arc::new(HeaderAllowlist::empty())
+    }
+
+    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
+        Arc::new(HeaderAllowlist::empty())
+    }
+}
 
 fn world_path(world: &str) -> ValidatedWorldPath {
     ValidatedWorldPath::new(world).unwrap()
