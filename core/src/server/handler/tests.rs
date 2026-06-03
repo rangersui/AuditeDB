@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     etag as et,
+    server::state::test_support::server_state_for_tests,
     test_support::{
         audit_meta_sha256_for_tests, test_core, world_db_path_for_tests,
         write_audited_world_for_tests,
@@ -11,40 +12,58 @@ use axum::response::Response;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-impl HandlerEngineState for &Arc<Core> {
-    fn engine(&self) -> Engine {
-        Engine::from_core_for_tests((*self).clone())
-    }
-
-    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
-        // Legacy white-box tests that pass Core directly use the default HTTP
-        // adapter policy. Tests for custom policy should construct ServerState.
-        Arc::new(HeaderAllowlist::empty())
-    }
-
-    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
-        Arc::new(HeaderAllowlist::empty())
-    }
-}
-
-impl HandlerEngineState for &Core {
-    fn engine(&self) -> Engine {
-        Engine::from_core_for_tests(Arc::new((*self).clone()))
-    }
-
-    fn persist_header_allowlist(&self) -> Arc<HeaderAllowlist> {
-        // Legacy white-box tests that pass Core directly use the default HTTP
-        // adapter policy. Tests for custom policy should construct ServerState.
-        Arc::new(HeaderAllowlist::empty())
-    }
-
-    fn persist_header_user_deny(&self) -> Arc<HeaderAllowlist> {
-        Arc::new(HeaderAllowlist::empty())
-    }
-}
-
 fn world_path(world: &str) -> ValidatedWorldPath {
     ValidatedWorldPath::new(world).unwrap()
+}
+
+fn handler_state_for_tests(core: &Core) -> ServerState {
+    server_state_for_tests(Arc::new(core.clone()))
+}
+
+async fn execute_get_with_test_state(
+    headers: HeaderMap,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    core: &Core,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_tests(core);
+    execute_get(headers, tier, world, &state, trace).await
+}
+
+async fn execute_head_with_test_state(
+    headers: HeaderMap,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    core: &Core,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_tests(core);
+    execute_head(headers, tier, world, &state, trace).await
+}
+
+async fn execute_put_with_test_state(
+    headers: HeaderMap,
+    body: Bytes,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    core: &Core,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_tests(core);
+    execute_put(headers, body, tier, world, &state, trace).await
+}
+
+async fn execute_post_with_test_state(
+    headers: HeaderMap,
+    body: Bytes,
+    tier: impl Into<AccessTier>,
+    world: ValidatedWorldPath,
+    core: &Core,
+    trace: &TraceCtx,
+) -> Phase {
+    let state = handler_state_for_tests(core);
+    execute_post(headers, body, tier, world, &state, trace).await
 }
 
 fn unwrap_response(phase: Phase) -> Response {
@@ -69,7 +88,7 @@ async fn get_and_head_require_read_token_when_enabled() {
 
     let headers = HeaderMap::new();
     let get_anon = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/private"),
@@ -80,7 +99,7 @@ async fn get_and_head_require_read_token_when_enabled() {
     );
     assert_eq!(get_anon.status(), StatusCode::UNAUTHORIZED);
     let head_reader = unwrap_response(
-        execute_head(
+        execute_head_with_test_state(
             headers.clone(),
             AccessTier::Read,
             world_path("home/private"),
@@ -103,7 +122,7 @@ async fn get_and_head_honor_single_byte_range() {
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=1-3"));
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
@@ -120,7 +139,7 @@ async fn get_and_head_honor_single_byte_range() {
     assert_eq!(get.headers().get(header::CONTENT_LENGTH).unwrap(), "3");
 
     let head = unwrap_response(
-        execute_head(
+        execute_head_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
@@ -147,7 +166,7 @@ async fn get_and_head_advertise_accept_ranges_on_full_body() {
     let headers = HeaderMap::new();
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/ranges"),
@@ -160,7 +179,7 @@ async fn get_and_head_advertise_accept_ranges_on_full_body() {
     assert_eq!(get.headers().get(header::ACCEPT_RANGES).unwrap(), "bytes");
 
     let head = unwrap_response(
-        execute_head(
+        execute_head_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/ranges"),
@@ -184,7 +203,7 @@ async fn unsatisfied_range_returns_416_with_content_range() {
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=99-100"));
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
@@ -212,7 +231,7 @@ async fn multi_range_is_ignored_and_returns_full_body() {
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1,4-5"));
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
@@ -236,7 +255,7 @@ async fn world_reads_advertise_monitor_and_collection_links() {
     let headers = HeaderMap::new();
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/links"),
@@ -255,7 +274,7 @@ async fn world_reads_advertise_monitor_and_collection_links() {
         .any(|v| *v == "</proc/worlds>; rel=\"collection\""));
 
     let head = unwrap_response(
-        execute_head(
+        execute_head_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/links"),
@@ -279,7 +298,7 @@ async fn stale_if_range_returns_full_body() {
     headers.insert(header::IF_RANGE, HeaderValue::from_static("\"hmac-stale\""));
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/range"),
@@ -305,7 +324,7 @@ async fn get_and_head_honor_if_none_match_cache_revalidation() {
     headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/cache"),
@@ -323,7 +342,7 @@ async fn get_and_head_honor_if_none_match_cache_revalidation() {
         .any(|v| v == "</listen/home/cache>; rel=\"monitor\""));
 
     let head = unwrap_response(
-        execute_head(
+        execute_head_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/cache"),
@@ -340,7 +359,7 @@ async fn get_and_head_honor_if_none_match_cache_revalidation() {
         HeaderValue::from_static("\"hmac-stale\""),
     );
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/cache"),
@@ -380,7 +399,7 @@ async fn get_returns_stored_standard_representation_headers() {
 
     let req_headers = HeaderMap::new();
     let resp = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             req_headers.clone(),
             AccessTier::Anon,
             world_path("home/gzip"),
@@ -416,7 +435,7 @@ async fn put_created_returns_location() {
     let (core, dir) = test_core("put-location");
     let headers = HeaderMap::new();
     let resp = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"new"),
             AccessTier::Write,
@@ -434,7 +453,7 @@ async fn put_created_returns_location() {
     );
 
     let resp = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"again"),
             AccessTier::Write,
@@ -455,7 +474,7 @@ async fn location_and_link_headers_percent_encode_world_urls() {
     let (core, dir) = test_core("encoded-headers");
     let headers = HeaderMap::new();
     let resp = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"new"),
             AccessTier::Write,
@@ -472,7 +491,7 @@ async fn location_and_link_headers_percent_encode_world_urls() {
     );
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             headers.clone(),
             AccessTier::Anon,
             world_path("home/café report"),
@@ -505,7 +524,7 @@ async fn unicode_world_get_preserves_body_headers_and_monitor_link() {
     .unwrap();
 
     let get = unwrap_response(
-        execute_get(
+        execute_get_with_test_state(
             HeaderMap::new(),
             AccessTier::Anon,
             world_path("home/销售/报告"),
@@ -542,7 +561,7 @@ async fn put_and_post_honor_write_preconditions_at_handler_level() {
     let mut stale = HeaderMap::new();
     stale.insert(header::IF_MATCH, HeaderValue::from_static("\"hmac-stale\""));
     let put = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             stale.clone(),
             Bytes::from_static(b"two"),
             AccessTier::Write,
@@ -555,7 +574,7 @@ async fn put_and_post_honor_write_preconditions_at_handler_level() {
     assert_eq!(put.status(), StatusCode::PRECONDITION_FAILED);
 
     let post = unwrap_response(
-        execute_post(
+        execute_post_with_test_state(
             stale.clone(),
             Bytes::from_static(b" plus"),
             AccessTier::Write,
@@ -573,7 +592,7 @@ async fn put_and_post_honor_write_preconditions_at_handler_level() {
         HeaderValue::from_str(&format!("\"{}\"", et::hmac_etag(&h))).unwrap(),
     );
     let post = unwrap_response(
-        execute_post(
+        execute_post_with_test_state(
             good.clone(),
             Bytes::from_static(b" plus"),
             AccessTier::Write,
@@ -611,7 +630,7 @@ async fn post_audit_uses_existing_representation_metadata() {
     );
     req_headers.insert(header::CONTENT_LANGUAGE, HeaderValue::from_static("zh-CN"));
     let resp = unwrap_response(
-        execute_post(
+        execute_post_with_test_state(
             req_headers.clone(),
             Bytes::from_static(b" world"),
             AccessTier::Write,
@@ -657,7 +676,7 @@ async fn durable_storage_quota_returns_507_without_writing() {
     let headers = HeaderMap::new();
 
     let first = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"1234"),
             AccessTier::Write,
@@ -670,7 +689,7 @@ async fn durable_storage_quota_returns_507_without_writing() {
     assert_eq!(first.status(), StatusCode::CREATED);
 
     let over = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,
@@ -687,7 +706,7 @@ async fn durable_storage_quota_returns_507_without_writing() {
     assert!(core.read_world("home/b").unwrap().is_none());
 
     let append = unwrap_response(
-        execute_post(
+        execute_post_with_test_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,
@@ -733,7 +752,7 @@ async fn concurrent_puts_to_distinct_worlds_do_not_overshoot_quota() {
             let path = format!("home/race/{i}");
             let body = Bytes::copy_from_slice(&vec![b'x'; body_len]);
             unwrap_response(
-                execute_put(
+                execute_put_with_test_state(
                     HeaderMap::new(),
                     body,
                     AccessTier::Write,
@@ -791,7 +810,7 @@ async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
             let path = format!("tmp/race/{i}");
             let body = Bytes::copy_from_slice(&vec![b'm'; body_len]);
             unwrap_response(
-                execute_put(
+                execute_put_with_test_state(
                     HeaderMap::new(),
                     body,
                     AccessTier::Write,
@@ -835,7 +854,7 @@ async fn put_and_post_enforce_world_size_cap() {
     let headers = HeaderMap::new();
 
     let too_big = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"12345"),
             AccessTier::Write,
@@ -848,7 +867,7 @@ async fn put_and_post_enforce_world_size_cap() {
     assert_eq!(too_big.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let ok = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"1234"),
             AccessTier::Write,
@@ -861,7 +880,7 @@ async fn put_and_post_enforce_world_size_cap() {
     assert_eq!(ok.status(), StatusCode::CREATED);
 
     let append = unwrap_response(
-        execute_post(
+        execute_post_with_test_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,
@@ -883,7 +902,7 @@ async fn memory_backend_enforces_total_quota() {
     let headers = HeaderMap::new();
 
     let first = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"12"),
             AccessTier::Write,
@@ -895,7 +914,7 @@ async fn memory_backend_enforces_total_quota() {
     );
     assert_eq!(first.status(), StatusCode::CREATED);
     let second = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"34"),
             AccessTier::Write,
@@ -907,7 +926,7 @@ async fn memory_backend_enforces_total_quota() {
     );
     assert_eq!(second.status(), StatusCode::CREATED);
     let third = unwrap_response(
-        execute_put(
+        execute_put_with_test_state(
             headers.clone(),
             Bytes::from_static(b"5"),
             AccessTier::Write,

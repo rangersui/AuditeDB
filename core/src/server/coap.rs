@@ -474,7 +474,7 @@ mod tests {
     use crate::{
         audit, auth,
         engine::Engine,
-        server::{handler, Phase, TraceCtx},
+        server::{handler, state::test_support::server_state_for_tests, Phase, TraceCtx},
         test_support, Core,
     };
     use axum::body::Bytes;
@@ -750,6 +750,7 @@ mod tests {
     async fn http_put_and_coap_put_share_engine_semantics() {
         let (core, dir) = test_core("cross-protocol");
         let mut events = core.events.subscribe();
+        let http_state = server_state_for_tests(Arc::new(core.clone()));
 
         let mut http_headers = HeaderMap::new();
         http_headers.insert(
@@ -761,7 +762,7 @@ mod tests {
             Bytes::from_static(b"23.5"),
             auth::Tier::Write,
             ValidatedWorldPath::new("home/http-temp").unwrap(),
-            &core,
+            &http_state,
             &TraceCtx::disabled(),
         )
         .await;

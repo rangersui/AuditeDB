@@ -637,6 +637,8 @@ mod tests {
         // and each bump the counter, leading to drift. With the
         // atomic swap, only the unique false->true transition bumps.
         let (core, dir) = test_core("concurrent-first-deletes");
+        let state = Arc::new(core);
+        let server_state = server_state_for_tests(state.clone());
         let headers = HeaderMap::new();
         for w in ["home/a", "home/b", "home/c"] {
             let put = unwrap_response(
@@ -645,18 +647,16 @@ mod tests {
                     Bytes::from_static(b"x"),
                     AccessTier::Write,
                     world_path(w),
-                    &core,
+                    &server_state,
                     &TraceCtx::disabled(),
                 )
                 .await,
             );
             assert_eq!(put.status(), StatusCode::CREATED);
         }
-        assert_eq!(core.durable_world_count.load(Ordering::Relaxed), 3);
-        assert!(!core.delete_ledger_created.load(Ordering::Relaxed));
+        assert_eq!(state.durable_world_count.load(Ordering::Relaxed), 3);
+        assert!(!state.delete_ledger_created.load(Ordering::Relaxed));
 
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state.clone());
         let s1 = server_state.clone();
         let s2 = server_state.clone();
         let s3 = server_state.clone();

@@ -775,6 +775,8 @@ mod tests {
     #[tokio::test]
     async fn proc_df_world_count_tracks_durable_put_and_delete() {
         let (core, dir) = test_core("proc-df-world-count");
+        let state = Arc::new(core);
+        let server_state = server_state_for_tests(state.clone());
         let headers = HeaderMap::new();
 
         let put = unwrap_response(
@@ -783,15 +785,13 @@ mod tests {
                 Bytes::from_static(b"x"),
                 auth::Tier::Write,
                 world_path("home/count"),
-                &core,
+                &server_state,
                 &TraceCtx::disabled(),
             )
             .await,
         );
         assert_eq!(put.status(), StatusCode::CREATED);
 
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state.clone());
         let before = proc_df(State(server_state.clone()), Method::GET, headers.clone()).await;
         assert!(response_text(before)
             .await
@@ -825,6 +825,8 @@ mod tests {
         // `ledger_writer_inits` counter must bump from 0 to 1
         // (lazy-init fired exactly once).
         let (core, dir) = test_core("proc-pool-metrics");
+        let state = Arc::new(core);
+        let server_state = server_state_for_tests(state.clone());
         let headers = HeaderMap::new();
 
         let put = unwrap_response(
@@ -833,7 +835,7 @@ mod tests {
                 Bytes::from_static(b"hello"),
                 auth::Tier::Write,
                 world_path("home/m"),
-                &core,
+                &server_state,
                 &TraceCtx::disabled(),
             )
             .await,
@@ -847,7 +849,7 @@ mod tests {
                     headers.clone(),
                     auth::Tier::Read,
                     world_path("home/m"),
-                    &core,
+                    &server_state,
                     &TraceCtx::disabled(),
                 )
                 .await,
@@ -855,8 +857,6 @@ mod tests {
             assert_eq!(get.status(), StatusCode::OK);
         }
 
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state.clone());
         let resp = proc_pool(State(server_state.clone()), Method::GET, headers.clone()).await;
         let body = response_text(resp).await;
 
@@ -896,6 +896,8 @@ mod tests {
     #[tokio::test]
     async fn proc_pool_reports_read_cache_eviction_values() {
         let (core, dir) = test_core_with_read_cache_max("proc-pool-eviction-values", 2);
+        let state = Arc::new(core);
+        let server_state = server_state_for_tests(state);
         let headers = HeaderMap::new();
 
         for world in ["home/a", "home/b", "home/c"] {
@@ -905,7 +907,7 @@ mod tests {
                     Bytes::from_static(b"x"),
                     auth::Tier::Write,
                     world_path(world),
-                    &core,
+                    &server_state,
                     &TraceCtx::disabled(),
                 )
                 .await,
@@ -919,7 +921,7 @@ mod tests {
                     headers.clone(),
                     auth::Tier::Read,
                     world_path(world),
-                    &core,
+                    &server_state,
                     &TraceCtx::disabled(),
                 )
                 .await,
@@ -927,8 +929,6 @@ mod tests {
             assert_eq!(get.status(), StatusCode::OK);
         }
 
-        let state = Arc::new(core);
-        let server_state = server_state_for_tests(state);
         let resp = proc_pool(State(server_state), Method::GET, headers).await;
         let body = response_text(resp).await;
 
