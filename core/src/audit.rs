@@ -3,7 +3,7 @@
 //! core storage invariant, independent of which SDK or bridge produced
 //! the write.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{ffi, Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
@@ -541,6 +541,16 @@ mod tests {
             b"key",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn hmac_sha256_known_vector_matches_rfc4231() {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&[0x0b; 20]).unwrap();
+        mac.update(b"Hi There");
+        assert_eq!(
+            hex::encode(mac.finalize().into_bytes()),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
     }
 
     #[test]
