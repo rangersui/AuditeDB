@@ -1,6 +1,6 @@
 {
   "name": "@elastikjs/core-darwin-arm64",
-  "version": "8.0.1",
+  "version": "8.1.0",
   "description": "Elastik L5 — bundled Rust core binary for macOS Apple Silicon. Installed transitively by @elastikjs/client when start() runs a local core.",
   "files": [
     "elastik-core"

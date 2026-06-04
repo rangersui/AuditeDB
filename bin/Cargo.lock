@@ -414,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "elastik-bin"
-version = "8.0.1"
+version = "8.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "elastik-core"
-version = "8.0.1"
+version = "8.1.0"
 dependencies = [
  "bytes",
  "dashmap",

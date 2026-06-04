@@ -1,6 +1,6 @@
 [package]
 name = "elastik-core"
-version = "8.0.1"
+version = "8.1.0"
 edition = "2021"
 description = "Elastik — Audi-ted L5 storage engine. SQLite for files."
 license = "MIT"

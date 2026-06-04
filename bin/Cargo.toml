@@ -1,6 +1,6 @@
 [package]
 name = "elastik-bin"
-version = "8.0.1"
+version = "8.1.0"
 edition = "2021"
 description = "Elastik server binary adapters for the elastik-core storage engine."
 license = "MIT"
