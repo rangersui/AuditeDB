@@ -8,18 +8,12 @@
 //! Re-exported into the crate root by `main.rs` so existing call sites
 //! like `crate::not_found()` keep working without import changes.
 //!
-//! The blocking-task error scaffold (`BlockingSqliteError` enum and
-//! `blocking_storage_error` mapper) lives in `main.rs`; that scaffold
-//! belongs to the spawn_blocking glue, not to the response surface.
-
 use axum::{
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
 };
 
 use crate::engine_introspection::{AuditBroken, AuditValid};
-#[cfg(test)]
-use crate::storage_class::{is_insufficient_storage_error, is_transient_storage_error};
 
 // ─── header utility ─────────────────────────────────────────────────
 
@@ -180,18 +174,6 @@ pub(crate) fn storage_quota_exceeded(used: usize, quota: usize, projected: usize
         .into_response()
 }
 
-#[cfg(test)]
-pub(crate) fn storage_error(scope: &str, err: rusqlite::Error) -> Response {
-    eprintln!("elastik-core internal {scope}: {err}");
-    if is_insufficient_storage_error(&err) {
-        insufficient_storage()
-    } else if is_transient_storage_error(&err) {
-        storage_temporarily_unavailable()
-    } else {
-        server_error("storage failure".to_string())
-    }
-}
-
 // ─── audit verify responses ────────────────────────────────────────
 
 pub(crate) fn audit_valid(report: AuditValid) -> Response {
@@ -340,47 +322,6 @@ pub(crate) fn world_list_body(names: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sqlite_disk_full_maps_to_507() {
-        let err = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
-            None,
-        );
-        assert!(is_insufficient_storage_error(&err));
-
-        let resp = storage_error("test", err);
-        assert_eq!(resp.status(), StatusCode::INSUFFICIENT_STORAGE);
-    }
-
-    #[test]
-    fn sqlite_busy_and_locked_map_to_503_retry_after() {
-        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
-            let err = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
-            assert!(is_transient_storage_error(&err));
-
-            let resp = storage_error("test", err);
-            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(
-                resp.headers()
-                    .get(header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok()),
-                Some("1")
-            );
-        }
-    }
-
-    #[test]
-    fn non_storage_sqlite_errors_stay_500() {
-        let err = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
-            None,
-        );
-        assert!(!is_insufficient_storage_error(&err));
-
-        let resp = storage_error("test", err);
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
 
     #[test]
     fn unauthorized_responses_advertise_bearer_challenge() {

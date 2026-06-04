@@ -28,3 +28,37 @@ pub(crate) fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {
         || msg.contains("no space left")
         || msg.contains("not enough space")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disk_full_is_insufficient_storage() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        );
+        assert!(is_insufficient_storage_error(&err));
+        assert!(!is_transient_storage_error(&err));
+    }
+
+    #[test]
+    fn busy_and_locked_are_transient_storage() {
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+            let err = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            assert!(is_transient_storage_error(&err));
+            assert!(!is_insufficient_storage_error(&err));
+        }
+    }
+
+    #[test]
+    fn corrupt_is_not_quota_or_transient_storage() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        );
+        assert!(!is_insufficient_storage_error(&err));
+        assert!(!is_transient_storage_error(&err));
+    }
+}
