@@ -154,10 +154,11 @@ These are not preferences. They are the contract every change must keep.
   mechanism: production append paths take a verified audit transaction type,
   not a raw SQLite transaction.
 - **FSM pipeline is the contract for new verbs.** Every new HTTP verb on
-  `/<world>` is one `pub(crate) async fn execute_*` exported from
-  `core/src/handler.rs`. Implementations live in `handler.rs`
-  (dispatcher + light verbs) or `handler/<verb>.rs` (heavy verbs
-  with their own audit / lock dance, e.g. `delete`). Use the
+  `/<world>` is one `pub(crate) async fn execute_*` exported through
+  `bin/src/server/handler.rs`. Implementations live in
+  `bin/src/server/handler.rs` (dispatcher + light verbs) or
+  `bin/src/server/handler/<verb>.rs` (heavy verbs with their own audit / lock
+  dance, e.g. `delete`). Use the
   unified primitives `execute_read` / `execute_write` for verbs
   that fit; structurally distinct verbs (multi-step audit,
   heterogeneous lock ordering) get their own file. Each `execute_*`
@@ -454,7 +455,7 @@ treatment up front.
 
 ## Endpoint Change Checklist
 
-Every new core route should pass the same small checklist before review:
+Every new binary-adapter route should pass the same small checklist before review:
 
 - Blocking: filesystem or SQLite work that can outlive a quick metadata read
   runs through `spawn_blocking`, not directly on a Tokio worker.
@@ -519,7 +520,7 @@ looking for style issues:
 - Path semantics: if core rejects a path form, SDK clients should reject it
   before network I/O too. Include encoded dot segments, empty segments,
   namespace roots, and reserved `/proc/*` exceptions in tests.
-- Cross-surface parity: when a status or limit changes in HTTP, check SCoAP
+- Cross-surface parity: when a status or limit changes in HTTP, check CoAP
   mappings, Python SDK path/proc allowlists, JS SDK assumptions, README, and
   `.env.example`.
 - Resource caps: every new long-lived connection, queue, replay ring, datagram
@@ -528,9 +529,13 @@ looking for style issues:
 - `/proc/*` discipline: proc endpoints are read-gated introspection, not worlds.
   They should not emit audit events, replay user headers, or trigger listen
   notifications. If they scan durable state, treat them as blocking work.
-- Review evidence: before saying a Rust core PR is ready, run or cite
+- Review evidence: before saying a Rust PR is ready, run or cite the relevant
+  manifest checks. For Engine/library changes, use
   `cargo fmt --manifest-path core/Cargo.toml -- --check`,
-  `cargo clippy --manifest-path core/Cargo.toml -- -D warnings`,
-  `cargo test --manifest-path core/Cargo.toml`, the SDK smoke tests touched by
-  the change, `python tools/header_policy_scan.py --offline` when header policy
-  is involved, and `git diff --check`.
+  `cargo clippy --manifest-path core/Cargo.toml -- -D warnings`, and
+  `cargo test --manifest-path core/Cargo.toml`. For binary-adapter changes,
+  add `cargo fmt --manifest-path bin/Cargo.toml -- --check`,
+  `cargo clippy --manifest-path bin/Cargo.toml --all-targets -- -D warnings`,
+  and `cargo test --manifest-path bin/Cargo.toml`. Also run the SDK smoke tests
+  touched by the change, `python tools/header_policy_scan.py --offline` when
+  header policy is involved, and `git diff --check`.

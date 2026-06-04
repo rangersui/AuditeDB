@@ -12,7 +12,7 @@ file documents the binary wire surface: startup, HTTP worlds, `/proc/*`,
 ```bash
 export ELASTIK_KEY=secret
 export ELASTIK_WRITE_TOKEN=secret
-cargo run --bin elastik-core
+cargo run --manifest-path bin/Cargo.toml --bin elastik-core
 # elastik-core v8.0.1 on http://127.0.0.1:3105/
 
 curl                  http://127.0.0.1:3105/proc/version

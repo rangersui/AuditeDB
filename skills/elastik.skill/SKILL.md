@@ -71,16 +71,17 @@ Curl cookbook:
 
 ## Canonical key
 
-HTTP wire path carries a leading slash; the core canonicalises it away.
+HTTP wire path carries a leading slash; the HTTP adapter canonicalises it into
+an Engine world path.
 
 ```text
 HTTP wire:        /home/a    /tmp/x
-core canonical:   home/a     tmp/x
+Engine canonical: home/a     tmp/x
 ```
 
 The canonical form is deliberately MQTT-like: no leading slash, slash-separated
-hierarchy, no query string. A future MQTT adapter would use the topic as the
-world path; it should not add a second naming grammar.
+hierarchy, no query string. The MQTT adapter projects client topics onto the
+same validated world grammar instead of adding a second naming system.
 
 Unprefixed paths fall under the bare-path rule and are prepended with `home/`:
 

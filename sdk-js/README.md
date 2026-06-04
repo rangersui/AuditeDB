@@ -91,8 +91,9 @@ await e.get("note")              // SDK sends GET (HTTP)
 await e.stop()                   // kill the process, wipe the temp data dir
 ```
 
-The SDK and the core communicate over HTTP. The SDK is `fetch`-wrapped over
-the core's HTTP surface — including when they live in the same process tree.
+The SDK and the `elastik-core` binary communicate over HTTP. The SDK is
+`fetch`-wrapped over the binary's HTTP adapter — including when they live in
+the same process tree.
 **HTTP is all you need, even between the SDK and its embedded core.**
 
 ### Supported platforms (npm install)
@@ -111,9 +112,9 @@ compatibility. `darwin-x64` is intentionally not in the matrix (Apple
 Silicon only on the Mac side).
 
 If `start()` runs on a platform we don't ship, it throws `NoBinaryError`
-with a list of workarounds: `pip install elastik`, `cargo build --release`,
-or `npx @elastikjs/server@<exact>` for the slow-but-pure-JS educational
-core.
+with a list of workarounds: `pip install elastik`,
+`cargo build --manifest-path bin/Cargo.toml --release`, or
+`npx @elastikjs/server@<exact>` for the slow-but-pure-JS educational core.
 
 ### Browser users: `start()` is not for you
 
@@ -347,7 +348,7 @@ doing the work is not.
 | --- | --- | --- | --- |
 | Python | `pip install elastik`              | a Python package          | a Python wrapper + a Rust binary |
 | JavaScript | `npm install @elastikjs/client` | a JS library              | a fetch wrapper + a Rust binary |
-| Rust | `cargo install elastik-core`         | a Rust binary             | a Rust binary (the only honest one) |
+| Rust | `cargo install elastik-bin`          | a Rust package            | the `elastik-core` executable |
 
 Three languages. Three package managers. **Same Rust binary** at the
 bottom. Most users don't know it's Rust, and don't need to.
@@ -706,9 +707,9 @@ This is intentional on the core's part — CORS is browser policy, not disk poli
 
 **Solutions, pick one:**
 
-- **Same-origin** (cleanest): serve your app from the elastik core itself. PUT your
+- **Same-origin** (cleanest): serve your app from the elastik-core binary itself. PUT your
   `index.html` and JS bundles into `home/...`, then visit `http://core/home/index.html`.
-  The same-origin model trivially passes; we ship a working example as `browser-smoke.html`.
+  The same-origin model passes when the app is served from stored worlds.
 - **Reverse proxy**: front the core with nginx / Caddy / Cloudflare and add CORS
   headers there. The core stays a byte store; the proxy speaks browser politics.
 - **Same machine, NOT mixed names**: `localhost` and `127.0.0.1` are *different* origins

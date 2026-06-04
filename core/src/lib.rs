@@ -71,7 +71,8 @@
 //! Binary adapter features such as `coap`, `mqtt`, and `multi-thread` live in
 //! `bin/Cargo.toml`, not in this library package.
 //!
-//! Minimal library-only build: `cargo build --lib --no-default-features
+//! Minimal library-only build from the repository root:
+//! `cargo build --manifest-path core/Cargo.toml --lib --no-default-features
 //! --features bundled-sqlite,unstable-engine`.
 mod audit;
 mod auth;

@@ -19,21 +19,20 @@ tree. `home/a/b` is not a child of `home/a`; it is a different key.
 
 ## Canonical key
 
-The HTTP wire path always starts with a slash. The core canonicalises it away
-before lookup:
+The HTTP wire path always starts with a slash. The HTTP adapter canonicalises
+it into an Engine world path before lookup:
 
 ```text
 HTTP wire:        /home/a    /tmp/x
-core canonical:   home/a     tmp/x
+Engine canonical: home/a     tmp/x
 ```
 
 ### MQTT-shaped canonical keys
 
 Core canonical keys are MQTT-topic-shaped: `home/sensor/temp`, not
 `/home/sensor/temp` and not `home/sensor/temp?x=y`. This is why HTTP, CoAP,
-SSE, and a future MQTT adapter can all project onto the same
-`ValidatedWorldPath`: the adapter owns wire syntax, the engine owns the
-topic-like key.
+SSE, and MQTT can all project onto the same validated Engine world grammar:
+the adapter owns wire syntax, the engine owns the topic-like key.
 
 ### Bare-path rule
 

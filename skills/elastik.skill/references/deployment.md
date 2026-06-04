@@ -21,7 +21,7 @@ Then run one of the available entrypoints:
 
 ```bash
 # From a source checkout
-cargo run --manifest-path core/Cargo.toml
+cargo run --manifest-path bin/Cargo.toml --bin elastik-core
 
 # If the Rust binary is installed or built
 elastik-core

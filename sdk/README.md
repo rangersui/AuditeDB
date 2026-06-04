@@ -173,9 +173,9 @@ Migration note: `ELASTIK_TOKEN` was the old write-token name. It still works as
 a temporary fallback when `ELASTIK_WRITE_TOKEN` is unset, but the SDK warns so
 you can rename it.
 
-## SCoAP / UDP Helper
+## CoAP / UDP Helper
 
-The core can expose an opt-in SCoAP/UDP surface when `ELASTIK_COAP_PORT` is
+The binary can expose an opt-in CoAP/UDP surface when `ELASTIK_COAP_PORT` is
 set. The SDK gives humans a small translator so nobody has to hand-type CoAP
 bytes:
 
@@ -381,8 +381,8 @@ print(r.status, r.headers, r.body)
 
 ## Python Ergonomics
 
-The core is HTTP; the SDK adds small Python-shaped conveniences without hiding
-the wire.
+The `elastik-core` binary exposes HTTP; the SDK adds small Python-shaped
+conveniences without hiding the wire.
 
 ```python
 e["note"] = "hello"             # PUT /home/note
@@ -539,8 +539,8 @@ Handler rules:
 - Advanced users may return `Reply`, `Archive`, `MoveTo`, or `Drop` action
   objects, but they are not required.
 
-Use `clear_routes()` or `unlisten(pattern)` in tests/notebooks to reset handler
-state. Registering the same pattern twice raises unless you use
+Use `clear_routes()` or `unlisten(pattern)` in tests or notebooks to reset
+handler state. Registering the same pattern twice raises unless you use
 `listen(pattern, replace=True)`.
 
 `run()` retries forever by default and logs failures to stderr. For supervised

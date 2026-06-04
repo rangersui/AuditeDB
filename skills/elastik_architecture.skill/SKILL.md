@@ -2,8 +2,8 @@
 name: elastik-architecture
 description: >
   Use this skill when making architectural decisions about Elastik: whether a
-  capability belongs in the Elastik engine library, in the HTTP/CoAP adapter
-  binary, in a worker, in a client, or in an HTTP world. Trigger when the user
+  capability belongs in the Elastik engine library, in the HTTP/CoAP/MQTT
+  adapter binary, in a worker, in a client, or in an HTTP world. Trigger when the user
   asks whether Elastik should execute code, validate formats, proxy or rewrite
   content, add RPC, become synchronous, add a control-plane endpoint, absorb a
   subsystem that could instead reuse Elastik's HTTP key-value/proc/auth/audit/
@@ -17,28 +17,29 @@ description: >
 
 ## Why This Skill Exists
 
-Elastik ships as two crate targets in one Cargo package:
+Elastik ships as two Cargo packages:
 
 ```text
-elastik_core (library)     elastik-core (binary)
-─────────────────────      ─────────────────────
-Engine + storage + audit   HTTP + CoAP + SSE + env
-+ subscription stream      + tokio runtime + signals
-                                    │
-                                    ▼
-                           consumes the library
-                           through the public Engine
-                           facade only
+core/                       bin/
+elastik_core (library)      elastik-core (binary)
+─────────────────────       ─────────────────────
+Engine + storage + audit    HTTP + CoAP + MQTT + SSE + env
++ subscription stream       + tokio runtime + signals
+                                     │
+                                     ▼
+                            consumes the library
+                            through the public Engine
+                            facade only
 ```
 
 The library is a protocol-neutral storage engine: paths, bytes, ETags, HMAC
 chain, four-tier auth, five verbs. The binary is one specific projection of
-that engine onto HTTP and CoAP wires. Every architecture question about
+that engine onto HTTP, CoAP, MQTT, and SSE wires. Every architecture question about
 Elastik reduces to one test:
 
 The canonical path shape is intentionally MQTT-like: no leading slash,
 slash-separated hierarchy, no query string. HTTP `/home/a`, CoAP `home/a`, and a
-future MQTT topic `home/a` all project onto the same `ValidatedWorldPath`.
+MQTT topic such as `sensor/temp` all project onto validated Engine worlds.
 
 ```text
 Does this keep the engine a storage engine, or does it turn the engine into
@@ -66,8 +67,8 @@ The boundary is structural, not stylistic:
   sockets, env vars, the binary's startup banner, or `curl`. A library-only
   build with `--no-default-features --features bundled-sqlite,unstable-engine`
   has zero HTTP-shaped crates in its dependency tree.
-- **Binary owns**: HTTP routing, CoAP datagram parsing, response rendering,
-  Authorization header parsing, env config, graceful shutdown, the
+- **Binary owns**: HTTP routing, CoAP datagram parsing, MQTT session handling,
+  response rendering, Authorization header parsing, env config, graceful shutdown, the
   `ServerState` adapter handle. The binary consumes the library through the
   public `Engine` API only.
 
@@ -351,8 +352,8 @@ When someone asks "can Elastik do X?", run this decision chain:
    First ask whether it is just Elastik's existing proc/auth/audit/static
    surface projected into a domain adapter.
 
-9. Does X require a wire shape Elastik does not speak today (e.g. MQTT,
-   gRPC, raw TCP)?
+9. Does X require a wire shape the selected Elastik binary does not speak
+   today (e.g. gRPC or another raw TCP protocol)?
    New adapter binary or external bridge process. Do NOT extend the engine
    library with the new wire's vocabulary.
 ```
@@ -443,7 +444,7 @@ that belongs in the worker.
 Strip the binary entirely. Build only the library:
 
 ```bash
-cargo build --lib --no-default-features --features bundled-sqlite,unstable-engine
+cargo build --manifest-path core/Cargo.toml --lib --no-default-features --features bundled-sqlite,unstable-engine
 ```
 
 ```text

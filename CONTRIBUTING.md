@@ -25,16 +25,19 @@ change, one pull request.
 
 ## Rust Core Checklist
 
-For core changes, check the same surfaces reviewers check:
+For Engine/library changes, check the same surfaces reviewers check:
 
 - Blocking: durable scans and SQLite-heavy work must not park Tokio workers.
 - Explicit errors: do not swallow storage errors into defaults or empty data.
-- Auth: new routes must use the right token gate.
+- Auth: Engine calls must pass the right `AccessTier`; binary-adapter routes
+  must use the right token gate.
 - Notify: externally visible writes must notify listeners.
 - Audit: durable mutations must be represented in the HMAC audit chain.
 - Headers: persisted response headers must pass the denylist.
 - Resources: new loops, queues, caches, and listeners need bounds.
-- Storage: expected storage exhaustion maps to 507, not panic or vague 500.
+- Storage: Engine errors must preserve `QuotaExceeded`, `TransientStorage`,
+  and `InsufficientStorage`; binary adapters map those to protocol status or
+  error codes.
 - Docs and tests: new public behavior needs a test and public documentation.
 
 The pull request template includes this same checklist so authors can fill it
@@ -42,13 +45,26 @@ inline when opening a PR.
 
 ## Local Checks
 
-Run the narrowest checks that cover your change. For Rust core work, the usual
-gate is:
+Run the narrowest checks that cover your change. For Engine-only work, the
+usual gate is:
 
 ```
 cargo fmt --manifest-path core/Cargo.toml -- --check
 cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path core/Cargo.toml
+```
+
+For binary-adapter work, add the binary crate checks:
+
+```
+cargo fmt --manifest-path bin/Cargo.toml -- --check
+cargo clippy --manifest-path bin/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path bin/Cargo.toml
+```
+
+For SDK or header-policy work, also run the matching smoke checks:
+
+```
 python sdk/tests/test_tools.py
 node sdk-js/test.mjs
 python tools/header_policy_scan.py --self-test
@@ -76,6 +92,7 @@ Do not file public security issues. Use `SECURITY.md`.
 ## Releases
 
 A version bump touches `core/Cargo.toml`, `core/Cargo.lock`,
+`bin/Cargo.toml`, `bin/Cargo.lock`, `ffi/Cargo.toml`, `ffi/Cargo.lock`,
 `sdk/pyproject.toml`, and every `sdk-js/**/package.json` (the main package plus
 per-platform binary packages) in one commit. Current-facing README and SDK docs
 must agree with the version and product wording. Tag `vX.Y.Z` only after every

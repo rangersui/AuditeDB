@@ -8,9 +8,14 @@ everything. Authenticate everything. Subscribe to changes.
 *SQLite für Dateien. Bytes an Pfaden. Alles auditiert. Änderungen abonniert.*
 
 ```
-┌─ engine (library) ─────────────────────────┐
+┌─ elastik-core (library, core/) ────────────┐
 │ paths + bytes + ETags + HMAC chain + auth  │
 │ no HTTP, no sockets, no env vars           │
+└─────────────────────┬──────────────────────┘
+                      │ pub Engine API
+┌─ elastik-bin (binary, bin/) ───────────────┐
+│ HTTP + CoAP + MQTT + SSE adapters          │
+│ config, routing, auth parsing, /proc/*     │
 └────────────────────────────────────────────┘
 ```
 
@@ -66,11 +71,7 @@ async fn main() {
 
     engine.replace(
         &world,
-        Representation {
-            body: Bytes::from_static(b"hi"),
-            content_type: "text/plain".into(),
-            headers: Vec::new(),
-        },
+        Representation::new(Bytes::from_static(b"hi"), "text/plain", Vec::new()),
         Preconditions::none(),
         AccessTier::Write,
     ).await.unwrap();
@@ -160,7 +161,7 @@ above.
 Library-only build, no HTTP stack:
 
 ```bash
-cargo build --lib --no-default-features --features bundled-sqlite,unstable-engine
+cargo build --manifest-path core/Cargo.toml --lib --no-default-features --features bundled-sqlite,unstable-engine
 ```
 
 The resulting dependency tree has zero `axum`, `hyper`, `tower`,
@@ -175,28 +176,36 @@ features:
 | `coap`            |    ✓    | —                                | CoAP adapter                  |
 | `multi-thread`    |    ✓    | `tokio/rt-multi-thread`          | multi-thread runtime          |
 | `mqtt`            |         | `rumqttd`, Tokio I/O utilities   | MQTT 3.1.1 adapter            |
-| `unstable-engine` |    ✓    | `elastik-core/unstable-engine`   | Engine facade used by adapters |
+| `unstable-engine` |    ✓    | —                                | local `cfg` gate for tracing / error arms in binary code |
 
 ---
 
 ## Architecture — library + binary split
 
-The codebase is split into two Rust packages:
+The codebase is two Rust packages:
 
-- **Library package** (`core/src/lib.rs` + `engine*.rs` + storage primitives):
-  the
-  protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars, no sockets.
-  Safe to embed in any Rust context.
-- **Binary package** (`bin/src/main.rs` + `bin/src/server/...` + adapter-side `config`,
-  `http_range`, `http_semantics`, `path`): the HTTP + CoAP + MQTT server. Owns
-  Authorization parsing, request lifecycle, response rendering, graceful
-  shutdown. Consumes the library through the public `Engine` facade only.
+| Package | Path | Cargo name | Produces |
+|---------|------|------------|----------|
+| Library | `core/` | `elastik-core` | `libelastik_core.rlib` |
+| Binary  | `bin/`  | `elastik-bin`  | `elastik-core` executable |
+
+The binary package is named `elastik-bin` so Cargo can distinguish it from the
+library. The compiled executable is still called `elastik-core` (set by the
+`[[bin]]` table in `bin/Cargo.toml`) — deploy names stay unchanged.
+
+- **Library** (`core/src/lib.rs` + `engine*.rs` + storage primitives):
+  the protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars,
+  no sockets. Safe to embed in any Rust context.
+- **Binary** (`bin/src/main.rs` + `bin/src/server/...` + adapter-side config,
+  routing, response rendering, path canonicalisation): the HTTP + CoAP + MQTT
+  server. Owns Authorization parsing, request lifecycle, graceful shutdown.
+  Consumes the library through the public `Engine` facade only.
 
 The split is real, not cosmetic:
 
-- `cargo build --lib --no-default-features --features bundled-sqlite,unstable-engine`
+- `cargo build --manifest-path core/Cargo.toml --lib --no-default-features --features bundled-sqlite,unstable-engine`
   produces an embeddable Engine library whose dep tree contains **zero**
-  HTTP-shaped crates.
+  HTTP-shaped crates (`axum`, `hyper`, `tower`, `rumqttd`, `base64` are all absent).
 - `cargo build --manifest-path bin/Cargo.toml` builds the `elastik-core`
   binary and all server adapters from the binary package.
 
