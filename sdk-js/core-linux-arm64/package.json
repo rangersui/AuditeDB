@@ -1,6 +1,6 @@
 {
   "name": "@elastikjs/core-linux-arm64",
-  "version": "8.1.0",
+  "version": "8.2.0",
   "description": "Elastik L5 — bundled Rust core binary for Linux ARM64. Installed transitively by @elastikjs/client when start() runs a local core.",
   "files": [
     "elastik-core"

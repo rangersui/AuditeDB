@@ -1,6 +1,6 @@
 {
   "name": "@elastikjs/client",
-  "version": "8.1.0",
+  "version": "8.2.0",
   "description": "JavaScript SDK for Elastik L5. Audi-ted storage over HTTP; one import, zero dependencies.",
   "type": "module",
   "main": "./index.mjs",
@@ -53,10 +53,10 @@
   },
   "dependencies": {},
   "optionalDependencies": {
-    "@elastikjs/core-linux-x64": "8.1.0",
-    "@elastikjs/core-linux-arm64": "8.1.0",
-    "@elastikjs/core-darwin-arm64": "8.1.0",
-    "@elastikjs/core-win32-x64": "8.1.0"
+    "@elastikjs/core-linux-x64": "8.2.0",
+    "@elastikjs/core-linux-arm64": "8.2.0",
+    "@elastikjs/core-darwin-arm64": "8.2.0",
+    "@elastikjs/core-win32-x64": "8.2.0"
   },
   "engines": {
     "node": ">=18"

@@ -14,7 +14,7 @@
 // Usage:
 //   node scripts/pack-platform.mjs <plat> <arch> <binary-path> [--version <version>] [--pack]
 // Example:
-//   node scripts/pack-platform.mjs linux x64 /tmp/elastik-core --version 8.1.0 --pack
+//   node scripts/pack-platform.mjs linux x64 /tmp/elastik-core --version 8.2.0 --pack
 //
 // On the win32 runner the binary is elastik-core.exe; everywhere else it's
 // elastik-core. The script auto-detects from the source filename.

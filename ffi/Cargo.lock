@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "elastik-core"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "bytes",
  "dashmap",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "elastik-ffi"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "elastik-core",
  "rusqlite",

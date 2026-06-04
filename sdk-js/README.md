@@ -106,7 +106,7 @@ the same process tree.
 | `win32-x64`     | `@elastikjs/core-win32-x64`    |
 
 The npm matrix matches the Rust core's release matrix
-([Elastik v8.1.0](https://github.com/rangersui/Elastik/releases/tag/v8.1.0)).
+([Elastik v8.2.0](https://github.com/rangersui/Elastik/releases/tag/v8.2.0)).
 Linux binaries are statically linked against musl libc for distro
 compatibility. `darwin-x64` is intentionally not in the matrix (Apple
 Silicon only on the Mac side).
@@ -641,7 +641,7 @@ If you need the bytes, follow up with `e.get(ev.path)`.
 
 ```js
 await e.exists("home/note");   // → false only on 404; auth/network errors throw
-await e.version();             // → "elastik-core 8.1.0 (rust)"
+await e.version();             // → "elastik-core 8.2.0 (rust)"
 await e.worlds();              // → "home/note\nhome/log\n..."
 ```
 
