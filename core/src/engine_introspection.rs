@@ -229,7 +229,7 @@ impl ValidatedProcPath {
         }
     }
 
-    /// Returns the proof token for an `audit verify` request against a
+    /// Returns the proof token for an `audit verify` operation against a
     /// specific world.
     pub fn audit_verify(world: ValidatedWorldPath) -> Self {
         Self {

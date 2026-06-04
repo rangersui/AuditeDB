@@ -1,6 +1,6 @@
 //! SQLite error classification shared by protocol adapters and world ops.
 //!
-//! These helpers classify storage failures without deciding the wire response.
+//! These helpers classify storage failures without deciding adapter output.
 //! Adapters map them to protocol-specific outcomes; `world_ops.rs` uses them
 //! to keep transient and permanent storage failures distinct.
 

@@ -52,7 +52,7 @@ pub struct MemoryStore {
 /// (mirror of the durable `WriteAuditError::Quota` path).
 pub struct MemoryQuotaError {
     /// Pre-write total bytes across all memory worlds. Currently the
-    /// callers only need `quota` for the 413 response, but `used` and
+    /// callers only need `quota` for payload-cap mapping, but `used` and
     /// `projected` are populated for diagnostic clarity.
     #[allow(dead_code)]
     pub used: usize,

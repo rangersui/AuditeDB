@@ -113,7 +113,7 @@ pub(crate) struct Core {
     /// `crate::read_cache` for the full design and the v7.1 design
     /// doc for the ten-round review history. All read paths route
     /// through `Core::read_world_with_etag`, which delegates to
-    /// `read_cache.cached_read_with_hmac`. DELETE installs a tombstone
+    /// `read_cache.cached_read_with_hmac`. Delete installs a tombstone
     /// before `delete_world_blocking` and clears it on both success
     /// and failure paths.
     pub(crate) read_cache: Arc<ReadCache>,
@@ -124,7 +124,7 @@ impl Core {
     /// writes; same-world writes serialize. Lazy creation: the lock is
     /// inserted on first acquire and never evicted while the process runs.
     ///
-    /// We deliberately do NOT remove the entry on DELETE. Removing while
+    /// We deliberately do NOT remove the entry on delete. Removing while
     /// another waiter holds a clone of the Arc would let the next acquirer
     /// create a fresh Arc<Mutex<()>> for the same world, breaking mutual
     /// exclusion (two concurrent writers, two different mutexes). The map
@@ -132,7 +132,7 @@ impl Core {
     /// practice by total world cardinality.
     ///
     /// Lock ordering rule for callers that need more than one world lock
-    /// (currently only DELETE, which also touches the shared `var/log/deletes`
+    /// (currently only delete, which also touches the shared `var/log/deletes`
     /// ledger): always acquire the target world lock FIRST, then any shared
     /// ledger lock(s). This avoids cycles. See `handler::execute_delete`
     /// for the only current example.
@@ -154,8 +154,8 @@ impl Core {
     }
 
     /// Read body + meta + ETag. Routes durable worlds through the
-    /// `read_cache` (slot-before-open, tombstone-aware) so GET / HEAD
-    /// don't pay `Connection::open_with_flags` per request. Memory
+    /// `read_cache` (slot-before-open, tombstone-aware) so repeated reads
+    /// don't pay `Connection::open_with_flags` per operation. Memory
     /// worlds bypass the cache. Synchronous: the cache uses
     /// `std::sync::RwLock`, matching the existing handler call shape.
     pub(crate) fn read_world_with_etag(
@@ -180,7 +180,7 @@ impl Core {
         }
     }
 
-    /// DELETE-side: drain in-flight readers, close the cached
+    /// Delete-side: drain in-flight readers, close the cached
     /// connection inside the slot's write guard window, install a
     /// tombstone slot. After this returns, no fd is alive on
     /// `world`'s DB -- `delete_world_blocking` is safe to call.
@@ -208,9 +208,9 @@ impl Core {
 
     /// Verify the audit chain through the read-cache SlotState
     /// protocol (Bug 58). Closes the gap that the bare
-    /// `audit::verify_chain` path left: DELETE on the same world
+    /// `audit::verify_chain` path left: delete on the same world
     /// drains in-flight verifies via the slot's write guard, just
-    /// like a regular GET. Memory worlds have no audit chain;
+    /// like a regular read. Memory worlds have no audit chain;
     /// callers (proc_audit_verify) filter those before reaching
     /// here.
     pub(crate) fn cached_verify_chain(

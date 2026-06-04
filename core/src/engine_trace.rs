@@ -18,7 +18,7 @@ use crate::{
 /// Trace hooks for [`Engine::replace_traced`] / [`Engine::append_traced`].
 ///
 /// All methods default to no-ops. Implement only the hooks an adapter cares
-/// about — typical use is a single per-request struct that flips a flag or
+/// about — typical use is a single per-operation struct that flips a flag or
 /// emits a structured trace line on each callback.
 pub trait EngineWriteTraceHooks {
     /// The per-world write lock was acquired.
@@ -42,7 +42,7 @@ pub trait EngineDeleteTraceHooks {
     fn lock_acquired(&self, _world: &str) {}
     /// The audit-intent ledger row was written successfully.
     fn audit_intent(&self) {}
-    /// Diagnostic-only debug rendering when the DELETE audit intent append fails.
+    /// Diagnostic-only debug rendering when the delete audit intent append fails.
     ///
     /// Do not parse this string programmatically; use [`EngineError`]
     /// categories and [`EngineError::sqlite_code`] for stable decisions.
@@ -53,7 +53,7 @@ pub trait EngineDeleteTraceHooks {
     fn physical_deleted(&self) {}
     /// The durable-world counter and storage-used counter were updated.
     fn counter_decremented(&self) {}
-    /// The DELETE broadcast event was sent to subscribers.
+    /// The delete broadcast event was sent to subscribers.
     fn notify_sent(&self) {}
     /// Diagnostic-only debug rendering of the internal blocking storage error.
     ///
@@ -72,7 +72,7 @@ pub trait EngineDeleteTraceHooks {
     fn audit_commit(&self) {}
 }
 
-/// Metadata recorded with a DELETE audit intent.
+/// Metadata recorded with a delete audit intent.
 ///
 /// Adapters that want the deleted representation's content-type and
 /// metadata headers preserved in the audit log fill this struct; pass
@@ -82,9 +82,9 @@ pub trait EngineDeleteTraceHooks {
 #[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct DeleteMetadata {
-    /// Content type recorded in the DELETE audit intent.
+    /// Content type recorded in the delete audit intent.
     pub content_type: String,
-    /// Representation headers recorded in the DELETE audit intent.
+    /// Representation headers recorded in the delete audit intent.
     pub headers: Vec<(String, String)>,
 }
 
@@ -166,7 +166,7 @@ impl Engine {
     /// Same as [`crate::Engine::replace`] but invokes `hooks` on each
     /// protocol phase.
     ///
-    /// Adapters use this to drive structured trace output or per-request
+    /// Adapters use this to drive structured trace output or per-operation
     /// metrics without paying the hook cost in non-traced call sites.
     ///
     /// # Errors

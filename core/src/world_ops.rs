@@ -4,9 +4,9 @@
 //! auth permits, body caps, per-world locks, tombstone clearing,
 //! preconditions, quota reservation, durable+memory writes, audit,
 //! and notify. It deliberately returns semantic outcomes instead of wire
-//! responses. Adapters map these outcomes onto their own shape.
+//! adapter outputs. Adapters map these outcomes onto their own shape.
 //!
-//! Not here: adapter request lifecycles, stream rendering, or DELETE (which
+//! Not here: adapter operation lifecycles, stream rendering, or delete (which
 //! has a distinct intent/commit ledger protocol).
 
 use std::sync::atomic::Ordering;
@@ -92,7 +92,7 @@ pub(crate) enum WriteError {
     PreconditionFailed {
         message: &'static str,
     },
-    /// Only `append_write` returns this; replace/PUT creates if absent.
+    /// Only `append_write` returns this; replace creates if absent.
     NotFound,
     QuotaExceeded {
         used: usize,

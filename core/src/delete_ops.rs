@@ -1,6 +1,6 @@
-//! Protocol-neutral DELETE transition.
+//! Protocol-neutral delete transition.
 //!
-//! DELETE has a different physical protocol from replace/append: intent,
+//! Delete has a different physical protocol from replace/append: intent,
 //! tombstone drain, physical delete, notify, then commit or commit_failed.
 //! Keeping it here avoids turning `world_ops` into a grab bag while still
 //! letting adapters route through Engine-owned disk semantics.

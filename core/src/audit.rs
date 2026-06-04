@@ -31,8 +31,8 @@ enum EmptyChain {
 /// Append a single row to the audit chain, reusing an already-open
 /// `Connection`. Cached writers (the ledger writer
 /// `Mutex<Option<Connection>>` on `Core`) call this directly so the
-/// hot DELETE path doesn't re-open `var/log/deletes` 2-3 times per
-/// request. Per-write paths that don't cache a connection compose
+/// hot delete path doesn't re-open `var/log/deletes` 2-3 times per
+/// operation. Per-write paths that don't cache a connection compose
 /// `world::open` + the explicit existing/genesis append entrypoint.
 #[allow(clippy::too_many_arguments)]
 pub fn append_with_conn_existing(
@@ -253,10 +253,10 @@ struct EventHmacInput<'a> {
 /// Verify the audit chain through a `TrackedReadConnection` (the
 /// SlotState-tracked read path). Mirrors `world::read_with_hmac_via_conn`
 /// -- the cache layer drives the slot-before-open dance and hands us
-/// the connection through the type gate. The bare per-request
+/// the connection through the type gate. The bare per-operation
 /// `verify_chain(data, world, key)` path is gone (Bug 58); admin
-/// `/proc/audit/{world}/verify` now goes through `Core::cached_verify_chain`,
-/// so DELETE on the same world drains in-flight verifies via the
+/// audit-verify surfaces now go through `Core::cached_verify_chain`,
+/// so a delete on the same world drains in-flight verifies via the
 /// usual SlotState write guard.
 pub fn verify_chain_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,

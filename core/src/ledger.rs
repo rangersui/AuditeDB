@@ -1,14 +1,14 @@
 //! Audit ledger writer cache.
 //!
 //! `var/log/deletes` is the hottest open() in the codebase: every
-//! DELETE used to open it 2-3 times (existence check + intent
+//! Delete used to open it 2-3 times (existence check + intent
 //! append + commit append). This module caches one write
 //! `Connection` per process and serializes appends through a
 //! single `StdMutex`. Lazy-initialized on first append.
 //!
 //! The counter (`inits`) tracks `None -> Some` transitions of the
 //! inner `Mutex<Option<Connection>>`. In steady state the value is
-//! 1 (lazy init on first DELETE in the process). Higher values
+//! 1 (lazy init on first delete in the process). Higher values
 //! surface re-init events that would otherwise be invisible from
 //! outside (e.g., a future code path resetting the writer for
 //! recovery). `/proc/pool` emits this as a `counter` metric.
@@ -57,7 +57,7 @@ pub(crate) struct LedgerWriter {
     /// `None` until the first successful `world::open` in
     /// `append`. Subsequent appends reuse the cached connection.
     /// Never invalidated -- the ledger world is never deleted by
-    /// user-facing DELETE (`var/log/*` is reserved).
+    /// public delete operation (`var/log/*` is reserved).
     conn: StdMutex<Option<Connection>>,
     /// Counter; bumped after each `None -> Some` transition.
     pub(crate) inits: AtomicUsize,

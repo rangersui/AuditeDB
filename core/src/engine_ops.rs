@@ -245,7 +245,7 @@ impl Engine {
 
     /// Deletes a world with default, empty audit metadata.
     ///
-    /// Convenience wrapper around the DELETE protocol that records empty
+    /// Convenience wrapper around the delete transition that records empty
     /// content-type and headers in the audit intent. Adapters that need to
     /// preserve the deleted representation's metadata in the audit log
     /// should call [`Engine::delete_traced`] with a populated

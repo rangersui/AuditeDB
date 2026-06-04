@@ -3,7 +3,7 @@
 //! Adapters parse protocol-specific precondition syntax into this shape. The
 //! matcher itself is disk physics: compare the caller's version expectation
 //! against the current world identity without knowing about wire headers or
-//! response rendering.
+//! adapter rendering.
 
 use crate::world;
 

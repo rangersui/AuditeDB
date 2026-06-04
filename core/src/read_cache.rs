@@ -1,12 +1,12 @@
 //! Per-world read connection cache.
 //!
-//! Caches one open SQLite connection per recently-read world so that
-//! GET / HEAD don't re-pay the ~456-700us `Connection::open_with_flags`
-//! cost on every request. The naive approach -- `DashMap<String,
-//! Mutex<Connection>>` -- has a race: DELETE removes the map entry,
+//! Caches one open SQLite connection per recently-read world so repeated
+//! reads don't re-pay the ~456-700us `Connection::open_with_flags`
+//! cost on every operation. The naive approach -- `DashMap<String,
+//! Mutex<Connection>>` -- has a race: delete removes the map entry,
 //! but in-flight readers holding cloned Arcs continue using their
 //! cached fd. Linux gets an orphan inode (harmless); Windows fails
-//! the unlink with sharing-violation (DELETE 500).
+//! the unlink with sharing-violation.
 //!
 //! This module is the v7.1 design distilled from ten review rounds
 //! (see `docs/architecture/sqlite-connection-pool.md`). The
@@ -15,10 +15,10 @@
 //! 1. **Slot-before-open** -- a reader reserves a slot in
 //!    `SlotState::Opening` via the DashMap Entry API BEFORE calling
 //!    `Connection::open_with_flags`, and holds the slot's
-//!    `inner.write()` guard for the duration of the open. DELETE's
+//!    `inner.write()` guard for the duration of the open. Delete's
 //!    drain blocks behind that guard. fd lifetime is tracked by the
 //!    synchronization primitive, not by chance.
-//! 2. **Tombstone protocol** -- DELETE replaces the slot's state with
+//! 2. **Tombstone protocol** -- delete replaces the slot's state with
 //!    `Tombstone` inside the write guard window, so the previous
 //!    `Ready(Mutex<Connection>)`'s Connection drops INSIDE the guard.
 //!    No fd is alive when `delete_world_blocking` runs.
@@ -43,7 +43,7 @@
 //! `Core::read_world_with_etag` signature (no caller churn). Callers
 //! that need to install a tombstone wrap `install_tombstone_blocking`
 //! in `tokio::task::spawn_blocking` so the drain doesn't stall a
-//! Tokio worker (the same pattern DELETE already uses for
+//! Tokio worker (the same pattern delete already uses for
 //! `delete_world_blocking`).
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -152,7 +152,7 @@ enum SlotState {
     Ready(StdMutex<TrackedReadConnection>),
     /// Cache eviction marker.
     ///
-    /// Unlike `Tombstone`, this is not a DELETE semantic. A reader that sees
+    /// Unlike `Tombstone`, this is not a delete semantic. A reader that sees
     /// `Evicted` must retry through the miss/open path rather than returning
     /// `Ok(None)`, because the world may still exist on disk.
     Evicted,
@@ -433,7 +433,7 @@ impl ReadCache {
     }
 
     /// Verify the audit chain through the cached read path (Bug 58).
-    /// Same SlotState protocol as `cached_read_with_hmac` -- DELETE
+    /// Same SlotState protocol as `cached_read_with_hmac` -- delete
     /// drains in-flight verifies via the slot's write guard. Closes
     /// the v10 type-gate gap on the admin
     /// `/proc/audit/{world}/verify` endpoint.
@@ -610,7 +610,7 @@ impl ReadCache {
         let mut f = Some(f);
         for _ in 0..READ_CACHE_RETRY_BUDGET {
             // Fast-path: slot already exists (concurrent reader installed
-            // one, DELETE installed a tombstone, or eviction has not removed
+            // one, delete installed a tombstone, or eviction has not removed
             // the map entry yet).
             if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
                 self.touch_slot(&arc);
@@ -740,7 +740,7 @@ impl ReadCache {
         }
     }
 
-    /// Sync version. DELETE callers wrap this in `spawn_blocking` so
+    /// Sync version. delete callers wrap this in `spawn_blocking` so
     /// the drain wait doesn't stall a Tokio worker.
     pub(crate) fn install_tombstone_blocking(&self, world: &str) {
         let new_tombstone = self.new_slot(SlotState::Tombstone);
@@ -766,7 +766,7 @@ impl ReadCache {
         self.read_conns.len()
     }
 
-    /// Snapshot accessor for `/proc/pool`; tombstones are DELETE state, not
+    /// Snapshot accessor for pool introspection; tombstones are delete state, not
     /// eviction candidates.
     pub(crate) fn snapshot_tombstones(&self) -> usize {
         self.read_conns
@@ -1287,7 +1287,7 @@ mod tests {
         assert!(cache.read_conns.get("home/ready").is_none());
         assert!(
             cache.read_conns.get("home/tomb").is_some(),
-            "Tombstone is DELETE state, not an LRU eviction candidate"
+            "Tombstone is delete state, not an LRU eviction candidate"
         );
         let tombstone_read = cache.cached_read_with_hmac(&dir, "home/tomb").unwrap();
         assert!(tombstone_read.is_none());
@@ -1376,7 +1376,7 @@ mod tests {
         let r2 = cache.cached_verify_chain(&dir, world, b"key").unwrap();
         assert!(matches!(r2, Some(crate::audit::VerifyReport::Valid(_))));
 
-        // Tombstone short-circuits verify (DELETE intent).
+        // Tombstone short-circuits verify (delete intent).
         cache.install_tombstone_blocking(world);
         let r3 = cache.cached_verify_chain(&dir, world, b"key").unwrap();
         assert!(r3.is_none());

@@ -280,7 +280,7 @@ pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(String, usize)>> {
 /// `Connection` and trying to read through it gets a type error.
 ///
 /// One SQLite tx covers body, headers, and the latest audit hmac, so
-/// GET/HEAD never pair an old body with a newer ETag when a write
+/// Read operations never pair an old body with a newer ETag when a write
 /// lands between independent reads.
 pub fn read_with_hmac_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
@@ -446,7 +446,7 @@ pub fn write_with_audit_checked(
 }
 
 /// Append bytes to an existing world's body without entering the HMAC
-/// chain. Production POST appends go through `append_with_audit`; this
+/// chain. Production appends go through `append_with_audit`; this
 /// raw form is unused after the lock refactor and is preserved with
 /// `#[allow(dead_code)]` against future direct callers (e.g. log
 /// rotation tooling). Returns Ok(None) if the world does not exist.
