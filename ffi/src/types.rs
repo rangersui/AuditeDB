@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, fmt};
 
 use elastik_core::{
     is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, ChangeVerb, DeleteMetadata,
-    DfSnapshot, EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions, ReadResult,
-    Representation, WorldUsage, WriteKind, WriteResult,
+    DfSnapshot, EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions,
+    ReadResult, Representation, WorldUsage, WriteKind, WriteResult,
 };
 
 /// Engine construction options for the FFI adapter.

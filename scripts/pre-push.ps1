@@ -129,6 +129,12 @@ Step "Rust tests" {
     Run cargo test --manifest-path bin/Cargo.toml
 }
 
+if (-not $strict) {
+    Step "Rust supply-chain quick audit" {
+        Run python tools/supply_chain_check.py prepush
+    }
+}
+
 if ($strict) {
     Step "Rust release tests" {
         Run cargo test --manifest-path core/Cargo.toml --release
@@ -162,6 +168,10 @@ Step "JS syntax" {
 if ($strict) {
     Step "JS SDK against real Rust core" {
         Run-JsSdkAgainstCore
+    }
+
+    Step "Rust supply-chain strict audit" {
+        Run python tools/supply_chain_check.py ci
     }
 }
 

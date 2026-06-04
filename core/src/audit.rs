@@ -675,6 +675,25 @@ mod tests {
     }
 
     #[test]
+    fn audit_chain_broken_predicate_tracks_rusqlite_error_shape() {
+        let err = audit_chain_broken_error(&VerifyBreak {
+            break_at: 7,
+            expected: "hmac-good".to_string(),
+            actual: "hmac-bad".to_string(),
+        });
+
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ffi::ErrorCode::DatabaseCorrupt),
+            "audit-chain breakage must remain a SQLite corrupt-class error"
+        );
+        assert!(
+            is_audit_chain_broken_error(&err),
+            "rusqlite Error::SqliteFailure shape changed without updating the audit predicate"
+        );
+    }
+
+    #[test]
     fn verify_connection_rejects_tampered_event_hmac() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();

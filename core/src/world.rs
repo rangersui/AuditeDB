@@ -894,7 +894,7 @@ mod tests {
             let start = Instant::now();
             for _ in 0..n {
                 let conn = open_existing(&dir, world).unwrap().unwrap();
-                let _len: usize = conn
+                let _len: i64 = conn
                     .query_row("SELECT length(body) FROM stage_meta WHERE id=1", [], |r| {
                         r.get(0)
                     })

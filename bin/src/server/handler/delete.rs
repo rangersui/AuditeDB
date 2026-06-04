@@ -752,7 +752,7 @@ mod tests {
                 "SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY event_type",
             )
             .unwrap()
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?)))
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();

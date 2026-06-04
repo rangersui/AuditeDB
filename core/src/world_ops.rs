@@ -462,6 +462,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn real_sqlite_lock_maps_to_transient_read_error() {
+        struct NoopTrace;
+        impl WriteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("runtime-lock-classification");
+        let world = world_path("home/busy");
+        let write_permit = authorize_write(&world, auth::Tier::Write).unwrap();
+        replace_write(
+            &core,
+            &write_permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"ok"),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+
+        let holder = rusqlite::Connection::open(crate::world::world_db(&dir, world.as_str()))
+            .expect("open lock holder");
+        holder
+            .pragma_update(None, "locking_mode", "EXCLUSIVE")
+            .expect("exclusive locking mode");
+        holder
+            .execute_batch("BEGIN EXCLUSIVE")
+            .expect("hold exclusive transaction");
+
+        let read_permit = authorize_read(&core, &world, auth::Tier::Read).unwrap();
+        assert!(
+            matches!(
+                read_world(&core, &read_permit),
+                Err(ReadError::TransientStorage { .. })
+            ),
+            "real SQLite busy/locked errors must stay classified as transient"
+        );
+
+        drop(holder);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn write_permit_preserves_path_based_approve_gate() {
         assert!(matches!(
