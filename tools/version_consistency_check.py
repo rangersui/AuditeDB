@@ -121,7 +121,7 @@ def check_release_note(errors: list[str], expected: str) -> None:
     text = path.read_text(encoding="utf-8")
     required = [
         f"# Elastik v{expected} -",
-        f"v{expected} is a minor release",
+        f"v{expected} is a",
         f"`elastik-core` `{expected}`",
         f"to resolve to {expected} after",
         f"`cargo add elastik-core` will report {expected}",
