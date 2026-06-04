@@ -19,7 +19,7 @@ PY        ?= python
 CARGO     ?= cargo
 HOST_OS    = $(shell uname -s 2>/dev/null || echo Windows)
 BIN_NAME   = elastik-core$(if $(filter Windows%,$(HOST_OS)),.exe,)
-RUST_TGT   = core/target/release/$(BIN_NAME)
+RUST_TGT   = bin/target/release/$(BIN_NAME)
 SDK_BIN    = sdk/src/elastik/_bin/$(BIN_NAME)
 
 # Cross-compile target list. zigbuild handles all of these without Docker.
@@ -54,7 +54,7 @@ info:
 
 # ── workflow 1: dev ────────────────────────────────────────────────
 dev:
-	cd core && $(CARGO) run
+	cd bin && $(CARGO) run
 
 # ── workflow 2: test (HOST only) ───────────────────────────────────
 test: $(SDK_BIN)
@@ -71,7 +71,7 @@ wheel:
 cross: $(addprefix cross-,$(CROSS_TARGETS))
 	@echo
 	@echo "  ✓ all $$(echo $(CROSS_TARGETS) | wc -w) cross targets built"
-	@echo "  binaries at core/target/<TARGET>/release/elastik-core[.exe]"
+	@echo "  binaries at bin/target/<TARGET>/release/elastik-core[.exe]"
 
 cross-%:
 	@echo
@@ -81,7 +81,7 @@ cross-%:
 	    if [ -n "$$ZIG_DIR" ]; then export PATH="$$ZIG_DIR:$$PATH"; \
 	    else echo "  ERROR: install zig — run: pip install ziglang cargo-zigbuild"; exit 1; fi; \
 	}
-	@cd core && PATH="$$($(PY) -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))'):$$PATH" \
+	@cd bin && PATH="$$($(PY) -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))'):$$PATH" \
 	    cargo zigbuild --release --target $*
 
 # ── workflow 5: re-tag wheels for each cross-built binary ─────────
@@ -99,7 +99,7 @@ PLAT_x86_64-pc-windows-msvc      = win_amd64
 PLAT_aarch64-pc-windows-msvc     = win_arm64
 
 wheel-%:
-	@target_bin="core/target/$*/release/elastik-core"; \
+	@target_bin="bin/target/$*/release/elastik-core"; \
 	[ "$*" = "x86_64-pc-windows-msvc" ] || [ "$*" = "aarch64-pc-windows-msvc" ] && target_bin="$$target_bin.exe"; \
 	if [ ! -f "$$target_bin" ]; then \
 	    echo "  ERROR: $$target_bin not built — run 'make cross-$*' first"; exit 1; \
@@ -118,12 +118,13 @@ $(SDK_BIN): $(RUST_TGT)
 	@echo "  bundled: $(SDK_BIN)"
 
 $(RUST_TGT):
-	cd core && $(CARGO) build --release
+	cd bin && $(CARGO) build --release
 
 install:
 	$(PY) -m pip install -e ./sdk
 
 clean:
+	cd bin && $(CARGO) clean
 	cd core && $(CARGO) clean
 	rm -f sdk/src/elastik/_bin/elastik-core*
 	rm -rf sdk/dist sdk/build sdk/src/elastik.egg-info

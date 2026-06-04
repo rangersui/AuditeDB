@@ -934,6 +934,10 @@ mod tests {
             .unwrap()
             .expect("test world should exist")
             .etag;
+        assert!(
+            etag.starts_with("hmac-"),
+            "durable If-Match fixture must use current HMAC ETag, got {etag}"
+        );
         let etag = format!("\"{etag}\"");
 
         let mut good = HeaderMap::new();

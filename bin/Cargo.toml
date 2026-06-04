@@ -39,3 +39,17 @@ tower = { version = "0.5", features = ["util"] }
 [[bin]]
 name = "elastik-core"
 path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.rut241]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

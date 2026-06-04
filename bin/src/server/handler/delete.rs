@@ -486,6 +486,29 @@ mod tests {
     async fn delete_returns_500_when_commit_audit_fails_after_physical_delete() {
         let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-commit-audit-fail");
         let state = server_state_for_engine_for_tests(engine.clone());
+        let warmup = world_path("home/delete-ledger-warmup");
+        engine
+            .replace(
+                &warmup,
+                Representation::new(Bytes::from_static(b"warmup"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let warmup_resp = unwrap_response(
+            execute_delete(
+                HeaderMap::new(),
+                AccessTier::Approve,
+                warmup.clone(),
+                &state,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        );
+        assert_eq!(warmup_resp.status(), StatusCode::NO_CONTENT);
+        assert!(engine.read(&warmup, AccessTier::Read).unwrap().is_none());
+
         let world = world_path("home/delete-degraded");
         engine
             .replace(
@@ -493,16 +516,6 @@ mod tests {
                 Representation::new(Bytes::from_static(b"alive"), "text/plain", Vec::new()),
                 Preconditions::none(),
                 AccessTier::Write,
-            )
-            .await
-            .unwrap();
-        let delete_ledger = world_path("var/log/deletes");
-        engine
-            .replace(
-                &delete_ledger,
-                Representation::new(Bytes::from_static(b"ledger"), "text/plain", Vec::new()),
-                Preconditions::none(),
-                AccessTier::Approve,
             )
             .await
             .unwrap();
@@ -546,7 +559,20 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(events, vec!["put", "delete_intent", "delete_commit_failed"]);
+        assert_eq!(
+            events,
+            vec![
+                "delete_intent",
+                "delete_commit",
+                "delete_intent",
+                "delete_commit_failed"
+            ]
+        );
+        assert_eq!(
+            engine.df(AccessTier::Read).unwrap().worlds,
+            0,
+            "failed delete commit must not leave phantom durable worlds"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -743,6 +769,11 @@ mod tests {
                 .unwrap()
                 .is_none());
         }
+        assert_eq!(
+            engine.df(AccessTier::Read).unwrap().worlds,
+            0,
+            "racing first deletes must not leave phantom durable worlds"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
