@@ -3,10 +3,12 @@
 //! The engine owns event ids, replay matching, and the live broadcast stream;
 //! adapters choose how to render those events.
 
+use crate::engine_types::ChangeVerb;
+
 #[derive(Clone, Debug)]
 pub(crate) struct ChangeEvent {
     pub(crate) id: u64,
-    pub(crate) method: &'static str,
+    pub(crate) verb: ChangeVerb,
     pub(crate) path: String,
     pub(crate) etag: String,
 }

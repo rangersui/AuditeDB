@@ -14,9 +14,10 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 
 use crate::{
-    auth, can_read, can_write, engine_types::ValidatedWorldPath, etag,
-    is_insufficient_storage_error, is_transient_storage_error, needs_write_approve, store, world,
-    AuthGate, Core,
+    auth, can_read, can_write,
+    engine_types::{ChangeVerb, ValidatedWorldPath},
+    etag, is_insufficient_storage_error, is_transient_storage_error, needs_write_approve, store,
+    world, AuthGate, Core,
 };
 
 #[derive(Debug)]
@@ -269,7 +270,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     };
 
     hooks.sqlite_committed(&etag);
-    core.notify("PUT", &permit.world, &etag);
+    core.notify(ChangeVerb::Replace, &permit.world, &etag);
     hooks.notify_sent();
     Ok(WriteOutcome {
         status_kind: if existed {
@@ -360,7 +361,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     };
 
     hooks.sqlite_committed(&etag);
-    core.notify("POST", &permit.world, &etag);
+    core.notify(ChangeVerb::Append, &permit.world, &etag);
     hooks.notify_sent();
     Ok(WriteOutcome {
         status_kind: WriteStatusKind::Updated,

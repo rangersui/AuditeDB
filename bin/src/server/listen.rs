@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use crate::{
     engine::EngineError,
-    engine_types::{ChangeEvent as EngineChangeEvent, SubscribePattern, SubscriptionRecvError},
+    engine_types::{
+        ChangeEvent as EngineChangeEvent, ChangeVerb, SubscribePattern, SubscriptionRecvError,
+    },
     server::{method_not_allowed, options_response, server_error, unauthorized, ServerState},
 };
 
@@ -98,15 +100,26 @@ pub(crate) async fn handler(
 }
 
 fn sse_change_event(change: EngineChangeEvent) -> Event {
-    let mut data = format!("path: /{}\nmethod: {}", change.path, change.method);
+    let method = change_method(change.verb);
+    let mut data = format!("path: /{}\nmethod: {method}", change.path);
     if !change.etag.is_empty() {
         data.push_str("\netag: ");
         data.push_str(&change.etag);
     }
     Event::default()
-        .event(change.method.to_ascii_lowercase())
+        .event(method.to_ascii_lowercase())
         .id(change.id.to_string())
         .data(data)
+}
+
+#[cfg_attr(test, allow(unreachable_patterns))]
+fn change_method(verb: ChangeVerb) -> &'static str {
+    match verb {
+        ChangeVerb::Replace => "PUT",
+        ChangeVerb::Append => "POST",
+        ChangeVerb::Delete => "DELETE",
+        _ => "UNKNOWN",
+    }
 }
 
 #[cfg(test)]
@@ -123,7 +136,7 @@ mod tests {
     fn sse_change_event_is_control_plane_only() {
         let event = sse_change_event(crate::engine_types::ChangeEvent::new(
             42,
-            "PUT",
+            ChangeVerb::Replace,
             crate::engine_types::ValidatedWorldPath::new("home/task/a").unwrap(),
             "hmac-abc".to_string(),
         ));

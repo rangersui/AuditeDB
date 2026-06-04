@@ -294,11 +294,16 @@ impl Core {
         }
     }
 
-    pub(crate) fn notify(&self, method: &'static str, world: &ValidatedWorldPath, etag: &str) {
+    pub(crate) fn notify(
+        &self,
+        verb: crate::engine_types::ChangeVerb,
+        world: &ValidatedWorldPath,
+        etag: &str,
+    ) {
         let id = next_event_id(&self.next_event);
         let change = event::ChangeEvent {
             id,
-            method,
+            verb,
             path: format!("/{}", world.as_str()),
             etag: etag.to_owned(),
         };

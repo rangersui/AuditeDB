@@ -543,7 +543,7 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::engine_types::SecretBytes;
+    use crate::engine_types::{ChangeVerb, SecretBytes};
 
     fn temp_root(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -577,7 +577,7 @@ mod tests {
             for id in 10..=12 {
                 log.push_back(event::ChangeEvent {
                     id,
-                    method: "PUT",
+                    verb: ChangeVerb::Replace,
                     path: format!("/home/task/{id}"),
                     etag: format!("hmac-{id}"),
                 });
@@ -604,7 +604,7 @@ mod tests {
             let mut log = engine.core().event_log.lock().unwrap();
             log.push_back(event::ChangeEvent {
                 id: u64::MAX,
-                method: "PUT",
+                verb: ChangeVerb::Replace,
                 path: "/home/task/max".to_string(),
                 etag: "hmac-max".to_string(),
             });
@@ -683,7 +683,7 @@ mod tests {
             .subscribe(&pattern, AccessTier::Read, Some(0))
             .expect("read tier subscribes");
         let event = subscription.recv().await.expect("replay event");
-        assert_eq!(event.method, "PUT");
+        assert_eq!(event.verb, ChangeVerb::Replace);
         assert_eq!(event.path.as_str(), "home/events/a");
 
         drop(subscription);

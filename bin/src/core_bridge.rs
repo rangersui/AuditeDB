@@ -146,8 +146,9 @@ pub(crate) mod engine_types {
     #[cfg(feature = "mqtt")]
     pub(crate) use elastik_core::EngineSubscription;
     pub(crate) use elastik_core::{
-        parse_etag_matchers, AccessTier, ChangeEvent, EtagMatcher, Preconditions, Representation,
-        SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind,
+        parse_etag_matchers, AccessTier, ChangeEvent, ChangeVerb, EtagMatcher, Preconditions,
+        Representation, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
+        WriteKind,
     };
 }
 

@@ -770,7 +770,7 @@ mod tests {
         };
         assert_eq!(http_response.status(), StatusCode::CREATED);
         let http_event = events.recv().await.unwrap();
-        assert_eq!(http_event.method, "PUT");
+        assert_eq!(http_event.verb, crate::engine_types::ChangeVerb::Replace);
         assert_eq!(http_event.path.as_str(), "home/http-temp");
 
         let coap_put_bytes =
@@ -779,7 +779,7 @@ mod tests {
         let coap_response = handle(&engine, &coap_put).await;
         assert_eq!(coap_response[1], 65); // 2.01 Created
         let coap_event = events.recv().await.unwrap();
-        assert_eq!(coap_event.method, "PUT");
+        assert_eq!(coap_event.verb, crate::engine_types::ChangeVerb::Replace);
         assert_eq!(coap_event.path.as_str(), "home/coap/temp");
 
         let http_world = ValidatedWorldPath::new("home/http-temp").unwrap();

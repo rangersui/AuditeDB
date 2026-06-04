@@ -545,7 +545,10 @@ mod tests {
 
     #[test]
     fn hmac_chain_domain_separates_adjacent_fields() {
-        assert_ne!(hmac_for("PUT/home/", "x"), hmac_for("PUT", "/home/x"));
+        assert_ne!(
+            hmac_for("replace/home/", "x"),
+            hmac_for("replace", "/home/x")
+        );
     }
 
     #[test]

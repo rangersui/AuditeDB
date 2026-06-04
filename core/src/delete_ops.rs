@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use crate::{
     auth, can_delete,
     engine::EngineError,
-    engine_types::{Preconditions, ValidatedWorldPath},
+    engine_types::{ChangeVerb, Preconditions, ValidatedWorldPath},
     etag, is_insufficient_storage_error, is_transient_storage_error, store, world, AuditAppendJob,
     AuthGate, BlockingSqliteError, Core,
 };
@@ -157,7 +157,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             .ok();
     }
     hooks.counter_decremented();
-    core.notify("DELETE", &permit.world, "");
+    core.notify(ChangeVerb::Delete, &permit.world, "");
     hooks.notify_sent();
 
     if let Err(commit_err) = core

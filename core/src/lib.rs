@@ -123,9 +123,9 @@ pub use engine_introspection::{
 pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};
 #[cfg(feature = "unstable-engine")]
 pub use engine_types::{
-    parse_etag_matchers, AccessTier, ChangeEvent, EmptyKeyError, EngineSubscription, EtagMatcher,
-    InvalidWorldPath, Preconditions, ReadResult, Representation, SecretBytes, SubscribePattern,
-    SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
+    parse_etag_matchers, AccessTier, ChangeEvent, ChangeVerb, EmptyKeyError, EngineSubscription,
+    EtagMatcher, InvalidWorldPath, Preconditions, ReadResult, Representation, SecretBytes,
+    SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
 };
 #[cfg(feature = "unstable-engine")]
 pub use path::{validate_world_name, NAMESPACE_PREFIXES};

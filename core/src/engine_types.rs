@@ -169,6 +169,18 @@ pub enum WriteKind {
     Updated,
 }
 
+/// Kind of storage mutation that produced a change event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ChangeVerb {
+    /// Full representation replacement.
+    Replace,
+    /// Payload append.
+    Append,
+    /// World deletion.
+    Delete,
+}
+
 /// Result of a successful write.
 #[non_exhaustive]
 pub struct WriteResult {
@@ -191,11 +203,11 @@ pub struct ChangeEvent {
     /// Monotonically increasing event id. Use this as `since` for resumed
     /// subscriptions.
     pub id: u64,
-    /// Verb that produced the change (`"PUT"`, `"POST"`, `"DELETE"`).
-    pub method: &'static str,
+    /// Engine mutation that produced the change.
+    pub verb: ChangeVerb,
     /// Canonical world path the change applies to.
     pub path: ValidatedWorldPath,
-    /// Strong ETag after the change (empty string for `DELETE`).
+    /// Strong ETag after the change (empty string for [`ChangeVerb::Delete`]).
     pub etag: String,
 }
 
@@ -339,7 +351,7 @@ impl From<crate::event::ChangeEvent> for ChangeEvent {
         let canonical = value.path.trim_start_matches('/').to_owned();
         let path = ValidatedWorldPath::from_canonical(canonical)
             .expect("listen events are emitted only for validated world paths");
-        Self::new(value.id, value.method, path, value.etag)
+        Self::new(value.id, value.verb, path, value.etag)
     }
 }
 
@@ -391,15 +403,10 @@ impl WriteResult {
 }
 
 impl ChangeEvent {
-    pub(crate) fn new(
-        id: u64,
-        method: &'static str,
-        path: ValidatedWorldPath,
-        etag: String,
-    ) -> Self {
+    pub(crate) fn new(id: u64, verb: ChangeVerb, path: ValidatedWorldPath, etag: String) -> Self {
         Self {
             id,
-            method,
+            verb,
             path,
             etag,
         }

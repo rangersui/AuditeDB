@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, fmt};
 
 use elastik_core::{
-    is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, DeleteMetadata, DfSnapshot,
-    EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions, ReadResult,
+    is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, ChangeVerb, DeleteMetadata,
+    DfSnapshot, EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions, ReadResult,
     Representation, WorldUsage, WriteKind, WriteResult,
 };
 
@@ -495,19 +495,21 @@ impl From<ChangeEvent> for FfiChangeEvent {
     fn from(value: ChangeEvent) -> Self {
         Self {
             id: value.id,
-            verb: change_verb(value.method),
+            verb: value.verb.into(),
             path: value.path.to_string(),
             etag: value.etag,
         }
     }
 }
 
-fn change_verb(method: &str) -> FfiChangeVerb {
-    match method {
-        "PUT" => FfiChangeVerb::Replace,
-        "POST" => FfiChangeVerb::Append,
-        "DELETE" => FfiChangeVerb::Delete,
-        _ => FfiChangeVerb::Unknown,
+impl From<ChangeVerb> for FfiChangeVerb {
+    fn from(value: ChangeVerb) -> Self {
+        match value {
+            ChangeVerb::Replace => Self::Replace,
+            ChangeVerb::Append => Self::Append,
+            ChangeVerb::Delete => Self::Delete,
+            _ => Self::Unknown,
+        }
     }
 }
 
