@@ -348,10 +348,10 @@ doing the work is not.
 | --- | --- | --- | --- |
 | Python | `pip install elastik`              | a Python package          | a Python wrapper + a Rust binary |
 | JavaScript | `npm install @elastikjs/client` | a JS library              | a fetch wrapper + a Rust binary |
-| Rust | `cargo install elastik-bin`          | a Rust package            | the `elastik-core` executable |
+| Rust source checkout | `cargo install --path bin` | a local Cargo package | the `elastik-core` executable |
 
-Three languages. Three package managers. **Same Rust binary** at the
-bottom. Most users don't know it's Rust, and don't need to.
+Three languages. Three install paths. **Same Rust binary** at the bottom. Most
+users don't know it's Rust, and don't need to.
 
 curl is all you need.        ← external interface
 fetch is all you need.        ← from JavaScript
