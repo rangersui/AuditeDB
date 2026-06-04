@@ -112,7 +112,6 @@ pub(crate) fn hmac_key_from_env_value(value: Option<String>) -> Option<Vec<u8>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth;
     use std::sync::{Mutex as TestMutex, OnceLock};
 
     fn env_lock() -> &'static TestMutex<()> {
@@ -289,24 +288,18 @@ mod tests {
 
     #[test]
     fn non_loopback_public_read_gets_warning_flag() {
-        let mut tokens = auth::Tokens {
-            read: None,
-            write: None,
-            approve: None,
-        };
         assert!(!should_warn_public_read(
             "127.0.0.1".parse::<IpAddr>().unwrap(),
-            tokens.read_required()
+            false
         ));
         assert!(should_warn_public_read(
             "0.0.0.0".parse::<IpAddr>().unwrap(),
-            tokens.read_required()
+            false
         ));
 
-        tokens.read = auth::NonEmptyBytes::new(b"reader".to_vec());
         assert!(!should_warn_public_read(
             "0.0.0.0".parse::<IpAddr>().unwrap(),
-            tokens.read_required()
+            true
         ));
     }
 }

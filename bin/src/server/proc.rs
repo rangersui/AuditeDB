@@ -432,7 +432,6 @@ fn mqtt_metrics_body(snapshot: &crate::server::mqtt::MqttMetricsSnapshot) -> Str
 mod tests {
     use super::*;
     use crate::{
-        auth,
         engine_types::{AccessTier, Preconditions, Representation},
         server::{
             handler::{execute_delete, execute_get, execute_put},
@@ -796,7 +795,7 @@ mod tests {
             execute_put(
                 headers.clone(),
                 Bytes::from_static(b"x"),
-                auth::Tier::Write,
+                AccessTier::Write,
                 world_path("home/count"),
                 &server_state,
                 &TraceCtx::disabled(),
@@ -813,7 +812,7 @@ mod tests {
         let delete = unwrap_response(
             execute_delete(
                 headers.clone(),
-                auth::Tier::Approve,
+                AccessTier::Approve,
                 world_path("home/count"),
                 &server_state,
                 &TraceCtx::disabled(),
@@ -845,7 +844,7 @@ mod tests {
             execute_put(
                 headers.clone(),
                 Bytes::from_static(b"hello"),
-                auth::Tier::Write,
+                AccessTier::Write,
                 world_path("home/m"),
                 &server_state,
                 &TraceCtx::disabled(),
@@ -859,7 +858,7 @@ mod tests {
             let get = unwrap_response(
                 execute_get(
                     headers.clone(),
-                    auth::Tier::Read,
+                    AccessTier::Read,
                     world_path("home/m"),
                     &server_state,
                     &TraceCtx::disabled(),
@@ -888,7 +887,7 @@ mod tests {
         let _ = unwrap_response(
             execute_delete(
                 headers.clone(),
-                auth::Tier::Approve,
+                AccessTier::Approve,
                 world_path("home/m"),
                 &server_state,
                 &TraceCtx::disabled(),
@@ -917,7 +916,7 @@ mod tests {
                 execute_put(
                     headers.clone(),
                     Bytes::from_static(b"x"),
-                    auth::Tier::Write,
+                    AccessTier::Write,
                     world_path(world),
                     &server_state,
                     &TraceCtx::disabled(),
@@ -931,7 +930,7 @@ mod tests {
             let get = unwrap_response(
                 execute_get(
                     headers.clone(),
-                    auth::Tier::Read,
+                    AccessTier::Read,
                     world_path(world),
                     &server_state,
                     &TraceCtx::disabled(),
