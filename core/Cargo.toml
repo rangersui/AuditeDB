@@ -31,9 +31,6 @@ default = ["bundled-sqlite", "unstable-engine"]
 bundled-sqlite = ["rusqlite/bundled"]
 unstable-engine = ["dep:tracing"]
 
-[dev-dependencies]
-base64 = "0.22"
-
 [profile.release]
 lto = "thin"
 codegen-units = 1

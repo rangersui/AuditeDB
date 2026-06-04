@@ -1,7 +1,6 @@
-//! Bearer + Basic auth check. Three tokens, three tiers:
-//!   ELASTIK_READ_TOKEN     -> tier "read"    (T1: reads when enabled)
-//!   ELASTIK_WRITE_TOKEN    -> tier "write"   (T2: writes /home/*)
-//!   ELASTIK_APPROVE_TOKEN  -> tier "approve" (T3: writes /lib/, /etc/)
+//! Raw token-byte auth check. Three optional configured token values map to
+//! read, write, and approve tiers; adapters decide how bytes arrive on their
+//! wire surface.
 //!
 //! Token comparison uses a small local byte loop that avoids early exit
 //! once lengths match. UTF-8 bytes on both sides — non-ASCII passwords
@@ -14,12 +13,6 @@ use std::{
     ptr,
     sync::atomic::{fence, Ordering},
 };
-
-#[cfg(test)]
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-
-#[cfg(test)]
-const MAX_AUTHORIZATION_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
@@ -111,49 +104,8 @@ fn wipe_vec_allocation(bytes: &mut Vec<u8>) {
 }
 
 impl Tokens {
-    /// Read tokens from env. Empty / whitespace-only values are
-    /// treated as **unset** — never as "the empty token is valid."
-    /// A `.env` with `ELASTIK_WRITE_TOKEN=` (placeholder unfilled) must not
-    /// silently grant T2 to anyone sending `Authorization: Bearer `.
-    #[cfg(test)]
-    pub fn from_env() -> Self {
-        Self {
-            read: nonempty_env("ELASTIK_READ_TOKEN"),
-            write: nonempty_env("ELASTIK_WRITE_TOKEN").or_else(|| nonempty_env("ELASTIK_TOKEN")),
-            approve: nonempty_env("ELASTIK_APPROVE_TOKEN"),
-        }
-    }
-
     pub fn read_required(&self) -> bool {
         self.read.is_some()
-    }
-
-    /// Resolve the request's tier from an Authorization header.
-    /// Empty / missing / unrecognized → Anon. Loopback callers may
-    /// short-circuit to Anon and let the protocol layer rule.
-    #[cfg(test)]
-    pub fn check(&self, authorization: Option<&str>) -> Tier {
-        let Some(value) = authorization else {
-            return Tier::Anon;
-        };
-        if value.len() > MAX_AUTHORIZATION_BYTES {
-            return Tier::Anon;
-        }
-        let Some((scheme, credentials)) = value.split_once(char::is_whitespace) else {
-            return Tier::Anon;
-        };
-        let credentials = credentials.trim();
-        if scheme.eq_ignore_ascii_case("Bearer") {
-            return self.check_token_bytes(credentials.as_bytes());
-        }
-        if scheme.eq_ignore_ascii_case("Basic") {
-            if let Ok(decoded) = B64.decode(credentials) {
-                if let Some(idx) = decoded.iter().position(|&b| b == b':') {
-                    return self.check_token_bytes(&decoded[idx + 1..]);
-                }
-            }
-        }
-        Tier::Anon
     }
 
     pub(crate) fn check_token_bytes(&self, candidate: &[u8]) -> Tier {
@@ -182,26 +134,6 @@ impl Tokens {
     }
 }
 
-#[cfg(test)]
-fn nonempty_env(name: &str) -> Option<NonEmptyBytes> {
-    match std::env::var(name) {
-        Ok(s) => NonEmptyBytes::new(s.into_bytes()),
-        _ => None,
-    }
-}
-
-/// True if `name` is set in the environment but holds an empty or
-/// whitespace-only string. Used by main.rs to print a startup warning
-/// — the user almost certainly meant "disabled," and we treated it as
-/// such, but they should know their `.env` placeholder is still bare.
-#[cfg(test)]
-pub fn env_set_but_empty(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(s) => s.trim().is_empty(),
-        Err(_) => false,
-    }
-}
-
 /// Equal-length byte comparison without early exit.
 ///
 /// `auth.rs` deliberately keeps credential parsing, validation, comparison,
@@ -225,105 +157,22 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::{can_delete, can_read, can_write, test_support::test_core};
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn bearer(token: &str) -> String {
-        format!("{} {token}", "Bearer")
-    }
 
     fn token(bytes: &[u8]) -> NonEmptyBytes {
         NonEmptyBytes::new(bytes.to_vec()).unwrap()
     }
 
-    struct EnvGuard {
-        read: Option<String>,
-        write: Option<String>,
-        legacy_write: Option<String>,
-        approve: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn capture() -> Self {
-            Self {
-                read: std::env::var("ELASTIK_READ_TOKEN").ok(),
-                write: std::env::var("ELASTIK_WRITE_TOKEN").ok(),
-                legacy_write: std::env::var("ELASTIK_TOKEN").ok(),
-                approve: std::env::var("ELASTIK_APPROVE_TOKEN").ok(),
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.read {
-                Some(v) => std::env::set_var("ELASTIK_READ_TOKEN", v),
-                None => std::env::remove_var("ELASTIK_READ_TOKEN"),
-            }
-            match &self.write {
-                Some(v) => std::env::set_var("ELASTIK_WRITE_TOKEN", v),
-                None => std::env::remove_var("ELASTIK_WRITE_TOKEN"),
-            }
-            match &self.legacy_write {
-                Some(v) => std::env::set_var("ELASTIK_TOKEN", v),
-                None => std::env::remove_var("ELASTIK_TOKEN"),
-            }
-            match &self.approve {
-                Some(v) => std::env::set_var("ELASTIK_APPROVE_TOKEN", v),
-                None => std::env::remove_var("ELASTIK_APPROVE_TOKEN"),
-            }
-        }
-    }
-
     #[test]
-    fn from_env_treats_empty_tokens_as_disabled() {
-        let _lock = env_lock().lock().unwrap();
-        let _env = EnvGuard::capture();
-        std::env::set_var("ELASTIK_READ_TOKEN", " ");
-        std::env::set_var("ELASTIK_WRITE_TOKEN", "");
-        std::env::remove_var("ELASTIK_TOKEN");
-        std::env::set_var("ELASTIK_APPROVE_TOKEN", "\u{2003}\n");
-
-        let tokens = Tokens::from_env();
-
-        assert!(tokens.read.is_none());
-        assert!(tokens.write.is_none());
-        assert!(tokens.approve.is_none());
-        assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
-        assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
-        assert!(env_set_but_empty("ELASTIK_READ_TOKEN"));
-        assert!(env_set_but_empty("ELASTIK_WRITE_TOKEN"));
-        assert!(env_set_but_empty("ELASTIK_APPROVE_TOKEN"));
-    }
-
-    #[test]
-    fn legacy_elastik_token_is_a_write_token_fallback() {
-        let _lock = env_lock().lock().unwrap();
-        let _env = EnvGuard::capture();
-        std::env::remove_var("ELASTIK_WRITE_TOKEN");
-        std::env::set_var("ELASTIK_TOKEN", "legacy-writer");
-
-        let tokens = Tokens::from_env();
-
-        assert_eq!(tokens.check(Some(&bearer("legacy-writer"))), Tier::Write);
-    }
-
-    #[test]
-    fn invalid_authorization_candidates_never_match() {
+    fn invalid_token_candidates_never_match() {
         let tokens = Tokens {
             read: Some(token(b"reader")),
             write: Some(token(b"writer")),
             approve: Some(token(b"approve")),
         };
 
-        assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
-        assert_eq!(tokens.check(Some("Bearer \t\r\n")), Tier::Anon);
-        assert_eq!(tokens.check(Some(&bearer("\u{2003}"))), Tier::Anon);
-        assert_eq!(tokens.check(Some("Basic Og==")), Tier::Anon);
+        assert_eq!(tokens.check_token_bytes(b""), Tier::Anon);
+        assert_eq!(tokens.check_token_bytes(b" \t\r\n"), Tier::Anon);
+        assert_eq!(tokens.check_token_bytes("\u{2003}".as_bytes()), Tier::Anon);
     }
 
     #[test]
@@ -407,38 +256,16 @@ mod tests {
     }
 
     #[test]
-    fn oversized_authorization_header_is_anon() {
+    fn nonempty_raw_tokens_still_authenticate() {
         let tokens = Tokens {
             read: Some(token(b"reader")),
             write: Some(token(b"writer")),
             approve: Some(token(b"approve")),
         };
-        let header = format!("Bearer {}", "x".repeat(MAX_AUTHORIZATION_BYTES));
 
-        assert_eq!(tokens.check(Some(&header)), Tier::Anon);
-    }
-
-    #[test]
-    fn nonempty_tokens_still_authenticate() {
-        let tokens = Tokens {
-            read: Some(token(b"reader")),
-            write: Some(token(b"writer")),
-            approve: Some(token(b"approve")),
-        };
-        let basic_writer = B64.encode("user:writer");
-
-        assert_eq!(tokens.check(Some(&bearer("reader"))), Tier::Read);
-        assert_eq!(tokens.check(Some("bearer reader")), Tier::Read);
-        assert_eq!(tokens.check(Some(&bearer("writer"))), Tier::Write);
-        assert_eq!(
-            tokens.check(Some(&format!("Basic {basic_writer}"))),
-            Tier::Write
-        );
-        assert_eq!(
-            tokens.check(Some(&format!("basic {basic_writer}"))),
-            Tier::Write
-        );
-        assert_eq!(tokens.check(Some(&bearer("approve"))), Tier::Approve);
-        assert_eq!(tokens.check(Some("Bearer ")), Tier::Anon);
+        assert_eq!(tokens.check_token_bytes(b"reader"), Tier::Read);
+        assert_eq!(tokens.check_token_bytes(b"writer"), Tier::Write);
+        assert_eq!(tokens.check_token_bytes(b"approve"), Tier::Approve);
+        assert_eq!(tokens.check_token_bytes(b"missing"), Tier::Anon);
     }
 }

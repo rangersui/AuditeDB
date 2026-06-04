@@ -60,8 +60,7 @@
 //! package's `elastik-core` binary and consume this library through the
 //! unstable public [`Engine`] API. In a minimal library-only build, the library
 //! does not read environment variables, does not bind sockets, and does not
-//! depend on adapter transport crates such as `axum`, `hyper`, `tower`,
-//! `tokio-stream`, `futures-util`, `rumqttd`, or `base64`.
+//! depend on protocol-adapter transport crates.
 //!
 //! ## Feature flags
 //!
@@ -171,17 +170,6 @@ pub(crate) fn can_delete(tier: auth::Tier) -> bool {
 
 // `require_read` (auth gate for proc handlers) lives in proc.rs now,
 // next to its only callers.
-
-// Response constructors (not_found, unauthorized, bad_request,
-// payload_too_large, insufficient_storage,
-// storage_temporarily_unavailable, storage_quota_exceeded,
-// options_response, method_not_allowed, precondition_failed,
-// server_error, storage_error, is_insufficient_storage_error,
-// is_transient_storage_error, audit_valid, audit_broken,
-// audit_header_value, audit_not_applicable, proc_text_response,
-// du_body, df_body, world_list_body,
-// to_header_map) live in `response.rs` and are re-exported at the
-// crate root. Helpers below use them through that re-export.
 
 pub(crate) fn exact_or_child(world_name: &str, prefix: &str) -> bool {
     world_name == prefix
