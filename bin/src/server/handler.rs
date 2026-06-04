@@ -261,7 +261,6 @@ pub(crate) async fn execute_put(
     let status = match outcome.kind {
         WriteKind::Created => StatusCode::CREATED,
         WriteKind::Updated => StatusCode::OK,
-        #[cfg(not(test))]
         _ => StatusCode::OK,
     };
     let mut resp_headers = vec![(header::ETAG, hs::etag_header(&outcome.etag))];
@@ -345,7 +344,6 @@ fn read_error_phase(err: EngineError) -> Phase {
             resp: server_error("unexpected read error".to_string()),
             reason: ErrorReason::StorageRead,
         },
-        #[cfg(not(test))]
         _ => Phase::Error {
             resp: server_error("unknown read error".to_string()),
             reason: ErrorReason::StorageRead,
@@ -407,7 +405,6 @@ pub(crate) fn write_error_phase(err: EngineError) -> Phase {
             resp: server_error("invalid world reached write adapter".to_string()),
             reason: ErrorReason::StorageWriteAudit,
         },
-        #[cfg(not(test))]
         _ => Phase::Error {
             resp: server_error("unknown write error".to_string()),
             reason: ErrorReason::StorageWriteAudit,

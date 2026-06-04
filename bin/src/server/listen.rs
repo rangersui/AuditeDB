@@ -80,13 +80,11 @@ pub(crate) async fn handler(
                 subscription,
             )),
             Err(SubscriptionRecvError::Closed) => None,
-            #[cfg(all(not(test), feature = "unstable-engine"))]
             Err(err) => {
+                #[cfg(feature = "unstable-engine")]
                 tracing::warn!(?err, "listen subscription receive failed");
                 None
             }
-            #[cfg(all(not(test), not(feature = "unstable-engine")))]
-            Err(_) => None,
         }
     });
 
@@ -126,26 +124,49 @@ fn change_method(verb: ChangeVerb) -> &'static str {
 mod tests {
     use super::*;
     use crate::{
-        engine_types::AccessTier,
+        engine_types::{AccessTier, Preconditions, Representation, ValidatedWorldPath},
         server::test_support::{
-            server_state_for_engine_for_tests, test_engine_for_server_with_listen_slots,
+            server_state_for_engine_for_tests, test_engine_for_server,
+            test_engine_for_server_with_listen_slots,
         },
     };
+    use axum::body::Bytes;
 
-    #[test]
-    fn sse_change_event_is_control_plane_only() {
-        let event = sse_change_event(crate::engine_types::ChangeEvent::new(
-            42,
-            ChangeVerb::Replace,
-            crate::engine_types::ValidatedWorldPath::new("home/task/a").unwrap(),
-            "hmac-abc".to_string(),
-        ));
+    #[tokio::test]
+    async fn sse_change_event_is_control_plane_only() {
+        let (engine, dir) = test_engine_for_server("listen-sse-event");
+        let mut subscription = engine
+            .subscribe(
+                &SubscribePattern::new("home/task/*"),
+                AccessTier::Read,
+                None,
+            )
+            .expect("test subscription should be accepted");
+        let world = ValidatedWorldPath::new("home/task/a").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"secret-body"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .expect("test write should notify subscription");
+
+        let event = sse_change_event(
+            subscription
+                .recv()
+                .await
+                .expect("test subscription should receive change"),
+        );
         let wire = format!("{event:?}");
         assert!(wire.contains("put"));
-        assert!(wire.contains("42"));
         assert!(wire.contains("/home/task/a"));
-        assert!(wire.contains("hmac-abc"));
+        assert!(wire.contains("hmac-"));
         assert!(!wire.contains("body"));
+        assert!(!wire.contains("secret-body"));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

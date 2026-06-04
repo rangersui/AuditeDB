@@ -278,7 +278,6 @@ fn etag_list_weak_matches(header_value: &str, current: &str) -> bool {
             EtagMatcher::Any => true,
             EtagMatcher::Strong(value) | EtagMatcher::Weak(value) => value == current,
             EtagMatcher::Invalid => false,
-            #[cfg(not(test))]
             _ => false,
         })
 }

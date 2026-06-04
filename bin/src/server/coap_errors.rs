@@ -16,7 +16,6 @@ pub(crate) fn read_error_to_coap(err: &EngineError) -> u8 {
         | EngineError::PayloadTooLarge { .. }
         | EngineError::PreconditionFailed { .. }
         | EngineError::QuotaExceeded { .. } => 160,
-        #[cfg(not(test))]
         _ => 160,
     }
 }
@@ -46,7 +45,6 @@ pub(crate) fn write_error_to_coap(err: &EngineError) -> u8 {
         | EngineError::InternalInvariant(_)
         | EngineError::InvalidWorldName
         | EngineError::AppendOnly => 160,
-        #[cfg(not(test))]
         _ => 160,
     }
 }

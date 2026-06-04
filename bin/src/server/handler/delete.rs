@@ -226,7 +226,6 @@ fn delete_error_phase(err: EngineError, last_step: DeleteStep) -> Phase {
             resp: server_error("unexpected delete error".to_string()),
             reason: ErrorReason::StorageWriteAudit,
         },
-        #[cfg(not(test))]
         _ => Phase::Error {
             resp: server_error("unknown delete error".to_string()),
             reason: ErrorReason::StorageWriteAudit,

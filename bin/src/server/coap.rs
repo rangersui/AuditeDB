@@ -218,7 +218,6 @@ async fn handle(engine: &Engine, request: &Packet<'_>) -> Vec<u8> {
                     let code = match outcome.kind {
                         WriteKind::Created => 65,
                         WriteKind::Updated => 68,
-                        #[cfg(not(test))]
                         _ => 68,
                     };
                     encode_response(request, code, None, b"")

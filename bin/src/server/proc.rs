@@ -297,7 +297,6 @@ pub(crate) async fn proc_audit_verify(
         AuditVerify::Valid(report) => audit_valid(report),
         AuditVerify::Broken(report) => audit_broken(report),
         AuditVerify::NotApplicable => audit_not_applicable(),
-        #[cfg(not(test))]
         _ => server_error("unknown audit verification result".to_string()),
     }
 }
@@ -346,7 +345,6 @@ fn proc_engine_error(scope: &'static str, err: EngineError) -> Response {
         | EngineError::SubscriptionLimit => {
             server_error(format!("unexpected {scope} engine error"))
         }
-        #[cfg(not(test))]
         _ => server_error(format!("unknown {scope} engine error")),
     }
 }
