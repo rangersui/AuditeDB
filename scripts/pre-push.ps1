@@ -129,6 +129,10 @@ Step "Rust tests" {
     Run cargo test --manifest-path bin/Cargo.toml
 }
 
+Step "Version consistency" {
+    Run python tools/version_consistency_check.py
+}
+
 if (-not $strict) {
     Step "Rust supply-chain quick audit" {
         Run python tools/supply_chain_check.py prepush

@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: version consistency
+        run: python tools/version_consistency_check.py
       - name: format
         working-directory: core
         run: cargo fmt --check

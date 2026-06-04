@@ -48,16 +48,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - name: verify binary version matches tag
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: verify release versions match tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' bin/Cargo.toml | head -n1)"
-          if [[ "$manifest_version" != "$version" ]]; then
-            echo "::error::tag v${version} does not match bin/Cargo.toml version ${manifest_version}"
-            exit 1
-          fi
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
       - name: add rust target
         if: matrix.rust-target != ''
         run: rustup target add ${{ matrix.rust-target }}
@@ -204,16 +200,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: verify ffi version matches tag
+      - name: verify release versions match tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' ffi/Cargo.toml | head -n1)"
-          if [[ "$manifest_version" != "$version" ]]; then
-            echo "::error::tag v${version} does not match ffi/Cargo.toml version ${manifest_version}"
-            exit 1
-          fi
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
 
       - name: build ffi library
         run: cargo build --release --manifest-path ffi/Cargo.toml
@@ -406,6 +395,10 @@ jobs:
       - name: show platform
         run: python -c "import platform, sys; print(sys.platform, platform.machine())"
 
+      - name: verify release versions match tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
+
       - name: download core asset
         uses: actions/download-artifact@v8
         with:
@@ -548,17 +541,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: verify release versions match tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
       - name: publish elastik-core to crates.io
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | head -n1)"
-          if [[ "$manifest_version" != "$version" ]]; then
-            echo "::error::tag v${version} does not match core/Cargo.toml version ${manifest_version}"
-            exit 1
-          fi
           api_url="https://crates.io/api/v1/crates/elastik-core/${version}"
           if curl -fsS -H "User-Agent: Elastik release workflow" "$api_url" >/dev/null; then
             echo "elastik-core ${version} already published; skipping cargo publish"
