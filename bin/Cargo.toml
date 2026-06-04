@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 elastik-core = { path = "../core", default-features = false, features = ["unstable-engine"] }
-axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 base64 = "0.22"
 bytes = "1"
 futures-util = "0.3"

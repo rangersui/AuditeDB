@@ -29,7 +29,7 @@ use crate::server::proc_mqtt_metrics;
 pub(crate) fn build_app(state: ServerState) -> Router {
     let app = Router::new()
         .route("/", any(root_hint))
-        .route("/listen/*pattern", any(listen::handler))
+        .route("/listen/{*pattern}", any(listen::handler))
         .route("/proc/version", any(proc_version))
         .route("/proc/worlds", any(proc_worlds))
         .route("/proc/du", any(proc_du))
@@ -37,10 +37,10 @@ pub(crate) fn build_app(state: ServerState) -> Router {
         .route("/proc/pool", any(proc_pool));
     #[cfg(feature = "mqtt")]
     let app = app.route("/proc/mqtt/metrics", any(proc_mqtt_metrics));
-    app.route("/proc/audit/*audit_path", any(proc_audit_verify))
+    app.route("/proc/audit/{*audit_path}", any(proc_audit_verify))
         .route("/proc", any(proc_reserved))
-        .route("/proc/*reserved", any(proc_reserved))
-        .route("/*world", any(world_handler))
+        .route("/proc/{*reserved}", any(proc_reserved))
+        .route("/{*world}", any(world_handler))
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(state.max_world_bytes()))
         .layer(from_fn_with_state(
@@ -110,7 +110,7 @@ mod tests {
         let state = server_state_for_engine_for_tests(engine);
 
         let app = Router::new()
-            .route("/*world", any(world_handler))
+            .route("/{*world}", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 crate::server::middleware::add_server_response_headers,
@@ -155,7 +155,7 @@ mod tests {
         let state = server_state_for_engine_for_tests(engine);
 
         let app = Router::new()
-            .route("/*world", any(world_handler))
+            .route("/{*world}", any(world_handler))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 crate::server::middleware::add_server_response_headers,
@@ -179,6 +179,33 @@ mod tests {
         assert!(resp.headers().get("x-request-id").is_some());
         // HEAD body must be empty even though Content-Length says 11.
         assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn proc_audit_verify_routes_through_full_app() {
+        let (engine, dir) = test_engine_for_server("proc-audit-route");
+        write_text_world_for_tests(&engine, "home/audit-route", "hello").await;
+        let state = server_state_for_engine_for_tests(engine);
+        let app = build_app(state);
+
+        let req = HttpRequest::builder()
+            .method("GET")
+            .uri("/proc/audit/home/audit-route/verify")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("x-audit-valid").unwrap(), "true");
+        assert_eq!(resp.headers().get("x-audit-events").unwrap(), "1");
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("0"),
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
