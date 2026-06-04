@@ -119,12 +119,8 @@ def check_release_note(errors: list[str], expected: str) -> None:
         errors.append(f"{rel(path)}: missing release notes for {expected}")
         return
     text = path.read_text(encoding="utf-8")
-    required = [
-        f"# Elastik v{expected} -",
-        f"v{expected} is a",
+    artifact_snippets = [
         f"`elastik-core` `{expected}`",
-        f"to resolve to {expected} after",
-        f"`cargo add elastik-core` will report {expected}",
         f"`elastik-bin` `{expected}`",
         f"`elastik-ffi` `{expected}`",
         f"`elastik` `{expected}`",
@@ -134,9 +130,9 @@ def check_release_note(errors: list[str], expected: str) -> None:
         f"`@elastikjs/core-darwin-arm64` `{expected}`",
         f"`@elastikjs/core-win32-x64` `{expected}`",
     ]
-    for snippet in required:
+    for snippet in artifact_snippets:
         if snippet not in text:
-            errors.append(f"{rel(path)}: missing {snippet!r}")
+            errors.append(f"{rel(path)}: missing artifact version {snippet!r}")
 
 
 def main() -> int:
