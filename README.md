@@ -23,6 +23,8 @@ everything. Authenticate everything. Subscribe to changes.
 
 ## Documentation map
 
+See the [wiki](https://github.com/rangersui/Elastik/wiki) for design documentation: storage model, audit chain, namespace system, auth tiers, and operational guides.
+
 This README is the Engine/library reference: storage model, trust tiers, audit
 chain, namespaces, and the Rust `Engine` API. Protocol adapters have their own
 README files so wire-specific behaviour does not get mistaken for Engine
