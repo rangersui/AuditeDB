@@ -294,15 +294,17 @@ impl EngineBuilder {
 
         verify_all_worlds_with_names(&self.data_root, hmac_key.as_slice())?;
         let durable_sizes = world::sizes(&self.data_root).map_err(|err| {
-            if storage_class::is_transient_storage_error(&err) {
-                EngineBuildError::DataRootLockHeld {
-                    path: self.data_root.clone(),
+            match storage_class::classify_storage_failure(&err) {
+                storage_class::StorageFailureClass::Transient => {
+                    EngineBuildError::DataRootLockHeld {
+                        path: self.data_root.clone(),
+                    }
                 }
-            } else {
-                EngineBuildError::Storage {
+                storage_class::StorageFailureClass::InsufficientStorage
+                | storage_class::StorageFailureClass::Other => EngineBuildError::Storage {
                     sqlite_code: sqlite_code(&err),
                     detail: err.to_string(),
-                }
+                },
             }
         })?;
         let storage_body_bytes = durable_sizes.iter().map(|(_, size)| *size).sum();
@@ -466,14 +468,15 @@ pub(crate) fn sqlite_code(err: &rusqlite::Error) -> Option<i32> {
 }
 
 fn map_writer_lock_error(data_root: &std::path::Path, err: rusqlite::Error) -> EngineBuildError {
-    if storage_class::is_transient_storage_error(&err) {
-        return EngineBuildError::DataRootLockHeld {
+    match storage_class::classify_storage_failure(&err) {
+        storage_class::StorageFailureClass::Transient => EngineBuildError::DataRootLockHeld {
             path: data_root.to_path_buf(),
-        };
-    }
-    EngineBuildError::Storage {
-        sqlite_code: sqlite_code(&err),
-        detail: format!("writer lock open failed: {err}"),
+        },
+        storage_class::StorageFailureClass::InsufficientStorage
+        | storage_class::StorageFailureClass::Other => EngineBuildError::Storage {
+            sqlite_code: sqlite_code(&err),
+            detail: format!("writer lock open failed: {err}"),
+        },
     }
 }
 
@@ -487,28 +490,33 @@ fn verify_all_worlds_with_names(
     })?;
     for world_name in worlds {
         audit::verify_world(data_root, &world_name, key).map_err(|err| {
-            if storage_class::is_transient_storage_error(&err) {
-                EngineBuildError::DataRootLockHeld {
-                    path: data_root.to_path_buf(),
+            match storage_class::classify_storage_failure(&err) {
+                storage_class::StorageFailureClass::Transient => {
+                    EngineBuildError::DataRootLockHeld {
+                        path: data_root.to_path_buf(),
+                    }
                 }
-            } else if storage_class::is_insufficient_storage_error(&err) {
-                EngineBuildError::Storage {
-                    sqlite_code: sqlite_code(&err),
-                    detail: format!(
-                        "audit verification for {world_name} failed with sqlite code {:?}: {err}",
-                        sqlite_code(&err)
-                    ),
+                storage_class::StorageFailureClass::InsufficientStorage => {
+                    EngineBuildError::Storage {
+                        sqlite_code: sqlite_code(&err),
+                        detail: format!(
+                            "audit verification for {world_name} failed with sqlite code {:?}: {err}",
+                            sqlite_code(&err)
+                        ),
+                    }
                 }
-            } else if audit::is_audit_chain_broken_error(&err) {
-                EngineBuildError::AuditChainCorrupted {
-                    world: world_name.clone(),
-                    detail: err.to_string(),
+                storage_class::StorageFailureClass::Other
+                    if audit::is_audit_chain_broken_error(&err) =>
+                {
+                    EngineBuildError::AuditChainCorrupted {
+                        world: world_name.clone(),
+                        detail: err.to_string(),
+                    }
                 }
-            } else {
-                EngineBuildError::Storage {
+                storage_class::StorageFailureClass::Other => EngineBuildError::Storage {
                     sqlite_code: sqlite_code(&err),
                     detail: format!("audit verification for {world_name} failed: {err}"),
-                }
+                },
             }
         })?;
     }

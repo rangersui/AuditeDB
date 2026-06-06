@@ -1474,8 +1474,8 @@ mod tests {
     // `path.try_exists()` returning `Ok(false)` -> 404 (file is
     // genuinely gone). Other variants (`Ok(true)` for unreadable
     // file, `Err(_)` for metadata failure) -> propagate the SQLite
-    // error so the verb maps to 500/507 via
-    // `is_insufficient_storage_error`. v6 collapsed all CANTOPEN
+    // error so the verb maps to 500/507 via the storage failure
+    // classifier. v6 collapsed all CANTOPEN
     // into 404; v7 introduced the recheck; v9 (Bug 49) tightened
     // `path.exists()` -> `path.try_exists()` so metadata errors stop
     // collapsing into a spurious 404.

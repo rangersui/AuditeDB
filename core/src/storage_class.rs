@@ -21,14 +21,6 @@ pub(crate) fn classify_storage_failure(err: &rusqlite::Error) -> StorageFailureC
     }
 }
 
-pub(crate) fn is_transient_storage_error(err: &rusqlite::Error) -> bool {
-    classify_storage_failure(err) == StorageFailureClass::Transient
-}
-
-pub(crate) fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {
-    classify_storage_failure(err) == StorageFailureClass::InsufficientStorage
-}
-
 fn is_transient_storage_error_impl(err: &rusqlite::Error) -> bool {
     if matches!(
         err.sqlite_error_code(),
@@ -68,8 +60,6 @@ mod tests {
             classify_storage_failure(&err),
             StorageFailureClass::InsufficientStorage
         );
-        assert!(is_insufficient_storage_error(&err));
-        assert!(!is_transient_storage_error(&err));
     }
 
     #[test]
@@ -80,8 +70,6 @@ mod tests {
                 classify_storage_failure(&err),
                 StorageFailureClass::Transient
             );
-            assert!(is_transient_storage_error(&err));
-            assert!(!is_insufficient_storage_error(&err));
         }
     }
 
@@ -92,7 +80,5 @@ mod tests {
             None,
         );
         assert_eq!(classify_storage_failure(&err), StorageFailureClass::Other);
-        assert!(!is_insufficient_storage_error(&err));
-        assert!(!is_transient_storage_error(&err));
     }
 }
