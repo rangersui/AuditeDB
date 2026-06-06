@@ -571,7 +571,7 @@ mod tests {
             b"hello",
             "text/plain; charset=utf-8",
             &headers,
-            &core.hmac_key,
+            core.hmac_key.as_slice(),
         )
         .unwrap();
 
