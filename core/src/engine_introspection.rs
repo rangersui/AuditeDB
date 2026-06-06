@@ -12,7 +12,7 @@ use crate::{
     engine::{self, Engine, EngineError},
     engine_ops::{log_storage_error, EngineOps},
     engine_types::{AccessTier, ValidatedWorldPath},
-    store, world, AuthGate,
+    store, world, AuthGate, StorageFailureClass,
 };
 
 /// Validated `/proc/*` introspection endpoint.
@@ -562,20 +562,24 @@ fn storage_error_to_engine(
     operation: &'static str,
     world: Option<&str>,
 ) -> EngineError {
-    if crate::is_insufficient_storage_error(&err) {
-        log_storage_error(scope, &err, operation, world);
-        EngineError::InsufficientStorage {
-            sqlite_code: engine::sqlite_code(&err),
+    match crate::classify_storage_failure(&err) {
+        StorageFailureClass::InsufficientStorage => {
+            log_storage_error(scope, &err, operation, world);
+            EngineError::InsufficientStorage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
         }
-    } else if crate::is_transient_storage_error(&err) {
-        log_storage_error(scope, &err, operation, world);
-        EngineError::TransientStorage {
-            sqlite_code: engine::sqlite_code(&err),
+        StorageFailureClass::Transient => {
+            log_storage_error(scope, &err, operation, world);
+            EngineError::TransientStorage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
         }
-    } else {
-        log_storage_error(scope, &err, operation, world);
-        EngineError::Storage {
-            sqlite_code: engine::sqlite_code(&err),
+        StorageFailureClass::Other => {
+            log_storage_error(scope, &err, operation, world);
+            EngineError::Storage {
+                sqlite_code: engine::sqlite_code(&err),
+            }
         }
     }
 }
