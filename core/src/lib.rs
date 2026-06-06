@@ -1,3 +1,6 @@
+#![deny(unsafe_code)]
+#![deny(clippy::undocumented_unsafe_blocks)]
+
 //! # AuditeDB — powered by the Elastik L5 Engine
 //!
 //! `elastik-core` is a protocol-neutral storage engine: canonical paths, opaque
