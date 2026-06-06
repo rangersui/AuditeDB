@@ -643,6 +643,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+
       - name: download release artifacts
         uses: actions/download-artifact@v8
         with:
@@ -653,6 +655,7 @@ jobs:
         run: |
           python - <<'PY'
           import hashlib
+          import os
           import pathlib
           import tarfile
           import zipfile
@@ -765,6 +768,17 @@ jobs:
               "```",
           ]
           pathlib.Path("CHECKSUMS.md").write_text("\n".join(note) + "\n", encoding="utf-8")
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          release_notes = pathlib.Path("release_notes") / f"RELEASE-NOTES-{tag}.md"
+          if not release_notes.is_file():
+              raise SystemExit(f"missing release notes: {release_notes}")
+          release_body = (
+              release_notes.read_text(encoding="utf-8").rstrip()
+              + "\n\n"
+              + pathlib.Path("CHECKSUMS.md").read_text(encoding="utf-8").lstrip()
+          )
+          pathlib.Path("RELEASE-BODY.md").write_text(release_body, encoding="utf-8")
           PY
           cat SHA256SUMS.txt
           cat BINARY-SHA256SUMS.txt
@@ -777,8 +791,7 @@ jobs:
             SHA256SUMS.txt
             BINARY-SHA256SUMS.txt
             CHANNEL-MATCHES.txt
-          body_path: CHECKSUMS.md
-          append_body: true
+          body_path: RELEASE-BODY.md
 
   verify-npm-publish:
     name: verify npm publish
