@@ -16,8 +16,7 @@ use bytes::Bytes;
 use crate::{
     auth, can_read, can_write,
     engine_types::{ChangeVerb, ValidatedWorldPath},
-    etag, is_insufficient_storage_error, is_transient_storage_error, needs_write_approve, store,
-    world, AuthGate, Core,
+    etag, needs_write_approve, store, world, AuthGate, Core, StorageFailureClass,
 };
 
 #[derive(Debug)]
@@ -398,12 +397,10 @@ fn check_write_preconditions(
 }
 
 fn classify_read_error(scope: &'static str, err: rusqlite::Error) -> ReadError {
-    if is_insufficient_storage_error(&err) {
-        ReadError::InsufficientStorage { scope, err }
-    } else if is_transient_storage_error(&err) {
-        ReadError::TransientStorage { scope, err }
-    } else {
-        ReadError::StorageRead { scope, err }
+    match crate::classify_storage_failure(&err) {
+        StorageFailureClass::InsufficientStorage => ReadError::InsufficientStorage { scope, err },
+        StorageFailureClass::Transient => ReadError::TransientStorage { scope, err },
+        StorageFailureClass::Other => ReadError::StorageRead { scope, err },
     }
 }
 
@@ -412,15 +409,15 @@ fn classify_write_storage_error(
     err: rusqlite::Error,
     op: StorageOp,
 ) -> WriteError {
-    if is_insufficient_storage_error(&err) {
-        WriteError::InsufficientStorage { scope, err, op }
-    } else if is_transient_storage_error(&err) {
-        WriteError::TransientStorage { scope, err, op }
-    } else {
-        match op {
+    match crate::classify_storage_failure(&err) {
+        StorageFailureClass::InsufficientStorage => {
+            WriteError::InsufficientStorage { scope, err, op }
+        }
+        StorageFailureClass::Transient => WriteError::TransientStorage { scope, err, op },
+        StorageFailureClass::Other => match op {
             StorageOp::Read => WriteError::StorageRead { scope, err },
             StorageOp::WriteAudit => WriteError::StorageWriteAudit { scope, err },
-        }
+        },
     }
 }
 
