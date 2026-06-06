@@ -55,7 +55,7 @@ jobs:
         run: cargo clippy --bin elastik-core --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::print_stdout
       - name: clippy
         working-directory: core
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
       - name: binary clippy
         working-directory: bin
         run: cargo clippy -- -D warnings

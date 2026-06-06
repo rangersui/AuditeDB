@@ -85,6 +85,7 @@ impl fmt::Debug for NonEmptyBytes {
     }
 }
 
+#[allow(unsafe_code)]
 fn wipe_vec_allocation(bytes: &mut Vec<u8>) {
     // These bytes are credentials. Wipe the full allocation, not only len(),
     // because callers can hand us a Vec whose spare capacity still contains
@@ -92,6 +93,10 @@ fn wipe_vec_allocation(bytes: &mut Vec<u8>) {
     // fence make the best-effort wipe physically observable before free.
     let ptr = bytes.as_mut_ptr();
     for index in 0..bytes.capacity() {
+        // SAFETY: `ptr` came from this Vec allocation and `index` is strictly
+        // below `capacity`, so the computed pointer stays within the
+        // allocation. Volatile-writing a `u8` zero is valid for every byte in
+        // the allocation, including spare capacity.
         unsafe {
             ptr::write_volatile(ptr.add(index), 0);
         }
@@ -232,11 +237,16 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn wipe_vec_allocation_clears_spare_capacity() {
         let mut bytes = Vec::with_capacity(8);
         bytes.extend_from_slice(b"key");
         let ptr = bytes.as_mut_ptr();
         let cap = bytes.capacity();
+        // SAFETY: `ptr` came from this Vec allocation and every index in
+        // `len..capacity` addresses spare capacity within the allocation.
+        // Writing initialized bytes there lets the test prove the wipe covers
+        // spare capacity as well as the current length.
         unsafe {
             for index in bytes.len()..cap {
                 ptr.add(index).write(b'x');
@@ -245,6 +255,10 @@ mod tests {
 
         wipe_vec_allocation(&mut bytes);
 
+        // SAFETY: the test initialized the spare capacity above, and
+        // `wipe_vec_allocation` wrote zeros across the full allocation, so
+        // exposing `capacity` bytes for inspection does not read uninitialized
+        // memory.
         unsafe {
             bytes.set_len(cap);
         }
