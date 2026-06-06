@@ -12,6 +12,7 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES,
     },
+    engine_types::SecretBytes,
     store, Core,
 };
 
@@ -43,7 +44,7 @@ pub(crate) fn test_core_with_read_cache_max(
                     write: None,
                     approve: None,
                 },
-                hmac_key: b"test-key".to_vec(),
+                hmac_key: SecretBytes::try_from_slice(b"test-key").unwrap(),
                 mem: Arc::new(store::MemoryStore::new()),
                 max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                 max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,

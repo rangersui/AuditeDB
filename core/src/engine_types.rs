@@ -297,12 +297,11 @@ impl SecretBytes {
         self.bytes.as_slice()
     }
 
-    /// Transfers the bytes out of the secret wrapper.
-    ///
-    /// After this call, wipe-on-drop responsibility belongs to the caller that
-    /// owns the returned `Vec<u8>`. Today that caller is `Core::hmac_key`.
-    pub(crate) fn into_vec(self) -> Vec<u8> {
-        self.bytes.into_vec()
+    /// Creates an owned secret copy for `'static` blocking jobs.
+    pub(crate) fn clone_secret(&self) -> Self {
+        Self {
+            bytes: self.bytes.clone(),
+        }
     }
 }
 

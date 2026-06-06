@@ -290,9 +290,9 @@ impl EngineBuilder {
         std::fs::create_dir_all(&self.data_root).map_err(EngineBuildError::DataRootIo)?;
         let data_lock = crate::acquire_data_root_writer_lock(&self.data_root)
             .map_err(|err| map_writer_lock_error(&self.data_root, err))?;
-        let hmac_key = self.key.ok_or(EngineBuildError::HmacKeyMissing)?.into_vec();
+        let hmac_key = self.key.ok_or(EngineBuildError::HmacKeyMissing)?;
 
-        verify_all_worlds_with_names(&self.data_root, &hmac_key)?;
+        verify_all_worlds_with_names(&self.data_root, hmac_key.as_slice())?;
         let durable_sizes = world::sizes(&self.data_root).map_err(|err| {
             if storage_class::is_transient_storage_error(&err) {
                 EngineBuildError::DataRootLockHeld {

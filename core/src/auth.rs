@@ -61,10 +61,6 @@ impl NonEmptyBytes {
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.0
     }
-
-    pub(crate) fn into_vec(mut self) -> Vec<u8> {
-        std::mem::take(&mut self.0)
-    }
 }
 
 /// Returns true when raw token bytes can represent a configured or candidate

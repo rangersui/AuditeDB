@@ -211,7 +211,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
 }
 
 fn ledger_hmac_key(core: &Core) -> SecretBytes {
-    SecretBytes::new(core.hmac_key.clone()).expect("Core hmac_key is validated at construction")
+    core.hmac_key.clone_secret()
 }
 
 fn check_preconditions(

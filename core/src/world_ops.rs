@@ -232,7 +232,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
             &req.body,
             &req.content_type,
             &req.headers,
-            &core.hmac_key,
+            core.hmac_key.as_slice(),
             None,
         ) {
             Ok(result) => {
@@ -331,7 +331,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
             &req.body,
             &content_type,
             &stored_headers,
-            &core.hmac_key,
+            core.hmac_key.as_slice(),
         ) {
             Ok(Some((_result, h))) => etag::hmac_etag(&h),
             Ok(None) => {
