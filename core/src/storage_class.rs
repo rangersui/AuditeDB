@@ -4,7 +4,32 @@
 //! Adapters map them to protocol-specific outcomes; `world_ops.rs` uses them
 //! to keep transient and permanent storage failures distinct.
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StorageFailureClass {
+    Transient,
+    InsufficientStorage,
+    Other,
+}
+
+pub(crate) fn classify_storage_failure(err: &rusqlite::Error) -> StorageFailureClass {
+    if is_insufficient_storage_error_impl(err) {
+        StorageFailureClass::InsufficientStorage
+    } else if is_transient_storage_error_impl(err) {
+        StorageFailureClass::Transient
+    } else {
+        StorageFailureClass::Other
+    }
+}
+
 pub(crate) fn is_transient_storage_error(err: &rusqlite::Error) -> bool {
+    classify_storage_failure(err) == StorageFailureClass::Transient
+}
+
+pub(crate) fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {
+    classify_storage_failure(err) == StorageFailureClass::InsufficientStorage
+}
+
+fn is_transient_storage_error_impl(err: &rusqlite::Error) -> bool {
     if matches!(
         err.sqlite_error_code(),
         Some(rusqlite::ffi::ErrorCode::DatabaseBusy | rusqlite::ffi::ErrorCode::DatabaseLocked)
@@ -15,7 +40,7 @@ pub(crate) fn is_transient_storage_error(err: &rusqlite::Error) -> bool {
     msg.contains("database is locked") || msg.contains("database table is locked")
 }
 
-pub(crate) fn is_insufficient_storage_error(err: &rusqlite::Error) -> bool {
+fn is_insufficient_storage_error_impl(err: &rusqlite::Error) -> bool {
     if matches!(
         err.sqlite_error_code(),
         Some(rusqlite::ffi::ErrorCode::DiskFull)
@@ -39,6 +64,10 @@ mod tests {
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
             None,
         );
+        assert_eq!(
+            classify_storage_failure(&err),
+            StorageFailureClass::InsufficientStorage
+        );
         assert!(is_insufficient_storage_error(&err));
         assert!(!is_transient_storage_error(&err));
     }
@@ -47,6 +76,10 @@ mod tests {
     fn busy_and_locked_are_transient_storage() {
         for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
             let err = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            assert_eq!(
+                classify_storage_failure(&err),
+                StorageFailureClass::Transient
+            );
             assert!(is_transient_storage_error(&err));
             assert!(!is_insufficient_storage_error(&err));
         }
@@ -58,6 +91,7 @@ mod tests {
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
             None,
         );
+        assert_eq!(classify_storage_failure(&err), StorageFailureClass::Other);
         assert!(!is_insufficient_storage_error(&err));
         assert!(!is_transient_storage_error(&err));
     }
