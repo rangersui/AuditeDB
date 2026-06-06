@@ -1,10 +1,10 @@
-# Flexible Elastik Deployment
+# Flexible AuditeDB Deployment
 
-Elastik can be one binary and one local folder. It can also run in one place
+AuditeDB can be one binary and one local folder. It can also run in one place
 while its data lives somewhere else. The binary, the HTTP endpoint, and the
 durable data root are separate deployment choices.
 
-Use this reference when the user wants to run Elastik on a laptop, machine,
+Use this reference when the user wants to run AuditeDB on a laptop, machine,
 Raspberry Pi, NAS-backed share, overlay network, or public HTTPS endpoint
 without changing the HTTP world model.
 
@@ -15,7 +15,7 @@ without changing the HTTP world model.
 - Layered security
 - Cache stack
 - Token topology
-- Elastik as a protocol gateway
+- AuditeDB as a protocol gateway
 - Minimal verification
 - Operational traps
 - Related references
@@ -23,10 +23,10 @@ without changing the HTTP world model.
 ## Core idea
 
 There is no fixed client/server split. There is data and there is an
-entrypoint. They can be in the same place, or not. The Elastik binary is just
+entrypoint. They can be in the same place, or not. The `elastik-core` binary is just
 the process that happens to expose an HTTP entrypoint and point at some bytes.
 
-Elastik sees a data directory. That directory can be local disk, SMB, NFS, a
+AuditeDB sees a data directory. That directory can be local disk, SMB, NFS, a
 FUSE mount, or a synced/overlay filesystem, as long as the operating system
 presents normal file semantics.
 
@@ -78,8 +78,8 @@ fancier modes below are extensions, not replacements.
 
 ### Mode 1: directly hosted local data
 
-Use this when an Elastik entrypoint should be visible to other machines on the
-same LAN, but the durable data still lives beside that Elastik process.
+Use this when an AuditeDB entrypoint should be visible to other machines on the
+same LAN, but the durable data still lives beside that AuditeDB process.
 
 ```bash
 export ELASTIK_HOST=0.0.0.0
@@ -94,17 +94,17 @@ Properties:
 - No NAS.
 - No network filesystem.
 - Other LAN machines can reach the HTTP endpoint directly.
-- The Elastik process remains the only thing touching the data directory.
-- One central Elastik process owns the tokens for all HTTP callers.
+- The AuditeDB process remains the only thing touching the data directory.
+- One central AuditeDB process owns the tokens for all HTTP callers.
 - Require write and approve tokens.
 - Use firewall rules when the LAN is not fully trusted.
 
-This is the simplest shared deployment: expose one Elastik entrypoint directly,
+This is the simplest shared deployment: expose one AuditeDB entrypoint directly,
 keep the data local to that process, and let HTTP be the sharing boundary.
 
 ### Mode A: private local endpoint, remote data
 
-Use this when one user wants a local Elastik storage endpoint backed by a NAS
+Use this when one user wants a local AuditeDB storage endpoint backed by a NAS
 or shared disk.
 
 ```bash
@@ -137,7 +137,7 @@ Properties:
 - Require write and approve tokens.
 - Prefer a trusted LAN or VPN.
 - Return to `127.0.0.1` when the share window ends.
-- Do not expose SMB/NFS directly just because Elastik is reachable.
+- Do not expose SMB/NFS directly just because AuditeDB is reachable.
 
 ### Mode C: overlay-network endpoint
 
@@ -156,8 +156,8 @@ Properties:
 - The physical route may cross many hops, but the operator sees one logical
   HTTP endpoint.
 - Overlay ACLs handle reachability.
-- Elastik tokens handle world-level authority.
-- The data path can still be beside the Elastik process or mounted remotely.
+- AuditeDB tokens handle world-level authority.
+- The data path can still be beside the AuditeDB process or mounted remotely.
 
 ### Mode D: public HTTPS front door
 
@@ -167,14 +167,14 @@ Use this only when the endpoint must be reachable from the public internet.
 browser/curl
   -> Cloudflare or equivalent edge
   -> reverse proxy with TLS and login
-  -> elastik on 127.0.0.1:3105
+  -> elastik-core on 127.0.0.1:3105
   -> data root
 ```
 
 Properties:
 
 - Put TLS, login, rate limiting, and request-size limits in front.
-- Keep Elastik bound to localhost behind the proxy when possible.
+- Keep AuditeDB bound to localhost behind the proxy when possible.
 - Keep write and approve tokens enabled.
 - Never expose SMB/NFS ports to the public internet.
 
@@ -185,7 +185,7 @@ The useful pattern is independent gates, not one giant gate.
 ```text
 Layer 0: edge or VPN       reachability, DDoS, IP allow rules
 Layer 1: reverse proxy     TLS, login, rate limits, request size
-Layer 2: elastik           bearer tokens (read/write/approve), ETags,
+Layer 2: AuditeDB          bearer tokens (read/write/approve), ETags,
                            HMAC audit chain, namespace policy
 Layer 3: filesystem share  OS credentials, NAS ACLs, LAN isolation
 ```
@@ -195,14 +195,14 @@ Each layer answers a different question:
 - Can this HTTP caller reach the entrypoint?
 - Is this user allowed through the front door?
 - Is this request allowed to mutate or delete this world?
-- Can the Elastik process touch the backing data?
+- Can the AuditeDB process touch the backing data?
 
 This is not magic MFA. It is normal systems architecture: independent failure
 domains make accidents and compromises harder to turn into full access.
 
 ### Token gate inside Layer 2
 
-Within Elastik itself the write/approve split is not policy-free; it follows
+Within AuditeDB itself the write/approve split is not policy-free; it follows
 the namespace.
 
 ```text
@@ -250,55 +250,55 @@ read-cache correctness. It amplifies open/metadata latency that local SSDs hide.
 
 ### Centralized token model
 
-This is the normal shape for one shared Elastik entrypoint.
+This is the normal shape for one shared AuditeDB entrypoint.
 
 ```text
-caller A -> HTTP -> one Elastik entrypoint -> one token policy -> data root
-caller B -> HTTP -> one Elastik entrypoint -> one token policy -> data root
-caller C -> HTTP -> one Elastik entrypoint -> one token policy -> data root
+caller A -> HTTP -> one AuditeDB entrypoint -> one token policy -> data root
+caller B -> HTTP -> one AuditeDB entrypoint -> one token policy -> data root
+caller C -> HTTP -> one AuditeDB entrypoint -> one token policy -> data root
 ```
 
 Use centralized tokens for Mode 1, Mode B, Mode C, and public-proxy deployments
-where one Elastik process is the authority boundary.
+where one AuditeDB process is the authority boundary.
 
 Properties:
 
-- One Elastik process owns the read, write, and approve tokens.
+- One AuditeDB process owns the read, write, and approve tokens.
 - HTTP callers do not need filesystem access.
-- HTTP callers do not run their own Elastik cores.
+- HTTP callers do not run their own AuditeDB cores.
 - Rotating a token happens once at the entrypoint, then callers update their env.
 - If per-user identity is needed, put login or identity at the reverse proxy
-  layer and keep Elastik tokens as capability gates.
+  layer and keep AuditeDB tokens as capability gates.
 
 This is the cleanest multi-caller model: centralize authority at HTTP, keep the
-data root private to the Elastik process, and let callers use curl or browsers.
+data root private to the AuditeDB process, and let callers use curl or browsers.
 
 ### Distributed token model
 
-Different users can run separate Elastik cores pointed at the same shared data
+Different users can run separate AuditeDB cores pointed at the same shared data
 root, but this should be treated carefully.
 
 ```text
-user A: own Elastik process, own tokens, shared data root
-user B: own Elastik process, own tokens, shared data root
+user A: own AuditeDB process, own tokens, shared data root
+user B: own AuditeDB process, own tokens, shared data root
 ```
 
 Use this only when the filesystem and SQLite locking semantics are known to be
-safe for the workload. For ordinary deployments, prefer one Elastik core as the
+safe for the workload. For ordinary deployments, prefer one AuditeDB core as the
 writer for a shared data root.
 
-## Elastik as a protocol gateway
+## AuditeDB as a protocol gateway
 
-Elastik is useful in front of protocols that should not be exposed directly.
+AuditeDB is useful in front of protocols that should not be exposed directly.
 
 ```text
-SMB/NFS data      -> elastik -> HTTP + tokens
-PLC/internal bus  -> adapter -> elastik worlds
-local files       -> elastik -> static HTML + proc surface
+SMB/NFS data      -> AuditeDB -> HTTP + tokens
+PLC/internal bus  -> adapter -> AuditeDB worlds
+local files       -> AuditeDB -> static HTML + proc surface
 ```
 
 The goal is not to hide every domain detail. Domain adapters should still own
-domain semantics. Elastik owns the common L5 storage surface: paths, bodies,
+domain semantics. AuditeDB owns the common L5 storage surface: paths, bodies,
 headers, tokens, audit, proc, and static serving.
 
 ## Minimal verification
@@ -341,5 +341,5 @@ layer.
 
 - `deployment.md`: basic environment variables and startup checks.
 - `http-worlds.md`: HTTP method semantics, ETags, header policy, and proc.
-- `projection-theorem.md`: when a gateway should reuse Elastik primitives.
+- `projection-theorem.md`: when a gateway should reuse AuditeDB primitives.
 - `ui-worlds.md`: static HTML worlds and browser-facing surfaces.

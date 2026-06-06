@@ -23,15 +23,15 @@ Python SDK, JavaScript SDK, or packaging), and a small reproduction if possible.
 
 ## Security Boundary
 
-Elastik is a byte store.
+The Elastik L5 Engine is a byte store.
 
-The core accepts bytes, stores bytes, returns bytes, enforces token tiers, signs
-durable writes into an HMAC audit chain, and replays safe persisted response
-metadata. That is the security boundary.
+The engine accepts bytes, stores bytes, returns bytes, enforces token tiers,
+signs durable writes into an HMAC audit chain, and replays safe persisted
+response metadata. That is the engine's security boundary.
 
 Documentation tokens such as `read-token`, `write-token`, `approve-token`,
-`admin-token`, `dev-hmac-key`, and `change-me` are examples only. Elastik does
-not use them as built-in defaults. If those copied strings protect a shared
+`admin-token`, `dev-hmac-key`, and `change-me` are examples only. The engine
+does not ship with built-in defaults. If those copied strings protect a shared
 deployment, that is a deployment configuration problem, not a hidden default
 credential.
 
@@ -46,17 +46,18 @@ Good security reports usually involve one of these:
 - A published package ships the wrong binary or a binary that does not match
   the source/release.
 
-Usually outside the Elastik security boundary:
+Usually outside the Elastik Engine's security boundary:
 
 - HTML sanitization, XSS filtering, CSP authoring, iframe policy, or browser
   sandboxing.
 - TLS termination, public edge routing, CDN policy, or firewall policy.
 - Application schemas, business rules, per-user authorization, or validation.
-- Bugs in user plugins, user applications, or content stored in Elastik.
+- Bugs in user plugins, user applications, or content stored via the engine.
 
 If you store an HTML app, that HTML app owns its browser policy. If you expose
-Elastik to a network, that deployment owns its edge policy. The core remains a
-small storage engine: bytes in, bytes out, with token gates and an audit chain.
+an AuditeDB deployment to a network, that deployment owns its edge policy. The
+Elastik L5 Engine remains a small storage engine: bytes in, bytes out, with
+token gates and an audit chain.
 On the optional CoAP/UDP binary surface, auth tokens travel as plaintext
 datagram metadata unless you wrap that edge in CoAPS/DTLS or another trusted
 tunnel.

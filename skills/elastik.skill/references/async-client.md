@@ -292,7 +292,7 @@ What sits behind it (CPU or disk) is not the caller's concern.
 - Polling needs `cache: 'no-store'`, otherwise browser cache will lie to you.
 - A sidecar writing a result should check whether the job has been deleted
   first; otherwise it races.
-- Timeouts are the caller's responsibility. Elastik does not surface a
+- Timeouts are the caller's responsibility. AuditeDB does not surface a
   "task timed out" event on its own.
 - A `lag` event on `/listen/*` means the listener missed changes; if you care
   about completeness, re-`GET` the affected paths to recover state.

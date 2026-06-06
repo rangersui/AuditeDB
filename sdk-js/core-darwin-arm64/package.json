@@ -22,12 +22,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rangersui/Elastik.git",
+    "url": "git+https://github.com/rangersui/AuditeDB.git",
     "directory": "sdk-js/core-darwin-arm64"
   },
-  "homepage": "https://github.com/rangersui/Elastik/tree/main/sdk-js#readme",
+  "homepage": "https://github.com/rangersui/AuditeDB/tree/main/sdk-js#readme",
   "bugs": {
-    "url": "https://github.com/rangersui/Elastik/issues"
+    "url": "https://github.com/rangersui/AuditeDB/issues"
   },
   "publishConfig": {
     "access": "public"

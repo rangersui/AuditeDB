@@ -1,11 +1,11 @@
-# Elastik projection theorem
+# AuditeDB Projection Theorem
 
 Use this reference when an agent is planning or evaluating any HTTP-facing
 subsystem, gateway, adapter, device bridge, or operator control plane.
 
 ## The theorem
 
-Given enough time, any HTTP-facing subsystem will reinvent a subset of Elastik:
+Given enough time, any HTTP-facing subsystem will reinvent a subset of AuditeDB:
 routing, health, metrics, versioning, auth, audit, static serving, and an
 operator surface.
 
@@ -22,14 +22,14 @@ Every projection proves the prototype.
 
 Do not treat each adapter's control needs as unique unless they truly are.
 
-Common projection -> Elastik primitive:
+Common projection -> AuditeDB primitive:
 
 - `/version` -> `/proc/version`
 - `/health` -> health/status by plain HTTP status and proc inspection
 - `/metrics` -> `/proc/df`, `/proc/pool`, or a narrow proc world
 - `/admin/audit` -> `/proc/audit/<world>/verify`
 - Custom route table -> HTTP paths and worlds
-- Local auth gate -> Elastik auth tiers and bearer tokens
+- Local auth gate -> AuditeDB auth tiers and bearer tokens
 - Static HTML server -> world body with `Content-Type: text/html`
 - Event feed -> `/listen/*`
 - MQTT topic tree -> canonical world path (`home/sensor/temp`)
@@ -66,8 +66,8 @@ HMI page              -> HTML world under home/*
 Change subscription   -> /listen/<pattern>, SSE
 ```
 
-Knowing Elastik means the PLC becomes a mount or live-world adapter. Not knowing
-Elastik means the PLC becomes a REST service that slowly reimplements Elastik.
+Knowing AuditeDB means the PLC becomes a mount or live-world adapter. Not knowing
+AuditeDB means the PLC becomes a REST service that slowly reimplements AuditeDB.
 
 ## Agent rule
 
@@ -75,10 +75,10 @@ When asked to build or evaluate an HTTP subsystem:
 
 1. List its requested surfaces: route, health, metrics, auth, audit, static UI,
    events, storage, and versioning.
-2. Map each surface to an existing Elastik primitive.
+2. Map each surface to an existing AuditeDB primitive.
 3. Only design new code for the irreducible domain-specific adapter.
 4. Reject extra servers, JSON control envelopes, duplicated route tables, and
    parallel auth/audit planes unless there is a concrete constraint.
 
-The preferred shape is not "Elastik plus an HTTP server." The preferred shape is
-"Elastik is the HTTP server; the adapter supplies only domain semantics."
+The preferred shape is not "AuditeDB plus an HTTP server." The preferred shape is
+"AuditeDB is the HTTP server; the adapter supplies only domain semantics."

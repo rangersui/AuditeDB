@@ -1,6 +1,6 @@
-# elastik Python SDK
+# AuditeDB Python SDK
 
-Python client and launcher for Elastik L5: the Audi-ted storage engine over HTTP.
+Python client and launcher for AuditeDB, powered by the Elastik L5 Engine.
 
 The engine is small on purpose: the library has five verbs, while the HTTP
 adapter maps them to `PUT`, `GET`, `HEAD`, `POST`, `DELETE`, and `LISTEN`.
@@ -48,7 +48,7 @@ tools where client lifecycle should be explicit. Use module-level
 
 ## Path Contracts
 
-Elastik apps can be coordinated by path names instead of API schemas.
+AuditeDB apps can be coordinated by path names instead of API schemas.
 
 ```js
 // Frontend writes input and listens for output.
@@ -101,6 +101,9 @@ python sdk/examples/03_metadata_and_etag.py
 py -m pip install elastik
 ```
 
+The package name stays `elastik` for compatibility. AuditeDB is the product;
+the Python package talks to the Elastik L5 Engine.
+
 The package ships a platform-specific `elastik-core` binary in
 `elastik/_bin/`. No compile-on-install.
 
@@ -128,7 +131,7 @@ e = elastik.start(
 ```
 
 `read-token`, `write-token`, `admin-token`, and `dev-hmac-key` in these examples
-are local placeholders only. Elastik does not ship with those credentials. Use
+are local placeholders only. The engine does not ship with built-in credentials. Use
 fresh per-deployment secrets outside throwaway demos.
 
 Python kwargs use underscores (`read_token`). CLI flags use hyphens
@@ -202,7 +205,7 @@ part of the no-JSON CoAP surface. It does not implement retransmission,
 dedup, Observe, Block-Wise transfer, DTLS/OSCORE, `.well-known/core`, multicast
 discovery, `Max-Age`, or strict critical-option handling.
 
-Elastik private option `65001` carries the raw auth token, like a UDP-shaped
+AuditeDB private option `65001` carries the raw auth token, like a UDP-shaped
 `Authorization: Bearer ...`. It is not encryption. Use a CoAP gateway at the
 edge if you need full CoAP behavior; use HTTP for reliability or large bodies.
 Bodies near 1 KiB or above should use HTTP: the SDK enforces a 1152-byte
@@ -593,12 +596,12 @@ assert e.get_text("note") == "hello"
 ## Source Checkout
 
 ```powershell
-git clone https://github.com/rangersui/Elastik
-cd Elastik
+git clone https://github.com/rangersui/AuditeDB
+cd AuditeDB
 python -m pip install -e .\sdk
 python -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token admin-token
 ```
 
 For the full project README, see:
 
-<https://github.com/rangersui/Elastik>
+<https://github.com/rangersui/AuditeDB>

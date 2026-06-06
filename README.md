@@ -1,19 +1,28 @@
-# Elastik
+# AuditeDB
 
-**Audi-ted L5 storage engine.**
+**the db that listens.**
 
-**SQLite for files.** Store bytes at paths. Version everything. Audit
-everything. Authenticate everything. Subscribe to changes.
+A filesystem-backed flat key-value store with an audit trail. Embed the engine as a library, or run the `elastik-core` HTTP server as a HTTP disk.
 
-*SQLite für Dateien. Bytes an Pfaden. Alles auditiert. Änderungen abonniert.*
+Powered by the Elastik L5 Engine.
+
+```text
+GET /home/a     read bytes
+PUT /home/a     replace bytes
+POST /home/a    append bytes
+DELETE /home/a  remove bytes
+LISTEN /home/*  subscribe to changes
+```
+
+5 verbs · HMAC audit chain · SQLite inside.
 
 ```
-┌─ elastik-core (library, core/) ────────────┐
+┌─ elastik-core (Elastik L5 Engine, core/) ──┐
 │ paths + bytes + ETags + HMAC chain + auth  │
 │ no HTTP, no sockets, no env vars           │
 └─────────────────────┬──────────────────────┘
                       │ pub Engine API
-┌─ elastik-bin (binary, bin/) ───────────────┐
+┌─ elastik-bin (AuditeDB server, bin/) ──────┐
 │ HTTP + CoAP + MQTT + SSE adapters          │
 │ config, routing, auth parsing, /proc/*     │
 └────────────────────────────────────────────┘
@@ -23,12 +32,9 @@ everything. Authenticate everything. Subscribe to changes.
 
 ## Documentation map
 
-See the [wiki](https://github.com/rangersui/Elastik/wiki) for design documentation: storage model, audit chain, namespace system, auth tiers, and operational guides.
+See the [wiki](https://github.com/rangersui/AuditeDB/wiki) for design documentation: storage model, audit chain, namespace system, auth tiers, and operational guides.
 
-This README is the Engine/library reference: storage model, trust tiers, audit
-chain, namespaces, and the Rust `Engine` API. Protocol adapters have their own
-README files so wire-specific behaviour does not get mistaken for Engine
-physics.
+This README is the Engine/library reference: storage model, trust tiers, audit chain, namespaces, and the Rust `Engine` API. Protocol adapters have their own README files so wire-specific behaviour does not get mistaken for Engine physics.
 
 | Surface | README | Scope |
 |---------|--------|-------|
@@ -49,9 +55,6 @@ Library embedders call typed Engine methods instead of HTTP `/proc/*` paths:
 | `Engine::df` | `DfSnapshot` |
 | `Engine::pool` | `PoolSnapshot` |
 | `Engine::verify_audit` | `AuditVerify` |
-
-There is no Engine `/proc/version` method; version banners are binary-adapter
-surface, while the library version comes from the Rust crate metadata.
 
 ## Quick start — library
 
@@ -105,13 +108,9 @@ API shapes may change between minor versions until that gate is removed.
 | `delete`    | `Engine::delete`     | Unlink the world; audit chain advances.              |
 | `subscribe` | `Engine::subscribe`  | Replay-then-live `ChangeEvent` stream.               |
 
-In the Rust API, `read` and introspection calls are synchronous. Mutating
-operations (`replace`, `append`, `delete`) are async; `subscribe` returns a
-subscription synchronously, and `EngineSubscription::recv().await` waits for
-events.
+In the Rust API, `read` and introspection calls are synchronous. Mutating operations (`replace`, `append`, `delete`) are async; `subscribe` returns a subscription synchronously, and `EngineSubscription::recv().await` waits for events.
 
-HTTP, CoAP, MQTT, and SSE are adapter mappings over these verbs. The library
-does not know about those protocols; it knows about the five verbs.
+HTTP, CoAP, MQTT, and SSE are adapter mappings over these verbs. The library does not know about those protocols; it knows about the five verbs.
 
 ## Four trust tiers
 
@@ -193,7 +192,7 @@ The codebase is two Rust packages:
 
 The binary package is named `elastik-bin` so Cargo can distinguish it from the
 library. The compiled executable is still called `elastik-core` (set by the
-`[[bin]]` table in `bin/Cargo.toml`) — deploy names stay unchanged.
+`[[bin]]` table in `bin/Cargo.toml`).
 
 - **Library** (`core/src/lib.rs` + `engine*.rs` + storage primitives):
   the protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars,
@@ -213,56 +212,29 @@ The split is real, not cosmetic:
 
 ---
 
-## Why "L5"
+## The name
 
-Five overloaded reasons. All true.
+AuditeDB comes from `audire`: to listen.
 
-1. **Audi inline-5 heritage.** Asymmetric, distinctive, lean. One cylinder
-   head instead of two. V6 → L5 means: no more HTTP-coupled head on the
-   library side.
-2. **Level 5 autonomous.** Codebase is AI-co-authored end to end; every PR
-   is adversarially reviewed before it lands.
-3. **Five engine verbs.** read · replace · append · delete · **subscribe**.
-4. **Linear architecture.** Straight pipe: validate → permit → transition →
-   audit → notify. Durable writes append the HMAC audit record in the write
-   transaction before subscribers hear about the change.
-5. **Five layers of trust.** Anon → Read → Write → Approve → Engine itself.
+The tagline is literal. AuditeDB listens forward through `subscribe`, so
+clients can react to changes instead of polling. It also listens backward
+through the HMAC audit chain, so durable writes leave a verifiable history.
 
-### The fifth cylinder is the brand
+AuditeDB is the product. Elastik L5 is the engine.
 
-CRUD has four operations. Elastik has **five**. The cylinder that turns an
-inline-4 into an inline-5 is `subscribe`.
+### Why "L5"
 
-```
-audire   (Latin: "to listen")
-  ├─ Audi          (German car brand — Latin translation of founder Horch's
-  │                 surname, which means "listen!" in German)
-  ├─ audit         (English: formal review — originally "to listen to
-  │                 accounts being read aloud")
-  └─ subscribe     (Elastik L5's fifth verb — the listening verb)
+CRUD has four operations. AuditeDB has five:
 
-           audire
-             │
-   ┌─────────┼──────────┐
-   │         │          │
- Audi      audit    subscribe
-   │         │          │
-  L5    audited       fifth cylinder
-   │   (= the         (= the listening
-   │     feature)      verb)
-   └─────────┼──────────┘
-             ▼
-       Elastik L5
+```text
+read · replace · append · delete · subscribe
 ```
 
-The audit chain — the HMAC ledger that records every write — is the engine
-*listening to* every change. The fifth cylinder *is* the listening verb. The
-tagline *is* the listening etymology. **Vorsprung durch Technik** — technical
-edge through listening. Three independent puns, one root word.
+The fifth verb is the point. Storage can be observed, not just polled.
 
-> **The tagline is literal.** *Audi-ted* is `audit` written so the
-> Latin-via-German brand stays visible. **Audi**-ted L5: the storage engine
-> whose fifth cylinder listens.
+The engine stays small: validate the path, prove authority, mutate bytes,
+advance the audit chain, notify listeners. Anything that needs to interpret
+stored content belongs in a client, worker, or adapter.
 
 ---
 

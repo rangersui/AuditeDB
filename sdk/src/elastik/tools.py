@@ -1,6 +1,6 @@
 """SDK-side execution helpers for @listen handlers.
 
-The core is an Audi-ted L5 storage surface. Tools live here, beside the reactor:
+The core is the Elastik L5 storage surface behind AuditeDB. Tools live here, beside the reactor:
 
     pool = TrustedShellPool(size=4)
 

@@ -1,10 +1,9 @@
-# @elastikjs/client
+# AuditeDB JavaScript SDK
 
 > **fetch is all you need.**
-> Audi-ted L5. One import. Zero dependencies.
+> AuditeDB on the Elastik L5 Engine. One import. Zero dependencies.
 
-JavaScript SDK for [Elastik L5](https://github.com/rangersui/Elastik), the Audi-ted
-storage engine over HTTP. Works in any environment that has `fetch` — browser, Node 18+, Deno, Bun, Cloudflare
+JavaScript SDK for [AuditeDB](https://github.com/rangersui/AuditeDB), powered by the Elastik L5 Engine. Works in any environment that has `fetch` — browser, Node 18+, Deno, Bun, Cloudflare
 Workers, Vercel Edge, you name it.
 
 TypeScript users get bundled `.d.ts` files for both `@elastikjs/client` and
@@ -53,6 +52,9 @@ If a JS dev has read the MDN docs for those five things, they already know this 
 ```bash
 npm install @elastikjs/client
 ```
+
+The package scope stays `@elastikjs` for compatibility. AuditeDB is the product;
+the JS package talks to the Elastik L5 Engine.
 
 (Browser: import directly via ESM; no build step needed.)
 
@@ -106,7 +108,7 @@ the same process tree.
 | `win32-x64`     | `@elastikjs/core-win32-x64`    |
 
 The npm matrix matches the Rust core's release matrix
-([Elastik v8.2.0](https://github.com/rangersui/Elastik/releases/tag/v8.2.0)).
+([Elastik L5 v8.2.0](https://github.com/rangersui/AuditeDB/releases/tag/v8.2.0)).
 Linux binaries are statically linked against musl libc for distro
 compatibility. `darwin-x64` is intentionally not in the matrix (Apple
 Silicon only on the Mac side).
@@ -358,9 +360,9 @@ fetch is all you need.        ← from JavaScript
 npm install is all you need. ← from a Node project
 Rust is all you need.        ← but nobody needs to know.
 
-## elastik *is* your frontend dev environment
+## AuditeDB *is* your frontend dev environment
 
-You didn't sign up for this. elastik didn't either. But once you have a running
+You didn't sign up for this. AuditeDB didn't either. But once you have a running
 core, you discover that you've accidentally shipped:
 
 - a static file server (PUT html/css/js, browse same-origin)
@@ -383,7 +385,7 @@ localhost:9090  →  mock server
                     + crash
 ```
 
-### The elastik way
+### The AuditeDB way
 
 ```bash
 # bootstrap a dev env in three curl calls
@@ -436,10 +438,10 @@ The browser tests for this very SDK ran like this:
    reports ✅ 19/19.
 ```
 
-No webpack. No dev server. No CORS configuration. The elastik core was the dev
+No webpack. No dev server. No CORS configuration. The `elastik-core` process was the dev
 server. It's currently sitting in `19/19 ✅` in a real Chromium next to me.
 
-elastik wasn't designed to be a frontend dev environment. It was designed to
+AuditeDB wasn't designed to be a frontend dev environment. It was designed to
 be an HTTP-shaped disk. Those turn out to be the same thing when you give the
 disk MIME-type sense, header persistence, and SSE.
 
@@ -470,7 +472,7 @@ policy is **part of the mock**, not a config file somewhere else.
 When the dev session ends:
 
 ```bash
-^C        # stop the elastik core
+^C        # stop the elastik-core process
 rm -rf ./data    # mock data is gone
 ```
 
@@ -480,7 +482,7 @@ deletes the dev environment.
 
 ### Born-deprecated. Used-once. Deleted.
 
-elastik shines hardest when you don't install it:
+AuditeDB shines hardest when you don't install it:
 
 ```bash
 # Spin up a temp debug server with one command:
@@ -499,7 +501,7 @@ prereleases by default). The intended way to consume it is:
 - read it on GitHub, OR
 - `npx @elastikjs/server@<exact>` for a transient debug server, then walk away.
 
-Born-deprecated. Used once. Deleted. Truly elastik.
+Born-deprecated. Used once. Deleted. Truly AuditeDB.
 
 > The educational implementation's lifetime: one curl, one PUT, one debug
 > session. Then `rm -rf data/`, then `npx`'s cache forgets it. The package

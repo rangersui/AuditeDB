@@ -23,6 +23,8 @@ jobs:
           python-version: "3.12"
       - name: version consistency
         run: python tools/version_consistency_check.py
+      - name: audit chain verifier self-test
+        run: python tools/audit_chain_verify.py --self-test
       - name: format
         working-directory: core
         run: cargo fmt --check

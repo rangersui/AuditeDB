@@ -1,8 +1,8 @@
 # Contributing
 
-Elastik is an Audi-ted L5 storage engine with HTTP, CoAP, MQTT, SDK, and FFI
-adapters. The contribution model is intentionally small too: one coherent
-change, one pull request.
+AuditeDB is the db that listens — powered by the Elastik L5 Engine, with HTTP,
+CoAP, MQTT, SDK, and FFI adapters. The contribution model is intentionally
+small: one coherent change, one pull request.
 
 ## Before You Start
 
@@ -113,5 +113,5 @@ Good PRs are small enough to review in one pass. Include:
 - The verification commands you ran.
 - Known follow-ups that are intentionally not part of this PR.
 
-Elastik values boring correctness. If a change can be made physically safer by
+AuditeDB values boring correctness. If a change can be made physically safer by
 types instead of reviewer discipline, prefer the type-system shape.

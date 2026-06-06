@@ -1,11 +1,11 @@
 ---
 name: elastik
-description: "Deploy and use Elastik (Audi-ted L5 storage engine), shipped as a Rust library + binary on SQLite. Use this skill whenever the user mentions elastik, wants to start a local or network elastik instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), embed the protocol-neutral `Engine` library directly in a Rust project, or evaluate whether an HTTP subsystem should reuse Elastik instead of reinventing health/metrics/version/auth/audit/static serving."
+description: "Deploy and use AuditeDB, powered by the Elastik L5 Engine and shipped as a Rust library + binary on SQLite. Use this skill whenever the user mentions AuditeDB or elastik, wants to start a local or network instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), embed the protocol-neutral `Engine` library directly in a Rust project, or evaluate whether an HTTP subsystem should reuse AuditeDB instead of reinventing health/metrics/version/auth/audit/static serving."
 ---
 
-# Elastik
+# AuditeDB
 
-**Audi-ted L5 storage engine.** Bytes at paths + versions + HMAC audit chain
+**the db that listens.** Powered by the Elastik L5 Engine. Bytes at paths + versions + HMAC audit chain
 + four-tier auth + change subscriptions. Five verbs (read · replace · append ·
 delete · subscribe), one SQLite store.
 
@@ -19,7 +19,7 @@ Two ways to use it:
   no sockets — see the crate-level rustdoc and `core/src/engine.rs` for the
   public surface.
 
-Elastik (the binary) is a flat HTTP key-value store with an introspection
+AuditeDB (the `elastik-core` binary) is a flat HTTP key-value store with an introspection
 plane. The key prefix is policy.
 
 ```text
@@ -52,7 +52,7 @@ are version clocks. `/proc/*` is the status surface.
 
 ## First moves
 
-1. If no Elastik instance is running, deploy one first. Startup verifies all
+1. If no AuditeDB instance is running, deploy one first. Startup verifies all
    durable audit chains before the process listens; see `references/deployment.md`
    if boot fails with a chain-broken error.
 2. Set `ELASTIK_BASE`, usually `http://127.0.0.1:3105`.
@@ -104,7 +104,7 @@ user-writable.
 
 Load only the reference needed for the task:
 
-- `references/deployment.md`: start Elastik, configure environment variables,
+- `references/deployment.md`: start AuditeDB, configure environment variables,
   bind address, tokens, data path, and safety checks.
 - `references/flexible-deployment.md`: choose local, LAN, overlay, NAS-backed,
   or public-proxy deployment shapes without changing the HTTP world model.
@@ -114,27 +114,27 @@ Load only the reference needed for the task:
 - `references/navigation.md`: list, find, inspect, and search worlds with
   `/proc/worlds` and text filters; the `ls`/`find`/`tree` substitute.
 - `references/projection-theorem.md`: the maximum-common-denominator rule for
-  deciding when an HTTP subsystem should reuse Elastik instead of building a
+  deciding when an HTTP subsystem should reuse AuditeDB instead of building a
   parallel control plane.
 - `references/ui-worlds.md`: flat HTML world topology, no-JS fallbacks,
   HTML/CSS/JS splitting, and X-Meta-Summary conventions.
 - `references/async-client.md`: synchronous storage vs asynchronous workflows;
   JavaScript and Python client patterns, SSE, polling, sidecar daemons.
 - `references/e2e-auth.md`: end-to-end encryption with self-signed certificates;
-  using Elastik as a zero-knowledge relay between client and sidecar.
+  using AuditeDB as a zero-knowledge relay between client and sidecar.
 
 ## Deploy workflow
 
 1. Pick a data directory with `ELASTIK_DATA`.
 2. Generate `ELASTIK_KEY`.
 3. Decide tokens: read, write, approve.
-4. Start the Elastik process from source, installed binary, or Python package.
+4. Start the `elastik-core` process from source, installed binary, or Python package.
 5. Verify `/proc/version`.
 6. PUT a small test world and HEAD it.
 
 ## Use workflow
 
-When publishing a file into Elastik:
+When publishing a file into AuditeDB:
 
 1. Choose the world path explicitly. Use `home/` (or another reserved prefix)
    rather than relying on bare-path canonicalisation, so the key is obvious.
@@ -169,7 +169,7 @@ curl -i -X PUT "$ELASTIK_BASE$ELASTIK_WORLD" \
   -H "Content-Type: text/html; charset=utf-8" \
   -H "Content-Language: en" \
   -H "Cache-Control: no-cache" \
-  -H "X-Meta-Summary: Report stored as an Elastik world." \
+  -H "X-Meta-Summary: Report stored as an AuditeDB world." \
   --data-binary @report.html
 ```
 
@@ -203,11 +203,11 @@ For browser pages:
 
 If a user asks for a small HTTP gateway, PLC bridge, operator panel, static file
 server, metrics route, health route, version route, audit route, or auth gate,
-first ask whether it is just an Elastik world, proc surface, token gate, or
+first ask whether it is just an AuditeDB world, proc surface, token gate, or
 HTML page.
 
-Elastik is the maximum common denominator. Domain adapters should supply domain
-semantics; Elastik supplies the shared HTTP key-value store and control plane.
+AuditeDB is the maximum common denominator. Domain adapters should supply domain
+semantics; AuditeDB supplies the shared HTTP key-value store and control plane.
 
 ## Browser reality
 

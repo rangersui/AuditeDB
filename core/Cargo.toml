@@ -2,10 +2,10 @@
 name = "elastik-core"
 version = "8.2.0"
 edition = "2021"
-description = "Elastik — Audi-ted L5 storage engine. SQLite for files."
+description = "AuditeDB — the db that listens. Powered by the Elastik L5 Engine."
 license = "MIT"
-repository = "https://github.com/rangersui/Elastik"
-homepage = "https://github.com/rangersui/Elastik"
+repository = "https://github.com/rangersui/AuditeDB"
+homepage = "https://github.com/rangersui/AuditeDB"
 
 [package.metadata.docs.rs]
 features = ["unstable-engine"]

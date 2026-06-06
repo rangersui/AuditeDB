@@ -1,12 +1,12 @@
 # HTTP worlds
 
-Use this reference when working with Elastik wire behaviour: methods, paths,
+Use this reference when working with AuditeDB wire behaviour: methods, paths,
 headers, namespace policy, status codes, caching, ETag/CAS, `/proc/*`, and
 `/listen/*`.
 
 ## Data model
 
-Elastik is a flat HTTP key-value store. A world is one entry:
+AuditeDB is a flat HTTP key-value store. A world is one entry:
 
 ```text
 world  =  canonical key  ->  representation
@@ -205,7 +205,7 @@ The guard exists to keep the `proc/*` subtree closed against accidental writes.
 
 ## Header persistence policy
 
-Elastik uses a layered header policy:
+AuditeDB uses a layered header policy:
 
 1. **Hard deny.** Hop-by-hop, request-control, probe, proxy, and core-owned
    headers never persist.

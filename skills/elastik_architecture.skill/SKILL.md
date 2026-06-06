@@ -1,23 +1,23 @@
 ---
 name: elastik-architecture
 description: >
-  Use this skill when making architectural decisions about Elastik: whether a
+  Use this skill when making architectural decisions about AuditeDB: whether a
   capability belongs in the Elastik engine library, in the HTTP/CoAP/MQTT
   adapter binary, in a worker, in a client, or in an HTTP world. Trigger when the user
-  asks whether Elastik should execute code, validate formats, proxy or rewrite
+  asks whether AuditeDB should execute code, validate formats, proxy or rewrite
   content, add RPC, become synchronous, add a control-plane endpoint, absorb a
-  subsystem that could instead reuse Elastik's HTTP key-value/proc/auth/audit/
+  subsystem that could instead reuse AuditeDB's HTTP key-value/proc/auth/audit/
   listen surfaces, expose new public Engine API on the library side, add HTTP
   semantics to the library, or push storage primitives into the adapter. This
   is the mental-model skill, not the operational cookbook; for commands,
   deployment, curl examples, tokens, paths, and headers, use the elastik skill.
 ---
 
-# Elastik Architecture: Design Principles for the Audi-ted L5 Storage Engine
+# AuditeDB Architecture: Design Principles for the Elastik L5 Engine
 
 ## Why This Skill Exists
 
-Elastik ships as two Cargo packages:
+AuditeDB ships as two Cargo packages:
 
 ```text
 core/                       bin/
@@ -35,7 +35,7 @@ Engine + storage + audit    HTTP + CoAP + MQTT + SSE + env
 The library is a protocol-neutral storage engine: paths, bytes, ETags, HMAC
 chain, four-tier auth, five verbs. The binary is one specific projection of
 that engine onto HTTP, CoAP, MQTT, and SSE wires. Every architecture question about
-Elastik reduces to one test:
+AuditeDB reduces to one test:
 
 The canonical path shape is intentionally MQTT-like: no leading slash,
 slash-separated hierarchy, no query string. HTTP `/home/a`, CoAP `home/a`, and a
@@ -85,17 +85,17 @@ renders, or rewrites stored *content*.
 Consequences:
 
 - `PUT /home/job/script.py` stores text bytes. It does not run Python.
-- `PUT /home/page.html` stores HTML. The browser renders it; Elastik does not.
-- `PUT /home/data.csv` stores bytes. Elastik does not parse CSV or run queries.
+- `PUT /home/page.html` stores HTML. The browser renders it; AuditeDB does not.
+- `PUT /home/data.csv` stores bytes. AuditeDB does not parse CSV or run queries.
 - `PUT /home/blob.json` stores bytes with a content type. Validation belongs in
   the client or worker that understands that schema.
-- A dangerous executable stored in Elastik is stored data. The danger begins
+- A dangerous executable stored in AuditeDB is stored data. The danger begins
   when some client downloads and executes it.
 
 Decision test:
 
 ```text
-After this feature is added, does Elastik still only store, version,
+After this feature is added, does AuditeDB still only store, version,
 authorize, audit, notify, and return bytes?
 ```
 
@@ -109,13 +109,13 @@ what the README says people should avoid.
 Bad shape:
 
 ```text
-Policy: Elastik will not execute uploaded code.
+Policy: AuditeDB will not execute uploaded code.
 ```
 
 Better shape:
 
 ```text
-Physics: Elastik has no execution engine.
+Physics: AuditeDB has no execution engine.
 ```
 
 Bad shape:
@@ -131,7 +131,7 @@ Physics: Workers interact through HTTP worlds, so writes go through the same
 auth, quota, ETag, and audit machinery as every other client.
 ```
 
-For concurrent writes, Elastik supports HTTP conditional requests. `If-Match`
+For concurrent writes, AuditeDB supports HTTP conditional requests. `If-Match`
 is not required for every write, but when a workflow needs compare-and-swap
 semantics, the correct shape is: read ETag, write with `If-Match`, and treat
 412 as "lost the race; re-read and retry if appropriate."
@@ -142,7 +142,7 @@ A disk is asynchronous by nature. You write now; another actor may read later.
 The delay may be milliseconds, days, or never.
 
 Synchronous computation is different: receive input, execute logic, and return
-computed output in the same interaction. Elastik does not do that.
+computed output in the same interaction. AuditeDB does not do that.
 
 Clarifications:
 
@@ -163,7 +163,7 @@ worker writes result world
 client reads result world
 ```
 
-Elastik is the mailbox and audit surface, not the worker.
+AuditeDB is the mailbox and audit surface, not the worker.
 
 ## Principle 4: Compute Lives in a Separate Process
 
@@ -171,26 +171,26 @@ When computation is needed, run it in a separate process with its own PID,
 permissions, lifecycle, and failure domain.
 
 ```text
-Elastik: stores bytes, serves bytes, verifies/audits durable writes,
+AuditeDB: stores bytes, serves bytes, verifies/audits durable writes,
          exposes /proc, emits /listen events.
 
-Worker:  reads bytes from Elastik, computes, writes bytes back.
+Worker:  reads bytes from AuditeDB, computes, writes bytes back.
 ```
 
 Why this matters:
 
-- Kill the worker: Elastik still serves existing data.
+- Kill the worker: AuditeDB still serves existing data.
 - Worker crashes: storage remains up.
 - Worker is compromised: limit the worker's token, filesystem access, and
   network access.
-- Elastik has no code execution engine to hijack.
+- AuditeDB has no code execution engine to hijack.
 
 The worker can be Python, Node, Rust, shell, PLC bridge code, browser-side JS,
-or a cron job. That variety is a feature. Elastik should not absorb it.
+or a cron job. That variety is a feature. AuditeDB should not absorb it.
 
 ## Principle 5: Format Is the Consumer's Problem
 
-Elastik stores bytes with HTTP metadata. The consumer decides what the bytes
+AuditeDB stores bytes with HTTP metadata. The consumer decides what the bytes
 mean.
 
 - Browser receives `text/html`: browser renders it.
@@ -198,12 +198,12 @@ mean.
 - `curl` receives `application/json`: curl prints bytes.
 - A worker receives `text/csv`: worker parses it if the workflow requires CSV.
 
-This is why Elastik does not need a PDF renderer, HTML engine, JSON validator,
+This is why AuditeDB does not need a PDF renderer, HTML engine, JSON validator,
 templating engine, image pipeline, or URL rewriter. Correct `Content-Type` and
 ordinary HTTP delivery let existing clients do their jobs.
 
 No-JS browsers are useful design probes: if navigation, forms, links, and
-metadata are enough, the page is aligned with Elastik's low-hop model. Use JS
+metadata are enough, the page is aligned with AuditeDB's low-hop model. Use JS
 when it helps, but do not make JS the only way to understand stored state.
 
 ## Principle 6: HTTP Usually Already Has the Mechanism (Adapter), Engine
@@ -256,11 +256,11 @@ type. Adding a method costs SemVer headroom — it stays forever inside the
 
 ## Principle 7: Attack Surface Belongs at the Edge
 
-Elastik core should not parse or execute stored content. That removes entire
+The engine core should not parse or execute stored content. That removes entire
 classes of core compromise: no template injection in core, no SQL exposed to
 clients, no plugin loader, no content transformer, no code runner.
 
-This does not mean every system built on Elastik is safe by default. Risk moves
+This does not mean every system built on AuditeDB is safe by default. Risk moves
 to the consumer:
 
 - A browser can execute HTML/JS it reads.
@@ -289,7 +289,7 @@ The component everything depends on should be the hardest component to break.
 Traditional systems often put the most complex part at the center: app server,
 broker, query engine, scheduler, plugin runtime, or orchestration API.
 
-Elastik has two centers stacked: the engine library is the deeper center, the
+AuditeDB has two centers stacked: the engine library is the deeper center, the
 adapter binary is the wider but shallower center. Both must stay simple.
 
 **Engine library center:**
@@ -321,7 +321,7 @@ adapter.
 
 ## Applying the Principles
 
-When someone asks "can Elastik do X?", run this decision chain:
+When someone asks "can AuditeDB do X?", run this decision chain:
 
 ```text
 1. Does X require interpreting stored content?
@@ -349,10 +349,10 @@ When someone asks "can Elastik do X?", run this decision chain:
 
 8. Does X look like /health, /version, /metrics, /audit, auth, or static
    serving for another HTTP subsystem?
-   First ask whether it is just Elastik's existing proc/auth/audit/static
+   First ask whether it is just AuditeDB's existing proc/auth/audit/static
    surface projected into a domain adapter.
 
-9. Does X require a wire shape the selected Elastik binary does not speak
+9. Does X require a wire shape the selected AuditeDB binary does not speak
    today (e.g. gRPC or another raw TCP protocol)?
    New adapter binary or external bridge process. Do NOT extend the engine
    library with the new wire's vocabulary.
@@ -363,7 +363,7 @@ If the answer is "worker," the shape is stable:
 ```text
 client -> PUT request world
 worker -> GET/LISTEN request world
-worker -> compute outside Elastik
+worker -> compute outside AuditeDB
 worker -> PUT result world
 client -> GET/HEAD result world
 ```
@@ -378,14 +378,14 @@ sandbox may read it, execute it, and write a result world.
 **"Add URL rewriting for proxied HTML."**
 
 No. Rewriting is content transformation. A worker or build step can fetch,
-rewrite, and PUT final bytes. Elastik serves the final representation.
+rewrite, and PUT final bytes. AuditeDB serves the final representation.
 
 **"Add JSON validation on PUT."**
 
 No. Validation is content interpretation. Put schema validation in the client,
 worker, CI pipeline, or domain adapter.
 
-**"Make Elastik synchronous for simple requests."**
+**"Make AuditeDB synchronous for simple requests."**
 
 GET is already immediate because it reads existing bytes. If "synchronous"
 means "compute a new answer before the response returns," use a worker.
@@ -408,14 +408,14 @@ adapter should supply domain meaning, not rebuild the shared control plane.
 
 ## The Projection Theorem
 
-Given enough time, any HTTP-facing subsystem will reinvent a subset of Elastik:
+Given enough time, any HTTP-facing subsystem will reinvent a subset of AuditeDB:
 routing, versioning, health, metrics, auth, audit, static serving, and event
 notification.
 
 It will usually do so with extra machinery because it does not recognize that
 HTTP itself is already the filesystem-shaped interface it needs.
 
-The architectural move is to project domain state onto Elastik worlds instead
+The architectural move is to project domain state onto AuditeDB worlds instead
 of rebuilding the same control plane inside every adapter.
 
 ## The Test That Ends Arguments

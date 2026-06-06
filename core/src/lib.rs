@@ -1,4 +1,4 @@
-//! # Elastik — Audi-ted L5 Storage Engine
+//! # AuditeDB — powered by the Elastik L5 Engine
 //!
 //! `elastik-core` is a protocol-neutral storage engine: canonical paths, opaque
 //! bytes, content-addressed versioning, an HMAC-chained audit log, and a

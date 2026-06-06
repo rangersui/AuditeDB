@@ -1,4 +1,4 @@
-# Elastik CoAP Adapter
+# AuditeDB CoAP Adapter
 
 The CoAP adapter is a UDP binary surface over the Engine. It exists for
 constrained clients that want the same world model without speaking HTTP.
@@ -27,7 +27,7 @@ straight curl debugging. Use CoAP when UDP and small client stacks matter.
 ## Auth
 
 CoAP authentication is experimental. Critical option `65001` carries the raw
-Elastik token bytes, equivalent to the HTTP bearer token value without the
+AuditeDB token bytes, equivalent to the HTTP bearer token value without the
 `Bearer ` prefix. Absence of option `65001` means `Anon`; a matching configured
 token yields `Read`, `Write`, or `Approve`.
 

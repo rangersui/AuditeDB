@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible Elastik bug.
+description: Report a reproducible AuditeDB bug.
 title: "[bug] "
 labels:
   - bug

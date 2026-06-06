@@ -65,12 +65,12 @@ case_put_metadata() {
   need_write_token
   title "PUT with representation metadata"
   echo "Note: X-Meta-Summary persists only when ELASTIK_PERSIST_HEADERS includes x-meta-*." >&2
-  printf '<!doctype html><title>Elastik</title><p>Hello.</p>\n' |
+  printf '<!doctype html><title>AuditeDB</title><p>Hello.</p>\n' |
     curl -sS -i -X PUT "${write_auth[@]}" \
       -H "Content-Type: text/html; charset=utf-8" \
       -H "Content-Language: en" \
       -H "Cache-Control: no-cache" \
-      -H "X-Meta-Summary: Generic Elastik curl example page." \
+      -H "X-Meta-Summary: Generic AuditeDB curl example page." \
       --data-binary @- \
       "$BASE$WORLD"
 }

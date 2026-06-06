@@ -248,7 +248,7 @@ authorisation    sidecar maps verified identity -> permission table
 confidentiality  encrypted body; Elastik sees only ciphertext bytes
 integrity        signature plus AEAD tag catch tampering
 replay defence   nonce cache plus timestamp window
-zero knowledge   Elastik stores opaque bytes
+zero knowledge   AuditeDB stores opaque bytes
 ```
 
 ## Attack-surface analysis

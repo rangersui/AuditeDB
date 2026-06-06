@@ -1,4 +1,4 @@
-# Elastik HTTP Adapter
+# AuditeDB HTTP Adapter
 
 The HTTP adapter is the default `elastik-core` binary surface. It maps HTTP
 methods, headers, and status codes onto the protocol-neutral Engine.

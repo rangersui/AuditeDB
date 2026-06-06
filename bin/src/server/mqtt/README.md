@@ -1,4 +1,4 @@
-# Elastik MQTT Adapter
+# AuditeDB MQTT Adapter
 
 The MQTT adapter is a binary surface over the Engine. It speaks MQTT 3.1.1 to
 clients and translates accepted operations into Engine reads, writes, and
@@ -27,7 +27,7 @@ Rejected or intentionally absent:
 - Last Will
 - global `#`
 - `+` single-level wildcards
-- client topics that explicitly include Elastik namespaces such as `home/` or `tmp/`
+- client topics that explicitly include AuditeDB namespaces such as `home/` or `tmp/`
 
 The built-in listener is plaintext MQTT. Terminate TLS externally before
 exposing it outside a trusted network.
@@ -109,7 +109,7 @@ across reconnects.
 
 ## Authentication
 
-MQTT `CONNECT` uses the password bytes as the Elastik token. Username-only
+MQTT `CONNECT` uses the password bytes as the AuditeDB token. Username-only
 token auth is kept only as a legacy fallback.
 
 | Token | Tier |

@@ -1,6 +1,6 @@
-# Elastik FFI
+# AuditeDB FFI
 
-`elastik-ffi` is the UniFFI adapter for Elastik's protocol-neutral `Engine`.
+`elastik-ffi` is the UniFFI adapter for the Elastik L5 Engine.
 
 This crate is deliberately not an HTTP binding. Its upstream is the Rust
 `Engine` facade from `elastik-core`; HTTP, CoAP, SDK wire clients, and this FFI

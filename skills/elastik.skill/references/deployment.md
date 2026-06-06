@@ -1,11 +1,11 @@
 # Deployment
 
-Use this reference when starting Elastik, configuring a target instance, or
+Use this reference when starting AuditeDB, configuring a target instance, or
 explaining the minimum environment a user needs.
 
 ## Minimum local run
 
-Elastik needs one HMAC key. Tokens are optional gates.
+AuditeDB needs one HMAC key. Tokens are optional gates.
 
 ```bash
 export ELASTIK_HOST=127.0.0.1
@@ -50,7 +50,7 @@ public too.
 
 `/proc/worlds` is plain text, one world per line. It is not JSON.
 
-On startup, Elastik verifies every durable world's HMAC audit chain before it
+On startup, AuditeDB verifies every durable world's HMAC audit chain before it
 listens for requests. If a chain is broken, startup fails loudly and names the
 affected world instead of serving corrupt state. Resolve that world or data root
 before retrying the boot.
@@ -133,7 +133,7 @@ namespaces, both should be set.
 
 ## Binding rule
 
-Loopback is local. Binding to `127.0.0.1` exposes Elastik only on the local
+Loopback is local. Binding to `127.0.0.1` exposes AuditeDB only on the local
 machine.
 
 Non-loopback is a deliberate network service. If binding to `0.0.0.0`, a LAN
@@ -142,9 +142,9 @@ are intentional.
 
 ## One writer per data directory
 
-Elastik holds a SQLite-backed writer lock on
+AuditeDB holds a SQLite-backed writer lock on
 `ELASTIK_DATA/.elastik-writer-lock.sqlite3` for the lifetime of the process. A
-second Elastik process pointed at the same data directory fails to start with a
+second AuditeDB process pointed at the same data directory fails to start with a
 lock error instead of silently corrupting state.
 
 To serve a different universe, change `ELASTIK_DATA`.

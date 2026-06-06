@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose a small, concrete Elastik capability.
+description: Propose a small, concrete AuditeDB capability.
 title: "[feature] "
 labels:
   - enhancement

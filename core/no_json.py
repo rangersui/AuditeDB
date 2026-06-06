@@ -141,7 +141,7 @@ def main(argv: list[str]) -> int:
             print(f"  line {lineno}: {msg}")
             total += 1
     print(f"\n[FAIL] {len(bad)} files have structured data, {total} violations total")
-    print("       elastik stores metadata separately from bodies.")
+    print("       AuditeDB stores metadata separately from bodies.")
     return 1
 
 

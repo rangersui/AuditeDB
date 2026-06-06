@@ -1,4 +1,4 @@
-# CurlBench design -- the scoring is information-theoretic, but the grader is elastik itself
+# CurlBench design -- the scoring is information-theoretic, but the grader is AuditeDB itself
 
 This file documents the scoring philosophy for CurlBench. Short
 version at the top, long derivation below. v0/v1 smoke results
@@ -10,7 +10,7 @@ here on out.
 
 - Don't grade with `similarity` -- it's a black box (0.25 vs 0.75
   unexplained).
-- Grade with HTTP status codes. **elastik is the examiner.**
+- Grade with HTTP status codes. **AuditeDB is the examiner.**
 - 201 = full pass. 412 = half pass (understood CAS, wrong ETag).
   400 / 404 = semantic fail. Shell parse error = syntax fail.
 - This isn't a workaround. It's the right answer: HTTP is itself

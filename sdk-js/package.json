@@ -1,7 +1,7 @@
 {
   "name": "@elastikjs/client",
   "version": "8.2.0",
-  "description": "JavaScript SDK for Elastik L5. Audi-ted storage over HTTP; one import, zero dependencies.",
+  "description": "AuditeDB JavaScript SDK for the Elastik L5 Engine; one import, zero dependencies.",
   "type": "module",
   "main": "./index.mjs",
   "module": "./index.mjs",
@@ -74,12 +74,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rangersui/Elastik.git",
+    "url": "git+https://github.com/rangersui/AuditeDB.git",
     "directory": "sdk-js"
   },
-  "homepage": "https://github.com/rangersui/Elastik/tree/main/sdk-js#readme",
+  "homepage": "https://github.com/rangersui/AuditeDB/tree/main/sdk-js#readme",
   "bugs": {
-    "url": "https://github.com/rangersui/Elastik/issues"
+    "url": "https://github.com/rangersui/AuditeDB/issues"
   },
   "publishConfig": {
     "access": "public"

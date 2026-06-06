@@ -1,9 +1,9 @@
 # Navigation
 
 Use this reference when listing, finding, inspecting, reading, or searching
-Elastik worlds.
+AuditeDB worlds.
 
-Elastik has no directories, no `cd`, and no `cwd`. `/proc/worlds` plus text
+AuditeDB has no directories, no `cd`, and no `cwd`. `/proc/worlds` plus text
 filters is `ls`, `find`, and most of `tree`. `/proc/du` and `/proc/df` cover
 sizing.
 

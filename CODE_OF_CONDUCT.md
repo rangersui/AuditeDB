@@ -1,6 +1,6 @@
 # Code of Conduct
 
-Elastik is a small project with a high-signal engineering culture. Be direct,
+AuditeDB is a small project with a high-signal engineering culture. Be direct,
 technical, and kind.
 
 ## Expected Behavior
@@ -37,4 +37,4 @@ accounts, or decline contributions to keep the project workable.
 This code of conduct applies to project spaces: issues, pull requests,
 discussions, release threads, and any project-linked communication.
 
-Elastik's standard is simple: rigorous work, no cruelty.
+AuditeDB's standard is simple: rigorous work, no cruelty.

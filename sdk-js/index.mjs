@@ -1,6 +1,6 @@
 // @elastikjs/client — fetch is all you need.
 //
-// Audi-ted L5. One import. Zero dependencies.
+// AuditeDB on the Elastik L5 Engine. One import. Zero dependencies.
 //
 // The SDK is a thin wrapper around native fetch. It does not invent new
 // patterns; it leans on what JS already gives you:

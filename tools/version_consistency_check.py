@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if Elastik release version surfaces drift apart."""
+"""Fail if AuditeDB/Elastik release version surfaces drift apart."""
 
 from __future__ import annotations
 
@@ -33,7 +33,8 @@ ACTIVE_TEXT_SURFACES = [
 ]
 
 ACTIVE_TEXT_VERSION_PATTERNS = [
-    ("Elastik release label", re.compile(r"\bElastik\s+v(\d+\.\d+\.\d+)\b")),
+    ("AuditeDB release label", re.compile(r"\bAuditeDB\s+v(\d+\.\d+\.\d+)\b")),
+    ("Elastik release label", re.compile(r"\bElastik(?:\s+L5)?\s+v(\d+\.\d+\.\d+)\b")),
     ("GitHub release tag", re.compile(r"/releases/tag/v(\d+\.\d+\.\d+)\b")),
     ("elastik-core version", re.compile(r"\belastik-core\s+v?(\d+\.\d+\.\d+)\b")),
     ("pack-platform --version", re.compile(r"--version\s+(\d+\.\d+\.\d+)\b")),
@@ -119,6 +120,16 @@ def check_release_note(errors: list[str], expected: str) -> None:
         errors.append(f"{rel(path)}: missing release notes for {expected}")
         return
     text = path.read_text(encoding="utf-8")
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    release_heading_prefixes = (
+        f"# AuditeDB v{expected}",
+        f"# Elastik v{expected}",
+    )
+    if not first_line.startswith(release_heading_prefixes):
+        errors.append(
+            f"{rel(path)}: release heading {first_line!r} does not start with "
+            f"{release_heading_prefixes!r}"
+        )
     artifact_snippets = [
         f"`elastik-core` `{expected}`",
         f"`elastik-bin` `{expected}`",
