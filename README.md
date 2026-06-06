@@ -2,6 +2,8 @@
 
 **the db that listens.**
 
+Audit the past. Subscribe to the future.
+
 A filesystem-backed flat key-value store with an audit trail. Embed the engine as a library, or run the `elastik-core` HTTP server as a HTTP disk.
 
 Powered by the Elastik L5 Engine.
