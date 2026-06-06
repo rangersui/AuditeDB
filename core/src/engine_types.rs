@@ -217,9 +217,13 @@ pub struct ChangeEvent {
 /// permit until dropped — drop it promptly when the caller is done so other
 /// subscribers can join.
 pub struct EngineSubscription {
-    _slot: OwnedSemaphorePermit,
+    _slot: SubscriptionSlot,
     state: SubscriptionState,
     pending_shutdown: Option<watch::Receiver<bool>>,
+}
+
+struct SubscriptionSlot {
+    _permit: OwnedSemaphorePermit,
 }
 
 struct DeferredLiveSubscription {
@@ -255,6 +259,12 @@ impl DeferredLiveSubscription {
             live_floor: self.live_floor,
             shutdown,
         }
+    }
+}
+
+impl SubscriptionSlot {
+    fn new(permit: OwnedSemaphorePermit) -> Self {
+        Self { _permit: permit }
     }
 }
 
@@ -445,7 +455,7 @@ impl EngineSubscription {
             )
         };
         Self {
-            _slot: slot,
+            _slot: SubscriptionSlot::new(slot),
             state,
             pending_shutdown,
         }
