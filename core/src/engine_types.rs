@@ -292,6 +292,11 @@ impl SecretBytes {
         Self::new(bytes.to_vec())
     }
 
+    /// Borrows the secret bytes for immediate cryptographic use.
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+
     /// Transfers the bytes out of the secret wrapper.
     ///
     /// After this call, wipe-on-drop responsibility belongs to the caller that
