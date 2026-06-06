@@ -25,6 +25,7 @@ use std::sync::Mutex as StdMutex;
 use rusqlite::Connection;
 
 use crate::audit;
+use crate::engine_types::SecretBytes;
 use crate::world;
 
 /// One audit append's input. Owns its strings/buffers because the
@@ -37,7 +38,7 @@ pub(crate) struct AuditAppendJob {
     pub(crate) size: i64,
     pub(crate) content_type: String,
     pub(crate) headers: Vec<(String, String)>,
-    pub(crate) key: Vec<u8>,
+    pub(crate) key: SecretBytes,
 }
 
 /// Result of an audit append run inside `spawn_blocking`. Shared
@@ -111,7 +112,7 @@ impl LedgerWriter {
             job.size,
             &job.content_type,
             &job.headers,
-            &job.key,
+            job.key.as_slice(),
         )
         .map_err(BlockingSqliteError::Sqlite)
     }

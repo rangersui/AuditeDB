@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use crate::{
     auth, can_delete,
     engine::EngineError,
-    engine_types::{ChangeVerb, Preconditions, ValidatedWorldPath},
+    engine_types::{ChangeVerb, Preconditions, SecretBytes, ValidatedWorldPath},
     etag, is_insufficient_storage_error, is_transient_storage_error, store, world, AuditAppendJob,
     AuthGate, BlockingSqliteError, Core,
 };
@@ -118,7 +118,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             size: 0,
             content_type: req.content_type.clone(),
             headers: req.headers.clone(),
-            key: core.hmac_key.clone(),
+            key: ledger_hmac_key(core),
         })
         .await
     {
@@ -169,7 +169,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             size: 0,
             content_type: req.content_type.clone(),
             headers: req.headers.clone(),
-            key: core.hmac_key.clone(),
+            key: ledger_hmac_key(core),
         })
         .await
     {
@@ -189,7 +189,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
                 size: 0,
                 content_type: req.content_type,
                 headers: req.headers,
-                key: core.hmac_key.clone(),
+                key: ledger_hmac_key(core),
             })
             .await
         {
@@ -208,6 +208,10 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     }
     hooks.audit_commit();
     Ok(())
+}
+
+fn ledger_hmac_key(core: &Core) -> SecretBytes {
+    SecretBytes::new(core.hmac_key.clone()).expect("Core hmac_key is validated at construction")
 }
 
 fn check_preconditions(
