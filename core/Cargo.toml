@@ -1,6 +1,6 @@
 [package]
 name = "elastik-core"
-version = "8.2.0"
+version = "8.2.1"
 edition = "2021"
 description = "AuditeDB — the db that listens. Powered by the Elastik L5 Engine."
 license = "MIT"

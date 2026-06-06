@@ -115,7 +115,7 @@ def check_active_text_versions(errors: list[str], expected: str) -> None:
 
 
 def check_release_note(errors: list[str], expected: str) -> None:
-    path = ROOT / f"RELEASE-NOTES-v{expected}.md"
+    path = ROOT / "release_notes" / f"RELEASE-NOTES-v{expected}.md"
     if not path.exists():
         errors.append(f"{rel(path)}: missing release notes for {expected}")
         return
@@ -148,7 +148,7 @@ def check_release_note(errors: list[str], expected: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tag", help="Release tag or ref, for example v8.2.0 or refs/tags/v8.2.0")
+    parser.add_argument("--tag", help="Release tag or ref, for example v8.2.1 or refs/tags/v8.2.1")
     args = parser.parse_args()
 
     errors: list[str] = []
