@@ -217,13 +217,13 @@ pub struct ChangeEvent {
 /// permit until dropped — drop it promptly when the caller is done so other
 /// subscribers can join.
 pub struct EngineSubscription {
-    _slot: SubscriptionSlot,
+    slot: SubscriptionSlot,
     state: SubscriptionState,
-    pending_shutdown: Option<watch::Receiver<bool>>,
 }
 
 struct SubscriptionSlot {
     _permit: OwnedSemaphorePermit,
+    pending_shutdown: Option<watch::Receiver<bool>>,
 }
 
 struct DeferredLiveSubscription {
@@ -263,8 +263,15 @@ impl DeferredLiveSubscription {
 }
 
 impl SubscriptionSlot {
-    fn new(permit: OwnedSemaphorePermit) -> Self {
-        Self { _permit: permit }
+    fn new(permit: OwnedSemaphorePermit, pending_shutdown: Option<watch::Receiver<bool>>) -> Self {
+        Self {
+            _permit: permit,
+            pending_shutdown,
+        }
+    }
+
+    fn take_pending_shutdown(&mut self) -> Option<watch::Receiver<bool>> {
+        self.pending_shutdown.take()
     }
 }
 
@@ -455,9 +462,8 @@ impl EngineSubscription {
             )
         };
         Self {
-            _slot: SubscriptionSlot::new(slot),
+            slot: SubscriptionSlot::new(slot, pending_shutdown),
             state,
-            pending_shutdown,
         }
     }
 
@@ -491,8 +497,8 @@ impl EngineSubscription {
                         return item;
                     }
                     let shutdown = self
-                        .pending_shutdown
-                        .take()
+                        .slot
+                        .take_pending_shutdown()
                         .expect("replay state retains pending shutdown receiver");
                     self.state = SubscriptionState::Live(live.with_shutdown(shutdown));
                 }
