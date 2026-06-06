@@ -11,8 +11,7 @@ use crate::{
     auth, can_delete,
     engine::EngineError,
     engine_types::{ChangeVerb, Preconditions, SecretBytes, ValidatedWorldPath},
-    etag, is_insufficient_storage_error, is_transient_storage_error, store, world, AuditAppendJob,
-    AuthGate, BlockingSqliteError, Core,
+    etag, store, world, AuditAppendJob, AuthGate, BlockingSqliteError, Core, StorageFailureClass,
 };
 
 pub(crate) struct DeleteRequest {
@@ -235,24 +234,22 @@ fn classify_storage_error(
     world: &ValidatedWorldPath,
     err: rusqlite::Error,
 ) -> DeleteError {
-    if is_insufficient_storage_error(&err) {
-        DeleteError::InsufficientStorage {
+    match crate::classify_storage_failure(&err) {
+        StorageFailureClass::InsufficientStorage => DeleteError::InsufficientStorage {
             scope,
             world: world.clone(),
             err,
-        }
-    } else if is_transient_storage_error(&err) {
-        DeleteError::TransientStorage {
+        },
+        StorageFailureClass::Transient => DeleteError::TransientStorage {
             scope,
             world: world.clone(),
             err,
-        }
-    } else {
-        DeleteError::StorageRead {
+        },
+        StorageFailureClass::Other => DeleteError::StorageRead {
             scope,
             world: world.clone(),
             err,
-        }
+        },
     }
 }
 
@@ -267,18 +264,16 @@ fn blocking_error_to_engine(
         Some(world.as_str()),
     );
     match err {
-        BlockingSqliteError::Sqlite(err) if is_insufficient_storage_error(&err) => {
-            EngineError::InsufficientStorage {
+        BlockingSqliteError::Sqlite(err) => match crate::classify_storage_failure(&err) {
+            StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage {
                 sqlite_code: crate::engine::sqlite_code(&err),
-            }
-        }
-        BlockingSqliteError::Sqlite(err) if is_transient_storage_error(&err) => {
-            EngineError::TransientStorage {
+            },
+            StorageFailureClass::Transient => EngineError::TransientStorage {
                 sqlite_code: crate::engine::sqlite_code(&err),
-            }
-        }
-        BlockingSqliteError::Sqlite(err) => EngineError::Storage {
-            sqlite_code: crate::engine::sqlite_code(&err),
+            },
+            StorageFailureClass::Other => EngineError::Storage {
+                sqlite_code: crate::engine::sqlite_code(&err),
+            },
         },
         BlockingSqliteError::Worker => EngineError::InternalInvariant("sqlite worker failed"),
     }
