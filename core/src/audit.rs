@@ -8,7 +8,7 @@ use rusqlite::{ffi, Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::world;
-use std::path::Path;
+use std::{fmt, path::Path};
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
                   e.content_type, e.meta_sha256, e.hmac, e.prev_hmac,
@@ -20,6 +20,44 @@ pub(crate) const AUDIT_CHAIN_BROKEN_PREFIX: &str = "audit chain broken at event 
 
 pub struct VerifiedAuditTx<'tx, 'conn> {
     tx: &'tx Transaction<'conn>,
+}
+
+pub type AuditResult<T> = Result<T, AuditError>;
+
+#[derive(Debug)]
+pub enum AuditError {
+    ChainBroken(VerifyBreak),
+    Storage(rusqlite::Error),
+}
+
+impl AuditError {
+    pub(crate) fn into_sqlite(self) -> rusqlite::Error {
+        match self {
+            Self::ChainBroken(break_report) => audit_chain_broken_error(&break_report),
+            Self::Storage(err) => err,
+        }
+    }
+}
+
+impl fmt::Display for AuditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ChainBroken(break_report) => write!(
+                f,
+                "{AUDIT_CHAIN_BROKEN_PREFIX}{}: expected {}, actual {}",
+                break_report.break_at, break_report.expected, break_report.actual
+            ),
+            Self::Storage(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for AuditError {}
+
+impl From<rusqlite::Error> for AuditError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::Storage(value)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -200,7 +238,7 @@ pub fn verify_world(data_root: &Path, world_name: &str, key: &[u8]) -> rusqlite:
     let Some(c) = world::open_existing(data_root, world_name)? else {
         return Ok(());
     };
-    require_intact(verify_connection(&c, key)?)
+    require_intact(verify_connection(&c, key)?).map_err(AuditError::into_sqlite)
 }
 
 pub fn verify_appendable_tx_existing<'tx, 'conn>(
@@ -224,7 +262,8 @@ fn verify_appendable_tx<'tx, 'conn>(
 ) -> rusqlite::Result<VerifiedAuditTx<'tx, 'conn>> {
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let allow_empty = matches!(empty_chain, EmptyChain::Allow);
-    require_intact(verify_statement(&mut stmt, key, allow_empty)?)?;
+    require_intact(verify_statement(&mut stmt, key, allow_empty)?)
+        .map_err(AuditError::into_sqlite)?;
     Ok(VerifiedAuditTx { tx })
 }
 
@@ -343,10 +382,10 @@ fn verify_statement(
     }))
 }
 
-fn require_intact(report: VerifyReport) -> rusqlite::Result<()> {
+fn require_intact(report: VerifyReport) -> AuditResult<()> {
     match report {
         VerifyReport::Valid(_) => Ok(()),
-        VerifyReport::Broken(break_report) => Err(audit_chain_broken_error(&break_report)),
+        VerifyReport::Broken(break_report) => Err(AuditError::ChainBroken(break_report)),
     }
 }
 
