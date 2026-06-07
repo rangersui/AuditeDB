@@ -4,7 +4,7 @@
 //! the write.
 
 use hmac::{Hmac, KeyInit, Mac};
-use rusqlite::{ffi, Connection, OptionalExtension, Statement, Transaction};
+use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::world;
@@ -28,15 +28,6 @@ pub type AuditResult<T> = Result<T, AuditError>;
 pub enum AuditError {
     ChainBroken(VerifyBreak),
     Storage(rusqlite::Error),
-}
-
-impl AuditError {
-    pub(crate) fn into_sqlite(self) -> rusqlite::Error {
-        match self {
-            Self::ChainBroken(break_report) => audit_chain_broken_error(&break_report),
-            Self::Storage(err) => err,
-        }
-    }
 }
 
 impl fmt::Display for AuditError {
@@ -82,7 +73,7 @@ pub fn append_with_conn_existing(
     content_type: &str,
     headers: &[(String, String)],
     key: &[u8],
-) -> rusqlite::Result<String> {
+) -> AuditResult<String> {
     append_with_conn_verified(
         conn,
         event_type,
@@ -106,7 +97,7 @@ pub fn append_with_conn_genesis(
     content_type: &str,
     headers: &[(String, String)],
     key: &[u8],
-) -> rusqlite::Result<String> {
+) -> AuditResult<String> {
     append_with_conn_verified(
         conn,
         event_type,
@@ -131,9 +122,9 @@ fn append_with_conn_verified(
     headers: &[(String, String)],
     key: &[u8],
     empty_chain: EmptyChain,
-) -> rusqlite::Result<String> {
+) -> AuditResult<String> {
     let tx = conn.transaction()?;
-    let audit_tx = verify_appendable_tx(&tx, key, empty_chain).map_err(AuditError::into_sqlite)?;
+    let audit_tx = verify_appendable_tx(&tx, key, empty_chain)?;
     let h = append_tx(
         &audit_tx,
         event_type,
@@ -246,14 +237,6 @@ pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn>(
     key: &[u8],
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn>> {
     verify_appendable_tx(tx, key, EmptyChain::Reject)
-}
-
-#[cfg(test)]
-pub fn verify_appendable_tx_genesis<'tx, 'conn>(
-    tx: &'tx Transaction<'conn>,
-    key: &[u8],
-) -> rusqlite::Result<VerifiedAuditTx<'tx, 'conn>> {
-    verify_appendable_tx_genesis_checked(tx, key).map_err(AuditError::into_sqlite)
 }
 
 pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn>(
@@ -394,30 +377,6 @@ fn require_intact(report: VerifyReport) -> AuditResult<()> {
         VerifyReport::Valid(_) => Ok(()),
         VerifyReport::Broken(break_report) => Err(AuditError::ChainBroken(break_report)),
     }
-}
-
-fn audit_chain_broken_error(break_report: &VerifyBreak) -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(
-        ffi::Error::new(ffi::SQLITE_CORRUPT),
-        Some(format!(
-            "{AUDIT_CHAIN_BROKEN_PREFIX}{}: expected {}, actual {}",
-            break_report.break_at, break_report.expected, break_report.actual
-        )),
-    )
-}
-
-#[cfg(test)]
-fn is_audit_chain_broken_error(err: &rusqlite::Error) -> bool {
-    matches!(
-        err,
-        rusqlite::Error::SqliteFailure(
-            ffi::Error {
-                code: rusqlite::ErrorCode::DatabaseCorrupt,
-                ..
-            },
-            Some(message),
-        ) if message.starts_with(AUDIT_CHAIN_BROKEN_PREFIX)
-    )
 }
 
 fn verify_event(
@@ -576,7 +535,7 @@ mod tests {
     fn hmac_for(event_type: &str, target: &str) -> String {
         let c = test_connection();
         let tx = c.unchecked_transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis(&tx, b"key").unwrap();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
         append_tx(
             &audit_tx,
             event_type,
@@ -652,7 +611,7 @@ mod tests {
     fn verify_connection_accepts_intact_chain() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis(&tx, b"key").unwrap();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
         let h1 = append_tx(
             &audit_tx,
             "put",
@@ -719,12 +678,15 @@ mod tests {
         .unwrap();
 
         let tx = c.transaction().unwrap();
-        let err = match verify_appendable_tx_genesis(&tx, b"key") {
+        let err = match verify_appendable_tx_genesis_checked(&tx, b"key") {
             Ok(_) => panic!("corrupt latest hmac must not be treated as an empty chain"),
             Err(e) => e,
         };
 
-        assert!(matches!(err, rusqlite::Error::InvalidColumnType(..)));
+        assert!(matches!(
+            err,
+            AuditError::Storage(rusqlite::Error::InvalidColumnType(..))
+        ));
         let count: i64 = tx
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
@@ -732,29 +694,48 @@ mod tests {
     }
 
     #[test]
-    fn audit_chain_broken_predicate_tracks_rusqlite_error_shape() {
-        let err = audit_chain_broken_error(&VerifyBreak {
-            break_at: 7,
-            expected: "hmac-good".to_string(),
-            actual: "hmac-bad".to_string(),
-        });
+    fn verify_appendable_existing_reports_chain_broken_error() {
+        let mut c = test_connection();
+        {
+            let tx = c.transaction().unwrap();
+            let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
+            append_tx(
+                &audit_tx,
+                "put",
+                "home/a",
+                "abc",
+                3,
+                "text/plain",
+                &[],
+                b"key",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
+            .unwrap();
 
-        assert_eq!(
-            err.sqlite_error_code(),
-            Some(rusqlite::ffi::ErrorCode::DatabaseCorrupt),
-            "audit-chain breakage must remain a SQLite corrupt-class error"
-        );
-        assert!(
-            is_audit_chain_broken_error(&err),
-            "rusqlite Error::SqliteFailure shape changed without updating the audit predicate"
-        );
+        let tx = c.transaction().unwrap();
+        let err = match verify_appendable_tx_existing_checked(&tx, b"key") {
+            Ok(_) => panic!("tampered audit chain must not be appendable"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            AuditError::ChainBroken(VerifyBreak {
+                break_at: 0,
+                actual,
+                ..
+            }) if actual == "hmac-bad"
+        ));
     }
 
     #[test]
     fn verify_connection_rejects_tampered_event_hmac() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis(&tx, b"key").unwrap();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
         append_tx(
             &audit_tx,
             "put",
@@ -782,17 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn chain_broken_error_predicate_matches_generated_error() {
-        let err = audit_chain_broken_error(&VerifyBreak {
-            break_at: 7,
-            expected: "hmac-expected".to_owned(),
-            actual: "hmac-actual".to_owned(),
-        });
-
-        assert!(is_audit_chain_broken_error(&err));
-    }
-
-    #[test]
     fn startup_verification_rejects_tampered_world() {
         let root =
             std::env::temp_dir().join(format!("elastik-audit-startup-{}", std::process::id()));
@@ -812,7 +782,7 @@ mod tests {
     fn verify_connection_rejects_tampered_event_headers() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis(&tx, b"key").unwrap();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
         append_tx(
             &audit_tx,
             "put",

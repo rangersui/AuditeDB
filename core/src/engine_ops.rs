@@ -547,6 +547,12 @@ pub(crate) fn log_blocking_storage_error(
     world: Option<&str>,
 ) {
     match err {
+        BlockingSqliteError::Audit(crate::audit::AuditError::ChainBroken(break_report)) => {
+            log_audit_chain_error(scope, break_report, operation, world)
+        }
+        BlockingSqliteError::Audit(crate::audit::AuditError::Storage(err)) => {
+            log_storage_error(scope, err, operation, world)
+        }
         BlockingSqliteError::Sqlite(err) => log_storage_error(scope, err, operation, world),
         BlockingSqliteError::Worker => {
             #[cfg(feature = "unstable-engine")]
