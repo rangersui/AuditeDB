@@ -237,7 +237,7 @@ impl Core {
         body: &[u8],
         content_type: &str,
         headers: &[(String, String)],
-    ) -> rusqlite::Result<()> {
+    ) -> Result<(), world::WriteAuditError> {
         if store::is_memory_world(world) {
             self.mem.write(world, body, content_type, headers);
             Ok(())

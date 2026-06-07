@@ -264,6 +264,22 @@ fn blocking_error_to_engine(
         Some(world.as_str()),
     );
     match err {
+        BlockingSqliteError::Audit(crate::audit::AuditError::ChainBroken(_)) => {
+            EngineError::Storage { sqlite_code: None }
+        }
+        BlockingSqliteError::Audit(crate::audit::AuditError::Storage(err)) => {
+            match crate::classify_storage_failure(&err) {
+                StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage {
+                    sqlite_code: crate::engine::sqlite_code(&err),
+                },
+                StorageFailureClass::Transient => EngineError::TransientStorage {
+                    sqlite_code: crate::engine::sqlite_code(&err),
+                },
+                StorageFailureClass::Other => EngineError::Storage {
+                    sqlite_code: crate::engine::sqlite_code(&err),
+                },
+            }
+        }
         BlockingSqliteError::Sqlite(err) => match crate::classify_storage_failure(&err) {
             StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage {
                 sqlite_code: crate::engine::sqlite_code(&err),
