@@ -975,18 +975,15 @@ mod tests {
             other => panic!("expected structured quota error, got {other:?}"),
         }
 
-        let transient: FfiError = EngineError::TransientStorage {
-            sqlite_code: Some(5),
-        }
-        .into();
+        let transient: FfiError = EngineError::TransientStorage.into();
         assert!(matches!(
             transient,
             FfiError::TransientStorage {
-                sqlite_code: Some(5)
+                sqlite_code: None
             }
         ));
-        assert!(!transient.to_string().contains("Some(5)"));
-        assert!(transient.to_string().contains("code 5"));
+        assert!(!transient.to_string().contains("Some("));
+        assert!(transient.to_string().contains("no sqlite code"));
     }
 
     #[test]

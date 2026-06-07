@@ -213,11 +213,11 @@ fn delete_error_phase(err: EngineError, last_step: DeleteStep) -> Phase {
             resp: not_found(),
             reason: ErrorReason::NotFound,
         },
-        EngineError::TransientStorage { .. } | EngineError::ShuttingDown => {
+        EngineError::TransientStorage | EngineError::ShuttingDown => {
             transient_delete_error_phase(last_step)
         }
-        EngineError::InsufficientStorage { .. } => insufficient_delete_error_phase(last_step),
-        EngineError::Storage { .. } => storage_delete_error_phase(last_step),
+        EngineError::InsufficientStorage => insufficient_delete_error_phase(last_step),
+        EngineError::Storage => storage_delete_error_phase(last_step),
         EngineError::InternalInvariant(message) => invariant_delete_error_phase(message, last_step),
         EngineError::InvalidWorldName
         | EngineError::PayloadTooLarge { .. }
@@ -380,11 +380,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_error_phase_preserves_intent_succeeded_failure_body() {
-        let (status, reason, body) = error_parts(delete_error_phase(
-            EngineError::Storage { sqlite_code: None },
-            DeleteStep::Intent,
-        ))
-        .await;
+        let (status, reason, body) =
+            error_parts(delete_error_phase(EngineError::Storage, DeleteStep::Intent)).await;
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(matches!(reason, ErrorReason::StorageWriteAudit));

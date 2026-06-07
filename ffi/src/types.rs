@@ -621,11 +621,9 @@ impl From<EngineError> for FfiError {
                 quota: quota as u64,
                 projected: projected as u64,
             },
-            EngineError::TransientStorage { sqlite_code } => Self::TransientStorage { sqlite_code },
-            EngineError::InsufficientStorage { sqlite_code } => {
-                Self::InsufficientStorage { sqlite_code }
-            }
-            EngineError::Storage { sqlite_code } => Self::Storage { sqlite_code },
+            EngineError::TransientStorage => Self::TransientStorage { sqlite_code: None },
+            EngineError::InsufficientStorage => Self::InsufficientStorage { sqlite_code: None },
+            EngineError::Storage => Self::Storage { sqlite_code: None },
             EngineError::SubscriptionLimit => Self::SubscriptionLimit,
             EngineError::ShuttingDown => Self::ShuttingDown,
             EngineError::InternalInvariant(message) => Self::InternalInvariant {
