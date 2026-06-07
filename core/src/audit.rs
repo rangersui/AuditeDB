@@ -227,18 +227,18 @@ pub enum VerifyReport {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn verify_all_worlds(data_root: &Path, key: &[u8]) -> rusqlite::Result<()> {
+pub fn verify_all_worlds(data_root: &Path, key: &[u8]) -> AuditResult<()> {
     for world_name in world::list(data_root)? {
         verify_world(data_root, &world_name, key)?;
     }
     Ok(())
 }
 
-pub fn verify_world(data_root: &Path, world_name: &str, key: &[u8]) -> rusqlite::Result<()> {
+pub fn verify_world(data_root: &Path, world_name: &str, key: &[u8]) -> AuditResult<()> {
     let Some(c) = world::open_existing(data_root, world_name)? else {
         return Ok(());
     };
-    require_intact(verify_connection(&c, key)?).map_err(AuditError::into_sqlite)
+    require_intact(verify_connection(&c, key)?)
 }
 
 pub fn verify_appendable_tx_existing<'tx, 'conn>(
@@ -399,7 +399,8 @@ fn audit_chain_broken_error(break_report: &VerifyBreak) -> rusqlite::Error {
     )
 }
 
-pub(crate) fn is_audit_chain_broken_error(err: &rusqlite::Error) -> bool {
+#[cfg(test)]
+fn is_audit_chain_broken_error(err: &rusqlite::Error) -> bool {
     matches!(
         err,
         rusqlite::Error::SqliteFailure(
