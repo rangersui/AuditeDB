@@ -171,6 +171,11 @@ impl<'a> EngineOps<'a> {
 impl Engine {
     /// Reads a world's full representation.
     ///
+    /// This is a synchronous API. It may open or reuse a SQLite connection and
+    /// read from storage on the caller thread. Async adapters that cannot block
+    /// an executor worker should call it from their own blocking-worker
+    /// boundary.
+    ///
     /// # Returns
     /// - `Ok(Some(ReadResult))` if the world exists.
     /// - `Ok(None)` if the world does not exist (callers that want 404
@@ -190,6 +195,10 @@ impl Engine {
     }
 
     /// Replaces a world with the provided representation.
+    ///
+    /// This is an async API. Awaiting it runs the complete ordered write
+    /// transition: auth proof, per-world write lock, precondition check,
+    /// storage update, audit-chain append, and subscriber notification.
     ///
     /// Creates the world if it does not exist; otherwise overwrites the
     /// body, content type, and headers, then advances the audit chain.
@@ -226,11 +235,19 @@ impl Engine {
 
     /// Appends bytes to a world's body and advances the audit chain.
     ///
+    /// This is an async API with the same ordered write boundary as
+    /// [`Engine::replace`]. It appends to the existing body instead of replacing
+    /// the full representation.
+    ///
+    /// Append does **not** create a missing world. Use [`Engine::replace`] to
+    /// create the initial representation, then append to it.
+    ///
     /// Same auth requirements and error variants as [`Engine::replace`].
     /// The world's content type and metadata headers are unchanged.
     ///
     /// # Errors
-    /// Same as [`Engine::replace`].
+    /// Same as [`Engine::replace`], plus [`EngineError::NotFound`] if the
+    /// world does not already exist.
     pub async fn append(
         &self,
         world: &ValidatedWorldPath,
@@ -244,6 +261,15 @@ impl Engine {
     }
 
     /// Deletes a world with default, empty audit metadata.
+    ///
+    /// This is an async API. Deletion is a physical file deletion for durable
+    /// worlds, so the transition writes delete intent, drains the read cache,
+    /// removes the world, writes delete commit, and notifies subscribers in
+    /// order.
+    ///
+    /// Deleting a missing world returns [`EngineError::NotFound`]. It does not
+    /// create a tombstone world or append a delete ledger entry for a world the
+    /// engine could not prove existed.
     ///
     /// Convenience wrapper around the delete transition that records empty
     /// content-type and headers in the audit intent. Adapters that need to
@@ -281,6 +307,10 @@ impl Engine {
     }
 
     /// Subscribes to change events matching `pattern`.
+    ///
+    /// Opening a subscription is synchronous: this method validates auth,
+    /// reserves a subscription slot, and prepares replay state. Receiving
+    /// events is async through [`EngineSubscription::recv`].
     ///
     /// If `since` is `Some(id)`, the subscription replays every event with
     /// `id > since` from the in-memory ring before switching to the live

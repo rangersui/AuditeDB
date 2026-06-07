@@ -1,11 +1,16 @@
-//! Raw token-byte auth check. Three optional configured token values map to
-//! read, write, and approve tiers; adapters decide how bytes arrive on their
-//! wire surface.
+//! Protocol-neutral access tiers and auth failure gates.
 //!
-//! Token comparison uses a small local byte loop that avoids early exit
-//! once lengths match. UTF-8 bytes on both sides — non-ASCII passwords
-//! don't crash, and the core does not depend on any SDK/runtime language
-//! to make auth decisions.
+//! Embedders pass an [`crate::AccessTier`] into each Engine operation. The
+//! Engine does not know whether that tier came from an HTTP bearer token, an
+//! FFI caller, a CLI flag, or a trusted in-process decision. If an operation is
+//! denied, [`crate::EngineError::Auth`] carries an [`AuthGate`] describing the
+//! minimum gate that rejected the call.
+//!
+//! Raw token verification is available through [`crate::Engine::verify_token`]
+//! for adapters that do want the Engine to classify configured read, write, and
+//! approve tokens. Token bytes are opaque: non-UTF-8 credentials are accepted,
+//! while empty and UTF-8 whitespace-only values are rejected at configuration
+//! and verification boundaries.
 
 use std::{
     fmt,
@@ -25,9 +30,26 @@ pub enum Tier {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AuthGate {
+    /// Operation requires read access.
+    ///
+    /// Returned by [`crate::EngineError::Auth`] for reads, subscriptions,
+    /// audit verification, and introspection when the engine has a read token
+    /// configured and the caller's tier is too low.
     Read,
+    /// Operation requires ordinary write access.
+    ///
+    /// Returned for replace/append operations in ordinary namespaces such as
+    /// `home/`, `tmp/`, `dev/`, `sys/`, and non-log `var/`.
     Write,
+    /// Operation requires approve-tier write access.
+    ///
+    /// Returned for replace/append operations in protected namespaces:
+    /// `etc/`, `lib/`, `boot/`, `usr/`, and `var/log/`.
     WriteApprove,
+    /// Operation requires approve-tier delete access.
+    ///
+    /// Delete is its own gate because it physically removes durable world
+    /// files and is not covered by ordinary write access.
     Delete,
 }
 

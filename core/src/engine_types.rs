@@ -70,7 +70,7 @@ pub enum AccessTier {
 /// Stored representation passed to write operations.
 ///
 /// Header persistence policy belongs to adapters. The engine treats these
-/// pairs as opaque metadata.
+/// pairs as opaque metadata and preserves their order as supplied.
 #[non_exhaustive]
 pub struct Representation {
     /// Opaque payload bytes stored verbatim.
@@ -79,6 +79,8 @@ pub struct Representation {
     pub content_type: String,
     /// Arbitrary metadata header pairs. Header-name de-duplication and
     /// allow/deny policy belong to the adapter that constructs this struct.
+    /// The engine stores and returns the vector order; it does not sort,
+    /// normalize, or coalesce entries.
     ///
     /// Browser-facing adapters apply their own filtering because clients may
     /// execute metadata as policy. Other adapters may pass headers through as
@@ -90,6 +92,12 @@ pub struct Representation {
 ///
 /// Use [`Preconditions::none`] to skip all checks. Multiple matchers within a
 /// list are OR'd; the two lists are AND'd.
+///
+/// This is the embedded-library form of HTTP `If-Match` and `If-None-Match`.
+/// A stale `If-Match` rejects the write with
+/// [`crate::EngineError::PreconditionFailed`]. An `If-None-Match: *` style
+/// matcher is represented as [`EtagMatcher::Any`] and rejects creation when the
+/// world already exists.
 #[non_exhaustive]
 pub struct Preconditions {
     /// `If-Match`-style matchers. The write proceeds only if **any** matcher
@@ -213,7 +221,8 @@ pub struct ChangeEvent {
 
 /// Subscription to protocol-neutral engine change events.
 ///
-/// Returned by [`crate::Engine::subscribe`]. The subscription holds a slot
+/// Returned synchronously by [`crate::Engine::subscribe`]. Receiving from it is
+/// async through [`EngineSubscription::recv`]. The subscription holds a slot
 /// permit until dropped — drop it promptly when the caller is done so other
 /// subscribers can join.
 pub struct EngineSubscription {
@@ -331,6 +340,24 @@ impl ValidatedWorldPath {
     ///
     /// # Errors
     /// Returns [`InvalidWorldPath`] if validation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "unstable-engine")]
+    /// # fn run() {
+    /// use elastik_core::ValidatedWorldPath;
+    ///
+    /// assert_eq!(
+    ///     ValidatedWorldPath::new("home/jobs/42").unwrap().as_str(),
+    ///     "home/jobs/42",
+    /// );
+    /// assert!(ValidatedWorldPath::new("/home/jobs/42").is_err());
+    /// assert!(ValidatedWorldPath::new("jobs/42").is_err());
+    /// assert!(ValidatedWorldPath::new("home").is_err());
+    /// assert!(ValidatedWorldPath::new("proc/version").is_err());
+    /// # }
+    /// ```
     pub fn new(world: impl Into<String>) -> Result<Self, InvalidWorldPath> {
         Self::from_canonical(world.into()).map_err(|_| InvalidWorldPath)
     }
@@ -382,6 +409,20 @@ impl SubscribePattern {
     /// Empty / `/` / `*` all collapse to the catch-all `*`. Other inputs are
     /// prefixed with `/` if not already present. Trailing `*` is the only
     /// wildcard supported.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "unstable-engine")]
+    /// # fn run() {
+    /// use elastik_core::SubscribePattern;
+    ///
+    /// assert_eq!(SubscribePattern::new("").as_str(), "*");
+    /// assert_eq!(SubscribePattern::new("/").as_str(), "*");
+    /// assert_eq!(SubscribePattern::new("home/tasks").as_str(), "/home/tasks");
+    /// assert_eq!(SubscribePattern::new("/home/tasks/*").as_str(), "/home/tasks/*");
+    /// # }
+    /// ```
     pub fn new(raw: impl AsRef<str>) -> Self {
         Self(crate::event::pattern(raw.as_ref()))
     }

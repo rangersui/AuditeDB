@@ -20,6 +20,10 @@ use crate::{
 /// All methods default to no-ops. Implement only the hooks an adapter cares
 /// about — typical use is a single per-operation struct that flips a flag or
 /// emits a structured trace line on each callback.
+///
+/// Successful durable writes fire hooks in this order:
+/// `lock_acquired` -> optional `quota_check` -> `sqlite_committed` ->
+/// `notify_sent`. Transient memory writes skip `quota_check`.
 pub trait EngineWriteTraceHooks {
     /// The per-world write lock was acquired.
     fn lock_acquired(&self) {}
@@ -37,6 +41,10 @@ pub trait EngineWriteTraceHooks {
 /// All methods default to no-ops. Hooks fire in protocol order; the
 /// `audit_intent_failed` / `audit_commit_failed*` hooks fire only on the
 /// corresponding failure path.
+///
+/// Successful deletes fire hooks in this order: `lock_acquired` ->
+/// `audit_intent` -> `read_cache_drained` -> `physical_deleted` ->
+/// `counter_decremented` -> `notify_sent` -> `audit_commit`.
 pub trait EngineDeleteTraceHooks {
     /// The per-world write lock was acquired.
     fn lock_acquired(&self, _world: &str) {}
@@ -166,6 +174,9 @@ impl Engine {
     /// Same as [`crate::Engine::replace`] but invokes `hooks` on each
     /// protocol phase.
     ///
+    /// This is an async API with the same storage and audit semantics as
+    /// [`crate::Engine::replace`].
+    ///
     /// Adapters use this to drive structured trace output or per-operation
     /// metrics without paying the hook cost in non-traced call sites.
     ///
@@ -193,6 +204,9 @@ impl Engine {
     /// Same as [`crate::Engine::append`] but invokes `hooks` on each
     /// protocol phase.
     ///
+    /// This is an async API with the same storage and audit semantics as
+    /// [`crate::Engine::append`].
+    ///
     /// # Errors
     /// Same as [`crate::Engine::append`].
     pub async fn append_traced<H: EngineWriteTraceHooks + ?Sized>(
@@ -217,6 +231,9 @@ impl Engine {
     /// Same as [`crate::Engine::delete`] but invokes `hooks` on each
     /// protocol phase and records the supplied [`DeleteMetadata`] in the
     /// audit intent.
+    ///
+    /// This is an async API with the same physical-delete semantics as
+    /// [`crate::Engine::delete`].
     ///
     /// Adapters that want to surface the deleted representation's content
     /// type and headers in operator audit views should use this method

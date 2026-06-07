@@ -37,6 +37,10 @@ use crate::{
 ///
 /// `Engine` is cloneable and owns the startup writer lock for the data root.
 /// Dropping the last clone releases the lock.
+///
+/// The facade is protocol-neutral: callers pass canonical world paths,
+/// representation bytes, preconditions, and access tiers. It does not parse
+/// HTTP, read environment variables, or bind sockets.
 #[derive(Clone)]
 pub struct Engine {
     inner: Arc<EngineInner>,
@@ -182,7 +186,8 @@ impl Default for EngineBuilder {
 impl EngineBuilder {
     /// Sets the directory where durable worlds and the audit log live.
     ///
-    /// Default: `./data`. The directory is created if missing.
+    /// Default: `./data`. The directory is created by
+    /// [`EngineBuilder::build`] if missing.
     pub fn data_root(mut self, path: impl Into<PathBuf>) -> Self {
         self.data_root = path.into();
         self
@@ -266,6 +271,11 @@ impl EngineBuilder {
 
     /// Acquires the data-root writer lock, verifies every audit chain, and
     /// returns a ready-to-serve [`Engine`].
+    ///
+    /// This is a synchronous startup boundary. It may create directories,
+    /// acquire the SQLite-backed process lock, scan durable worlds, and verify
+    /// HMAC audit chains before returning. Do this during application startup,
+    /// before accepting requests.
     ///
     /// # Errors
     /// - [`EngineBuildError::HmacKeyMissing`] if [`EngineBuilder::key`] was

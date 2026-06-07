@@ -470,6 +470,9 @@ impl EngineOps<'_> {
 impl Engine {
     /// Lists every canonical world (durable + in-memory) in sorted order.
     ///
+    /// This is a synchronous API. It may scan durable world names from the
+    /// data root and memory world names from the in-process store.
+    ///
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below `Read`.
     /// - [`EngineError::TransientStorage`] / [`EngineError::Storage`] /
@@ -479,6 +482,8 @@ impl Engine {
     }
 
     /// Lists canonical worlds with the supplied canonical prefix.
+    ///
+    /// This is a synchronous API and may scan storage on the caller thread.
     ///
     /// This is intended for adapters that need a bounded namespace view (for
     /// example retained replay) without materializing the full proc-worlds
@@ -498,6 +503,8 @@ impl Engine {
     /// Lists canonical worlds with the supplied canonical prefix, returning
     /// `Ok(None)` if more than `max` distinct worlds match.
     ///
+    /// This is a synchronous API and may scan storage on the caller thread.
+    ///
     /// This is intended for adapter-internal bounded scans. It uses the same
     /// read-tier gate as [`Engine::list_worlds_with_prefix`].
     pub fn list_worlds_with_prefix_bounded(
@@ -511,6 +518,9 @@ impl Engine {
 
     /// Returns per-world body byte size, `du`-style.
     ///
+    /// This is a synchronous API. Durable sizes are read from storage; memory
+    /// sizes are read from the in-process store.
+    ///
     /// # Errors
     /// See [`Engine::list_worlds`] for the storage-failure variants. Same
     /// `Read`-tier requirement.
@@ -520,6 +530,9 @@ impl Engine {
 
     /// Returns aggregate storage + memory usage, `df`-style.
     ///
+    /// This is a synchronous snapshot of engine counters. It does not walk
+    /// every durable world on each call.
+    ///
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below `Read`.
     pub fn df(&self, tier: AccessTier) -> Result<DfSnapshot, EngineError> {
@@ -528,6 +541,8 @@ impl Engine {
 
     /// Returns the read-cache + ledger-writer counter snapshot.
     ///
+    /// This is a synchronous snapshot of in-process counters.
+    ///
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below `Read`.
     pub fn pool(&self, tier: AccessTier) -> Result<PoolSnapshot, EngineError> {
@@ -535,6 +550,9 @@ impl Engine {
     }
 
     /// Verifies a single world's HMAC audit chain.
+    ///
+    /// This is a synchronous API. It may use the read cache and read the
+    /// world's SQLite-backed audit ledger on the caller thread.
     ///
     /// Returns [`AuditVerify::Valid`] / [`AuditVerify::Broken`] /
     /// [`AuditVerify::NotApplicable`] (the latter for in-memory worlds with

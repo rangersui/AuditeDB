@@ -7,6 +7,40 @@
 //! bytes, content-addressed versioning, an HMAC-chained audit log, and a
 //! four-tier access model. **SQLite for files.**
 //!
+//! As a Rust library, AuditeDB is an embedded flat key-value engine. One key
+//! stores one byte value plus metadata and audit history. There is no HTTP
+//! server, no environment-variable loader, and no socket listener in this
+//! crate; adapters add those surfaces on top.
+//!
+//! ## Public API shape
+//!
+//! The public facade is intentionally small. The call shape is mixed:
+//! synchronous methods return immediately on the caller thread, while async
+//! methods must be awaited by the caller's runtime.
+//!
+//! | Operation | Method | Call shape |
+//! | --- | --- | --- |
+//! | Build engine | [`Engine::builder`] -> [`EngineBuilder::build`] | sync |
+//! | Read value | [`Engine::read`] | sync |
+//! | Replace value | [`Engine::replace`] | async |
+//! | Append bytes | [`Engine::append`] | async |
+//! | Delete value | [`Engine::delete`] | async |
+//! | Open subscription | [`Engine::subscribe`] | sync |
+//! | Receive subscription event | [`EngineSubscription::recv`] | async |
+//! | List / inspect | [`Engine::list_worlds`], [`Engine::du`], [`Engine::df`], [`Engine::pool`] | sync |
+//! | Verify audit chain | [`Engine::verify_audit`] | sync |
+//! | Auth helpers | [`Engine::verify_token`], [`Engine::allows_read`] | sync |
+//! | Shutdown signal | [`Engine::shutdown`] | sync |
+//!
+//! The sync methods can perform storage work on the caller thread. If an
+//! adapter is running inside an async executor and must not block that worker,
+//! call sync storage methods from that adapter's blocking-worker boundary.
+//! Mutating methods are async because durable writes, appends, deletes, audit
+//! updates, and subscriber notifications are ordered engine transitions.
+//!
+//! [`Engine::subscribe`] only opens the subscription and reserves a slot. The
+//! stream itself is consumed with async [`EngineSubscription::recv`].
+//!
 //! ## Quick start
 //!
 //! ```no_run
@@ -25,7 +59,7 @@
 //!
 //! let world = ValidatedWorldPath::new("home/hello").expect("canonical path");
 //!
-//! // Store bytes at a path.
+//! // Store bytes at a path. Mutating operations are async.
 //! engine
 //!     .replace(
 //!         &world,
@@ -36,9 +70,57 @@
 //!     .await
 //!     .expect("write succeeds");
 //!
-//! // Retrieve bytes by path.
+//! // Retrieve bytes by path. Reads are sync.
 //! let read = engine.read(&world, AccessTier::Read).expect("read succeeds");
 //! assert!(read.is_some());
+//! # }
+//! ```
+//!
+//! ## Compare-and-set write
+//!
+//! Use the ETag returned by a read or write as the value clock for the next
+//! write.
+//!
+//! ```no_run
+//! # #[cfg(feature = "unstable-engine")]
+//! # async fn run(engine: elastik_core::Engine, world: elastik_core::ValidatedWorldPath) {
+//! use elastik_core::{
+//!     AccessTier, EtagMatcher, Preconditions, Representation,
+//! };
+//! use bytes::Bytes;
+//!
+//! let current = engine
+//!     .read(&world, AccessTier::Read)
+//!     .expect("read")
+//!     .expect("world exists");
+//!
+//! let next = Representation::new(Bytes::from_static(b"next"), "text/plain", Vec::new());
+//! let cas = Preconditions::new(vec![EtagMatcher::Strong(current.etag)], Vec::new());
+//!
+//! engine
+//!     .replace(&world, next, cas, AccessTier::Write)
+//!     .await
+//!     .expect("etag still current");
+//! # }
+//! ```
+//!
+//! ## Subscribe to changes
+//!
+//! Opening a subscription is sync; receiving events is async. Pass `since` to
+//! replay recent events before switching to live delivery.
+//!
+//! ```no_run
+//! # #[cfg(feature = "unstable-engine")]
+//! # async fn run(engine: elastik_core::Engine) {
+//! use elastik_core::{AccessTier, SubscribePattern};
+//!
+//! let pattern = SubscribePattern::new("/home/tasks/*");
+//! let mut sub = engine
+//!     .subscribe(&pattern, AccessTier::Read, None)
+//!     .expect("subscription opens");
+//!
+//! let event = sub.recv().await.expect("change event");
+//! println!("{} changed with {:?}", event.path, event.verb);
 //! # }
 //! ```
 //!
