@@ -9,7 +9,7 @@ use std::{fmt, sync::atomic::Ordering};
 
 use crate::{
     auth,
-    engine::{self, Engine, EngineError},
+    engine::{Engine, EngineError},
     engine_ops::{log_storage_error, EngineOps},
     engine_types::{AccessTier, ValidatedWorldPath},
     store, world, AuthGate, StorageFailureClass,
@@ -565,21 +565,15 @@ fn storage_error_to_engine(
     match crate::classify_storage_failure(&err) {
         StorageFailureClass::InsufficientStorage => {
             log_storage_error(scope, &err, operation, world);
-            EngineError::InsufficientStorage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::InsufficientStorage
         }
         StorageFailureClass::Transient => {
             log_storage_error(scope, &err, operation, world);
-            EngineError::TransientStorage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::TransientStorage
         }
         StorageFailureClass::Other => {
             log_storage_error(scope, &err, operation, world);
-            EngineError::Storage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::Storage
         }
     }
 }

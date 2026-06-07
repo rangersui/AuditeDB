@@ -5,11 +5,11 @@ use crate::engine::EngineError;
 pub(crate) fn read_error_to_coap(err: &EngineError) -> u8 {
     match err {
         EngineError::Auth(_) => 129,
-        EngineError::InsufficientStorage { .. } => 167,
-        EngineError::TransientStorage { .. }
+        EngineError::InsufficientStorage => 167,
+        EngineError::TransientStorage
         | EngineError::ShuttingDown
         | EngineError::SubscriptionLimit => 163,
-        EngineError::Storage { .. } | EngineError::InternalInvariant(_) => 160,
+        EngineError::Storage | EngineError::InternalInvariant(_) => 160,
         EngineError::InvalidWorldName
         | EngineError::NotFound
         | EngineError::AppendOnly
@@ -23,8 +23,8 @@ pub(crate) fn read_error_to_coap(err: &EngineError) -> u8 {
 pub(crate) fn read_error_body(err: &EngineError) -> &'static [u8] {
     match err {
         EngineError::Auth(_) => b"unauthorized\n",
-        EngineError::InsufficientStorage { .. } => b"insufficient storage\n",
-        EngineError::TransientStorage { .. }
+        EngineError::InsufficientStorage => b"insufficient storage\n",
+        EngineError::TransientStorage
         | EngineError::ShuttingDown
         | EngineError::SubscriptionLimit => b"storage busy\n",
         _ => b"storage error\n",
@@ -37,11 +37,11 @@ pub(crate) fn write_error_to_coap(err: &EngineError) -> u8 {
         EngineError::PayloadTooLarge { .. } => 141,
         EngineError::PreconditionFailed { .. } => 140,
         EngineError::NotFound => 132,
-        EngineError::QuotaExceeded { .. } | EngineError::InsufficientStorage { .. } => 167,
-        EngineError::TransientStorage { .. }
+        EngineError::QuotaExceeded { .. } | EngineError::InsufficientStorage => 167,
+        EngineError::TransientStorage
         | EngineError::ShuttingDown
         | EngineError::SubscriptionLimit => 163,
-        EngineError::Storage { .. }
+        EngineError::Storage
         | EngineError::InternalInvariant(_)
         | EngineError::InvalidWorldName
         | EngineError::AppendOnly => 160,

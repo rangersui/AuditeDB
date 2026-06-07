@@ -54,7 +54,7 @@ pub(crate) async fn handler(
             )
                 .into_response();
         }
-        Err(EngineError::ShuttingDown) | Err(EngineError::TransientStorage { .. }) => {
+        Err(EngineError::ShuttingDown) | Err(EngineError::TransientStorage) => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 [

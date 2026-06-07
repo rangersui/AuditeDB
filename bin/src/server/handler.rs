@@ -315,15 +315,15 @@ fn read_error_phase(err: EngineError) -> Phase {
             resp: unauthorized("read requires read token"),
             reason: ErrorReason::Auth(gate),
         },
-        EngineError::TransientStorage { .. } => Phase::Error {
+        EngineError::TransientStorage => Phase::Error {
             resp: storage_temporarily_unavailable(),
             reason: ErrorReason::StorageRead,
         },
-        EngineError::InsufficientStorage { .. } => Phase::Error {
+        EngineError::InsufficientStorage => Phase::Error {
             resp: insufficient_storage(),
             reason: ErrorReason::InsufficientStorage,
         },
-        EngineError::Storage { .. } | EngineError::InternalInvariant(_) => Phase::Error {
+        EngineError::Storage | EngineError::InternalInvariant(_) => Phase::Error {
             resp: server_error("storage failure".to_string()),
             reason: ErrorReason::StorageRead,
         },
@@ -377,15 +377,15 @@ pub(crate) fn write_error_phase(err: EngineError) -> Phase {
             resp: storage_quota_exceeded(used, quota, projected),
             reason: ErrorReason::QuotaExceeded,
         },
-        EngineError::TransientStorage { .. } => Phase::Error {
+        EngineError::TransientStorage => Phase::Error {
             resp: storage_temporarily_unavailable(),
             reason: ErrorReason::StorageWriteAudit,
         },
-        EngineError::InsufficientStorage { .. } => Phase::Error {
+        EngineError::InsufficientStorage => Phase::Error {
             resp: insufficient_storage(),
             reason: ErrorReason::InsufficientStorage,
         },
-        EngineError::Storage { .. } => Phase::Error {
+        EngineError::Storage => Phase::Error {
             resp: server_error("storage failure".to_string()),
             reason: ErrorReason::StorageRead,
         },

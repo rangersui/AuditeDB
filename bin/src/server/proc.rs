@@ -329,11 +329,11 @@ fn proc_engine_error(scope: &'static str, err: EngineError) -> Response {
     match err {
         EngineError::Auth(_) => unauthorized("read requires read token"),
         EngineError::NotFound => not_found(),
-        EngineError::TransientStorage { .. } | EngineError::ShuttingDown => {
+        EngineError::TransientStorage | EngineError::ShuttingDown => {
             storage_temporarily_unavailable()
         }
-        EngineError::InsufficientStorage { .. } => insufficient_storage(),
-        EngineError::Storage { .. } => server_error(format!("{scope} storage failure")),
+        EngineError::InsufficientStorage => insufficient_storage(),
+        EngineError::Storage => server_error(format!("{scope} storage failure")),
         EngineError::InvalidWorldName => bad_request("invalid world path"),
         EngineError::InternalInvariant(message) => {
             server_error(format!("{scope} internal invariant: {message}"))

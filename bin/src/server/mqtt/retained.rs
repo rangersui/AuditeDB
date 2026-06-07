@@ -291,7 +291,7 @@ mod tests {
             &metrics,
             RetainedReplayError::List {
                 prefix: "home/sensor/".to_owned(),
-                err: EngineError::Storage { sqlite_code: None },
+                err: EngineError::Storage,
             },
         );
 

@@ -411,21 +411,15 @@ fn read_error_to_engine(value: world_ops::ReadError, world: Option<&str>) -> Eng
         world_ops::ReadError::Auth(gate) => EngineError::Auth(gate),
         world_ops::ReadError::TransientStorage { scope, err } => {
             log_storage_error(scope, &err, "read", world);
-            EngineError::TransientStorage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::TransientStorage
         }
         world_ops::ReadError::InsufficientStorage { scope, err } => {
             log_storage_error(scope, &err, "read", world);
-            EngineError::InsufficientStorage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::InsufficientStorage
         }
         world_ops::ReadError::StorageRead { scope, err } => {
             log_storage_error(scope, &err, "read", world);
-            EngineError::Storage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::Storage
         }
         world_ops::ReadError::PermitWorldMismatch => {
             EngineError::InternalInvariant("read permit world mismatch")
@@ -452,34 +446,26 @@ fn write_error_to_engine(value: world_ops::WriteError, world: Option<&str>) -> E
         },
         world_ops::WriteError::TransientStorage { scope, err, op } => {
             log_storage_error(scope, &err, storage_op_label(op), world);
-            EngineError::TransientStorage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::TransientStorage
         }
         world_ops::WriteError::InsufficientStorage { scope, err, op } => {
             log_storage_error(scope, &err, storage_op_label(op), world);
-            EngineError::InsufficientStorage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::InsufficientStorage
         }
         world_ops::WriteError::StorageRead { scope, err } => {
             log_storage_error(scope, &err, "read", world);
-            EngineError::Storage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::Storage
         }
         world_ops::WriteError::StorageWriteAudit { scope, err } => {
             log_storage_error(scope, &err, "write_audit", world);
-            EngineError::Storage {
-                sqlite_code: engine::sqlite_code(&err),
-            }
+            EngineError::Storage
         }
         world_ops::WriteError::AuditChainBroken {
             scope,
             break_report,
         } => {
             log_audit_chain_error(scope, &break_report, "write_audit", world);
-            EngineError::Storage { sqlite_code: None }
+            EngineError::Storage
         }
         world_ops::WriteError::Internal(message) => EngineError::InternalInvariant(message),
     }

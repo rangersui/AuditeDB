@@ -265,31 +265,19 @@ fn blocking_error_to_engine(
     );
     match err {
         BlockingSqliteError::Audit(crate::audit::AuditError::ChainBroken(_)) => {
-            EngineError::Storage { sqlite_code: None }
+            EngineError::Storage
         }
         BlockingSqliteError::Audit(crate::audit::AuditError::Storage(err)) => {
             match crate::classify_storage_failure(&err) {
-                StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage {
-                    sqlite_code: crate::engine::sqlite_code(&err),
-                },
-                StorageFailureClass::Transient => EngineError::TransientStorage {
-                    sqlite_code: crate::engine::sqlite_code(&err),
-                },
-                StorageFailureClass::Other => EngineError::Storage {
-                    sqlite_code: crate::engine::sqlite_code(&err),
-                },
+                StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage,
+                StorageFailureClass::Transient => EngineError::TransientStorage,
+                StorageFailureClass::Other => EngineError::Storage,
             }
         }
         BlockingSqliteError::Sqlite(err) => match crate::classify_storage_failure(&err) {
-            StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage {
-                sqlite_code: crate::engine::sqlite_code(&err),
-            },
-            StorageFailureClass::Transient => EngineError::TransientStorage {
-                sqlite_code: crate::engine::sqlite_code(&err),
-            },
-            StorageFailureClass::Other => EngineError::Storage {
-                sqlite_code: crate::engine::sqlite_code(&err),
-            },
+            StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage,
+            StorageFailureClass::Transient => EngineError::TransientStorage,
+            StorageFailureClass::Other => EngineError::Storage,
         },
         BlockingSqliteError::Worker => EngineError::InternalInvariant("sqlite worker failed"),
     }
@@ -304,26 +292,18 @@ impl From<DeleteError> for EngineError {
             DeleteError::NotFound => Self::NotFound,
             DeleteError::TransientStorage { scope, world, err } => {
                 crate::engine_ops::log_storage_error(scope, &err, "delete", Some(world.as_str()));
-                Self::TransientStorage {
-                    sqlite_code: crate::engine::sqlite_code(&err),
-                }
+                Self::TransientStorage
             }
             DeleteError::InsufficientStorage { scope, world, err } => {
                 crate::engine_ops::log_storage_error(scope, &err, "delete", Some(world.as_str()));
-                Self::InsufficientStorage {
-                    sqlite_code: crate::engine::sqlite_code(&err),
-                }
+                Self::InsufficientStorage
             }
             DeleteError::StorageRead { scope, world, err } => {
                 crate::engine_ops::log_storage_error(scope, &err, "delete", Some(world.as_str()));
-                Self::Storage {
-                    sqlite_code: crate::engine::sqlite_code(&err),
-                }
+                Self::Storage
             }
             DeleteError::AuditIntent { world, err } => blocking_error_to_engine(&world, err),
-            DeleteError::DeleteFailedAfterIntent | DeleteError::AuditCommitFailed => {
-                Self::Storage { sqlite_code: None }
-            }
+            DeleteError::DeleteFailedAfterIntent | DeleteError::AuditCommitFailed => Self::Storage,
         }
     }
 }

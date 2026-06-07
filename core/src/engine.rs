@@ -145,21 +145,12 @@ pub enum EngineError {
     },
     /// Storage is temporarily unavailable (e.g. SQLite `BUSY`/`LOCKED`).
     /// Callers should retry with backoff.
-    TransientStorage {
-        /// Underlying SQLite extended result code, when available.
-        sqlite_code: Option<i32>,
-    },
+    TransientStorage,
     /// Storage backing exhausted (full disk, IO failure that maps to
     /// "no space left"). Callers must surface this as 5xx-class to operators.
-    InsufficientStorage {
-        /// Underlying SQLite extended result code, when available.
-        sqlite_code: Option<i32>,
-    },
+    InsufficientStorage,
     /// Generic storage failure that is neither transient nor insufficient.
-    Storage {
-        /// Underlying SQLite extended result code, when available.
-        sqlite_code: Option<i32>,
-    },
+    Storage,
     /// Subscription slot semaphore is exhausted.
     SubscriptionLimit,
     /// [`Engine::shutdown`] has been called; do not start new operations.
@@ -420,33 +411,6 @@ impl ShutdownToken {
             return;
         }
         let _ = self.rx.changed().await;
-    }
-}
-
-impl EngineError {
-    /// Returns the underlying SQLite extended result code, when this error
-    /// originated in the storage backend.
-    ///
-    /// Non-storage variants (auth, not-found, append-only, precondition,
-    /// quota, subscription-limit, shutting-down, internal-invariant) always
-    /// return `None`. Adapters can use this for protocol-specific code
-    /// mapping without inspecting the variant.
-    pub fn sqlite_code(&self) -> Option<i32> {
-        match self {
-            Self::TransientStorage { sqlite_code }
-            | Self::InsufficientStorage { sqlite_code }
-            | Self::Storage { sqlite_code } => *sqlite_code,
-            Self::Auth(_)
-            | Self::InvalidWorldName
-            | Self::NotFound
-            | Self::AppendOnly
-            | Self::PayloadTooLarge { .. }
-            | Self::PreconditionFailed { .. }
-            | Self::QuotaExceeded { .. }
-            | Self::SubscriptionLimit
-            | Self::ShuttingDown
-            | Self::InternalInvariant(_) => None,
-        }
     }
 }
 
