@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 
 use crate::{
-    auth, can_read, can_write,
+    audit, auth, can_read, can_write,
     engine_types::{ChangeVerb, ValidatedWorldPath},
     etag, needs_write_approve, store, world, AuthGate, Core, StorageFailureClass,
 };
@@ -121,6 +121,11 @@ pub(crate) enum WriteError {
         #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
+    },
+    AuditChainBroken {
+        #[allow(dead_code)]
+        scope: &'static str,
+        break_report: audit::VerifyBreak,
     },
     Internal(&'static str),
 }
@@ -244,6 +249,10 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
                 core.rollback_storage_reservation(prev_len, req.body.len());
                 return Err(WriteError::Internal("unexpected quota error"));
             }
+            Err(world::WriteAuditError::Audit(err)) => {
+                core.rollback_storage_reservation(prev_len, req.body.len());
+                return Err(classify_write_audit_error("storage/audit", err));
+            }
             Err(world::WriteAuditError::Sqlite(err)) => {
                 core.rollback_storage_reservation(prev_len, req.body.len());
                 return Err(classify_write_storage_error(
@@ -337,13 +346,21 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
                 core.rollback_storage_reservation(0, req.body.len());
                 return Err(WriteError::NotFound);
             }
-            Err(err) => {
+            Err(world::WriteAuditError::Audit(err)) => {
+                core.rollback_storage_reservation(0, req.body.len());
+                return Err(classify_write_audit_error("storage/audit", err));
+            }
+            Err(world::WriteAuditError::Sqlite(err)) => {
                 core.rollback_storage_reservation(0, req.body.len());
                 return Err(classify_write_storage_error(
                     "storage/audit",
                     err,
                     StorageOp::WriteAudit,
                 ));
+            }
+            Err(world::WriteAuditError::Quota { .. }) => {
+                core.rollback_storage_reservation(0, req.body.len());
+                return Err(WriteError::Internal("unexpected quota error"));
             }
         }
     } else {
@@ -401,6 +418,18 @@ fn classify_read_error(scope: &'static str, err: rusqlite::Error) -> ReadError {
         StorageFailureClass::InsufficientStorage => ReadError::InsufficientStorage { scope, err },
         StorageFailureClass::Transient => ReadError::TransientStorage { scope, err },
         StorageFailureClass::Other => ReadError::StorageRead { scope, err },
+    }
+}
+
+fn classify_write_audit_error(scope: &'static str, err: audit::AuditError) -> WriteError {
+    match err {
+        audit::AuditError::ChainBroken(break_report) => WriteError::AuditChainBroken {
+            scope,
+            break_report,
+        },
+        audit::AuditError::Storage(err) => {
+            classify_write_storage_error(scope, err, StorageOp::WriteAudit)
+        }
     }
 }
 
