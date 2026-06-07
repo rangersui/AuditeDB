@@ -414,31 +414,6 @@ impl ShutdownToken {
     }
 }
 
-impl EngineError {
-    /// Returns the underlying SQLite extended result code, when this error
-    /// originated in the storage backend.
-    ///
-    /// Non-storage variants (auth, not-found, append-only, precondition,
-    /// quota, subscription-limit, shutting-down, internal-invariant) always
-    /// return `None`. Adapters can use this for protocol-specific code
-    /// mapping without inspecting the variant.
-    pub fn sqlite_code(&self) -> Option<i32> {
-        match self {
-            Self::TransientStorage | Self::InsufficientStorage | Self::Storage => None,
-            Self::Auth(_)
-            | Self::InvalidWorldName
-            | Self::NotFound
-            | Self::AppendOnly
-            | Self::PayloadTooLarge { .. }
-            | Self::PreconditionFailed { .. }
-            | Self::QuotaExceeded { .. }
-            | Self::SubscriptionLimit
-            | Self::ShuttingDown
-            | Self::InternalInvariant(_) => None,
-        }
-    }
-}
-
 impl fmt::Debug for Engine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Engine").finish_non_exhaustive()

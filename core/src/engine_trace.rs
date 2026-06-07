@@ -44,8 +44,8 @@ pub trait EngineDeleteTraceHooks {
     fn audit_intent(&self) {}
     /// Diagnostic-only debug rendering when the delete audit intent append fails.
     ///
-    /// Do not parse this string programmatically; use [`EngineError`]
-    /// categories and [`EngineError::sqlite_code`] for stable decisions.
+    /// Do not parse this string programmatically; match [`EngineError`]
+    /// variants for stable decisions.
     fn audit_intent_failed(&self, _err: &str) {}
     /// In-flight reads were drained from the read cache.
     fn read_cache_drained(&self) {}
@@ -57,16 +57,16 @@ pub trait EngineDeleteTraceHooks {
     fn notify_sent(&self) {}
     /// Diagnostic-only debug rendering of the internal blocking storage error.
     ///
-    /// Do not parse this string programmatically; use [`EngineError`]
-    /// categories and [`EngineError::sqlite_code`] for stable decisions.
+    /// Do not parse this string programmatically; match [`EngineError`]
+    /// variants for stable decisions.
     fn audit_commit_failed(&self, _err: &str) {}
     /// `audit_commit_failed` was followed by a successful `delete_commit_failed`
     /// ledger entry — the audit chain reflects the partial state.
     fn audit_commit_failed_event_logged(&self) {}
     /// Diagnostic-only debug rendering of the internal blocking storage error.
     ///
-    /// Do not parse this string programmatically; use [`EngineError`]
-    /// categories and [`EngineError::sqlite_code`] for stable decisions.
+    /// Do not parse this string programmatically; match [`EngineError`]
+    /// variants for stable decisions.
     fn audit_commit_failed_event_failed(&self, _err: &str) {}
     /// The audit-commit ledger row was written successfully.
     fn audit_commit(&self) {}
