@@ -474,6 +474,13 @@ fn write_error_to_engine(value: world_ops::WriteError, world: Option<&str>) -> E
                 sqlite_code: engine::sqlite_code(&err),
             }
         }
+        world_ops::WriteError::AuditChainBroken {
+            scope,
+            break_report,
+        } => {
+            log_audit_chain_error(scope, &break_report, "write_audit", world);
+            EngineError::Storage { sqlite_code: None }
+        }
         world_ops::WriteError::Internal(message) => EngineError::InternalInvariant(message),
     }
 }
@@ -500,6 +507,36 @@ pub(crate) fn log_storage_error(
             eprintln!("elastik-core internal {scope} ({operation}) world={world}: {err}");
         }
         None => eprintln!("elastik-core internal {scope} ({operation}): {err}"),
+    }
+}
+
+pub(crate) fn log_audit_chain_error(
+    scope: &'static str,
+    break_report: &crate::audit::VerifyBreak,
+    operation: &'static str,
+    world: Option<&str>,
+) {
+    #[cfg(feature = "unstable-engine")]
+    tracing::error!(
+        scope,
+        operation,
+        world = world.unwrap_or(""),
+        break_at = break_report.break_at,
+        expected = %break_report.expected,
+        actual = %break_report.actual,
+        "engine audit chain broken"
+    );
+
+    #[cfg(not(feature = "unstable-engine"))]
+    match world {
+        Some(world) => eprintln!(
+            "elastik-core internal {scope} ({operation}) world={world}: audit chain broken at event {}: expected {}, actual {}",
+            break_report.break_at, break_report.expected, break_report.actual
+        ),
+        None => eprintln!(
+            "elastik-core internal {scope} ({operation}): audit chain broken at event {}: expected {}, actual {}",
+            break_report.break_at, break_report.expected, break_report.actual
+        ),
     }
 }
 

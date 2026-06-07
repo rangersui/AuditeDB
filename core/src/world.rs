@@ -208,6 +208,7 @@ pub struct WriteAuditResult {
 }
 
 pub enum WriteAuditError {
+    Audit(audit::AuditError),
     Sqlite(rusqlite::Error),
     /// Returned only if the caller passes a `quota` argument to
     /// `write_with_audit_checked`. The active path passes `None` and
@@ -225,6 +226,12 @@ pub enum WriteAuditError {
 impl From<rusqlite::Error> for WriteAuditError {
     fn from(value: rusqlite::Error) -> Self {
         Self::Sqlite(value)
+    }
+}
+
+impl From<audit::AuditError> for WriteAuditError {
+    fn from(value: audit::AuditError) -> Self {
+        Self::Audit(value)
     }
 }
 
@@ -368,6 +375,7 @@ pub fn write_with_audit(
     write_with_audit_checked(data_root, world, body, content_type, headers, key, None)
         .map(|result| result.hmac)
         .map_err(|err| match err {
+            WriteAuditError::Audit(e) => e.into_sqlite(),
             WriteAuditError::Sqlite(e) => e,
             WriteAuditError::Quota { .. } => unreachable!("quota is disabled"),
         })
@@ -487,7 +495,7 @@ pub fn append_with_audit(
     content_type: &str,
     headers: &[(String, String)],
     key: &[u8],
-) -> rusqlite::Result<Option<(AppendResult, String)>> {
+) -> Result<Option<(AppendResult, String)>, WriteAuditError> {
     let path = world_db(data_root, world);
     if !path.exists() {
         return Ok(None);
@@ -531,11 +539,11 @@ fn verify_appendable_world_tx<'tx, 'conn>(
     tx: &'tx Transaction<'conn>,
     key: &[u8],
     existed_before_open: bool,
-) -> rusqlite::Result<audit::VerifiedAuditTx<'tx, 'conn>> {
+) -> Result<audit::VerifiedAuditTx<'tx, 'conn>, WriteAuditError> {
     if !existed_before_open || is_empty_bootstrap_tx(tx)? {
-        audit::verify_appendable_tx_genesis(tx, key)
+        Ok(audit::verify_appendable_tx_genesis_checked(tx, key)?)
     } else {
-        audit::verify_appendable_tx_existing(tx, key)
+        Ok(audit::verify_appendable_tx_existing_checked(tx, key)?)
     }
 }
 

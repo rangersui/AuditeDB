@@ -133,7 +133,7 @@ fn append_with_conn_verified(
     empty_chain: EmptyChain,
 ) -> rusqlite::Result<String> {
     let tx = conn.transaction()?;
-    let audit_tx = verify_appendable_tx(&tx, key, empty_chain)?;
+    let audit_tx = verify_appendable_tx(&tx, key, empty_chain).map_err(AuditError::into_sqlite)?;
     let h = append_tx(
         &audit_tx,
         event_type,
@@ -241,17 +241,25 @@ pub fn verify_world(data_root: &Path, world_name: &str, key: &[u8]) -> AuditResu
     require_intact(verify_connection(&c, key)?)
 }
 
-pub fn verify_appendable_tx_existing<'tx, 'conn>(
+pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn>(
     tx: &'tx Transaction<'conn>,
     key: &[u8],
-) -> rusqlite::Result<VerifiedAuditTx<'tx, 'conn>> {
+) -> AuditResult<VerifiedAuditTx<'tx, 'conn>> {
     verify_appendable_tx(tx, key, EmptyChain::Reject)
 }
 
+#[cfg(test)]
 pub fn verify_appendable_tx_genesis<'tx, 'conn>(
     tx: &'tx Transaction<'conn>,
     key: &[u8],
 ) -> rusqlite::Result<VerifiedAuditTx<'tx, 'conn>> {
+    verify_appendable_tx_genesis_checked(tx, key).map_err(AuditError::into_sqlite)
+}
+
+pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn>(
+    tx: &'tx Transaction<'conn>,
+    key: &[u8],
+) -> AuditResult<VerifiedAuditTx<'tx, 'conn>> {
     verify_appendable_tx(tx, key, EmptyChain::Allow)
 }
 
@@ -259,11 +267,10 @@ fn verify_appendable_tx<'tx, 'conn>(
     tx: &'tx Transaction<'conn>,
     key: &[u8],
     empty_chain: EmptyChain,
-) -> rusqlite::Result<VerifiedAuditTx<'tx, 'conn>> {
+) -> AuditResult<VerifiedAuditTx<'tx, 'conn>> {
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let allow_empty = matches!(empty_chain, EmptyChain::Allow);
-    require_intact(verify_statement(&mut stmt, key, allow_empty)?)
-        .map_err(AuditError::into_sqlite)?;
+    require_intact(verify_statement(&mut stmt, key, allow_empty)?)?;
     Ok(VerifiedAuditTx { tx })
 }
 
