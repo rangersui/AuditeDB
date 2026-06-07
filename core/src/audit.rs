@@ -4,7 +4,7 @@
 //! the write.
 
 use hmac::{Hmac, KeyInit, Mac};
-use rusqlite::{ffi, Connection, OptionalExtension, Statement, Transaction};
+use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::world;
@@ -31,6 +31,7 @@ pub enum AuditError {
 }
 
 impl AuditError {
+    #[cfg(test)]
     pub(crate) fn into_sqlite(self) -> rusqlite::Error {
         match self {
             Self::ChainBroken(break_report) => audit_chain_broken_error(&break_report),
@@ -82,7 +83,7 @@ pub fn append_with_conn_existing(
     content_type: &str,
     headers: &[(String, String)],
     key: &[u8],
-) -> rusqlite::Result<String> {
+) -> AuditResult<String> {
     append_with_conn_verified(
         conn,
         event_type,
@@ -106,7 +107,7 @@ pub fn append_with_conn_genesis(
     content_type: &str,
     headers: &[(String, String)],
     key: &[u8],
-) -> rusqlite::Result<String> {
+) -> AuditResult<String> {
     append_with_conn_verified(
         conn,
         event_type,
@@ -131,9 +132,9 @@ fn append_with_conn_verified(
     headers: &[(String, String)],
     key: &[u8],
     empty_chain: EmptyChain,
-) -> rusqlite::Result<String> {
+) -> AuditResult<String> {
     let tx = conn.transaction()?;
-    let audit_tx = verify_appendable_tx(&tx, key, empty_chain).map_err(AuditError::into_sqlite)?;
+    let audit_tx = verify_appendable_tx(&tx, key, empty_chain)?;
     let h = append_tx(
         &audit_tx,
         event_type,
@@ -396,9 +397,10 @@ fn require_intact(report: VerifyReport) -> AuditResult<()> {
     }
 }
 
+#[cfg(test)]
 fn audit_chain_broken_error(break_report: &VerifyBreak) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(
-        ffi::Error::new(ffi::SQLITE_CORRUPT),
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
         Some(format!(
             "{AUDIT_CHAIN_BROKEN_PREFIX}{}: expected {}, actual {}",
             break_report.break_at, break_report.expected, break_report.actual
@@ -411,7 +413,7 @@ fn is_audit_chain_broken_error(err: &rusqlite::Error) -> bool {
     matches!(
         err,
         rusqlite::Error::SqliteFailure(
-            ffi::Error {
+            rusqlite::ffi::Error {
                 code: rusqlite::ErrorCode::DatabaseCorrupt,
                 ..
             },
