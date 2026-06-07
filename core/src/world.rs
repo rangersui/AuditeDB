@@ -207,6 +207,7 @@ pub struct WriteAuditResult {
     pub existed: bool,
 }
 
+#[derive(Debug)]
 pub enum WriteAuditError {
     Audit(audit::AuditError),
     Sqlite(rusqlite::Error),
@@ -371,14 +372,9 @@ pub fn write_with_audit(
     content_type: &str,
     headers: &[(String, String)],
     key: &[u8],
-) -> rusqlite::Result<String> {
+) -> Result<String, WriteAuditError> {
     write_with_audit_checked(data_root, world, body, content_type, headers, key, None)
         .map(|result| result.hmac)
-        .map_err(|err| match err {
-            WriteAuditError::Audit(e) => e.into_sqlite(),
-            WriteAuditError::Sqlite(e) => e,
-            WriteAuditError::Quota { .. } => unreachable!("quota is disabled"),
-        })
 }
 
 pub fn write_with_audit_checked(
