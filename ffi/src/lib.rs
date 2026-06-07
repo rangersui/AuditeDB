@@ -976,14 +976,9 @@ mod tests {
         }
 
         let transient: FfiError = EngineError::TransientStorage.into();
-        assert!(matches!(
-            transient,
-            FfiError::TransientStorage {
-                sqlite_code: None
-            }
-        ));
+        assert!(matches!(transient, FfiError::TransientStorage));
         assert!(!transient.to_string().contains("Some("));
-        assert!(transient.to_string().contains("no sqlite code"));
+        assert!(!transient.to_string().contains("sqlite"));
     }
 
     #[test]

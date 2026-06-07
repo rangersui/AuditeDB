@@ -293,15 +293,9 @@ pub enum FfiError {
         quota: u64,
         projected: u64,
     },
-    TransientStorage {
-        sqlite_code: Option<i32>,
-    },
-    InsufficientStorage {
-        sqlite_code: Option<i32>,
-    },
-    Storage {
-        sqlite_code: Option<i32>,
-    },
+    TransientStorage,
+    InsufficientStorage,
+    Storage,
     SubscriptionLimit,
     ShuttingDown,
     InternalInvariant {
@@ -621,9 +615,9 @@ impl From<EngineError> for FfiError {
                 quota: quota as u64,
                 projected: projected as u64,
             },
-            EngineError::TransientStorage => Self::TransientStorage { sqlite_code: None },
-            EngineError::InsufficientStorage => Self::InsufficientStorage { sqlite_code: None },
-            EngineError::Storage => Self::Storage { sqlite_code: None },
+            EngineError::TransientStorage => Self::TransientStorage,
+            EngineError::InsufficientStorage => Self::InsufficientStorage,
+            EngineError::Storage => Self::Storage,
             EngineError::SubscriptionLimit => Self::SubscriptionLimit,
             EngineError::ShuttingDown => Self::ShuttingDown,
             EngineError::InternalInvariant(message) => Self::InternalInvariant {
@@ -677,19 +671,9 @@ impl fmt::Display for FfiError {
                 f,
                 "storage quota exceeded (used {used}, quota {quota}, projected {projected})"
             ),
-            Self::TransientStorage { sqlite_code } => {
-                write!(
-                    f,
-                    "storage temporarily unavailable ({})",
-                    code_label(*sqlite_code)
-                )
-            }
-            Self::InsufficientStorage { sqlite_code } => {
-                write!(f, "insufficient storage ({})", code_label(*sqlite_code))
-            }
-            Self::Storage { sqlite_code } => {
-                write!(f, "storage failed ({})", code_label(*sqlite_code))
-            }
+            Self::TransientStorage => f.write_str("storage temporarily unavailable"),
+            Self::InsufficientStorage => f.write_str("insufficient storage"),
+            Self::Storage => f.write_str("storage failed"),
             Self::SubscriptionLimit => f.write_str("subscription limit reached"),
             Self::ShuttingDown => f.write_str("engine is shutting down"),
         }
