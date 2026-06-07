@@ -489,8 +489,15 @@ fn verify_all_worlds_with_names(
         detail: format!("list worlds for audit verification failed: {err}"),
     })?;
     for world_name in worlds {
-        audit::verify_world(data_root, &world_name, key).map_err(|err| {
-            match storage_class::classify_storage_failure(&err) {
+        audit::verify_world(data_root, &world_name, key).map_err(|err| match err {
+            audit::AuditError::ChainBroken(break_report) => {
+                EngineBuildError::AuditChainCorrupted {
+                    world: world_name.clone(),
+                    detail: audit::AuditError::ChainBroken(break_report).to_string(),
+                }
+            }
+            audit::AuditError::Storage(err) => match storage_class::classify_storage_failure(&err)
+            {
                 storage_class::StorageFailureClass::Transient => {
                     EngineBuildError::DataRootLockHeld {
                         path: data_root.to_path_buf(),
@@ -505,19 +512,11 @@ fn verify_all_worlds_with_names(
                         ),
                     }
                 }
-                storage_class::StorageFailureClass::Other
-                    if audit::is_audit_chain_broken_error(&err) =>
-                {
-                    EngineBuildError::AuditChainCorrupted {
-                        world: world_name.clone(),
-                        detail: err.to_string(),
-                    }
-                }
                 storage_class::StorageFailureClass::Other => EngineBuildError::Storage {
                     sqlite_code: sqlite_code(&err),
                     detail: format!("audit verification for {world_name} failed: {err}"),
                 },
-            }
+            },
         })?;
     }
     Ok(())

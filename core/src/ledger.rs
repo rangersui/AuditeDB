@@ -46,6 +46,7 @@ pub(crate) struct AuditAppendJob {
 /// (`handler::execute_delete`).
 #[derive(Debug)]
 pub(crate) enum BlockingSqliteError {
+    Audit(audit::AuditError),
     Sqlite(rusqlite::Error),
     Worker,
 }
@@ -114,6 +115,6 @@ impl LedgerWriter {
             &job.headers,
             job.key.as_slice(),
         )
-        .map_err(BlockingSqliteError::Sqlite)
+        .map_err(BlockingSqliteError::Audit)
     }
 }
