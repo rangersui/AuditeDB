@@ -163,7 +163,8 @@ try:
 except FfiError.InvalidSecret as e:
     print(e.message)
 except FfiError.BuildDataRootLockHeld as e:
-    print(f"locked: {e.path}")
+    holder = f" (last writer: PID {e.holder_pid})" if e.holder_pid else ""
+    print(f"locked{holder}: {e.path}")
 ```
 
 ## Artifact CI

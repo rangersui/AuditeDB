@@ -1003,6 +1003,23 @@ mod tests {
         let err: FfiError = EngineBuildError::HmacKeyMissing.into();
         assert!(matches!(err, FfiError::BuildHmacKeyMissing));
         assert_eq!(err.to_string(), "hmac key missing");
+
+        let err: FfiError = EngineBuildError::DataRootLockHeld {
+            path: std::path::PathBuf::from("data"),
+            holder_pid: Some("12345".to_owned()),
+        }
+        .into();
+        assert!(matches!(
+            err,
+            FfiError::BuildDataRootLockHeld {
+                ref holder_pid,
+                ..
+            } if holder_pid.as_deref() == Some("12345")
+        ));
+        assert_eq!(
+            err.to_string(),
+            "data root writer lock is held (last writer: PID 12345): data"
+        );
     }
 
     #[test]

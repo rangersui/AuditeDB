@@ -145,7 +145,15 @@ are intentional.
 AuditeDB holds a SQLite-backed writer lock on
 `ELASTIK_DATA/.elastik-writer-lock.sqlite3` for the lifetime of the process. A
 second AuditeDB process pointed at the same data directory fails to start with a
-lock error instead of silently corrupting state.
+lock error instead of silently corrupting state. The error includes a
+best-effort holder PID when the previous owner committed one before taking the
+lock.
+
+This assumes a local filesystem. SQLite file locks are not a distributed
+coordination protocol, and NFS or other network filesystems with weak locking
+or caching semantics can break that assumption. Put `ELASTIK_DATA` on local
+storage, or use an external coordinator that is designed for distributed
+ownership.
 
 To serve a different universe, change `ELASTIK_DATA`.
 
