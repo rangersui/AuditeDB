@@ -278,6 +278,37 @@ struct EventHmacInput<'a> {
     meta_sha256: &'a str,
 }
 
+/// O(1) chain-head read through the SlotState-tracked read path: the
+/// newest event's `(id, hmac)` without re-walking the chain.
+///
+/// This is the unit of external anchoring (the O(1) subset of what
+/// `verify_chain_via_conn` reports as `latest`): a host that remembers the
+/// returned stamp can later prove tail truncation or rollback whenever the
+/// observed head is behind the anchored seq — which in-file verification
+/// structurally cannot. (A rolled-back or replaced chain re-grown past the
+/// anchor needs the at-seq divergence check, a later PR.) Returns
+/// `Ok(None)` for an empty chain (bootstrap-shape DB) — nothing to anchor
+/// yet.
+///
+/// Same type gate as `verify_chain_via_conn`: no bare-connection path, so
+/// a delete on the same world drains in-flight head reads via the usual
+/// SlotState write guard.
+pub fn chain_head_via_conn(
+    tracked: &mut crate::read_cache::TrackedReadConnection,
+) -> rusqlite::Result<Option<(i64, String)>> {
+    tracked
+        .as_mut_conn()
+        .query_row(
+            "SELECT id, hmac FROM events ORDER BY id DESC LIMIT 1",
+            [],
+            // hmac_label: same `hmac-` rendering as VerifyOk's
+            // genesis/latest, so a stamp compares byte-for-byte with
+            // what verify reports and what subscribers witness.
+            |r| Ok((r.get::<_, i64>(0)?, hmac_label(&r.get::<_, String>(1)?))),
+        )
+        .optional()
+}
+
 /// Verify the audit chain through a `TrackedReadConnection` (the
 /// SlotState-tracked read path). Mirrors `world::read_with_hmac_via_conn`
 /// -- the cache layer drives the slot-before-open dance and hands us

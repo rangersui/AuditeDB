@@ -146,6 +146,34 @@ pub enum AuditVerify {
     NotApplicable,
 }
 
+/// The audit chain's current head: the newest event's sequence number and
+/// chain HMAC. Returned by [`crate::Engine::chain_head`].
+///
+/// This is the unit of external anchoring. In-file verification proves
+/// "nobody tampered with what is here"; it structurally cannot prove
+/// "everything that happened is here" — every non-empty prefix of a valid
+/// chain is itself a valid chain, and a rolled-back file is self-
+/// consistent. A host that remembers a `HeadStamp` (on another machine, a
+/// subscriber, an RFC 3161 timestamp) can later **prove** truncation or
+/// rollback whenever the observed head is behind the anchored `seq`. A
+/// rolled-back or replaced (deleted-and-recreated) chain that has re-grown
+/// past the anchor is not caught by the seq comparison alone
+/// (`sqlite_sequence` rolls back with the file, so ids are reissued);
+/// catching that requires comparing the hmac at the anchored seq — the
+/// divergence check, a later PR in this stack.
+///
+/// When the chain verifies, `hmac` equals [`AuditValid::latest`] — the
+/// stamp is the O(1) subset of a full [`crate::Engine::verify_audit`]
+/// walk.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadStamp {
+    /// Sequence number (rowid) of the newest event on the chain.
+    pub seq: i64,
+    /// Chain HMAC of the newest event.
+    pub hmac: String,
+}
+
 struct IntrospectionPermit {
     path: ValidatedProcPath,
 }
@@ -455,6 +483,36 @@ impl EngineOps<'_> {
         }
     }
 
+    pub(crate) fn chain_head(
+        &self,
+        world: &ValidatedWorldPath,
+        tier: auth::Tier,
+    ) -> Result<Option<HeadStamp>, EngineError> {
+        if !crate::can_read(self.core(), tier) {
+            return Err(EngineError::Auth(AuthGate::Read));
+        }
+        if store::is_memory_world(world.as_str()) {
+            if !self.core().mem.contains(world.as_str()) {
+                return Err(EngineError::NotFound);
+            }
+            // Memory worlds have no audit chain: nothing to anchor.
+            return Ok(None);
+        }
+        match self.core().cached_chain_head(world.as_str()) {
+            Ok(Some(Some((seq, hmac)))) => Ok(Some(HeadStamp { seq, hmac })),
+            // Existing DB with an empty chain (bootstrap shape): nothing to
+            // anchor yet.
+            Ok(Some(None)) => Ok(None),
+            Ok(None) => Err(EngineError::NotFound),
+            Err(err) => Err(storage_error_to_engine(
+                "chain head",
+                err,
+                "chain_head",
+                Some(world.as_str()),
+            )),
+        }
+    }
+
     fn authorize_introspection(
         &self,
         path: &ValidatedProcPath,
@@ -571,6 +629,51 @@ impl Engine {
     ) -> Result<AuditVerify, EngineError> {
         let path = ValidatedProcPath::audit_verify(world.clone());
         EngineOps::new(self.core()).verify_audit(&path, tier.into())
+    }
+
+    /// Returns the audit chain's current head for external anchoring.
+    ///
+    /// This is a synchronous, O(1) API: it reads the newest event's
+    /// sequence number and chain HMAC through the cached read path without
+    /// walking the chain. It does **not** verify the chain — pair it with
+    /// [`Engine::verify_audit`] when integrity matters; when the chain
+    /// verifies, [`HeadStamp::hmac`] equals [`AuditValid::latest`].
+    ///
+    /// Push the returned stamp somewhere — ideally somewhere this machine
+    /// cannot rewrite (another host, a subscriber, an RFC 3161 timestamp;
+    /// the further from this machine, the stronger the guarantee). A later
+    /// head whose `seq` went backwards proves truncation or rollback that
+    /// in-file verification cannot detect — and so does a durable world
+    /// that previously had a stamp **persistently** returning `Ok(None)`
+    /// or [`EngineError::NotFound`] (total truncation or deletion). A
+    /// delete in flight also reads as `NotFound`, and a delete that failed
+    /// before touching the chain file restores the head — re-poll before
+    /// treating a single `NotFound` observation as loss.
+    ///
+    /// This method applies the read gate directly and intentionally
+    /// bypasses proc-path authorization; do not expose it directly as a
+    /// network endpoint (the proc endpoint comes in a later PR of this
+    /// stack).
+    ///
+    /// # Returns
+    /// - `Ok(Some(HeadStamp))` — the durable world's current chain head.
+    /// - `Ok(None)` — the world exists but has no chain head to anchor:
+    ///   an in-memory world (no audit chain) or an empty bootstrap-shape
+    ///   chain. Note: [`Engine::verify_audit`] reports an existing durable
+    ///   world with an empty chain as `Broken` (`no-events`) — `Ok(None)`
+    ///   here is not a clean bill of health.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
+    /// - [`EngineError::NotFound`] if `world` does not exist.
+    /// - [`EngineError::TransientStorage`] / [`EngineError::Storage`] /
+    ///   [`EngineError::InsufficientStorage`] for storage failures.
+    pub fn chain_head(
+        &self,
+        world: &ValidatedWorldPath,
+        tier: AccessTier,
+    ) -> Result<Option<HeadStamp>, EngineError> {
+        EngineOps::new(self.core()).chain_head(world, tier.into())
     }
 }
 
@@ -761,6 +864,109 @@ mod tests {
                 "proc permit endpoint mismatch"
             ))
         ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn chain_head_is_the_o1_subset_of_verify() {
+        let root = temp_root("chain-head");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
+            .read_token(b"reader".to_vec())
+            .build()
+            .unwrap();
+        let disk = ValidatedWorldPath::new("home/anchored").unwrap();
+        let memory = ValidatedWorldPath::new("tmp/anchored").unwrap();
+
+        assert!(matches!(
+            engine.chain_head(&disk, AccessTier::Anon),
+            Err(EngineError::Auth(AuthGate::Read))
+        ));
+        assert!(matches!(
+            engine.chain_head(&disk, AccessTier::Read),
+            Err(EngineError::NotFound)
+        ));
+
+        for body in [b"one".as_slice(), b"two", b"three"] {
+            engine
+                .replace(
+                    &disk,
+                    Representation::new(Bytes::copy_from_slice(body), "text/plain", Vec::new()),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await
+                .unwrap();
+        }
+        engine
+            .replace(
+                &memory,
+                Representation::new(Bytes::from_static(b"ram"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let head = engine
+            .chain_head(&disk, AccessTier::Read)
+            .unwrap()
+            .expect("durable world has a chain head");
+        let AuditVerify::Valid(valid) = engine.verify_audit(&disk, AccessTier::Read).unwrap()
+        else {
+            panic!("chain must verify");
+        };
+        // The stamp is the O(1) subset of a full verify walk.
+        assert_eq!(head.hmac, valid.latest);
+        assert_eq!(head.seq, valid.events as i64);
+
+        // Memory world exists but has no chain to anchor. The auth gate
+        // must also hold on the memory path (pins gate-before-branch).
+        assert!(matches!(
+            engine.chain_head(&memory, AccessTier::Anon),
+            Err(EngineError::Auth(AuthGate::Read))
+        ));
+        assert_eq!(engine.chain_head(&memory, AccessTier::Read).unwrap(), None);
+        let missing_memory = ValidatedWorldPath::new("tmp/anchored-missing").unwrap();
+        assert!(matches!(
+            engine.chain_head(&missing_memory, AccessTier::Read),
+            Err(EngineError::NotFound)
+        ));
+
+        // Bootstrap-shape durable DB (schema committed, zero events):
+        // nothing to anchor — while verify_audit reports the same state
+        // as Broken (no-events). The contrast is documented on the
+        // chain_head facade.
+        drop(crate::world::open(&engine.core().data, "home/anchored-bootstrap").unwrap());
+        let bootstrap = ValidatedWorldPath::new("home/anchored-bootstrap").unwrap();
+        assert_eq!(
+            engine.chain_head(&bootstrap, AccessTier::Read).unwrap(),
+            None
+        );
+        assert!(matches!(
+            engine.verify_audit(&bootstrap, AccessTier::Read).unwrap(),
+            AuditVerify::Broken(b) if b.actual == "no-events"
+        ));
+
+        // The head advances with the chain and never repeats.
+        engine
+            .replace(
+                &disk,
+                Representation::new(Bytes::from_static(b"four"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let advanced = engine
+            .chain_head(&disk, AccessTier::Read)
+            .unwrap()
+            .expect("head persists after another write");
+        assert_eq!(advanced.seq, head.seq + 1);
+        assert_ne!(advanced.hmac, head.hmac);
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);

@@ -432,6 +432,19 @@ impl ReadCache {
         self.with_tracked_conn(data, world, world::read_with_hmac_via_conn)
     }
 
+    /// O(1) chain-head read through the cached read path. Same
+    /// SlotState protocol as `cached_verify_chain` -- delete drains
+    /// in-flight head reads via the slot's write guard. Outer `None`
+    /// means the world's DB is missing; inner `None` means the chain
+    /// is empty (bootstrap shape).
+    pub(crate) fn cached_chain_head(
+        &self,
+        data: &std::path::Path,
+        world: &str,
+    ) -> rusqlite::Result<Option<Option<(i64, String)>>> {
+        self.with_tracked_conn(data, world, crate::audit::chain_head_via_conn)
+    }
+
     /// Verify the audit chain through the cached read path (Bug 58).
     /// Same SlotState protocol as `cached_read_with_hmac` -- delete
     /// drains in-flight verifies via the slot's write guard. Closes
