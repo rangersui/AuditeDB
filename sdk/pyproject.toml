@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elastik"
-version = "8.2.1"
+version = "8.3.0"
 description = "AuditeDB: the db that listens. Python client for the Elastik L5 Engine."
 readme = "README.md"
 requires-python = ">=3.10"

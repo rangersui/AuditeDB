@@ -10,7 +10,10 @@ pub(crate) use core_bridge::*;
 #[cfg_attr(not(feature = "multi-thread"), tokio::main(flavor = "current_thread"))]
 #[cfg(not(test))]
 async fn main() {
-    server::run_from_env().await;
+    if let Err(err) = server::run_from_env().await {
+        eprintln!("elastik-core: {err}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]

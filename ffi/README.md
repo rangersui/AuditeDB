@@ -54,7 +54,7 @@ from elastik_ffi import (
 
 engine = FfiEngine.open(FfiEngineConfig(
     data_root="/var/lib/elastik",
-    hmac_key=b"my-secret-key",
+    hmac_key=b"0123456789abcdef0123456789abcdef",
     read_token=b"reader",
     write_token=b"writer",
     approve_token=b"admin",
@@ -66,6 +66,9 @@ engine = FfiEngine.open(FfiEngineConfig(
     read_cache_max_entries=None,
 ))
 ```
+
+`hmac_key` is the audit-chain HMAC key and must be at least 32 bytes. Short,
+empty, or all-whitespace keys are rejected before the Engine opens.
 
 ### Handle
 
@@ -174,7 +177,6 @@ Python bindings for:
 
 - Linux x64 (`libelastik_ffi.so`)
 - Linux ARM64 (`libelastik_ffi.so`)
-- macOS x64 (`libelastik_ffi.dylib`)
 - macOS ARM64 (`libelastik_ffi.dylib`)
 - Windows x64 (`elastik_ffi.dll`)
 

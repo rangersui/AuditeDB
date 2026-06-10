@@ -47,13 +47,13 @@
 //! # #[cfg(feature = "unstable-engine")]
 //! # async fn run() {
 //! use elastik_core::{
-//!     AccessTier, Engine, Preconditions, Representation, SecretBytes, ValidatedWorldPath,
+//!     AccessTier, AuditHmacKey, Engine, Preconditions, Representation, ValidatedWorldPath,
 //! };
 //! use bytes::Bytes;
 //!
 //! let engine = Engine::builder()
 //!     .data_root("./data")
-//!     .key(SecretBytes::new(b"shared-hmac-secret".to_vec()).expect("hmac key"))
+//!     .key(AuditHmacKey::new(b"0123456789abcdef0123456789abcdef".to_vec()).expect("hmac key"))
 //!     .build()
 //!     .expect("engine builds");
 //!
@@ -131,9 +131,9 @@
 //!   without per-call configuration.
 //! - **Versions everything.** Every successful write returns an ETag; reads,
 //!   replaces, and appends honour `Preconditions::if_match` / `if_none_match`.
-//! - **Audits everything.** HMAC-chained ledger; `Engine::verify_audit`
-//!   returns a typed [`AuditVerify`] result and refuses to start when an
-//!   existing chain is corrupted.
+//! - **Audits durable writes.** Durable worlds append to an HMAC-chained
+//!   ledger; `Engine::verify_audit` returns a typed [`AuditVerify`] result and
+//!   refuses to start when an existing chain is corrupted.
 //! - **Authenticates everything.** [`AccessTier`] (Anon / Read / Write /
 //!   Approve) plus token-bytes verification via [`Engine::verify_token`].
 //! - **Subscribes to changes.** [`Engine::subscribe`] returns an
@@ -209,9 +209,10 @@ pub use engine_introspection::{
 pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};
 #[cfg(feature = "unstable-engine")]
 pub use engine_types::{
-    parse_etag_matchers, AccessTier, ChangeEvent, ChangeVerb, EmptyKeyError, EngineSubscription,
-    EtagMatcher, InvalidWorldPath, Preconditions, ReadResult, Representation, SecretBytes,
-    SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
+    parse_etag_matchers, AccessTier, AuditHmacKey, ChangeEvent, ChangeVerb, EmptyKeyError,
+    EngineSubscription, EtagMatcher, InvalidHmacKey, InvalidWorldPath, Preconditions, ReadResult,
+    Representation, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
+    WriteKind, WriteResult, MIN_HMAC_KEY_BYTES,
 };
 #[cfg(feature = "unstable-engine")]
 pub use path::{validate_world_name, NAMESPACE_PREFIXES};

@@ -54,7 +54,7 @@ function Run-JsSdkAgainstCore {
     $p = $null
     try {
         $env:ELASTIK_DATA = $temp
-        $env:ELASTIK_KEY = "test-key"
+        $env:ELASTIK_KEY = "0123456789abcdef0123456789abcdef"
         $env:ELASTIK_READ_TOKEN = "r"
         $env:ELASTIK_WRITE_TOKEN = "w"
         $env:ELASTIK_APPROVE_TOKEN = "a"

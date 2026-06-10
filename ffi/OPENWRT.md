@@ -5,7 +5,6 @@ smoke today:
 
 - Linux x64: `libelastik_ffi.so`
 - Linux ARM64: `libelastik_ffi.so`
-- macOS x64: `libelastik_ffi.dylib`
 - macOS ARM64: `libelastik_ffi.dylib`
 - Windows x64: `elastik_ffi.dll`
 

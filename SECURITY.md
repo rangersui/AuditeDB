@@ -30,10 +30,10 @@ signs durable writes into an HMAC audit chain, and replays safe persisted
 response metadata. That is the engine's security boundary.
 
 Documentation tokens such as `read-token`, `write-token`, `approve-token`,
-`admin-token`, `dev-hmac-key`, and `change-me` are examples only. The engine
-does not ship with built-in defaults. If those copied strings protect a shared
-deployment, that is a deployment configuration problem, not a hidden default
-credential.
+`admin-token`, and `change-me` are examples only. Audit-chain HMAC keys must be
+at least 32 bytes and must not be empty or all whitespace. The engine does not
+ship with built-in defaults. If copied strings protect a shared deployment, that
+is a deployment configuration problem, not a hidden default credential.
 
 Good security reports usually involve one of these:
 

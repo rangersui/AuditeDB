@@ -39,9 +39,9 @@ pub(crate) mod engine_types {
     #[cfg(test)]
     pub(crate) use elastik_core::WriteResult;
     pub(crate) use elastik_core::{
-        parse_etag_matchers, AccessTier, ChangeEvent, ChangeVerb, EtagMatcher, Preconditions,
-        Representation, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
-        WriteKind,
+        parse_etag_matchers, AccessTier, AuditHmacKey, ChangeEvent, ChangeVerb, EtagMatcher,
+        InvalidHmacKey, Preconditions, Representation, SubscribePattern, SubscriptionRecvError,
+        ValidatedWorldPath, WriteKind,
     };
 }
 

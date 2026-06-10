@@ -281,7 +281,7 @@ fn log_replay_error(metrics: &MqttMetrics, err: RetainedReplayError) {
 mod tests {
     use super::super::topic::mqtt_filter_to_route;
     use super::*;
-    use crate::engine_types::{Preconditions, Representation, SecretBytes};
+    use crate::engine_types::{AuditHmacKey, Preconditions, Representation};
 
     #[test]
     fn retained_replay_list_errors_are_counted() {
@@ -454,7 +454,7 @@ mod tests {
         ));
         let engine = Engine::builder()
             .data_root(&dir)
-            .key(SecretBytes::new(b"test-hmac-key".to_vec()).unwrap())
+            .key(AuditHmacKey::try_from_slice(b"0123456789abcdef0123456789abcdef").unwrap())
             .read_token(b"read-token".to_vec())
             .write_token(b"write-token".to_vec())
             .build()

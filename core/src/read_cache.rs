@@ -441,9 +441,9 @@ impl ReadCache {
         &self,
         data: &std::path::Path,
         world: &str,
-        key: &[u8],
+        key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<crate::audit::VerifyReport>> {
-        let key = key.to_vec();
+        let key = key.clone_secret();
         self.with_tracked_conn(data, world, move |conn| {
             crate::audit::verify_chain_via_conn(conn, &key)
         })
@@ -786,6 +786,11 @@ impl ReadCache {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn test_key() -> crate::engine_types::AuditHmacKey {
+        crate::engine_types::AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY)
+            .unwrap()
+    }
 
     fn scratch_dir(label: &str) -> PathBuf {
         let mut d = std::env::temp_dir();
@@ -1353,7 +1358,7 @@ mod tests {
             b"hello",
             "text/plain",
             &[],
-            b"key",
+            &test_key(),
             None,
         ) {
             Ok(_) => {}
@@ -1363,7 +1368,8 @@ mod tests {
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
         // Phase 3 lazy-init: first verify warms the cache.
-        let r1 = cache.cached_verify_chain(&dir, world, b"key").unwrap();
+        let key = test_key();
+        let r1 = cache.cached_verify_chain(&dir, world, &key).unwrap();
         assert!(matches!(r1, Some(crate::audit::VerifyReport::Valid(_))));
         assert!(
             cache.read_conns.get(world).is_some(),
@@ -1373,18 +1379,18 @@ mod tests {
         );
 
         // Phase 1 cache hit: second verify reuses the cached slot.
-        let r2 = cache.cached_verify_chain(&dir, world, b"key").unwrap();
+        let r2 = cache.cached_verify_chain(&dir, world, &key).unwrap();
         assert!(matches!(r2, Some(crate::audit::VerifyReport::Valid(_))));
 
         // Tombstone short-circuits verify (delete intent).
         cache.install_tombstone_blocking(world);
-        let r3 = cache.cached_verify_chain(&dir, world, b"key").unwrap();
+        let r3 = cache.cached_verify_chain(&dir, world, &key).unwrap();
         assert!(r3.is_none());
 
         // After clear_tombstone the next verify re-opens through
         // Phase 3 lazy-init.
         cache.clear_tombstone(world);
-        let r4 = cache.cached_verify_chain(&dir, world, b"key").unwrap();
+        let r4 = cache.cached_verify_chain(&dir, world, &key).unwrap();
         assert!(matches!(r4, Some(crate::audit::VerifyReport::Valid(_))));
 
         let _ = std::fs::remove_dir_all(&dir);

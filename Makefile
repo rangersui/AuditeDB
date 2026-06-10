@@ -10,7 +10,8 @@
 # is missing, the next step refuses with a clear error, not magic.
 #
 # CI is the canonical source of release wheels — see
-# .github/workflows/build.yml. Local cross-compile (`make cross`) is a
+# .github/workflows/wheel-ci.yml and .github/workflows/release.yml.
+# Local cross-compile (`make cross`) is a
 # convenience for testing one target at a time.
 
 .PHONY: dev test build wheel cross install clean help info
@@ -23,6 +24,8 @@ RUST_TGT   = bin/target/release/$(BIN_NAME)
 SDK_BIN    = sdk/src/elastik/_bin/$(BIN_NAME)
 
 # Cross-compile target list. zigbuild handles all of these without Docker.
+# This is a local convenience surface, not the current release artifact matrix.
+# FFI release assets intentionally omit macOS x64.
 # Windows ARM64 needs MSVC ARM64 cross tools; CI handles that one.
 CROSS_TARGETS = \
     x86_64-unknown-linux-gnu \

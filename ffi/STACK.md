@@ -43,7 +43,6 @@ HTTP server, routes, status codes, or `/proc/*` paths.
    - Build and smoke native FFI libraries plus generated Python UniFFI binding:
      - Linux x64 (`.so`)
      - Linux ARM64 (`.so`)
-     - macOS x64 (`.dylib`)
      - macOS ARM64 (`.dylib`)
      - Windows x64 (`.dll`)
    - Upload zipped CI artifacts containing the native library, generated

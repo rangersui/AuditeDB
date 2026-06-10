@@ -1,6 +1,6 @@
 {
   "name": "@elastikjs/client",
-  "version": "8.2.1",
+  "version": "8.3.0",
   "description": "AuditeDB JavaScript SDK for the Elastik L5 Engine; one import, zero dependencies.",
   "type": "module",
   "main": "./index.mjs",
@@ -53,10 +53,10 @@
   },
   "dependencies": {},
   "optionalDependencies": {
-    "@elastikjs/core-linux-x64": "8.2.1",
-    "@elastikjs/core-linux-arm64": "8.2.1",
-    "@elastikjs/core-darwin-arm64": "8.2.1",
-    "@elastikjs/core-win32-x64": "8.2.1"
+    "@elastikjs/core-linux-x64": "8.3.0",
+    "@elastikjs/core-linux-arm64": "8.3.0",
+    "@elastikjs/core-darwin-arm64": "8.3.0",
+    "@elastikjs/core-win32-x64": "8.3.0"
   },
   "engines": {
     "node": ">=18"

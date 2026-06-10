@@ -2043,7 +2043,12 @@ mod tests {
         ));
         let mut builder = Engine::builder()
             .data_root(&dir)
-            .key(crate::engine_types::SecretBytes::new(b"test-hmac-key".to_vec()).unwrap())
+            .key(
+                crate::engine_types::AuditHmacKey::try_from_slice(
+                    b"0123456789abcdef0123456789abcdef",
+                )
+                .unwrap(),
+            )
             .write_token(b"write-token".to_vec());
         if read_token {
             builder = builder.read_token(b"read-token".to_vec());

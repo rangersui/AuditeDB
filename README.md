@@ -62,7 +62,7 @@ Library embedders call typed Engine methods instead of HTTP `/proc/*` paths:
 
 ```rust
 use elastik_core::{
-    AccessTier, Engine, Preconditions, Representation, SecretBytes, ValidatedWorldPath,
+    AccessTier, AuditHmacKey, Engine, Preconditions, Representation, ValidatedWorldPath,
 };
 use bytes::Bytes;
 
@@ -70,7 +70,7 @@ use bytes::Bytes;
 async fn main() {
     let engine = Engine::builder()
         .data_root("./data")
-        .key(SecretBytes::new(b"shared-secret".to_vec()).unwrap())
+        .key(AuditHmacKey::new(b"0123456789abcdef0123456789abcdef".to_vec()).unwrap())
         .build()
         .unwrap();
 
@@ -90,13 +90,14 @@ async fn main() {
 
 ```toml
 [dependencies]
-elastik-core = { version = "8", default-features = false,
+elastik-core = { version = "=8.3.0", default-features = false,
                  features = ["bundled-sqlite", "unstable-engine"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
 The `unstable-engine` gate explicitly marks the public Engine API unstable.
-API shapes may change between minor versions until that gate is removed.
+API shapes may change between minor versions until that gate is removed. Pin an
+exact `elastik-core` version when embedding the unstable Engine API.
 
 ---
 

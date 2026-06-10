@@ -25,7 +25,7 @@
 //! is the historical per-write view. The event chain stores structured
 //! audit facts, never JSON blobs.
 
-use crate::audit;
+use crate::{audit, engine_types::AuditHmacKey};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use rusqlite::{ffi, params, Connection, OpenFlags, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
@@ -371,7 +371,7 @@ pub fn write_with_audit(
     body: &[u8],
     content_type: &str,
     headers: &[(String, String)],
-    key: &[u8],
+    key: &AuditHmacKey,
 ) -> Result<String, WriteAuditError> {
     write_with_audit_checked(data_root, world, body, content_type, headers, key, None)
         .map(|result| result.hmac)
@@ -383,7 +383,7 @@ pub fn write_with_audit_checked(
     body: &[u8],
     content_type: &str,
     headers: &[(String, String)],
-    key: &[u8],
+    key: &AuditHmacKey,
     quota: Option<(usize, usize)>,
 ) -> Result<WriteAuditResult, WriteAuditError> {
     let existed = world_db(data_root, world).exists();
@@ -439,7 +439,6 @@ pub fn write_with_audit_checked(
         body.len() as i64,
         content_type,
         headers,
-        key,
     )?;
     tx.commit()?;
     Ok(WriteAuditResult {
@@ -450,16 +449,12 @@ pub fn write_with_audit_checked(
 }
 
 /// Append bytes to an existing world's body without entering the HMAC
-/// chain. Production appends go through `append_with_audit`; this
-/// raw form is unused after the lock refactor and is preserved with
-/// `#[allow(dead_code)]` against future direct callers (e.g. log
-/// rotation tooling). Returns Ok(None) if the world does not exist.
+/// chain. Test-only schema-corruption probes use this to make sure raw
+/// SQLite body errors are still detected; production durable appends must
+/// go through `append_with_audit`.
+#[cfg(test)]
 #[allow(dead_code)]
-pub fn append(
-    data_root: &Path,
-    world: &str,
-    body: &[u8],
-) -> rusqlite::Result<Option<AppendResult>> {
+fn append(data_root: &Path, world: &str, body: &[u8]) -> rusqlite::Result<Option<AppendResult>> {
     let path = world_db(data_root, world);
     if !path.exists() {
         return Ok(None);
@@ -490,7 +485,7 @@ pub fn append_with_audit(
     body: &[u8],
     content_type: &str,
     headers: &[(String, String)],
-    key: &[u8],
+    key: &AuditHmacKey,
 ) -> Result<Option<(AppendResult, String)>, WriteAuditError> {
     let path = world_db(data_root, world);
     if !path.exists() {
@@ -520,7 +515,6 @@ pub fn append_with_audit(
         size_after as i64,
         content_type,
         headers,
-        key,
     )?;
     tx.commit()?;
     Ok(Some((
@@ -531,11 +525,11 @@ pub fn append_with_audit(
     )))
 }
 
-fn verify_appendable_world_tx<'tx, 'conn>(
+fn verify_appendable_world_tx<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
-    key: &[u8],
+    key: &'key AuditHmacKey,
     existed_before_open: bool,
-) -> Result<audit::VerifiedAuditTx<'tx, 'conn>, WriteAuditError> {
+) -> Result<audit::VerifiedAuditTx<'tx, 'conn, 'key>, WriteAuditError> {
     if !existed_before_open || is_empty_bootstrap_tx(tx)? {
         Ok(audit::verify_appendable_tx_genesis_checked(tx, key)?)
     } else {
@@ -684,6 +678,10 @@ fn list_matching_bounded(
 mod tests {
     use super::*;
 
+    fn test_key() -> AuditHmacKey {
+        AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
+    }
+
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("elastik-world-test-{name}-{}", std::process::id()))
     }
@@ -779,7 +777,7 @@ mod tests {
             b"!",
             "text/plain; charset=utf-8",
             &[],
-            b"test-key",
+            &test_key(),
         )
         .is_err());
 
@@ -790,16 +788,15 @@ mod tests {
     fn audited_write_rejects_tampered_existing_chain() {
         let root = test_root("tampered-audit-chain");
         let _ = std::fs::remove_dir_all(&root);
-        write_with_audit(&root, "home/tamper", b"one", "text/plain", &[], b"key").unwrap();
+        let key = test_key();
+        write_with_audit(&root, "home/tamper", b"one", "text/plain", &[], &key).unwrap();
         {
             let c = Connection::open(world_db(&root, "home/tamper")).unwrap();
             c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
                 .unwrap();
         }
 
-        assert!(
-            write_with_audit(&root, "home/tamper", b"two", "text/plain", &[], b"key",).is_err()
-        );
+        assert!(write_with_audit(&root, "home/tamper", b"two", "text/plain", &[], &key,).is_err());
 
         let c = Connection::open(world_db(&root, "home/tamper")).unwrap();
         let count: i64 = c
@@ -815,7 +812,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         drop(open(&root, "home/retry").unwrap());
 
-        write_with_audit(&root, "home/retry", b"one", "text/plain", &[], b"key").unwrap();
+        write_with_audit(&root, "home/retry", b"one", "text/plain", &[], &test_key()).unwrap();
 
         let c = Connection::open(world_db(&root, "home/retry")).unwrap();
         let count: i64 = c
@@ -835,7 +832,9 @@ mod tests {
                 .unwrap();
         }
 
-        assert!(write_with_audit(&root, "home/orphan", b"two", "text/plain", &[], b"key").is_err());
+        assert!(
+            write_with_audit(&root, "home/orphan", b"two", "text/plain", &[], &test_key()).is_err()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -843,7 +842,8 @@ mod tests {
     fn existing_world_missing_audit_table_is_not_recreated() {
         let root = test_root("missing-audit-table");
         let _ = std::fs::remove_dir_all(&root);
-        write_with_audit(&root, "home/drop-events", b"one", "text/plain", &[], b"key").unwrap();
+        let key = test_key();
+        write_with_audit(&root, "home/drop-events", b"one", "text/plain", &[], &key).unwrap();
         {
             let c = Connection::open(world_db(&root, "home/drop-events")).unwrap();
             c.execute("DROP TABLE events", []).unwrap();
@@ -851,8 +851,7 @@ mod tests {
 
         assert!(open(&root, "home/drop-events").is_err());
         assert!(
-            write_with_audit(&root, "home/drop-events", b"two", "text/plain", &[], b"key",)
-                .is_err()
+            write_with_audit(&root, "home/drop-events", b"two", "text/plain", &[], &key,).is_err()
         );
         let _ = std::fs::remove_dir_all(root);
     }

@@ -27,7 +27,7 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
     },
-    engine_types::{AccessTier, SecretBytes},
+    engine_types::{AccessTier, AuditHmacKey},
     read_cache::ReadCache,
     state::{new_event_counter, Core},
     storage_class, store, world,
@@ -66,7 +66,7 @@ pub struct ShutdownToken {
 /// defaults without breaking callers.
 pub struct EngineBuilder {
     data_root: PathBuf,
-    key: Option<SecretBytes>,
+    key: Option<AuditHmacKey>,
     tokens: auth::Tokens,
     max_world_bytes: usize,
     max_memory_bytes: usize,
@@ -111,6 +111,35 @@ pub enum EngineBuildError {
         detail: String,
     },
 }
+
+impl fmt::Display for EngineBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DataRootIo(err) => write!(f, "data root IO error: {err}"),
+            Self::DataRootLockHeld { path, holder_pid } => match holder_pid {
+                Some(pid) => write!(
+                    f,
+                    "data root writer lock is held (last writer: PID {pid}): {}",
+                    path.display()
+                ),
+                None => write!(f, "data root writer lock is held: {}", path.display()),
+            },
+            Self::HmacKeyMissing => f.write_str("audit-chain HMAC key is missing"),
+            Self::AuditChainCorrupted { world, detail } => {
+                write!(f, "audit chain verification failed for {world}: {detail}")
+            }
+            Self::Storage {
+                sqlite_code,
+                detail,
+            } => match sqlite_code {
+                Some(code) => write!(f, "startup storage error (SQLite code {code}): {detail}"),
+                None => write!(f, "startup storage error: {detail}"),
+            },
+        }
+    }
+}
+
+impl std::error::Error for EngineBuildError {}
 
 /// Runtime operation errors reported by the Engine facade.
 ///
@@ -197,7 +226,11 @@ impl EngineBuilder {
     }
 
     /// Sets the HMAC key that protects the audit chain. Required.
-    pub fn key(mut self, key: SecretBytes) -> Self {
+    ///
+    /// The key must already be an [`AuditHmacKey`], which proves the input was
+    /// non-empty, not all whitespace, and at least
+    /// [`crate::MIN_HMAC_KEY_BYTES`] long.
+    pub fn key(mut self, key: AuditHmacKey) -> Self {
         self.key = Some(key);
         self
     }
@@ -296,7 +329,7 @@ impl EngineBuilder {
             .map_err(|err| map_writer_lock_error(&self.data_root, err))?;
         let hmac_key = self.key.ok_or(EngineBuildError::HmacKeyMissing)?;
 
-        verify_all_worlds_with_names(&self.data_root, hmac_key.as_slice())?;
+        verify_all_worlds_with_names(&self.data_root, &hmac_key)?;
         let durable_sizes = world::sizes(&self.data_root).map_err(|err| {
             match storage_class::classify_storage_failure(&err) {
                 storage_class::StorageFailureClass::Transient => {
@@ -465,7 +498,7 @@ fn map_writer_lock_error(
 
 fn verify_all_worlds_with_names(
     data_root: &std::path::Path,
-    key: &[u8],
+    key: &AuditHmacKey,
 ) -> Result<(), EngineBuildError> {
     let worlds = world::list(data_root).map_err(|err| EngineBuildError::Storage {
         sqlite_code: sqlite_code(&err),
@@ -509,6 +542,7 @@ fn verify_all_worlds_with_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine_types::SecretBytes;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root(name: &str) -> PathBuf {
@@ -539,7 +573,7 @@ mod tests {
         let root = temp_root("verify-token");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .read_token(b"reader".to_vec())
             .write_token(b"writer".to_vec())
             .approve_token(b"approve".to_vec())
@@ -561,7 +595,7 @@ mod tests {
         let root = temp_root("token-whitespace");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .read_token(b" \t\n".to_vec())
             .write_token(Vec::new())
             .approve_token("\u{2003}\n".as_bytes().to_vec())
@@ -583,7 +617,7 @@ mod tests {
         let root = temp_root("zero-limits");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .max_storage_bytes(Some(0))
             .max_listen_connections(0)
             .listen_replay_max(0)
@@ -614,7 +648,7 @@ mod tests {
         let root = temp_root("shutdown-idempotent");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .build()
             .unwrap();
         let mut shutdown = engine.inner.core.shutdown.clone();
@@ -636,13 +670,13 @@ mod tests {
         let root = temp_root("writer-lock");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .build()
             .unwrap();
 
         let second = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .build();
 
         match second {
@@ -660,7 +694,7 @@ mod tests {
     #[test]
     fn build_verifies_audit_chains_before_returning_engine() {
         let root = temp_root("audit-verify");
-        let key = b"key".to_vec();
+        let key = AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap();
         let write_result = world::write_with_audit_checked(
             &root,
             "home/audit",
@@ -680,10 +714,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let result = Engine::builder()
-            .data_root(root.clone())
-            .key(SecretBytes::new(key).unwrap())
-            .build();
+        let result = Engine::builder().data_root(root.clone()).key(key).build();
 
         assert!(matches!(
             result,
@@ -696,7 +727,7 @@ mod tests {
     #[test]
     fn build_classifies_non_chain_verify_failures_as_storage_errors() {
         let root = temp_root("audit-storage-error");
-        let key = b"key".to_vec();
+        let key = AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap();
         let write_result = world::write_with_audit_checked(
             &root,
             "home/schema",
@@ -712,10 +743,7 @@ mod tests {
         conn.execute("DROP TABLE events", []).unwrap();
         drop(conn);
 
-        let result = Engine::builder()
-            .data_root(root.clone())
-            .key(SecretBytes::new(key).unwrap())
-            .build();
+        let result = Engine::builder().data_root(root.clone()).key(key).build();
 
         match result {
             Err(EngineBuildError::Storage {

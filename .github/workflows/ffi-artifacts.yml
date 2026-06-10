@@ -26,9 +26,6 @@ jobs:
           - name: linux-arm64
             os: ubuntu-24.04-arm
             library-path: target/release/libelastik_ffi.so
-          - name: macos-x64
-            os: macos-15-intel
-            library-path: target/release/libelastik_ffi.dylib
           - name: macos-arm64
             os: macos-14
             library-path: target/release/libelastik_ffi.dylib
@@ -87,7 +84,7 @@ jobs:
           none = e.FfiPreconditions(if_match=[], if_none_match=[])
           engine = e.FfiEngine.open(e.FfiEngineConfig(
               data_root=str(root),
-              hmac_key=b"ffi-ci-key",
+              hmac_key=b"0123456789abcdef0123456789abcdef",
               read_token=None,
               write_token=None,
               approve_token=None,

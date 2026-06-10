@@ -45,7 +45,7 @@ use std::time::Duration;
 #[cfg(not(test))]
 use crate::{
     engine::{Engine, EngineBuilder},
-    engine_types::SecretBytes,
+    engine_types::AuditHmacKey,
 };
 #[cfg(all(not(test), feature = "coap"))]
 use config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
@@ -65,14 +65,19 @@ use config::{
 use http::semantics::{header_allowlist_from_env, header_user_deny_from_env};
 
 #[cfg(not(test))]
-pub(crate) async fn run_from_env() {
+pub(crate) async fn run_from_env() -> Result<(), String> {
     pipeline::init_trace_from_env();
 
     let host = std::env::var("ELASTIK_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = std::env::var("ELASTIK_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3105);
+    let port: u16 = match std::env::var("ELASTIK_PORT") {
+        Ok(raw) => raw
+            .parse()
+            .map_err(|_| format!("ELASTIK_PORT must be a TCP port number; got {raw:?}"))?,
+        Err(std::env::VarError::NotPresent) => 3105,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("ELASTIK_PORT must be valid Unicode".into());
+        }
+    };
     #[cfg(feature = "coap")]
     let coap_bind = coap_bind_from_env();
     #[cfg(feature = "mqtt")]
@@ -82,7 +87,7 @@ pub(crate) async fn run_from_env() {
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
     let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
-    let max_storage_bytes = env_optional_usize("ELASTIK_MAX_STORAGE_BYTES");
+    let max_storage_bytes = env_optional_usize("ELASTIK_MAX_STORAGE_BYTES")?;
     let max_listen_connections = env_nonzero_usize(
         "ELASTIK_MAX_LISTEN_CONNECTIONS",
         DEFAULT_MAX_LISTEN_CONNECTIONS,
@@ -119,9 +124,22 @@ pub(crate) async fn run_from_env() {
         "ELASTIK_READ_CACHE_MAX_ENTRIES",
         DEFAULT_READ_CACHE_MAX_ENTRIES,
     );
-    let hmac_key = hmac_key_from_env_value(std::env::var("ELASTIK_KEY").ok()).expect(
-        "ELASTIK_KEY must be a non-empty string; the audit chain has no meaning without it",
-    );
+    let raw_hmac_key = match std::env::var("ELASTIK_KEY") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("ELASTIK_KEY is invalid: value is not valid Unicode".into());
+        }
+    };
+    let hmac_key = match hmac_key_from_env_value(raw_hmac_key) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return Err(
+                "ELASTIK_KEY is required; the audit chain has no meaning without it".into(),
+            );
+        }
+        Err(err) => return Err(format!("ELASTIK_KEY is invalid: {err}")),
+    };
     let tokens = ServerTokens::from_env();
     let persist_header_allowlist = header_allowlist_from_env();
     let persist_header_user_deny = header_user_deny_from_env();
@@ -137,7 +155,7 @@ pub(crate) async fn run_from_env() {
             listen_replay_max,
             read_cache_max_entries,
         },
-    );
+    )?;
     let state = ServerState::new(
         engine.clone(),
         max_world_bytes,
@@ -152,7 +170,9 @@ pub(crate) async fn run_from_env() {
     };
 
     let addr = listen_addr(&host, port);
-    let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|err| format!("bind {addr} failed: {err}"))?;
     let bind_ip = listener
         .local_addr()
         .map(|addr| addr.ip())
@@ -206,8 +226,9 @@ pub(crate) async fn run_from_env() {
     let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(engine.clone()))
         .await;
-    serve_result.expect("axum server failed");
+    serve_result.map_err(|err| format!("axum server failed: {err}"))?;
     drop(engine);
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -245,14 +266,13 @@ impl ServerTokens {
 #[cfg(not(test))]
 fn build_engine_from_env(
     data: PathBuf,
-    hmac_key: Vec<u8>,
+    hmac_key: AuditHmacKey,
     tokens: &ServerTokens,
     limits: EngineLimits,
-) -> Engine {
-    let key = SecretBytes::new(hmac_key).expect("ELASTIK_KEY validated before Engine build");
+) -> Result<Engine, String> {
     let builder = Engine::builder()
         .data_root(data)
-        .key(key)
+        .key(hmac_key)
         .max_world_bytes(limits.max_world_bytes)
         .max_memory_bytes(limits.max_memory_bytes)
         .max_storage_bytes(limits.max_storage_bytes)
@@ -261,7 +281,7 @@ fn build_engine_from_env(
         .read_cache_max_entries(limits.read_cache_max_entries);
     configure_tokens(builder, tokens)
         .build()
-        .unwrap_or_else(|err| panic!("build Engine failed: {err:?}"))
+        .map_err(|err| format!("build Engine failed: {err}"))
 }
 
 #[cfg(not(test))]

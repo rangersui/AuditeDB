@@ -7,7 +7,7 @@ Usage:
       --out prompts/curlbench-$(date +%s).json
 
 Pre-flight (one-shot, in another terminal):
-  $env:ELASTIK_KEY = "test-key"
+  $env:ELASTIK_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   $env:ELASTIK_WRITE_TOKEN = "write-token"
   $env:ELASTIK_APPROVE_TOKEN = "approve-token"
   $env:ELASTIK_PERSIST_HEADERS = "x-author,x-meta-*"

@@ -12,9 +12,11 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES,
     },
-    engine_types::SecretBytes,
+    engine_types::AuditHmacKey,
     store, Core,
 };
+
+pub(crate) const TEST_HMAC_KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
 pub(crate) fn test_core(label: &str) -> (Core, PathBuf) {
     test_core_with_read_cache_max(label, crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES)
@@ -44,7 +46,7 @@ pub(crate) fn test_core_with_read_cache_max(
                     write: None,
                     approve: None,
                 },
-                hmac_key: SecretBytes::try_from_slice(b"test-key").unwrap(),
+                hmac_key: AuditHmacKey::try_from_slice(TEST_HMAC_KEY).unwrap(),
                 mem: Arc::new(store::MemoryStore::new()),
                 max_world_bytes: DEFAULT_MAX_WORLD_BYTES,
                 max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,

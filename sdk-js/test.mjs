@@ -2,7 +2,7 @@
 // Elastik core. Pass ELASTIK_URL to point at Rust (3105) or Node (3106).
 //
 // Usage:
-//   ELASTIK_URL=http://127.0.0.1:3105 ELASTIK_KEY=test \
+//   ELASTIK_URL=http://127.0.0.1:3105 ELASTIK_KEY=0123456789abcdef0123456789abcdef \
 //     ELASTIK_READ_TOKEN=r ELASTIK_WRITE_TOKEN=w ELASTIK_APPROVE_TOKEN=a \
 //     node test.mjs
 

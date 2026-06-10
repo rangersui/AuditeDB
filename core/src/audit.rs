@@ -7,7 +7,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
-use crate::world;
+use crate::{engine_types::AuditHmacKey, world};
 use std::{fmt, path::Path};
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
@@ -18,8 +18,9 @@ const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256
            ORDER BY e.id ASC, h.name ASC, h.value ASC"#;
 pub(crate) const AUDIT_CHAIN_BROKEN_PREFIX: &str = "audit chain broken at event ";
 
-pub struct VerifiedAuditTx<'tx, 'conn> {
+pub struct VerifiedAuditTx<'tx, 'conn, 'key> {
     tx: &'tx Transaction<'conn>,
+    key: &'key AuditHmacKey,
 }
 
 pub type AuditResult<T> = Result<T, AuditError>;
@@ -72,7 +73,7 @@ pub fn append_with_conn_existing(
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
-    key: &[u8],
+    key: &AuditHmacKey,
 ) -> AuditResult<String> {
     append_with_conn_verified(
         conn,
@@ -96,7 +97,7 @@ pub fn append_with_conn_genesis(
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
-    key: &[u8],
+    key: &AuditHmacKey,
 ) -> AuditResult<String> {
     append_with_conn_verified(
         conn,
@@ -120,7 +121,7 @@ fn append_with_conn_verified(
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
-    key: &[u8],
+    key: &AuditHmacKey,
     empty_chain: EmptyChain,
 ) -> AuditResult<String> {
     let tx = conn.transaction()?;
@@ -133,7 +134,6 @@ fn append_with_conn_verified(
         size,
         content_type,
         headers,
-        key,
     )?;
     tx.commit()?;
     Ok(h)
@@ -141,14 +141,13 @@ fn append_with_conn_verified(
 
 #[allow(clippy::too_many_arguments)]
 pub fn append_tx(
-    audit_tx: &VerifiedAuditTx<'_, '_>,
+    audit_tx: &VerifiedAuditTx<'_, '_, '_>,
     event_type: &str,
     target: &str,
     body_sha256: &str,
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
-    key: &[u8],
 ) -> rusqlite::Result<String> {
     let tx = audit_tx.tx;
     let canonical = canonical_headers(headers);
@@ -162,7 +161,7 @@ pub fn append_tx(
         .optional()?
         .unwrap_or_default();
     let h = event_hmac(
-        key,
+        audit_tx.key.as_slice(),
         EventHmacInput {
             prev: &prev,
             event_type,
@@ -218,43 +217,43 @@ pub enum VerifyReport {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn verify_all_worlds(data_root: &Path, key: &[u8]) -> AuditResult<()> {
+pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()> {
     for world_name in world::list(data_root)? {
         verify_world(data_root, &world_name, key)?;
     }
     Ok(())
 }
 
-pub fn verify_world(data_root: &Path, world_name: &str, key: &[u8]) -> AuditResult<()> {
+pub fn verify_world(data_root: &Path, world_name: &str, key: &AuditHmacKey) -> AuditResult<()> {
     let Some(c) = world::open_existing(data_root, world_name)? else {
         return Ok(());
     };
     require_intact(verify_connection(&c, key)?)
 }
 
-pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn>(
+pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
-    key: &[u8],
-) -> AuditResult<VerifiedAuditTx<'tx, 'conn>> {
+    key: &'key AuditHmacKey,
+) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
     verify_appendable_tx(tx, key, EmptyChain::Reject)
 }
 
-pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn>(
+pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
-    key: &[u8],
-) -> AuditResult<VerifiedAuditTx<'tx, 'conn>> {
+    key: &'key AuditHmacKey,
+) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
     verify_appendable_tx(tx, key, EmptyChain::Allow)
 }
 
-fn verify_appendable_tx<'tx, 'conn>(
+fn verify_appendable_tx<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
-    key: &[u8],
+    key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
-) -> AuditResult<VerifiedAuditTx<'tx, 'conn>> {
+) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let allow_empty = matches!(empty_chain, EmptyChain::Allow);
-    require_intact(verify_statement(&mut stmt, key, allow_empty)?)?;
-    Ok(VerifiedAuditTx { tx })
+    require_intact(verify_statement(&mut stmt, key.as_slice(), allow_empty)?)?;
+    Ok(VerifiedAuditTx { tx, key })
 }
 
 struct EventRow {
@@ -289,14 +288,14 @@ struct EventHmacInput<'a> {
 /// usual SlotState write guard.
 pub fn verify_chain_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
-    key: &[u8],
+    key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
     verify_connection(tracked.as_mut_conn(), key)
 }
 
-fn verify_connection(c: &Connection, key: &[u8]) -> rusqlite::Result<VerifyReport> {
+fn verify_connection(c: &Connection, key: &AuditHmacKey) -> rusqlite::Result<VerifyReport> {
     let mut stmt = c.prepare(AUDIT_SELECT)?;
-    verify_statement(&mut stmt, key, false)
+    verify_statement(&mut stmt, key.as_slice(), false)
 }
 
 fn verify_statement(
@@ -532,21 +531,16 @@ mod tests {
         c
     }
 
+    fn test_key() -> AuditHmacKey {
+        AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
+    }
+
     fn hmac_for(event_type: &str, target: &str) -> String {
         let c = test_connection();
         let tx = c.unchecked_transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
-        append_tx(
-            &audit_tx,
-            event_type,
-            target,
-            "abc",
-            3,
-            "text/plain",
-            &[],
-            b"key",
-        )
-        .unwrap()
+        let key = test_key();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        append_tx(&audit_tx, event_type, target, "abc", 3, "text/plain", &[]).unwrap()
     }
 
     #[test]
@@ -577,7 +571,7 @@ mod tests {
             b"hello",
             "text/plain; charset=utf-8",
             &headers,
-            core.hmac_key.as_slice(),
+            &core.hmac_key,
         )
         .unwrap();
 
@@ -611,7 +605,8 @@ mod tests {
     fn verify_connection_accepts_intact_chain() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
+        let key = test_key();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
         let h1 = append_tx(
             &audit_tx,
             "put",
@@ -620,23 +615,12 @@ mod tests {
             3,
             "text/plain",
             &[("x-meta-author".to_owned(), "ranger".to_owned())],
-            b"key",
         )
         .unwrap();
-        let h2 = append_tx(
-            &audit_tx,
-            "append",
-            "home/a",
-            "def",
-            6,
-            "text/plain",
-            &[],
-            b"key",
-        )
-        .unwrap();
+        let h2 = append_tx(&audit_tx, "append", "home/a", "def", 6, "text/plain", &[]).unwrap();
         tx.commit().unwrap();
 
-        let report = verify_connection(&c, b"key").unwrap();
+        let report = verify_connection(&c, &key).unwrap();
         assert_eq!(
             report,
             VerifyReport::Valid(VerifyOk {
@@ -678,7 +662,8 @@ mod tests {
         .unwrap();
 
         let tx = c.transaction().unwrap();
-        let err = match verify_appendable_tx_genesis_checked(&tx, b"key") {
+        let key = test_key();
+        let err = match verify_appendable_tx_genesis_checked(&tx, &key) {
             Ok(_) => panic!("corrupt latest hmac must not be treated as an empty chain"),
             Err(e) => e,
         };
@@ -698,25 +683,17 @@ mod tests {
         let mut c = test_connection();
         {
             let tx = c.transaction().unwrap();
-            let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
-            append_tx(
-                &audit_tx,
-                "put",
-                "home/a",
-                "abc",
-                3,
-                "text/plain",
-                &[],
-                b"key",
-            )
-            .unwrap();
+            let key = test_key();
+            let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+            append_tx(&audit_tx, "put", "home/a", "abc", 3, "text/plain", &[]).unwrap();
             tx.commit().unwrap();
         }
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
             .unwrap();
 
         let tx = c.transaction().unwrap();
-        let err = match verify_appendable_tx_existing_checked(&tx, b"key") {
+        let key = test_key();
+        let err = match verify_appendable_tx_existing_checked(&tx, &key) {
             Ok(_) => panic!("tampered audit chain must not be appendable"),
             Err(err) => err,
         };
@@ -735,23 +712,14 @@ mod tests {
     fn verify_connection_rejects_tampered_event_hmac() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
-        append_tx(
-            &audit_tx,
-            "put",
-            "home/a",
-            "abc",
-            3,
-            "text/plain",
-            &[],
-            b"key",
-        )
-        .unwrap();
+        let key = test_key();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        append_tx(&audit_tx, "put", "home/a", "abc", 3, "text/plain", &[]).unwrap();
         tx.commit().unwrap();
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
             .unwrap();
 
-        let report = verify_connection(&c, b"key").unwrap();
+        let report = verify_connection(&c, &key).unwrap();
         assert!(matches!(
             report,
             VerifyReport::Broken(VerifyBreak {
@@ -767,14 +735,15 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("elastik-audit-startup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        world::write_with_audit(&root, "home/a", b"abc", "text/plain", &[], b"key").unwrap();
+        let key = test_key();
+        world::write_with_audit(&root, "home/a", b"abc", "text/plain", &[], &key).unwrap();
         {
             let c = Connection::open(world::world_db(&root, "home/a")).unwrap();
             c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
                 .unwrap();
         }
 
-        assert!(verify_all_worlds(&root, b"key").is_err());
+        assert!(verify_all_worlds(&root, &key).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -782,7 +751,8 @@ mod tests {
     fn verify_connection_rejects_tampered_event_headers() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, b"key").unwrap();
+        let key = test_key();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
         append_tx(
             &audit_tx,
             "put",
@@ -791,7 +761,6 @@ mod tests {
             3,
             "text/plain",
             &[("x-meta-author".to_owned(), "ranger".to_owned())],
-            b"key",
         )
         .unwrap();
         tx.commit().unwrap();
@@ -801,7 +770,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = verify_connection(&c, b"key").unwrap();
+        let report = verify_connection(&c, &key).unwrap();
         assert!(matches!(
             report,
             VerifyReport::Broken(VerifyBreak {
