@@ -163,7 +163,7 @@ try:
 except FfiError.InvalidSecret as e:
     print(e.message)
 except FfiError.BuildDataRootLockHeld as e:
-    holder = f" by PID {e.holder_pid}" if e.holder_pid else ""
+    holder = f" (last writer: PID {e.holder_pid})" if e.holder_pid else ""
     print(f"locked{holder}: {e.path}")
 ```
 

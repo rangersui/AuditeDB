@@ -1018,7 +1018,7 @@ mod tests {
         ));
         assert_eq!(
             err.to_string(),
-            "data root writer lock is held by PID 12345: data"
+            "data root writer lock is held (last writer: PID 12345): data"
         );
     }
 

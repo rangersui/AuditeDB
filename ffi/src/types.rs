@@ -648,7 +648,10 @@ impl fmt::Display for FfiError {
                 f.write_str(detail)
             }
             Self::BuildDataRootLockHeld { path, holder_pid } => match holder_pid {
-                Some(pid) => write!(f, "data root writer lock is held by PID {pid}: {path}"),
+                Some(pid) => write!(
+                    f,
+                    "data root writer lock is held (last writer: PID {pid}): {path}"
+                ),
                 None => write!(f, "data root writer lock is held: {path}"),
             },
             Self::BuildHmacKeyMissing => f.write_str("hmac key missing"),
