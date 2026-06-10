@@ -22,7 +22,7 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -38,19 +38,54 @@ _last_live_url: str | None = None
 _last_live_data_dir: str | None = None
 
 
+class _BoundedOutputCapture:
+    """Drain child output without letting quiet-mode logs grow unbounded."""
+
+    def __init__(self, limit: int = 4000) -> None:
+        self._limit = limit
+        self._buffer = bytearray()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def start(self, pipe) -> None:
+        thread = threading.Thread(target=self._drain, args=(pipe,), daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def _drain(self, pipe) -> None:
+        try:
+            while True:
+                chunk = pipe.read(4096)
+                if not chunk:
+                    return
+                with self._lock:
+                    self._buffer.extend(chunk)
+                    overflow = len(self._buffer) - self._limit
+                    if overflow > 0:
+                        del self._buffer[:overflow]
+        except OSError:
+            return
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def text(self) -> str:
+        if self._thread is not None:
+            self._thread.join(timeout=0.2)
+        with self._lock:
+            raw = bytes(self._buffer)
+        return raw.decode("utf-8", "replace").strip()
+
+
 def _captured_startup_output(capture) -> str:
     if capture is None:
         return ""
-    try:
-        capture.flush()
-        capture.seek(0)
-        raw = capture.read()
-    except OSError:
-        return ""
-    text = raw.decode("utf-8", "replace").strip()
+    text = capture.text()
     if not text:
         return ""
-    return "\nchild output:\n" + text[-4000:]
+    return "\nchild output:\n" + text
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -335,42 +370,40 @@ def start(
     else:
         env.pop("ELASTIK_DATA", None)
 
-    capture = tempfile.TemporaryFile() if quiet else None
-    out = capture if quiet else None
-    try:
-        _proc = subprocess.Popen(
-            [str(binary)],
-            env=env,
-            stdout=out,
-            stderr=subprocess.STDOUT if quiet else None,
-        )
-        atexit.register(stop)
+    capture = _BoundedOutputCapture() if quiet else None
+    out = subprocess.PIPE if quiet else None
+    _proc = subprocess.Popen(
+        [str(binary)],
+        env=env,
+        stdout=out,
+        stderr=subprocess.STDOUT if quiet else None,
+    )
+    if capture is not None and _proc.stdout is not None:
+        capture.start(_proc.stdout)
+    atexit.register(stop)
 
-        if not _wait_for_port(host, port, proc=_proc):
-            stop()
-            code = None if _proc is None else _proc.returncode
-            exited = "" if code is None else f" (child exited with code {code})"
-            raise RuntimeError(
-                f"elastik-core failed to start on {host}:{port} within 10s{exited}"
-                f"{_captured_startup_output(capture)}"
-            )
-        if _proc is None or _proc.poll() is not None:
-            code = None if _proc is None else _proc.returncode
-            stop()
-            raise RuntimeError(
-                f"elastik-core exited during startup (code={code})"
-                f"{_captured_startup_output(capture)}"
-            )
-        probe_token = approve_token or write_token or read_token
-        if not _probe_core(host, port, probe_token):
-            stop()
-            raise RuntimeError(
-                f"port {host}:{port} did not answer as elastik-core"
-                f"{_captured_startup_output(capture)}"
-            )
-    finally:
-        if capture is not None:
-            capture.close()
+    if not _wait_for_port(host, port, proc=_proc):
+        stop()
+        code = None if _proc is None else _proc.returncode
+        exited = "" if code is None else f" (child exited with code {code})"
+        raise RuntimeError(
+            f"elastik-core failed to start on {host}:{port} within 10s{exited}"
+            f"{_captured_startup_output(capture)}"
+        )
+    if _proc is None or _proc.poll() is not None:
+        code = None if _proc is None else _proc.returncode
+        stop()
+        raise RuntimeError(
+            f"elastik-core exited during startup (code={code})"
+            f"{_captured_startup_output(capture)}"
+        )
+    probe_token = approve_token or write_token or read_token
+    if not _probe_core(host, port, probe_token):
+        stop()
+        raise RuntimeError(
+            f"port {host}:{port} did not answer as elastik-core"
+            f"{_captured_startup_output(capture)}"
+        )
     if not quiet:
         _warn_token_state(read_token, write_token, approve_token)
 
