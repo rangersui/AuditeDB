@@ -329,6 +329,28 @@ pub enum SubscriptionRecvError {
         /// Number of events the receiver missed.
         skipped: u64,
     },
+    /// The subscriber's resume cursor (`since`) is ahead of the newest event
+    /// id this engine process has issued.
+    ///
+    /// Listen ids are process-local: the counter starts at zero on every
+    /// engine start, so a cursor saved before a restart can point past
+    /// everything the current process has issued. Without this signal such a
+    /// cursor would silently filter out every live event until the counter
+    /// caught up.
+    ///
+    /// Recoverable as a **new** stream: the subscription continues in
+    /// live-only mode — no replay, no event-id filtering (the subscribe
+    /// pattern still applies). The caller must discard its saved cursor;
+    /// there is no continuity between the cursor's id space and the events
+    /// that follow. Callers that also want this process's buffered history
+    /// should resubscribe with `since = Some(0)` instead.
+    CursorAhead {
+        /// The cursor the subscriber presented.
+        since: u64,
+        /// The newest event id this process had issued when the
+        /// subscription was opened.
+        newest: u64,
+    },
 }
 
 impl SecretBytes {
@@ -584,7 +606,10 @@ impl EngineSubscription {
     ///
     /// Drains the replay queue first (in increasing event id order), then
     /// switches to the live broadcast stream. If the caller passed `since` to
-    /// [`crate::Engine::subscribe`], events with id `<= since` are filtered.
+    /// [`crate::Engine::subscribe`], events with id `<= since` are filtered —
+    /// unless `since` was ahead of the newest issued id (see
+    /// [`SubscriptionRecvError::CursorAhead`]), in which case no id filtering
+    /// is applied.
     ///
     /// # Errors
     /// - [`SubscriptionRecvError::Closed`] when the engine shut down or the
@@ -593,6 +618,10 @@ impl EngineSubscription {
     /// - [`SubscriptionRecvError::Lagged`] when the broadcast ring buffer
     ///   overflowed and events were lost. Recoverable: the next call resumes
     ///   with fresh events.
+    /// - [`SubscriptionRecvError::CursorAhead`] when `since` points past the
+    ///   newest id this process has issued (the cursor predates an engine
+    ///   restart). Recoverable as a new stream: subsequent calls yield live
+    ///   events; the saved cursor must be discarded.
     pub async fn recv(&mut self) -> Result<ChangeEvent, SubscriptionRecvError> {
         loop {
             let state = std::mem::replace(&mut self.state, SubscriptionState::Closed);

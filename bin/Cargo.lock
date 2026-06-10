@@ -518,6 +518,7 @@ dependencies = [
  "elastik-core",
  "futures-util",
  "hex",
+ "http-body-util",
  "percent-encoding",
  "rumqttd",
  "rusqlite",

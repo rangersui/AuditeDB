@@ -130,7 +130,7 @@ export interface GetMetaResult {
     status: number;
 }
 
-export type ListenEventType = "put" | "post" | "delete" | "lag" | "message" | "error";
+export type ListenEventType = "put" | "post" | "delete" | "lag" | "reset" | "message" | "error";
 
 export interface ListenEvent {
     type: ListenEventType;

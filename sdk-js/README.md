@@ -617,7 +617,7 @@ Event shape:
 
 ```js
 {
-    type:   "put" | "post" | "delete" | "lag" | "message" | "error",
+    type:   "put" | "post" | "delete" | "lag" | "reset" | "message" | "error",
     id:     "42",
     path:   "/home/task/123",
     method: "PUT",

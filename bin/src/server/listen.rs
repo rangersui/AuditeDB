@@ -79,6 +79,11 @@ pub(crate) async fn handler(
                     .data(format!("missed: {skipped}"))),
                 subscription,
             )),
+            // The client's Last-Event-ID predates an engine restart: its id
+            // space no longer exists. The stream continues live.
+            Err(SubscriptionRecvError::CursorAhead { since, newest }) => {
+                Some((Ok(sse_reset_event(since, newest)), subscription))
+            }
             Err(SubscriptionRecvError::Closed) => None,
             Err(_err) => {
                 #[cfg(feature = "unstable-engine")]
@@ -95,6 +100,20 @@ pub(crate) async fn handler(
                 .text("keepalive"),
         )
         .into_response()
+}
+
+/// Builds the `reset` frame for a cursor that predates an engine restart.
+///
+/// The `id:` field rebases the client's Last-Event-ID buffer to `newest`
+/// (the SSE spec applies id updates on named events too), so an
+/// auto-reconnecting client resumes via normal ring replay instead of
+/// looping on reset. One key per `data:` line, matching every other
+/// multi-field frame on this stream.
+fn sse_reset_event(since: u64, newest: u64) -> Event {
+    Event::default()
+        .event("reset")
+        .id(newest.to_string())
+        .data(format!("since: {since}\nnewest: {newest}"))
 }
 
 fn sse_change_event(change: EngineChangeEvent) -> Event {
@@ -165,6 +184,94 @@ mod tests {
         assert!(wire.contains("hmac-"));
         assert!(!wire.contains("body"));
         assert!(!wire.contains("secret-body"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn sse_reset_event_rebases_cursor_for_stale_subscribers() {
+        let (engine, dir) = test_engine_for_server("listen-sse-reset");
+        let mut subscription = engine
+            .subscribe(
+                &SubscribePattern::new("home/task/*"),
+                AccessTier::Read,
+                Some(500),
+            )
+            .expect("stale-cursor subscription should be accepted");
+
+        let err = subscription
+            .recv()
+            .await
+            .expect_err("first item must be the reset signal");
+        let SubscriptionRecvError::CursorAhead { since, newest } = err else {
+            panic!("expected CursorAhead, got {err:?}");
+        };
+
+        let event = sse_reset_event(since, newest);
+        let wire = format!("{event:?}");
+        assert!(
+            wire.contains("event: reset\\n") || wire.contains("event: reset\n"),
+            "event name must be exactly reset: {wire}"
+        );
+        assert!(
+            wire.contains("id: 0"),
+            "id field must rebase Last-Event-ID to newest: {wire}"
+        );
+        assert!(
+            wire.contains("data: since: 500\\ndata: newest: 0")
+                || wire.contains("data: since: 500\ndata: newest: 0"),
+            "one key per data line, in since/newest order: {wire}"
+        );
+
+        // Nonzero newest pins the variable plumbing: a hard-coded-zero
+        // mutant of sse_reset_event passes every engine-driven test above
+        // (fresh engines always have newest == 0).
+        let warm = format!("{:?}", sse_reset_event(500, 7));
+        assert!(warm.contains("id: 7"), "{warm}");
+        assert!(
+            warm.contains("data: since: 500\\ndata: newest: 7")
+                || warm.contains("data: since: 500\ndata: newest: 7"),
+            "{warm}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn handler_emits_reset_frame_for_stale_last_event_id() {
+        // Pins the handler wiring itself: if the CursorAhead arm were
+        // deleted, the stream would fall into the wildcard and close, and
+        // this test would fail on a missing first frame — the silent
+        // reconnect loop cannot come back unnoticed.
+        use http_body_util::BodyExt;
+
+        let (engine, dir) = test_engine_for_server("listen-reset-wire");
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", "500".parse().unwrap());
+
+        let resp = handler(
+            State(server_state_for_engine_for_tests(engine)),
+            Method::GET,
+            headers,
+            AxPath("home/task/*".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let mut body = resp.into_body();
+        let frame = tokio::time::timeout(Duration::from_secs(10), body.frame())
+            .await
+            .expect("first SSE frame must arrive promptly")
+            .expect("stream must yield a reset frame, not end")
+            .expect("frame must not error");
+        let bytes = frame.into_data().expect("first frame carries data");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: reset"), "{text}");
+        assert!(text.contains("id: 0"), "{text}");
+        assert!(
+            text.contains("data: since: 500\ndata: newest: 0"),
+            "two data lines in since/newest order: {text}"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

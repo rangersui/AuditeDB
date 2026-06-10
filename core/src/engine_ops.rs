@@ -149,11 +149,11 @@ impl<'a> EngineOps<'a> {
 
     fn open_subscription(&self, permit: SubscribePermit, since: Option<u64>) -> EngineSubscription {
         let rx = self.core.events.subscribe();
-        let (lag, replay, live_floor) = replay_after(self.core, since, &permit.pattern);
+        let (interruption, replay, live_floor) = replay_after(self.core, since, &permit.pattern);
         let replay_mode = since.is_some();
         let mut initial = VecDeque::new();
-        if let Some(skipped) = lag {
-            initial.push_back(Err(SubscriptionRecvError::Lagged { skipped }));
+        if let Some(err) = interruption {
+            initial.push_back(Err(err.into()));
         }
         initial.extend(replay.into_iter().map(Ok));
         EngineSubscription::new(
@@ -321,7 +321,11 @@ impl Engine {
     /// `id > since` from the in-memory ring before switching to the live
     /// stream. Replay is bounded by the configured `listen_replay_max`; if
     /// `since` is older than the ring's floor, the first `recv` call yields
-    /// a [`crate::SubscriptionRecvError::Lagged`] error.
+    /// a [`crate::SubscriptionRecvError::Lagged`] error. If `since` is ahead
+    /// of the newest id this process has issued (a cursor saved before an
+    /// engine restart), the first `recv` call yields
+    /// [`crate::SubscriptionRecvError::CursorAhead`] and the subscription
+    /// continues in live-only mode.
     ///
     /// The returned [`EngineSubscription`] holds a subscription slot until
     /// dropped; drop it promptly when finished so other subscribers can
@@ -350,11 +354,40 @@ struct NoopDeleteTrace;
 
 impl DeleteTraceHooks for NoopDeleteTrace {}
 
+/// A non-terminal condition surfaced as the first `recv` result of a
+/// resuming subscription. Deliberately narrower than
+/// [`SubscriptionRecvError`]: a replay interruption can never be `Closed`,
+/// so the production construction path (`replay_after` →
+/// `open_subscription`) cannot queue a fake terminal error.
+/// (`EngineSubscription::new` itself still accepts any error in its replay
+/// queue; that seam is exercised by tests and is on the ledger for the
+/// planned `ReplayCursor` consolidation.)
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReplayInterruption {
+    /// The ring evicted `skipped` events between the cursor and the oldest
+    /// retained event.
+    Lagged { skipped: u64 },
+    /// The cursor is ahead of every id this process has issued (it predates
+    /// an engine restart).
+    CursorAhead { since: u64, newest: u64 },
+}
+
+impl From<ReplayInterruption> for SubscriptionRecvError {
+    fn from(value: ReplayInterruption) -> Self {
+        match value {
+            ReplayInterruption::Lagged { skipped } => Self::Lagged { skipped },
+            ReplayInterruption::CursorAhead { since, newest } => {
+                Self::CursorAhead { since, newest }
+            }
+        }
+    }
+}
+
 pub(crate) fn replay_after(
     core: &Core,
     since: Option<u64>,
     pattern: &SubscribePattern,
-) -> (Option<u64>, Vec<ChangeEvent>, u64) {
+) -> (Option<ReplayInterruption>, Vec<ChangeEvent>, u64) {
     let Some(last_id) = since else {
         return (None, Vec::new(), 0);
     };
@@ -362,6 +395,28 @@ pub(crate) fn replay_after(
         .event_log
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    // The counter is read only after acquiring the log lock: writers push
+    // under this lock after allocating their id, so the acquire edge
+    // guarantees the load observes every id whose event is already visible
+    // to replay — the CursorAhead check below cannot misfire for a cursor
+    // whose event is in the log.
+    let newest = crate::last_issued_event_id(&core.next_event);
+    if last_id > newest {
+        // A cursor this process never issued: it predates an engine restart
+        // (listen ids are process-local and the counter resets to zero).
+        // Surface the discontinuity and fall back to live-only mode with a
+        // zero floor — filtering live events against an id space that no
+        // longer exists would silently drop everything until the counter
+        // caught up.
+        return (
+            Some(ReplayInterruption::CursorAhead {
+                since: last_id,
+                newest,
+            }),
+            Vec::new(),
+            0,
+        );
+    }
     let gap = log.front().and_then(|oldest| {
         let expected_next = last_id.saturating_add(1);
         if expected_next < oldest.id {
@@ -377,7 +432,11 @@ pub(crate) fn replay_after(
         .map(Into::into)
         .collect();
     let live_floor = replay.last().map(|change| change.id).unwrap_or(last_id);
-    (gap, replay, live_floor)
+    (
+        gap.map(|skipped| ReplayInterruption::Lagged { skipped }),
+        replay,
+        live_floor,
+    )
 }
 
 impl From<Preconditions> for etag::Preconditions {
@@ -647,11 +706,15 @@ mod tests {
                 });
             }
         }
+        crate::state::test_only_set_event_counter(&engine.core().next_event, 12);
 
         let pattern = SubscribePattern::new("home/task/*");
-        let (gap, replay, floor) = replay_after(engine.core(), Some(5), &pattern);
+        let (interruption, replay, floor) = replay_after(engine.core(), Some(5), &pattern);
 
-        assert_eq!(gap, Some(4));
+        assert_eq!(
+            interruption,
+            Some(ReplayInterruption::Lagged { skipped: 4 })
+        );
         assert_eq!(replay.len(), 3);
         assert_eq!(replay[0].id, 10);
         assert_eq!(replay[0].path.as_str(), "home/task/10");
@@ -673,13 +736,66 @@ mod tests {
                 etag: "hmac-max".to_string(),
             });
         }
+        crate::state::test_only_set_event_counter(&engine.core().next_event, u64::MAX);
 
         let pattern = SubscribePattern::new("home/task/*");
-        let (gap, replay, floor) = replay_after(engine.core(), Some(u64::MAX), &pattern);
+        let (interruption, replay, floor) = replay_after(engine.core(), Some(u64::MAX), &pattern);
 
-        assert_eq!(gap, None);
+        assert_eq!(interruption, None);
         assert!(replay.is_empty());
         assert_eq!(floor, u64::MAX);
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replay_after_flags_cursor_from_previous_boot() {
+        let (engine, root) = test_engine("replay-cursor-ahead");
+        {
+            let mut log = engine.core().event_log.lock().unwrap();
+            for id in 1..=3 {
+                log.push_back(event::ChangeEvent {
+                    id,
+                    verb: ChangeVerb::Replace,
+                    path: format!("/home/task/{id}"),
+                    etag: format!("hmac-{id}"),
+                });
+            }
+        }
+        crate::state::test_only_set_event_counter(&engine.core().next_event, 3);
+
+        let pattern = SubscribePattern::new("home/task/*");
+        let (interruption, replay, floor) = replay_after(engine.core(), Some(500), &pattern);
+
+        assert_eq!(
+            interruption,
+            Some(ReplayInterruption::CursorAhead {
+                since: 500,
+                newest: 3
+            })
+        );
+        assert!(replay.is_empty(), "a foreign cursor must not replay");
+        assert_eq!(floor, 0, "live-only mode must not filter anything");
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replay_after_accepts_cursor_at_newest_id() {
+        let (engine, root) = test_engine("replay-cursor-at-newest");
+        crate::state::test_only_set_event_counter(&engine.core().next_event, 7);
+
+        let pattern = SubscribePattern::new("*");
+        let (interruption, replay, floor) = replay_after(engine.core(), Some(7), &pattern);
+
+        assert_eq!(
+            interruption, None,
+            "a cursor equal to the newest issued id is legitimate"
+        );
+        assert!(replay.is_empty());
+        assert_eq!(floor, 7);
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
@@ -814,6 +930,53 @@ mod tests {
             subscription.recv().await,
             Err(SubscriptionRecvError::Closed)
         ));
+
+        drop(subscription);
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_subscription_with_stale_cursor_signals_then_streams_live() {
+        // Regression: before CursorAhead existed, a cursor saved before an
+        // engine restart was filtered against the reset id space — the
+        // subscription stayed open, authorized, and silently empty. The
+        // timeouts make that regression fail fast instead of hanging the
+        // suite: the silent-drop failure mode is recv() never returning.
+        let recv_budget = std::time::Duration::from_secs(10);
+        let (engine, root) = test_engine("subscribe-stale-cursor");
+        let pattern = SubscribePattern::new("home/stale/*");
+        let mut subscription = engine
+            .subscribe(&pattern, AccessTier::Anon, Some(500))
+            .expect("subscription opens with a stale cursor");
+
+        let first = tokio::time::timeout(recv_budget, subscription.recv())
+            .await
+            .expect("first recv must yield CursorAhead, not block");
+        assert!(matches!(
+            first,
+            Err(SubscriptionRecvError::CursorAhead {
+                since: 500,
+                newest: 0
+            })
+        ));
+
+        let world = ValidatedWorldPath::new("home/stale/a").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"alive"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let change = tokio::time::timeout(recv_budget, subscription.recv())
+            .await
+            .expect("live recv must not block after the cursor warning")
+            .expect("live events must flow after the cursor warning");
+        assert_eq!(change.path.as_str(), "home/stale/a");
 
         drop(subscription);
         drop(engine);

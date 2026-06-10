@@ -283,7 +283,10 @@ export class Elastik {
     // ─── LISTEN ──────────────────────────────────────────
     // Subscribe to /listen/<pattern>. Calls callback(event) for each SSE event.
     // event: { type, id, path, method, etag, data }
-    //   type   "put" | "post" | "delete" | "lag" | "message" | "error"
+    //   type   "put" | "post" | "delete" | "lag" | "reset" | "message" | "error"
+    //          "reset": your lastEventId predates an engine restart; the
+    //          stream continues live. This SDK keeps no cursor — pass this
+    //          event's id as options.lastEventId on your next listen() call.
     //   data   raw multi-line data string (rarely needed; structured fields above suffice)
     // Returns: () => void (unsubscribe)
     listen(pattern, callback, options = {}) {

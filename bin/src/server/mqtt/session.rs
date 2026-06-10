@@ -449,6 +449,17 @@ pub(super) async fn subscription_loop(
                 ));
                 continue;
             }
+            // Defensive arm: currently unreachable — this adapter always
+            // subscribes with since=None (no MQTT resume-cursor concept), and
+            // CursorAhead is only produced for Some(cursor). Kept explicit so
+            // a future resume feature cannot silently fall into a wildcard.
+            Err(SubscriptionRecvError::CursorAhead { since, newest }) => {
+                mqtt_warn(format_args!(
+                    "mqtt: subscription cursor {since} predates an engine restart \
+                     (newest issued id is {newest}); continuing live"
+                ));
+                continue;
+            }
             Err(SubscriptionRecvError::Closed) => break,
             #[allow(unreachable_patterns)]
             Err(_) => continue,

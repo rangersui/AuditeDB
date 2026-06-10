@@ -67,6 +67,41 @@ fn next_event_id(counter: &EventCounter) -> u64 {
     *next
 }
 
+/// Returns the newest event id this process has issued (0 before the first
+/// event). Ids are allocated before their events are published, so a cursor
+/// legitimately obtained from this process can never exceed this value; a
+/// larger cursor must come from a previous process lifetime.
+#[cfg(target_has_atomic = "64")]
+#[inline]
+pub(crate) fn last_issued_event_id(counter: &EventCounter) -> u64 {
+    counter.load(Ordering::Relaxed)
+}
+
+#[cfg(not(target_has_atomic = "64"))]
+#[inline]
+pub(crate) fn last_issued_event_id(counter: &EventCounter) -> u64 {
+    *counter
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Test bypass: forges the event counter so tests can simulate a process
+/// that has already issued ids. Production code must never set the counter
+/// directly — it only advances through `next_event_id`.
+#[cfg(test)]
+pub(crate) fn test_only_set_event_counter(counter: &EventCounter, value: u64) {
+    #[cfg(target_has_atomic = "64")]
+    {
+        counter.store(value, Ordering::Relaxed);
+    }
+    #[cfg(not(target_has_atomic = "64"))]
+    {
+        *counter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
+    }
+}
+
 pub(crate) struct StorageReservationError {
     pub(crate) used: usize,
     pub(crate) quota: usize,

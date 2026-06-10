@@ -30,6 +30,8 @@ unstable-engine = []
 [dev-dependencies]
 base64 = "0.22"
 hex = "0.4"
+# Already in Cargo.lock transitively via axum; dev-only, zero new supply chain.
+http-body-util = "0.1"
 rusqlite = { version = "0.40", default-features = false }
 tower = { version = "0.5", features = ["util"] }
 

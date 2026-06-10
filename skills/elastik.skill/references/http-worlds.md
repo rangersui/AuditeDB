@@ -249,12 +249,20 @@ data: method: DELETE
 event: lag
 data: missed: 12
 
+event: reset
+id: 7
+data: since: 500
+data: newest: 7
+
 : keepalive
 ```
 
 The server (`axum::Sse` with a 15-second `KeepAlive`) emits a `: keepalive`
-SSE comment on idle, a `lag` event when the listener falls behind, and a
-`put` / `delete` / similar event on each change.
+SSE comment on idle, a `lag` event when the listener falls behind or
+resumes from an id older than the replay ring retains, a `reset` event when
+the client's `Last-Event-ID` predates an engine restart (ids are
+process-local; the `id:` field rebases the client's cursor and the stream
+continues live), and a `put` / `delete` / similar event on each change.
 
 ### Client compatibility
 
