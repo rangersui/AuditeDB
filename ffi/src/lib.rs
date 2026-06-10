@@ -11,7 +11,7 @@
 use std::{sync::Arc, time::Duration};
 
 use elastik_core::{
-    ChangeEvent, Engine, EngineDeleteTraceHooks, SecretBytes, SubscribePattern,
+    AuditHmacKey, ChangeEvent, Engine, EngineDeleteTraceHooks, SubscribePattern,
     SubscriptionRecvError, ValidatedWorldPath,
 };
 use tokio::{
@@ -57,7 +57,7 @@ impl FfiEngine {
     pub fn open(config: FfiEngineConfig) -> Result<Arc<Self>, FfiError> {
         let summary = config.summary();
         let mut builder = Engine::builder().data_root(config.data_root);
-        let key = SecretBytes::new(config.hmac_key).map_err(|err| FfiError::InvalidSecret {
+        let key = AuditHmacKey::new(config.hmac_key).map_err(|err| FfiError::InvalidSecret {
             message: err.to_string(),
         })?;
         builder = builder.key(key);
@@ -462,7 +462,7 @@ mod tests {
         let dir = unique_test_dir("opens");
         let engine = FfiEngine::open(FfiEngineConfig {
             data_root: dir.clone(),
-            hmac_key: b"ffi-test-key".to_vec(),
+            hmac_key: b"0123456789abcdef0123456789abcdef".to_vec(),
             read_token: Some(b"read".to_vec()),
             write_token: Some(b"write".to_vec()),
             approve_token: Some(b"approve".to_vec()),
@@ -491,7 +491,7 @@ mod tests {
     fn engine_handle_drop_shuts_down_cleanly() {
         let engine = FfiEngine::open(FfiEngineConfig {
             data_root: unique_test_dir("drop-shutdown"),
-            hmac_key: b"ffi-test-key".to_vec(),
+            hmac_key: b"0123456789abcdef0123456789abcdef".to_vec(),
             read_token: None,
             write_token: None,
             approve_token: None,
@@ -511,7 +511,7 @@ mod tests {
     fn config_summary_uses_engine_normalization_rules() {
         let engine = FfiEngine::open(FfiEngineConfig {
             data_root: unique_test_dir("summary-normalization"),
-            hmac_key: b"ffi-test-key".to_vec(),
+            hmac_key: b"0123456789abcdef0123456789abcdef".to_vec(),
             read_token: Some(b" \t\n".to_vec()),
             write_token: Some(Vec::new()),
             approve_token: Some(vec![0xff, 0xfe]),
@@ -642,7 +642,7 @@ mod tests {
         let dir = unique_test_dir("delete-meta");
         let engine = FfiEngine::open(FfiEngineConfig {
             data_root: dir.clone(),
-            hmac_key: b"ffi-test-key".to_vec(),
+            hmac_key: b"0123456789abcdef0123456789abcdef".to_vec(),
             read_token: None,
             write_token: None,
             approve_token: None,
@@ -845,7 +845,7 @@ mod tests {
     fn subscription_close_releases_receiver_without_waiting_for_drop() {
         let engine = FfiEngine::open(FfiEngineConfig {
             data_root: unique_test_dir("subscribe-explicit-close"),
-            hmac_key: b"ffi-test-key".to_vec(),
+            hmac_key: b"0123456789abcdef0123456789abcdef".to_vec(),
             read_token: None,
             write_token: None,
             approve_token: None,
@@ -921,24 +921,29 @@ mod tests {
     }
 
     #[test]
-    fn engine_handle_rejects_empty_key() {
-        let result = FfiEngine::open(FfiEngineConfig {
-            data_root: unique_test_dir("empty-key"),
-            hmac_key: b"   ".to_vec(),
-            read_token: None,
-            write_token: None,
-            approve_token: None,
-            max_world_bytes: None,
-            max_memory_bytes: None,
-            max_storage_bytes: None,
-            max_listen_connections: None,
-            listen_replay_max: None,
-            read_cache_max_entries: None,
-        });
-        let Err(err) = result else {
-            panic!("empty key should fail");
-        };
-        assert!(matches!(err, FfiError::InvalidSecret { .. }));
+    fn engine_handle_rejects_invalid_hmac_keys() {
+        for (label, hmac_key) in [
+            ("empty-key", b"   ".to_vec()),
+            ("short-key", b"short".to_vec()),
+        ] {
+            let result = FfiEngine::open(FfiEngineConfig {
+                data_root: unique_test_dir(label),
+                hmac_key,
+                read_token: None,
+                write_token: None,
+                approve_token: None,
+                max_world_bytes: None,
+                max_memory_bytes: None,
+                max_storage_bytes: None,
+                max_listen_connections: None,
+                listen_replay_max: None,
+                read_cache_max_entries: None,
+            });
+            let Err(err) = result else {
+                panic!("{label} should fail");
+            };
+            assert!(matches!(err, FfiError::InvalidSecret { .. }));
+        }
     }
 
     #[test]
@@ -1064,7 +1069,7 @@ mod tests {
     fn test_engine(label: &str) -> Arc<FfiEngine> {
         FfiEngine::open(FfiEngineConfig {
             data_root: unique_test_dir(label),
-            hmac_key: b"ffi-test-key".to_vec(),
+            hmac_key: b"0123456789abcdef0123456789abcdef".to_vec(),
             read_token: None,
             write_token: None,
             approve_token: None,

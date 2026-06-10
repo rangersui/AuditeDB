@@ -26,7 +26,7 @@ use std::sync::atomic::AtomicU64;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
-use crate::engine_types::{SecretBytes, ValidatedWorldPath};
+use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
 use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
 use crate::read_cache::ReadCache;
@@ -76,7 +76,7 @@ pub(crate) struct StorageReservationError {
 pub(crate) struct Core {
     pub(crate) data: PathBuf,
     pub(crate) tokens: auth::Tokens,
-    pub(crate) hmac_key: SecretBytes,
+    pub(crate) hmac_key: AuditHmacKey,
     pub(crate) mem: Arc<store::MemoryStore>,
     pub(crate) max_world_bytes: usize,
     pub(crate) max_memory_bytes: usize,
@@ -221,7 +221,7 @@ impl Core {
             "cached_verify_chain only applies to durable worlds"
         );
         self.read_cache
-            .cached_verify_chain(&self.data, world, self.hmac_key.as_slice())
+            .cached_verify_chain(&self.data, world, &self.hmac_key)
     }
 
     /// Test-only fixture: seed a world directly without going through
@@ -249,7 +249,7 @@ impl Core {
                 body,
                 content_type,
                 headers,
-                self.hmac_key.as_slice(),
+                &self.hmac_key,
             )?;
             let prev = current_len.unwrap_or(0);
             let _ = self.storage_body_bytes.fetch_update(
@@ -387,14 +387,14 @@ impl Core {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine_types::SecretBytes;
+    use crate::engine_types::AuditHmacKey;
 
     #[test]
-    fn core_hmac_key_is_stored_as_secret_bytes() {
+    fn core_hmac_key_is_stored_as_audit_hmac_key() {
         let (core, dir) = crate::test_support::test_core("core-secret-key-type");
 
-        fn assert_secret_bytes(_: &SecretBytes) {}
-        assert_secret_bytes(&core.hmac_key);
+        fn assert_audit_hmac_key(_: &AuditHmacKey) {}
+        assert_audit_hmac_key(&core.hmac_key);
 
         drop(core);
         std::fs::remove_dir_all(dir).ok();

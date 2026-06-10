@@ -646,7 +646,7 @@ mod tests {
         engine::{Engine, EngineError},
         engine_ops::EngineOps,
         engine_types::{
-            AccessTier, Preconditions, Representation, SecretBytes, ValidatedWorldPath,
+            AccessTier, AuditHmacKey, Preconditions, Representation, ValidatedWorldPath,
         },
         AuthGate,
     };
@@ -695,7 +695,7 @@ mod tests {
         let root = temp_root("snapshots");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .read_token(b"reader".to_vec())
             .max_storage_bytes(Some(64))
             .build()

@@ -164,7 +164,7 @@ __all__ = [
     "list_worlds", "list_paths", "list_keys", "request",
 ]
 
-__version__ = "8.2.1"
+__version__ = "8.3.0"
 
 
 # ── module-level singleton client ──────────────────────────────────
@@ -247,9 +247,10 @@ def show_config() -> None:
     print(f"  approve: {_mask(os.getenv('ELASTIK_APPROVE_TOKEN'))}")
 
 
-# Re-export start() to also bind the singleton, so the next 模式 works:
-#   e = elastik.start()      # works (returns client)
-#   elastik.put("/x", "y")   # also works (uses the same client)
+# Re-export start() to also bind the singleton, so later module-level calls use
+# the same client:
+#   e = elastik.start(key=..., write_token=...)
+#   elastik.put("/x", "y")
 def start(
     port: int | None = None,
     host: str | None = None,

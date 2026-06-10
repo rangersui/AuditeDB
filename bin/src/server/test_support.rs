@@ -6,7 +6,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use crate::{
     defaults::{DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_WORLD_BYTES},
     engine::Engine,
-    engine_types::{AccessTier, Preconditions, Representation, SecretBytes, ValidatedWorldPath},
+    engine_types::{AccessTier, AuditHmacKey, Preconditions, Representation, ValidatedWorldPath},
     server::{http::semantics::HeaderAllowlist, ServerState},
 };
 
@@ -51,7 +51,7 @@ pub(crate) fn test_engine_for_server_with_read_token(
     let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
-        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .key(test_hmac_key())
         .read_token(token)
         .build()
         .expect("test engine should build");
@@ -62,7 +62,7 @@ pub(crate) fn test_engine_for_server_with_auth_tokens(label: &str) -> (Engine, s
     let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
-        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .key(test_hmac_key())
         .read_token(b"reader".to_vec())
         .write_token(b"writer".to_vec())
         .approve_token(b"approve".to_vec())
@@ -78,7 +78,7 @@ pub(crate) fn test_engine_for_server_with_storage_quota(
     let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
-        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .key(test_hmac_key())
         .max_storage_bytes(Some(max_storage_bytes))
         .build()
         .expect("test engine should build");
@@ -92,7 +92,7 @@ pub(crate) fn test_engine_for_server_with_memory_cap(
     let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
-        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .key(test_hmac_key())
         .max_memory_bytes(max_memory_bytes)
         .build()
         .expect("test engine should build");
@@ -106,7 +106,7 @@ pub(crate) fn test_engine_for_server_with_read_cache_max(
     let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
-        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .key(test_hmac_key())
         .read_cache_max_entries(max_entries)
         .build()
         .expect("test engine should build");
@@ -120,7 +120,7 @@ pub(crate) fn test_engine_for_server_with_world_cap(
     let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
-        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .key(test_hmac_key())
         .max_world_bytes(max_world_bytes)
         .build()
         .expect("test engine should build");
@@ -134,7 +134,7 @@ pub(crate) fn test_engine_for_server_with_listen_slots(
     let dir = test_data_root(label);
     let engine = Engine::builder()
         .data_root(dir.clone())
-        .key(SecretBytes::try_from_slice(b"test-hmac-key").expect("test hmac key"))
+        .key(test_hmac_key())
         .max_listen_connections(max_listen_connections)
         .build()
         .expect("test engine should build");
@@ -172,4 +172,9 @@ pub(crate) async fn write_text_world_for_tests(engine: &Engine, world: &str, bod
 pub(crate) fn world_db_path_for_server_tests(data_root: impl AsRef<Path>, world: &str) -> PathBuf {
     let disk_name = utf8_percent_encode(world, TEST_DISK_ENCODE).to_string();
     data_root.as_ref().join(disk_name).join("universe.db")
+}
+const TEST_HMAC_KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
+
+fn test_hmac_key() -> AuditHmacKey {
+    AuditHmacKey::try_from_slice(TEST_HMAC_KEY).expect("test hmac key")
 }

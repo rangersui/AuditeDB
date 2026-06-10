@@ -130,9 +130,11 @@ e = elastik.start(
 )
 ```
 
-`read-token`, `write-token`, `admin-token`, and `dev-hmac-key` in these examples
-are local placeholders only. The engine does not ship with built-in credentials. Use
-fresh per-deployment secrets outside throwaway demos.
+`read-token`, `write-token`, and `admin-token` in these examples are local
+placeholders only. The audit-chain HMAC key must be at least 32 bytes. The
+audit-chain HMAC key must also not be empty or all whitespace. The engine does
+not ship with built-in credentials. Use fresh per-deployment secrets outside
+throwaway demos.
 
 Python kwargs use underscores (`read_token`). CLI flags use hyphens
 (`--read-token`).
@@ -142,7 +144,7 @@ Python kwargs use underscores (`read_token`). CLI flags use hyphens
 Use this when you want a long-running local service:
 
 ```powershell
-py -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token admin-token
+py -m elastik run --key 0123456789abcdef0123456789abcdef --read-token read-token --write-token write-token --approve-token admin-token
 ```
 
 Then connect from another process:
@@ -522,7 +524,7 @@ least one handler.
 ```python
 import elastik
 
-e = elastik.start(key="dev-key", write_token="write-token")
+e = elastik.start(key="0123456789abcdef0123456789abcdef", write_token="write-token")
 
 @elastik.listen("/home/inbox/*")
 def on_inbox(body, path, meta, e):
@@ -599,7 +601,7 @@ assert e.get_text("note") == "hello"
 git clone https://github.com/rangersui/AuditeDB
 cd AuditeDB
 python -m pip install -e .\sdk
-python -m elastik run --key dev-hmac-key --read-token read-token --write-token write-token --approve-token admin-token
+python -m elastik run --key 0123456789abcdef0123456789abcdef --read-token read-token --write-token write-token --approve-token admin-token
 ```
 
 For the full project README, see:

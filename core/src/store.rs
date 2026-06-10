@@ -345,7 +345,7 @@ mod tests {
             b"final",
             "text/plain; charset=utf-8",
             &[],
-            core.hmac_key.as_slice(),
+            &core.hmac_key,
         )
         .unwrap();
 

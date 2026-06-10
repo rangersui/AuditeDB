@@ -198,10 +198,13 @@ impl Engine {
     ///
     /// This is an async API. Awaiting it runs the complete ordered write
     /// transition: auth proof, per-world write lock, precondition check,
-    /// storage update, audit-chain append, and subscriber notification.
+    /// storage update, audit-chain append for durable worlds, and subscriber
+    /// notification.
     ///
     /// Creates the world if it does not exist; otherwise overwrites the
-    /// body, content type, and headers, then advances the audit chain.
+    /// body, content type, and headers. Durable worlds advance the audit chain;
+    /// memory worlds update only their transient body, metadata, and SHA-256
+    /// ETag.
     ///
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below the namespace's write
@@ -233,7 +236,7 @@ impl Engine {
             .await
     }
 
-    /// Appends bytes to a world's body and advances the audit chain.
+    /// Appends bytes to a world's body.
     ///
     /// This is an async API with the same ordered write boundary as
     /// [`Engine::replace`]. It appends to the existing body instead of replacing
@@ -243,7 +246,9 @@ impl Engine {
     /// create the initial representation, then append to it.
     ///
     /// Same auth requirements and error variants as [`Engine::replace`].
-    /// The world's content type and metadata headers are unchanged.
+    /// The world's content type and metadata headers are unchanged. Durable
+    /// worlds advance the audit chain; memory worlds update only their
+    /// transient body and SHA-256 ETag.
     ///
     /// # Errors
     /// Same as [`Engine::replace`], plus [`EngineError::NotFound`] if the
@@ -602,7 +607,7 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::engine_types::{ChangeVerb, SecretBytes};
+    use crate::engine_types::{AuditHmacKey, ChangeVerb};
 
     fn temp_root(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -621,7 +626,7 @@ mod tests {
         let root = temp_root(name);
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .max_listen_connections(1)
             .build()
             .unwrap();
@@ -716,7 +721,7 @@ mod tests {
         let root = temp_root("subscribe");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .read_token(b"reader".to_vec())
             .build()
             .unwrap();
@@ -772,7 +777,7 @@ mod tests {
         let root = temp_root("subscribe-auth-slot");
         let engine = Engine::builder()
             .data_root(root.clone())
-            .key(SecretBytes::try_from_slice(b"key").unwrap())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
             .read_token(b"reader".to_vec())
             .max_listen_connections(1)
             .build()

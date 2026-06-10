@@ -8,7 +8,7 @@ launches it in a subprocess and returns a pre-bound `Elastik` client.
 The user does:
 
     import elastik
-    e = elastik.start(write_token="x")
+    e = elastik.start(key="0123456789abcdef0123456789abcdef", write_token="x")
     e.put("/home/note", "hi")
     print(e.get("/home/note"))
     elastik.stop()
@@ -22,6 +22,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -35,6 +36,21 @@ _live_url: str | None = None
 _live_data_dir: str | None = None
 _last_live_url: str | None = None
 _last_live_data_dir: str | None = None
+
+
+def _captured_startup_output(capture) -> str:
+    if capture is None:
+        return ""
+    try:
+        capture.flush()
+        capture.seek(0)
+        raw = capture.read()
+    except OSError:
+        return ""
+    text = raw.decode("utf-8", "replace").strip()
+    if not text:
+        return ""
+    return "\nchild output:\n" + text[-4000:]
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -91,11 +107,13 @@ def _binary_path() -> Path:
     return here / name
 
 
-def _wait_for_port(host: str, port: int, deadline_s: float = 10.0) -> bool:
+def _wait_for_port(host: str, port: int, deadline_s: float = 10.0, proc=None) -> bool:
     """Poll until the server accepts a TCP connection or we give up."""
     connect_host = _connect_host(host)
     end = time.time() + deadline_s
     while time.time() < end:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             with socket.create_connection((connect_host, port), timeout=0.3):
                 return True
@@ -125,6 +143,16 @@ def _url_host(host: str) -> str:
 def _client_url(host: str, port: int) -> str:
     """URL a local client should use after the core binds."""
     return f"http://{_url_host(host)}:{port}"
+
+
+def _parse_port(value: str, source: str) -> int:
+    try:
+        port = int(value)
+    except ValueError:
+        raise RuntimeError(f"{source} must be an integer; got {value!r}") from None
+    if not 0 <= port <= 65535:
+        raise RuntimeError(f"{source} must be between 0 and 65535; got {port}")
+    return port
 
 
 def _port_is_free(host: str, port: int) -> bool:
@@ -209,6 +237,7 @@ def start(
     data_dir: Optional[str] = None,
     quiet: bool = True,
     debug: bool | str = False,
+    _key_source: str | None = None,
 ):
     """Launch the bundled elastik-core. Returns a pre-bound Elastik client.
 
@@ -227,18 +256,38 @@ def start(
 
     host = host or os.getenv("ELASTIK_HOST", "127.0.0.1")
     if port is None:
-        port = int(os.getenv("ELASTIK_PORT", "3105"))
+        port = _parse_port(os.getenv("ELASTIK_PORT", "3105"), "ELASTIK_PORT")
+    else:
+        port = _parse_port(str(port), "port")
     # ELASTIK_KEY: no constant default. The audit chain HMAC computed
     # against a publicly-known key is meaningless: anyone could forge
     # events. Caller passes `key=...`, the env provides ELASTIK_KEY,
     # or .env (already loaded by `import elastik`) supplies it.
     # Validate before checking the binary: a missing key is a config
     # error the user can fix; a missing binary is an install error.
-    key = key or os.getenv("ELASTIK_KEY")
-    if not key:
+    if key is None:
+        key = os.getenv("ELASTIK_KEY")
+        key_source = "ELASTIK_KEY"
+    else:
+        key_source = _key_source or "key="
+    if key is None:
         raise RuntimeError(
-            "ELASTIK_KEY required: set it in .env, export it in the shell, "
-            "or pass key=... to elastik.start().\n"
+            "audit key required: set ELASTIK_KEY to a 32-byte-or-longer value "
+            "in .env or the shell, pass key=... to elastik.start(), "
+            "or pass --key to python -m elastik run.\n"
+            "Generate one with: "
+            "python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    try:
+        key_bytes = key.encode("utf-8")
+    except UnicodeError:
+        raise RuntimeError(
+            f"audit key is invalid: {key_source} value must be valid UTF-8 text."
+        ) from None
+    if not key.strip() or len(key_bytes) < 32:
+        raise RuntimeError(
+            f"audit key is invalid: {key_source} must be at least 32 UTF-8 bytes "
+            "and not all whitespace.\n"
             "Generate one with: "
             "python -c \"import secrets; print(secrets.token_hex(32))\""
         )
@@ -286,23 +335,42 @@ def start(
     else:
         env.pop("ELASTIK_DATA", None)
 
-    out = subprocess.DEVNULL if quiet else None
-    _proc = subprocess.Popen([str(binary)], env=env, stdout=out, stderr=out)
-    atexit.register(stop)
-
-    if not _wait_for_port(host, port):
-        stop()
-        raise RuntimeError(
-            f"elastik-core failed to start on {host}:{port} within 10s"
+    capture = tempfile.TemporaryFile() if quiet else None
+    out = capture if quiet else None
+    try:
+        _proc = subprocess.Popen(
+            [str(binary)],
+            env=env,
+            stdout=out,
+            stderr=subprocess.STDOUT if quiet else None,
         )
-    if _proc is None or _proc.poll() is not None:
-        code = None if _proc is None else _proc.returncode
-        stop()
-        raise RuntimeError(f"elastik-core exited during startup (code={code})")
-    probe_token = approve_token or write_token or read_token
-    if not _probe_core(host, port, probe_token):
-        stop()
-        raise RuntimeError(f"port {host}:{port} did not answer as elastik-core")
+        atexit.register(stop)
+
+        if not _wait_for_port(host, port, proc=_proc):
+            stop()
+            code = None if _proc is None else _proc.returncode
+            exited = "" if code is None else f" (child exited with code {code})"
+            raise RuntimeError(
+                f"elastik-core failed to start on {host}:{port} within 10s{exited}"
+                f"{_captured_startup_output(capture)}"
+            )
+        if _proc is None or _proc.poll() is not None:
+            code = None if _proc is None else _proc.returncode
+            stop()
+            raise RuntimeError(
+                f"elastik-core exited during startup (code={code})"
+                f"{_captured_startup_output(capture)}"
+            )
+        probe_token = approve_token or write_token or read_token
+        if not _probe_core(host, port, probe_token):
+            stop()
+            raise RuntimeError(
+                f"port {host}:{port} did not answer as elastik-core"
+                f"{_captured_startup_output(capture)}"
+            )
+    finally:
+        if capture is not None:
+            capture.close()
     if not quiet:
         _warn_token_state(read_token, write_token, approve_token)
 
@@ -368,7 +436,7 @@ def default_url() -> str:
     if explicit:
         return explicit
     host = os.getenv("ELASTIK_HOST", "127.0.0.1")
-    port = int(os.getenv("ELASTIK_PORT", "3105"))
+    port = _parse_port(os.getenv("ELASTIK_PORT", "3105"), "ELASTIK_PORT")
     return _client_url(host, port)
 
 

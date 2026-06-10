@@ -65,8 +65,8 @@ loadDotenv();
 
 // Map of (process.platform, process.arch) → npm package name + binary file.
 // Keep in sync with the @elastikjs/core-* packages that actually exist.
-// darwin-x64 was deliberately dropped from the Rust release matrix in
-// 6.4.2 — Apple Silicon only on the Mac side.
+// darwin-x64 is deliberately absent from the current Rust release matrix:
+// Apple Silicon only on the Mac side.
 const PLATFORM_PACKAGES = {
     "linux-x64":     { pkg: "@elastikjs/core-linux-x64",    file: "elastik-core" },
     "linux-arm64":   { pkg: "@elastikjs/core-linux-arm64",  file: "elastik-core" },

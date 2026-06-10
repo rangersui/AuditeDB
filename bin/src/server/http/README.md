@@ -10,10 +10,10 @@ file documents the binary wire surface: startup, HTTP worlds, `/proc/*`,
 ## Quick Start
 
 ```bash
-export ELASTIK_KEY=secret
+export ELASTIK_KEY=0123456789abcdef0123456789abcdef
 export ELASTIK_WRITE_TOKEN=secret
 cargo run --manifest-path bin/Cargo.toml --bin elastik-core
-# elastik-core v8.2.1 on http://127.0.0.1:3105/
+# elastik-core v8.3.0 on http://127.0.0.1:3105/
 
 curl                  http://127.0.0.1:3105/proc/version
 curl -X PUT -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
@@ -32,7 +32,7 @@ Common binary environment variables:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ELASTIK_KEY` | required | HMAC audit-chain key; startup refuses empty or missing keys. |
+| `ELASTIK_KEY` | required | HMAC audit-chain key; startup refuses missing, empty, all-whitespace, or shorter-than-32-byte keys. |
 | `ELASTIK_READ_TOKEN` | unset | Gates reads, `/proc/*`, and `/listen/*`; unset means public reads. |
 | `ELASTIK_WRITE_TOKEN` | unset | Enables ordinary PUT/POST writes in user namespaces such as `home/`. |
 | `ELASTIK_APPROVE_TOKEN` | unset | Enables DELETE and writes in protected namespaces such as `etc/` and `var/log/`. |
@@ -80,7 +80,7 @@ always policy-free capability discovery.
 
 | Endpoint | Methods | Auth | Purpose |
 |----------|---------|------|---------|
-| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `elastik-core 8.2.1 (rust)`. |
+| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `elastik-core 8.3.0 (rust)`. |
 | `/proc/worlds` | `GET`, `HEAD`, `OPTIONS` | read-gated | Canonical world list, one `home/foo`-style key per line. |
 | `/proc/du` | `GET`, `HEAD`, `OPTIONS` | read-gated | Per-world byte usage. This is an unpaginated management view. |
 | `/proc/df` | `GET`, `HEAD`, `OPTIONS` | read-gated | Storage and memory quota snapshot plus world count. |

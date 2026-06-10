@@ -12,7 +12,15 @@ use tokio::sync::{broadcast, watch, OwnedSemaphorePermit};
 
 use crate::auth::{self, NonEmptyBytes};
 
-/// HMAC key material for the audit chain.
+/// Minimum accepted audit-chain HMAC key length, in bytes.
+///
+/// RFC 2104 section 3 strongly discourages HMAC keys shorter than L, the hash
+/// function output length. SHA-256 outputs 32 bytes, so 32 bytes is the
+/// minimum. Shorter keys are rejected before a [`crate::Engine`] can be built,
+/// so weak audit-chain keys are not representable as [`AuditHmacKey`].
+pub const MIN_HMAC_KEY_BYTES: usize = 32;
+
+/// Secret byte material with zeroing-on-drop behaviour.
 ///
 /// Empty and all-whitespace keys are rejected. The key intentionally has no
 /// public `Debug`, `Display`, or `AsRef<[u8]>` implementation.
@@ -20,10 +28,34 @@ pub struct SecretBytes {
     bytes: NonEmptyBytes,
 }
 
-/// Returned when a secret key constructor receives an empty or all-whitespace
-/// byte string.
+/// HMAC key material strong enough for the audit chain.
+///
+/// This is the proof type accepted by [`crate::EngineBuilder::key`]. Callers
+/// can only construct it through checked constructors, so a short HMAC key
+/// cannot enter the Engine by accident.
+pub struct AuditHmacKey {
+    secret: SecretBytes,
+}
+
+/// Returned when a secret constructor receives an empty or all-whitespace byte
+/// string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmptyKeyError;
+
+/// Returned when audit-chain HMAC key material is empty, whitespace, or too short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InvalidHmacKey {
+    /// The input was empty or all whitespace.
+    Empty(EmptyKeyError),
+    /// The input was shorter than [`MIN_HMAC_KEY_BYTES`].
+    TooShort {
+        /// Minimum accepted length in bytes.
+        min: usize,
+        /// Actual input length in bytes.
+        actual: usize,
+    },
+}
 
 /// Canonical world key that passed Engine path validation.
 ///
@@ -300,7 +332,7 @@ pub enum SubscriptionRecvError {
 }
 
 impl SecretBytes {
-    /// Wraps owned bytes as an HMAC secret.
+    /// Wraps owned bytes as secret material.
     ///
     /// # Errors
     /// Returns [`EmptyKeyError`] if the byte slice is empty or all whitespace.
@@ -310,7 +342,7 @@ impl SecretBytes {
             .ok_or(EmptyKeyError)
     }
 
-    /// Copies the slice and wraps it as an HMAC secret.
+    /// Copies the slice and wraps it as secret material.
     ///
     /// # Errors
     /// Returns [`EmptyKeyError`] if the slice is empty or all whitespace.
@@ -327,6 +359,46 @@ impl SecretBytes {
     pub(crate) fn clone_secret(&self) -> Self {
         Self {
             bytes: self.bytes.clone(),
+        }
+    }
+}
+
+impl AuditHmacKey {
+    /// Wraps owned bytes as an audit-chain HMAC key.
+    ///
+    /// # Errors
+    /// Returns [`InvalidHmacKey`] if the byte slice is empty, all whitespace,
+    /// or shorter than [`MIN_HMAC_KEY_BYTES`].
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, InvalidHmacKey> {
+        let secret = SecretBytes::new(bytes).map_err(InvalidHmacKey::Empty)?;
+        let actual = secret.as_slice().len();
+        if actual < MIN_HMAC_KEY_BYTES {
+            return Err(InvalidHmacKey::TooShort {
+                min: MIN_HMAC_KEY_BYTES,
+                actual,
+            });
+        }
+        Ok(Self { secret })
+    }
+
+    /// Copies the slice and wraps it as an audit-chain HMAC key.
+    ///
+    /// # Errors
+    /// Returns [`InvalidHmacKey`] if the slice is empty, all whitespace, or
+    /// shorter than [`MIN_HMAC_KEY_BYTES`].
+    pub fn try_from_slice(bytes: &[u8]) -> Result<Self, InvalidHmacKey> {
+        Self::new(bytes.to_vec())
+    }
+
+    /// Borrows the key bytes for immediate cryptographic use.
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        self.secret.as_slice()
+    }
+
+    /// Creates an owned key copy for `'static` blocking jobs.
+    pub(crate) fn clone_secret(&self) -> Self {
+        Self {
+            secret: self.secret.clone_secret(),
         }
     }
 }
@@ -620,10 +692,60 @@ impl fmt::Display for EmptyKeyError {
 
 impl std::error::Error for EmptyKeyError {}
 
+impl fmt::Display for InvalidHmacKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty(err) => err.fmt(f),
+            Self::TooShort { min, actual } => {
+                write!(f, "HMAC key must be at least {min} bytes; got {actual}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InvalidHmacKey {}
+
 #[cfg(test)]
 mod tests {
-    use super::{EtagMatcher, Preconditions, Representation, SubscribePattern, ValidatedWorldPath};
+    use super::{
+        AuditHmacKey, EtagMatcher, InvalidHmacKey, Preconditions, Representation, SecretBytes,
+        SubscribePattern, ValidatedWorldPath, MIN_HMAC_KEY_BYTES,
+    };
     use bytes::Bytes;
+
+    #[test]
+    fn audit_hmac_key_rejects_empty_whitespace_and_short_keys() {
+        assert!(matches!(
+            AuditHmacKey::try_from_slice(b""),
+            Err(InvalidHmacKey::Empty(_))
+        ));
+        assert!(matches!(
+            AuditHmacKey::try_from_slice(b" \t\r\n"),
+            Err(InvalidHmacKey::Empty(_))
+        ));
+        match AuditHmacKey::try_from_slice(b"short") {
+            Err(err) => assert_eq!(
+                err,
+                InvalidHmacKey::TooShort {
+                    min: MIN_HMAC_KEY_BYTES,
+                    actual: 5,
+                }
+            ),
+            Ok(_) => panic!("short HMAC key should be rejected"),
+        }
+        assert!(matches!(
+            AuditHmacKey::try_from_slice(b"0123456789abcdef0123456789abcde"),
+            Err(InvalidHmacKey::TooShort {
+                min: MIN_HMAC_KEY_BYTES,
+                actual: 31,
+            })
+        ));
+        assert!(AuditHmacKey::try_from_slice(b"0123456789abcdef0123456789abcdef").is_ok());
+
+        // SecretBytes remains a generic zeroing container; it is not proof
+        // that bytes are strong enough for the audit-chain HMAC key.
+        assert!(SecretBytes::try_from_slice(b"short").is_ok());
+    }
 
     #[test]
     fn validated_world_path_accepts_canonical_namespaced_worlds() {

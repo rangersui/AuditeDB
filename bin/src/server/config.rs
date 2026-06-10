@@ -8,6 +8,8 @@
 
 use std::net::{IpAddr, SocketAddr};
 
+use crate::engine_types::{AuditHmacKey, InvalidHmacKey};
+
 #[cfg(feature = "coap")]
 pub(crate) const DEFAULT_COAP_MAX_IN_FLIGHT: usize = 1024;
 #[cfg(not(test))]
@@ -31,18 +33,22 @@ pub(crate) fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-pub(crate) fn env_optional_usize(name: &str) -> Option<usize> {
-    let Ok(raw) = std::env::var(name) else {
-        return None;
+pub(crate) fn env_optional_usize(name: &str) -> Result<Option<usize>, String> {
+    let raw = match std::env::var(name) {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!("{name} must be valid Unicode"));
+        }
     };
     let value = raw.trim();
     if value.is_empty() {
-        return None;
+        return Ok(None);
     }
     let parsed = value
         .parse::<usize>()
-        .unwrap_or_else(|_| panic!("{name} must be a non-negative integer byte count"));
-    (parsed > 0).then_some(parsed)
+        .map_err(|_| format!("{name} must be a non-negative integer byte count"))?;
+    Ok((parsed > 0).then_some(parsed))
 }
 
 pub(crate) fn env_nonzero_usize(name: &str, default: usize) -> usize {
@@ -104,10 +110,10 @@ pub(crate) fn listen_addr(host: &str, port: u16) -> String {
         .unwrap_or_else(|_| format!("{host}:{port}"))
 }
 
-pub(crate) fn hmac_key_from_env_value(value: Option<String>) -> Option<Vec<u8>> {
-    value
-        .filter(|s| !s.trim().is_empty())
-        .map(String::into_bytes)
+pub(crate) fn hmac_key_from_env_value(
+    value: Option<String>,
+) -> Result<Option<AuditHmacKey>, InvalidHmacKey> {
+    value.map(|s| AuditHmacKey::new(s.into_bytes())).transpose()
 }
 #[cfg(test)]
 mod tests {
@@ -181,13 +187,23 @@ mod tests {
 
     #[test]
     fn hmac_key_requires_nonempty_semantic_content() {
-        assert!(hmac_key_from_env_value(None).is_none());
-        assert!(hmac_key_from_env_value(Some(String::new())).is_none());
-        assert!(hmac_key_from_env_value(Some(" \t\n".to_string())).is_none());
-        assert_eq!(
-            hmac_key_from_env_value(Some(" secret ".to_string())).unwrap(),
-            b" secret ".to_vec()
-        );
+        assert!(matches!(hmac_key_from_env_value(None), Ok(None)));
+        assert!(matches!(
+            hmac_key_from_env_value(Some(String::new())),
+            Err(InvalidHmacKey::Empty(_))
+        ));
+        assert!(matches!(
+            hmac_key_from_env_value(Some(" \t\n".to_string())),
+            Err(InvalidHmacKey::Empty(_))
+        ));
+        assert!(matches!(
+            hmac_key_from_env_value(Some("short".to_string())),
+            Err(InvalidHmacKey::TooShort { actual: 5, .. })
+        ));
+        assert!(matches!(
+            hmac_key_from_env_value(Some("0123456789abcdef0123456789abcdef".to_string())),
+            Ok(Some(_))
+        ));
     }
 
     #[test]
@@ -206,17 +222,20 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         let key = format!("ELASTIK_TEST_STORAGE_CAP_{}", std::process::id());
         std::env::remove_var(&key);
-        assert_eq!(env_optional_usize(&key), None);
+        assert_eq!(env_optional_usize(&key), Ok(None));
         std::env::set_var(&key, "");
-        assert_eq!(env_optional_usize(&key), None);
+        assert_eq!(env_optional_usize(&key), Ok(None));
         std::env::set_var(&key, " \t ");
-        assert_eq!(env_optional_usize(&key), None);
+        assert_eq!(env_optional_usize(&key), Ok(None));
         std::env::set_var(&key, "0");
-        assert_eq!(env_optional_usize(&key), None);
+        assert_eq!(env_optional_usize(&key), Ok(None));
         std::env::set_var(&key, "11");
-        assert_eq!(env_optional_usize(&key), Some(11));
+        assert_eq!(env_optional_usize(&key), Ok(Some(11)));
         std::env::set_var(&key, "10GB");
-        assert!(std::panic::catch_unwind(|| env_optional_usize(&key)).is_err());
+        assert_eq!(
+            env_optional_usize(&key),
+            Err(format!("{key} must be a non-negative integer byte count"))
+        );
         std::env::remove_var(&key);
     }
 

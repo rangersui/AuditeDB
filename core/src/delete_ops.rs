@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use crate::{
     auth, can_delete,
     engine::EngineError,
-    engine_types::{ChangeVerb, Preconditions, SecretBytes, ValidatedWorldPath},
+    engine_types::{ChangeVerb, Preconditions, ValidatedWorldPath},
     etag, store, world, AuditAppendJob, AuthGate, BlockingSqliteError, Core, StorageFailureClass,
 };
 
@@ -209,7 +209,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     Ok(())
 }
 
-fn ledger_hmac_key(core: &Core) -> SecretBytes {
+fn ledger_hmac_key(core: &Core) -> crate::engine_types::AuditHmacKey {
     core.hmac_key.clone_secret()
 }
 

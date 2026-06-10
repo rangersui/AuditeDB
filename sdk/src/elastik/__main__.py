@@ -87,7 +87,14 @@ def main() -> int:
     )
     p_run.add_argument("--host", default=None, help="bind host (default: ELASTIK_HOST or 127.0.0.1)")
     p_run.add_argument("--port", type=int, default=None, help="bind port (default: ELASTIK_PORT or 3105)")
-    p_run.add_argument("--key", default=None, help="audit-chain HMAC key; required unless ELASTIK_KEY/.env is set")
+    p_run.add_argument(
+        "--key",
+        default=None,
+        help=(
+            "audit-chain HMAC key, at least 32 UTF-8 bytes and not all "
+            "whitespace; required unless ELASTIK_KEY/.env is set"
+        ),
+    )
     p_run.add_argument("--read-token", dest="read_token", default=None, help="optional read gate; omit to keep reads public")
     p_run.add_argument("--write-token", default=None, help="optional write token for ordinary PUT/POST; omit to disable writes")
     p_run.add_argument("--approve-token", dest="approve_token", default=None, help="optional approve token for DELETE and system writes")
@@ -197,24 +204,29 @@ def main() -> int:
 
     if args.cmd == "run":
         try:
-            client = start(
-                host=args.host,
-                port=args.port,
-                key=args.key,
-                read_token=args.read_token,
-                write_token=args.write_token,
-                approve_token=args.approve_token,
-                data_dir=args.data_dir,
-                quiet=False,
-            )
-            print(f"elastik running at {client.url}", flush=True)
-            print("  Ctrl-C to stop", flush=True)
             try:
-                while True:
-                    import time
-                    time.sleep(3600)
-            except KeyboardInterrupt:
-                pass
+                client = start(
+                    host=args.host,
+                    port=args.port,
+                    key=args.key,
+                    read_token=args.read_token,
+                    write_token=args.write_token,
+                    approve_token=args.approve_token,
+                    data_dir=args.data_dir,
+                    quiet=False,
+                    _key_source="--key" if args.key is not None else None,
+                )
+                print(f"elastik running at {client.url}", flush=True)
+                print("  Ctrl-C to stop", flush=True)
+                try:
+                    while True:
+                        import time
+                        time.sleep(3600)
+                except KeyboardInterrupt:
+                    pass
+            except RuntimeError as exc:
+                print(f"elastik: {exc}", file=sys.stderr)
+                return 1
         finally:
             stop()
         return 0
