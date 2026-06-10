@@ -258,6 +258,7 @@ pub enum FfiError {
     },
     BuildDataRootLockHeld {
         path: String,
+        holder_pid: Option<String>,
     },
     BuildHmacKeyMissing,
     BuildAuditChainCorrupted {
@@ -574,9 +575,12 @@ impl From<EngineBuildError> for FfiError {
             EngineBuildError::DataRootIo(err) => Self::BuildDataRootIo {
                 message: err.to_string(),
             },
-            EngineBuildError::DataRootLockHeld { path } => Self::BuildDataRootLockHeld {
-                path: path.to_string_lossy().into_owned(),
-            },
+            EngineBuildError::DataRootLockHeld { path, holder_pid } => {
+                Self::BuildDataRootLockHeld {
+                    path: path.to_string_lossy().into_owned(),
+                    holder_pid,
+                }
+            }
             EngineBuildError::HmacKeyMissing => Self::BuildHmacKeyMissing,
             EngineBuildError::AuditChainCorrupted { world, detail } => {
                 Self::BuildAuditChainCorrupted { world, detail }
@@ -643,9 +647,10 @@ impl fmt::Display for FfiError {
             Self::UnknownBuildError { detail } | Self::UnknownEngineError { detail } => {
                 f.write_str(detail)
             }
-            Self::BuildDataRootLockHeld { path } => {
-                write!(f, "data root writer lock is held: {path}")
-            }
+            Self::BuildDataRootLockHeld { path, holder_pid } => match holder_pid {
+                Some(pid) => write!(f, "data root writer lock is held by PID {pid}: {path}"),
+                None => write!(f, "data root writer lock is held: {path}"),
+            },
             Self::BuildHmacKeyMissing => f.write_str("hmac key missing"),
             Self::BuildAuditChainCorrupted { world, detail } => {
                 write!(f, "audit chain corrupted for {world}: {detail}")

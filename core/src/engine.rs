@@ -90,6 +90,9 @@ pub enum EngineBuildError {
     DataRootLockHeld {
         /// The data root that failed to acquire the writer lock.
         path: PathBuf,
+        /// Best-effort PID last written by the process that attempted to hold
+        /// the lock. This is diagnostic only, not a fencing proof.
+        holder_pid: Option<String>,
     },
     /// [`EngineBuilder::key`] was never called.
     HmacKeyMissing,
@@ -299,6 +302,7 @@ impl EngineBuilder {
                 storage_class::StorageFailureClass::Transient => {
                     EngineBuildError::DataRootLockHeld {
                         path: self.data_root.clone(),
+                        holder_pid: None,
                     }
                 }
                 storage_class::StorageFailureClass::InsufficientStorage
@@ -441,15 +445,20 @@ pub(crate) fn sqlite_code(err: &rusqlite::Error) -> Option<i32> {
     err.sqlite_error_code().map(|code| code as i32)
 }
 
-fn map_writer_lock_error(data_root: &std::path::Path, err: rusqlite::Error) -> EngineBuildError {
-    match storage_class::classify_storage_failure(&err) {
+fn map_writer_lock_error(
+    data_root: &std::path::Path,
+    err: crate::data_lock::DataRootWriterLockError,
+) -> EngineBuildError {
+    let sqlite_err = err.sqlite_error();
+    match storage_class::classify_storage_failure(sqlite_err) {
         storage_class::StorageFailureClass::Transient => EngineBuildError::DataRootLockHeld {
             path: data_root.to_path_buf(),
+            holder_pid: err.holder_pid().map(str::to_owned),
         },
         storage_class::StorageFailureClass::InsufficientStorage
         | storage_class::StorageFailureClass::Other => EngineBuildError::Storage {
-            sqlite_code: sqlite_code(&err),
-            detail: format!("writer lock open failed: {err}"),
+            sqlite_code: sqlite_code(sqlite_err),
+            detail: format!("writer lock open failed: {sqlite_err}"),
         },
     }
 }
@@ -475,6 +484,7 @@ fn verify_all_worlds_with_names(
                 storage_class::StorageFailureClass::Transient => {
                     EngineBuildError::DataRootLockHeld {
                         path: data_root.to_path_buf(),
+                        holder_pid: None,
                     }
                 }
                 storage_class::StorageFailureClass::InsufficientStorage => {
@@ -635,10 +645,13 @@ mod tests {
             .key(SecretBytes::try_from_slice(b"key").unwrap())
             .build();
 
-        assert!(matches!(
-            second,
-            Err(EngineBuildError::DataRootLockHeld { .. })
-        ));
+        match second {
+            Err(EngineBuildError::DataRootLockHeld { holder_pid, .. }) => {
+                let expected_pid = std::process::id().to_string();
+                assert_eq!(holder_pid.as_deref(), Some(expected_pid.as_str()));
+            }
+            other => panic!("expected data root writer lock error, got {other:?}"),
+        }
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
