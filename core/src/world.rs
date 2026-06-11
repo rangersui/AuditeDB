@@ -25,7 +25,7 @@
 //! is the historical per-write view. The event chain stores structured
 //! audit facts, never JSON blobs.
 
-use crate::{audit, engine_types::AuditHmacKey};
+use crate::{audit, engine_types::AuditHmacKey, event::AuditEventKind};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use rusqlite::{ffi, params, Connection, OpenFlags, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
@@ -433,7 +433,7 @@ pub fn write_with_audit_checked(
     }
     let h = audit::append_tx(
         &audit_tx,
-        "put",
+        AuditEventKind::Put,
         world,
         &sha256_hex(body),
         body.len() as i64,
@@ -509,7 +509,7 @@ pub fn append_with_audit(
     )?;
     let h = audit::append_tx(
         &audit_tx,
-        "append",
+        AuditEventKind::Append,
         world,
         &after,
         size_after as i64,

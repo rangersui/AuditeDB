@@ -11,7 +11,9 @@ use crate::{
     auth, can_delete,
     engine::EngineError,
     engine_types::{ChangeVerb, Preconditions, ValidatedWorldPath},
-    etag, store, world, AuditAppendJob, AuthGate, BlockingSqliteError, Core, StorageFailureClass,
+    etag,
+    event::AuditEventKind,
+    store, world, AuditAppendJob, AuthGate, BlockingSqliteError, Core, StorageFailureClass,
 };
 
 pub(crate) struct DeleteRequest {
@@ -111,7 +113,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     if let Err(err) = core
         .append_to_ledger(AuditAppendJob {
             ledger_world: "var/log/deletes",
-            event_type: "delete_intent",
+            event_type: AuditEventKind::DeleteIntent,
             target: world_name.to_owned(),
             body_sha256: body_sha256_before.clone(),
             size: 0,
@@ -162,7 +164,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     if let Err(commit_err) = core
         .append_to_ledger(AuditAppendJob {
             ledger_world: "var/log/deletes",
-            event_type: "delete_commit",
+            event_type: AuditEventKind::DeleteCommit,
             target: world_name.to_owned(),
             body_sha256: body_sha256_before.clone(),
             size: 0,
@@ -182,7 +184,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         match core
             .append_to_ledger(AuditAppendJob {
                 ledger_world: "var/log/deletes",
-                event_type: "delete_commit_failed",
+                event_type: AuditEventKind::DeleteCommitFailed,
                 target: world_name.to_owned(),
                 body_sha256: body_sha256_before,
                 size: 0,
