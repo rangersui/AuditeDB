@@ -182,6 +182,7 @@ mod test_support;
 mod timeline;
 mod world;
 mod world_ops;
+mod world_schema;
 
 // Re-export protocol-neutral helpers at the crate root.
 pub(crate) use crate::state::*;
