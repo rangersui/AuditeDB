@@ -53,7 +53,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use rusqlite::{ffi::ErrorCode, Connection, OpenFlags};
 
-use crate::world;
+use crate::{world, world_schema};
 
 /// Default ceiling on the number of cached read slots. Per-conn
 /// memory is bounded to ~250KB (PRAGMA cache_size=-200), so 5000
@@ -111,6 +111,14 @@ fn read_cache_retry_budget_error(world: &str, mode: &str) -> rusqlite::Error {
     )
 }
 
+fn open_verified_read_conn(path: &std::path::Path) -> rusqlite::Result<Connection> {
+    let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
+    c.pragma_update(None, "cache_size", -200)?;
+    world_schema::verify(&c)?;
+    Ok(c)
+}
+
 /// Newtype around `rusqlite::Connection` that gates read access at
 /// the type level. The only constructor (`from_raw`) is reachable
 /// solely from `OpeningTransition::promote` below -- no other code
@@ -137,6 +145,10 @@ impl TrackedReadConnection {
     /// preserve the type gate.
     pub(crate) fn as_mut_conn(&mut self) -> &mut Connection {
         &mut self.0
+    }
+
+    fn verify_schema(&self) -> rusqlite::Result<()> {
+        world_schema::verify(&self.0)
     }
 }
 
@@ -557,13 +569,7 @@ impl ReadCache {
                 let mut g = new_guard;
                 if matches!(&*g, SlotState::Opening) {
                     let transition = OpeningTransition::new(&mut g);
-                    let init: rusqlite::Result<Connection> = (|| {
-                        let c =
-                            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                        c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
-                        c.pragma_update(None, "cache_size", -200)?;
-                        Ok(c)
-                    })();
+                    let init = open_verified_read_conn(&path);
                     match init {
                         Ok(c) => transition.promote(c),
                         Err(e) => {
@@ -665,13 +671,7 @@ impl ReadCache {
                 let mut g = new_guard;
                 if matches!(&*g, SlotState::Opening) {
                     let transition = OpeningTransition::new(&mut g);
-                    let init: rusqlite::Result<Connection> = (|| {
-                        let c =
-                            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                        c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
-                        c.pragma_update(None, "cache_size", -200)?;
-                        Ok(c)
-                    })();
+                    let init = open_verified_read_conn(path);
                     match init {
                         Ok(c) => transition.promote(c),
                         Err(e) => {
@@ -740,6 +740,7 @@ impl ReadCache {
         match &*read_guard {
             SlotState::Ready(tracked_mutex) => {
                 let mut tracked = tracked_mutex.lock().unwrap_or_else(|p| p.into_inner());
+                tracked.verify_schema()?;
                 let f = f.take().expect(
                     "invoke_via_slot closure slot is empty; SlotRead::Opening \
                      and SlotRead::Evicted may re-enter with the closure intact, \
@@ -838,6 +839,98 @@ mod tests {
         assert_eq!(cache.metrics.read_cache_hits.load(Ordering::Relaxed), 1);
         assert_eq!(cache.metrics.read_cache_misses.load(Ordering::Relaxed), 1);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn create_legacy_world_without_generation(data_root: &std::path::Path, world: &str) {
+        std::fs::create_dir_all(world::world_dir(data_root, world)).unwrap();
+        let c = Connection::open(world::world_db(data_root, world)).unwrap();
+        c.execute_batch(
+            r#"
+            CREATE TABLE stage_meta(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                body BLOB DEFAULT x'',
+                content_type TEXT DEFAULT 'application/octet-stream'
+            );
+            INSERT INTO stage_meta(id, body) VALUES(1, x'');
+            CREATE TABLE meta_headers(
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY(name)
+            );
+            CREATE TABLE events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                target TEXT DEFAULT '',
+                body_sha256 TEXT DEFAULT '',
+                size INTEGER DEFAULT 0,
+                content_type TEXT DEFAULT '',
+                meta_sha256 TEXT DEFAULT '',
+                hmac TEXT NOT NULL,
+                prev_hmac TEXT DEFAULT ''
+            );
+            CREATE TABLE event_headers(
+                event_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+    }
+
+    fn drop_generation_column_from_cached_world(data_root: &std::path::Path, world: &str) {
+        let c = Connection::open(world::world_db(data_root, world)).unwrap();
+        c.execute_batch(
+            r#"
+            ALTER TABLE stage_meta RENAME TO stage_meta_with_generation;
+            CREATE TABLE stage_meta(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                body BLOB DEFAULT x'',
+                content_type TEXT DEFAULT 'application/octet-stream'
+            );
+            INSERT INTO stage_meta(id, body, content_type)
+                SELECT id, body, content_type FROM stage_meta_with_generation;
+            DROP TABLE stage_meta_with_generation;
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn cache_open_rejects_legacy_stage_meta_without_generation() {
+        let dir = scratch_dir("legacy-generation-read-cache");
+        create_legacy_world_without_generation(&dir, "home/legacy");
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+
+        let err = match cache.cached_read_with_hmac(&dir, "home/legacy") {
+            Ok(_) => panic!("legacy schema must fail before read-cache promotion"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("stage_meta.generation"));
+        assert!(cache.read_conns.get("home/legacy").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_hit_revalidates_generation_before_read() {
+        let dir = scratch_dir("generation-regression-cache-hit");
+        let world = "home/cached";
+        let _c = world::open(&dir, world).unwrap();
+        world::write(&dir, world, b"hello", "text/plain", &[]).unwrap();
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+
+        assert!(cache.cached_read_with_hmac(&dir, world).unwrap().is_some());
+        drop_generation_column_from_cached_world(&dir, world);
+
+        let err = match cache.cached_read_with_hmac(&dir, world) {
+            Ok(_) => panic!("cached read must revalidate stage_meta.generation"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("stage_meta.generation"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
