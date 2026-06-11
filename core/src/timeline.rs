@@ -6,13 +6,10 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::{fmt, num::NonZeroI64};
-
 use crate::engine_types::{Representation, ValidatedWorldPath};
+use crate::world_generation::{MintedWorldGeneration, WorldGeneration};
+use std::num::NonZeroI64;
 
-/// Local Path 3 invariant: a world generation is a 128-bit identity rendered as
-/// 32 lowercase hexadecimal characters.
-const WORLD_GEN_HEX_LEN: usize = 32;
 /// FIPS 180-4 defines SHA-256 output as 256 bits; hex renders 4 bits per char.
 const BODY_SHA256_HEX_LEN: usize = 64;
 
@@ -32,12 +29,6 @@ pub(crate) struct MintedTimelineAddress {
     body_sha256: BodySha256,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorldGeneration(String);
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct MintedWorldGeneration(WorldGeneration);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct TimelineSeq(NonZeroI64);
 
@@ -47,17 +38,6 @@ pub(crate) struct BodySha256(String);
 pub(crate) struct TimelineBody {
     address: TimelineAddress,
     representation: Representation,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum InvalidWorldGeneration {
-    WrongLength,
-    NotLowerHex,
-}
-
-#[derive(Debug)]
-pub(crate) enum MintWorldGenerationError {
-    Entropy(getrandom::Error),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,51 +170,6 @@ impl MintedTimelineAddress {
     }
 }
 
-impl WorldGeneration {
-    pub(crate) fn mint() -> Result<MintedWorldGeneration, MintWorldGenerationError> {
-        let mut bytes = [0u8; 16];
-        getrandom::getrandom(&mut bytes).map_err(MintWorldGenerationError::Entropy)?;
-        Ok(MintedWorldGeneration(Self(hex::encode(bytes))))
-    }
-
-    pub(crate) fn new(raw: impl Into<String>) -> Result<Self, InvalidWorldGeneration> {
-        let raw = raw.into();
-        if raw.len() != WORLD_GEN_HEX_LEN {
-            return Err(InvalidWorldGeneration::WrongLength);
-        }
-        if !is_lower_hex(&raw) {
-            return Err(InvalidWorldGeneration::NotLowerHex);
-        }
-        Ok(Self(raw))
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl MintedWorldGeneration {
-    pub(crate) fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
-    #[cfg(test)]
-    // Deterministic minting bypass for stable assertions only.
-    fn test_only_from_entropy_bytes(bytes: [u8; 16]) -> Self {
-        Self(WorldGeneration(hex::encode(bytes)))
-    }
-}
-
-impl fmt::Display for MintWorldGenerationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Entropy(err) => write!(f, "world generation entropy failed: {err:?}"),
-        }
-    }
-}
-
-impl std::error::Error for MintWorldGenerationError {}
-
 impl TimelineSeq {
     pub(crate) fn new(raw: i64) -> Result<Self, InvalidTimelineSeq> {
         NonZeroI64::new(raw)
@@ -333,44 +268,6 @@ mod tests {
             address.body_sha256().as_str(),
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
-    }
-
-    #[test]
-    fn generation_is_128_bit_lower_hex() {
-        assert!(WorldGeneration::new("0123456789abcdef0123456789abcdef").is_ok());
-        assert_eq!(
-            WorldGeneration::new("0123456789abcdef0123456789abcde").unwrap_err(),
-            InvalidWorldGeneration::WrongLength
-        );
-        assert_eq!(
-            WorldGeneration::new("0123456789abcdef0123456789abcdef0").unwrap_err(),
-            InvalidWorldGeneration::WrongLength
-        );
-        assert_eq!(
-            WorldGeneration::new("0123456789abcdef0123456789abcdeF").unwrap_err(),
-            InvalidWorldGeneration::NotLowerHex
-        );
-        assert_eq!(
-            WorldGeneration::new("0123456789abcdef0123456789abcdeg").unwrap_err(),
-            InvalidWorldGeneration::NotLowerHex
-        );
-    }
-
-    #[test]
-    fn generation_from_entropy_bytes_renders_lower_hex() {
-        let minted = MintedWorldGeneration::test_only_from_entropy_bytes([
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ]);
-
-        assert_eq!(minted.as_str(), "000102030405060708090a0b0c0d0e0f");
-    }
-
-    #[test]
-    fn mint_generation_preserves_contract_shape() {
-        let minted = WorldGeneration::mint().unwrap();
-
-        assert!(WorldGeneration::new(minted.as_str()).is_ok());
     }
 
     #[test]

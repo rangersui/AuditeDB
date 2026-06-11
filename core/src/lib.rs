@@ -181,6 +181,7 @@ mod store;
 mod test_support;
 mod timeline;
 mod world;
+mod world_generation;
 mod world_ops;
 mod world_schema;
 
