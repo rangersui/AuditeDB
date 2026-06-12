@@ -717,7 +717,7 @@ mod tests {
 
     #[tokio::test]
     async fn proc_du_and_df_report_resource_usage() {
-        let (engine, dir) = test_engine_for_server_with_storage_quota("proc-du-df", 10);
+        let (engine, dir) = test_engine_for_server_with_storage_quota("proc-du-df", 16);
         engine
             .replace(
                 &world_path("home/hello"),
@@ -742,19 +742,19 @@ mod tests {
         let du = proc_du(State(state.clone()), Method::GET, headers.clone()).await;
         assert_eq!(du.status(), StatusCode::OK);
         let du_body = response_text(du).await;
-        assert!(du_body.contains("home/hello\t5\n"));
+        assert!(du_body.contains("home/hello\t10\n"));
         assert!(du_body.contains("tmp/scratch\t4\n"));
 
         let df = proc_df(State(state.clone()), Method::GET, headers.clone()).await;
         assert_eq!(df.status(), StatusCode::OK);
         let df_body = response_text(df).await;
-        assert!(df_body.contains("storage\t5\t10\t5\n"));
+        assert!(df_body.contains("storage\t10\t16\t6\n"));
         assert!(df_body.contains("memory\t4\t268435456\t268435452\n"));
         assert!(df_body.contains("worlds\t2\tunlimited\tunlimited\n"));
 
         let head = proc_du(State(state), Method::HEAD, headers).await;
         assert_eq!(head.status(), StatusCode::OK);
-        assert_eq!(head.headers().get(header::CONTENT_LENGTH).unwrap(), "27");
+        assert_eq!(head.headers().get(header::CONTENT_LENGTH).unwrap(), "28");
         assert_eq!(response_text(head).await, "");
 
         let _ = std::fs::remove_dir_all(dir);
