@@ -609,6 +609,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_delete_ledger_subject_generation_survives_recreate() {
+        let (engine, root) = test_engine("delete-recreate");
+        let world = ValidatedWorldPath::new("home/delete-recreate").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"first"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let first_conn = rusqlite::Connection::open(crate::world::world_db(
+            engine.core().data.as_path(),
+            world.as_str(),
+        ))
+        .unwrap();
+        let first_generation = crate::world_schema::generation(&first_conn).unwrap();
+        drop(first_conn);
+
+        engine
+            .delete(&world, Preconditions::none(), AccessTier::Approve)
+            .await
+            .unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"second"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let second_conn = rusqlite::Connection::open(crate::world::world_db(
+            engine.core().data.as_path(),
+            world.as_str(),
+        ))
+        .unwrap();
+        let second_generation = crate::world_schema::generation(&second_conn).unwrap();
+        drop(second_conn);
+        assert_ne!(first_generation, second_generation);
+
+        let ledger =
+            rusqlite::Connection::open(crate::world::world_db(&root, "var/log/deletes")).unwrap();
+        let stored_generation: String = ledger
+            .query_row(
+                "SELECT value FROM event_headers
+                 WHERE event_id=1 AND name=?1",
+                [crate::audit::DELETE_SUBJECT_GENERATION],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_generation, first_generation.as_str());
+        assert_ne!(stored_generation, second_generation.as_str());
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn engine_read_timeline_body_returns_historical_body() {
         let (engine, root) = test_engine("timeline-public-read");
         let world = ValidatedWorldPath::new("home/timeline-public-read").unwrap();

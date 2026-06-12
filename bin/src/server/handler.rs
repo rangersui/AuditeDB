@@ -52,10 +52,10 @@ use crate::{
     engine_trace::EngineWriteTraceHooks,
     engine_types::{AccessTier, Representation, ValidatedWorldPath, WriteKind},
     server::{
-        content_range_value, decimal_header_value, http::semantics as hs, insufficient_storage,
-        not_found, payload_too_large, precondition_failed, server_error, storage_quota_exceeded,
-        storage_temporarily_unavailable, to_header_map, unauthorized, ErrorReason, Phase,
-        ServerState, TraceCtx, Verb,
+        bad_request, content_range_value, decimal_header_value, http::semantics as hs,
+        insufficient_storage, not_found, payload_too_large, precondition_failed, server_error,
+        storage_quota_exceeded, storage_temporarily_unavailable, to_header_map, unauthorized,
+        ErrorReason, Phase, ServerState, TraceCtx, Verb,
     },
 };
 
@@ -335,6 +335,10 @@ fn read_error_phase(err: EngineError) -> Phase {
             resp: server_error("unexpected read subscription limit".to_string()),
             reason: ErrorReason::StorageRead,
         },
+        EngineError::InvalidMetadata { message } => Phase::Error {
+            resp: bad_request(message),
+            reason: ErrorReason::PathInvalid(message),
+        },
         EngineError::InvalidWorldName
         | EngineError::NotFound
         | EngineError::AppendOnly
@@ -392,6 +396,10 @@ pub(crate) fn write_error_phase(err: EngineError) -> Phase {
         EngineError::InternalInvariant(message) => Phase::Error {
             resp: server_error(message.to_string()),
             reason: ErrorReason::StorageWriteAudit,
+        },
+        EngineError::InvalidMetadata { message } => Phase::Error {
+            resp: bad_request(message),
+            reason: ErrorReason::PathInvalid(message),
         },
         EngineError::ShuttingDown => Phase::Error {
             resp: storage_temporarily_unavailable(),

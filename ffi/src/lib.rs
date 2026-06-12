@@ -724,6 +724,48 @@ mod tests {
     }
 
     #[test]
+    fn delete_with_metadata_rejects_reserved_delete_subject_headers() {
+        let engine = test_engine("delete-meta-reserved");
+        let none = FfiPreconditions {
+            if_match: Vec::new(),
+            if_none_match: Vec::new(),
+        };
+        engine
+            .replace(
+                "home/delete-meta-reserved".to_owned(),
+                small_representation(b"delete me"),
+                none.clone(),
+                FfiAccessTier::Write,
+            )
+            .expect("replace succeeds");
+
+        let err = engine
+            .delete_with_metadata(
+                "home/delete-meta-reserved".to_owned(),
+                FfiDeleteMetadata {
+                    content_type: "text/plain".to_owned(),
+                    headers: vec![FfiHeader {
+                        name: "auditedb-delete-subject-seq".to_owned(),
+                        value: "fake".to_owned(),
+                    }],
+                },
+                none,
+                FfiAccessTier::Approve,
+            )
+            .expect_err("reserved header should be rejected");
+
+        assert!(matches!(
+            err,
+            FfiError::InvalidMetadata { ref message }
+                if message == "reserved-delete-subject-header"
+        ));
+        assert!(engine
+            .read("home/delete-meta-reserved".to_owned(), FfiAccessTier::Read)
+            .expect("read after rejected delete")
+            .is_some());
+    }
+
+    #[test]
     fn engine_verbs_reject_noncanonical_worlds() {
         let engine = test_engine("invalid-world");
         let err = engine
@@ -984,6 +1026,16 @@ mod tests {
         assert!(matches!(transient, FfiError::TransientStorage));
         assert!(!transient.to_string().contains("Some("));
         assert!(!transient.to_string().contains("sqlite"));
+
+        let invalid_metadata: FfiError = EngineError::InvalidMetadata {
+            message: "reserved-delete-subject-header",
+        }
+        .into();
+        assert!(matches!(
+            invalid_metadata,
+            FfiError::InvalidMetadata { ref message }
+                if message == "reserved-delete-subject-header"
+        ));
     }
 
     #[test]

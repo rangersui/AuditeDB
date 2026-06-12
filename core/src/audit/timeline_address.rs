@@ -54,6 +54,25 @@ impl VerifiedBodyEvent {
     }
 }
 
+pub(crate) struct VerifiedBodyHead {
+    address: TimelineAddress,
+    hmac: String,
+}
+
+impl VerifiedBodyHead {
+    fn new(address: TimelineAddress, hmac: String) -> Self {
+        Self { address, hmac }
+    }
+
+    pub(crate) fn address(&self) -> &TimelineAddress {
+        &self.address
+    }
+
+    pub(crate) fn hmac(&self) -> &str {
+        &self.hmac
+    }
+}
+
 struct TimelineEventSnapshot {
     event_type: String,
     target: String,
@@ -108,6 +127,64 @@ pub(crate) fn verified_timeline_address_via_conn(
     let lookup = TimelineAddressLookup::Body(TimelineAddress::from_verified_body_event(event));
     tx.commit()?;
     Ok(lookup)
+}
+
+pub(crate) fn verified_latest_body_head_via_conn(
+    tracked: &mut TrackedReadConnection,
+    world: &ValidatedWorldPath,
+    key: &AuditHmacKey,
+) -> super::AuditResult<Option<VerifiedBodyHead>> {
+    let conn = tracked.as_mut_conn();
+    let tx = conn.transaction()?;
+    // The chain verification and "latest body row" lookup share one SQLite
+    // snapshot. Otherwise delete could anchor the ledger to a row that was not
+    // part of the verified chain it just observed.
+    super::require_intact(super::verify_world_connection(&tx, world, key)?)?;
+    if let Some(break_report) = super::live_body::verify_tx(&tx)? {
+        return Err(super::AuditError::ChainBroken(break_report));
+    }
+
+    let Some((seq, event_type, target, body_sha256, hmac)) = tx
+        .query_row(
+            "SELECT id, event_type, target, body_sha256, hmac
+             FROM events
+             WHERE event_type IN ('put', 'append')
+             ORDER BY id DESC
+             LIMIT 1",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        tx.commit()?;
+        return Ok(None);
+    };
+
+    let kind = AuditEventKind::from_storage(&event_type)
+        .ok_or_else(|| corrupt("events.event_type is not a known audit event"))?;
+    if !kind.class().body_bearing {
+        return Err(corrupt("latest body query returned a metadata event").into());
+    }
+    if target != world.as_str() {
+        return Err(corrupt("events.target does not match requested world").into());
+    }
+    let seq = TimelineSeq::new(seq).map_err(|_| corrupt("events.id is not positive"))?;
+    let body_sha256 = BodySha256::new(body_sha256)
+        .map_err(|err| corrupt(&format!("events.body_sha256 is invalid: {err:?}")))?;
+    let gen = world_schema::generation(&tx)?;
+    let event = VerifiedBodyEvent::new(world.clone(), gen, seq, body_sha256);
+    let address = TimelineAddress::from_verified_body_event(event);
+    let head = VerifiedBodyHead::new(address, super::hmac_label(&hmac));
+    tx.commit()?;
+    Ok(Some(head))
 }
 
 pub(crate) fn read_timeline_body_via_conn(

@@ -87,6 +87,11 @@ pub trait EngineDeleteTraceHooks {
 /// [`DeleteMetadata::default`] to record empty metadata. The plain
 /// [`crate::Engine::delete`] convenience method always records empty
 /// metadata.
+///
+/// Header names beginning with `auditedb-delete-subject-` are reserved for the
+/// engine's internal subject-coordinate proof in the delete ledger. Supplying
+/// one of those names to [`crate::Engine::delete_traced`] fails with
+/// [`EngineError::InvalidMetadata`].
 #[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct DeleteMetadata {
@@ -244,7 +249,9 @@ impl Engine {
     /// `audit_intent_failed` callback fires before the
     /// [`EngineError::Storage`] / [`EngineError::TransientStorage`] /
     /// [`EngineError::InsufficientStorage`] / [`EngineError::InternalInvariant`]
-    /// result is returned when the audit-intent write itself fails.
+    /// result is returned when the audit-intent write itself fails. Returns
+    /// [`EngineError::InvalidMetadata`] if `metadata.headers` uses a reserved
+    /// delete-subject header name.
     pub async fn delete_traced<H: EngineDeleteTraceHooks + ?Sized>(
         &self,
         world: &ValidatedWorldPath,

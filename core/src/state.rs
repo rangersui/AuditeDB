@@ -264,6 +264,27 @@ impl Core {
         }
     }
 
+    /// Delete-side final subject anchor through the read-cache SlotState
+    /// protocol. Durable delete uses this before installing a tombstone so the
+    /// delete ledger can identify the exact body event being removed.
+    pub(crate) fn latest_body_head(
+        &self,
+        world: &ValidatedWorldPath,
+    ) -> audit::AuditResult<Option<audit::VerifiedBodyHead>> {
+        debug_assert!(
+            !store::is_memory_world(world.as_str()),
+            "latest_body_head only applies to durable worlds"
+        );
+        let head = self
+            .read_cache
+            .cached_latest_body_head(&self.data, world, &self.hmac_key)
+            .map_err(audit::AuditError::from)?;
+        match head {
+            Some(result) => result,
+            None => Ok(None),
+        }
+    }
+
     /// Test-only fixture: seed a world directly without going through
     /// auth/preconditions/audit. Production writes go through `world_ops`
     /// (durable: `world::write_with_audit_checked` + `reserve_storage`;

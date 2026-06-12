@@ -97,7 +97,7 @@ pub(crate) fn append_with_conn_existing(
     body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
-    headers: &[(String, String)],
+    headers: &super::AuditHeaders,
     key: &AuditHmacKey,
 ) -> AuditResult<String> {
     append_with_conn_verified(
@@ -123,7 +123,7 @@ pub(crate) fn append_with_conn_genesis(
     body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
-    headers: &[(String, String)],
+    headers: &super::AuditHeaders,
     key: &AuditHmacKey,
 ) -> AuditResult<String> {
     append_with_conn_verified(
@@ -149,12 +149,13 @@ fn append_with_conn_verified(
     body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
-    headers: &[(String, String)],
+    headers: &super::AuditHeaders,
     key: &AuditHmacKey,
     empty_chain: EmptyChain,
 ) -> AuditResult<String> {
     let tx = conn.transaction()?;
     let audit_tx = super::verify_appendable_tx(&tx, ledger_world, key, empty_chain)?;
+    let headers = headers.to_storage_pairs();
     let row = append_tx_inner(
         &audit_tx,
         event_type.kind(),
@@ -162,7 +163,7 @@ fn append_with_conn_verified(
         body_sha256,
         size,
         content_type,
-        headers,
+        &headers,
     )?;
     tx.commit()?;
     Ok(row.hmac().to_owned())

@@ -24,7 +24,7 @@ use std::sync::Mutex as StdMutex;
 
 use rusqlite::Connection;
 
-use crate::audit;
+use crate::audit::{self, AuditHeaders};
 use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
 use crate::event::EventMetadataKind;
 use crate::timeline::BodySha256;
@@ -39,7 +39,7 @@ pub(crate) struct AuditAppendJob {
     pub(crate) body_sha256: BodySha256,
     pub(crate) size: i64,
     pub(crate) content_type: String,
-    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) headers: AuditHeaders,
     pub(crate) key: AuditHmacKey,
 }
 
@@ -154,7 +154,7 @@ mod tests {
                     body_sha256: BodySha256::for_body(b"body"),
                     size: 0,
                     content_type: "application/octet-stream".to_owned(),
-                    headers: Vec::new(),
+                    headers: AuditHeaders::empty(),
                     key: test_key(),
                 },
             )

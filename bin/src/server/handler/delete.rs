@@ -23,8 +23,9 @@ use crate::{
     engine_trace::{DeleteMetadata, EngineDeleteTraceHooks},
     engine_types::{AccessTier, ValidatedWorldPath},
     server::{
-        http::semantics as hs, insufficient_storage, not_found, precondition_failed, server_error,
-        storage_temporarily_unavailable, unauthorized, ErrorReason, Phase, ServerState, TraceCtx,
+        bad_request, http::semantics as hs, insufficient_storage, not_found, precondition_failed,
+        server_error, storage_temporarily_unavailable, unauthorized, ErrorReason, Phase,
+        ServerState, TraceCtx,
     },
     AuthGate,
 };
@@ -219,6 +220,10 @@ fn delete_error_phase(err: EngineError, last_step: DeleteStep) -> Phase {
         EngineError::InsufficientStorage => insufficient_delete_error_phase(last_step),
         EngineError::Storage => storage_delete_error_phase(last_step),
         EngineError::InternalInvariant(message) => invariant_delete_error_phase(message, last_step),
+        EngineError::InvalidMetadata { message } => Phase::Error {
+            resp: bad_request(message),
+            reason: ErrorReason::PathInvalid(message),
+        },
         EngineError::InvalidWorldName
         | EngineError::PayloadTooLarge { .. }
         | EngineError::QuotaExceeded { .. }
@@ -324,9 +329,10 @@ mod tests {
         engine_types::{Preconditions, Representation},
         server::{
             handler::execute_put,
+            http::semantics::HeaderAllowlist,
             test_support::{
-                server_state_for_engine_for_tests, test_engine_for_server_with_auth_tokens,
-                world_db_path_for_server_tests,
+                server_state_for_engine_for_tests, server_state_with_headers_for_engine_for_tests,
+                test_engine_for_server_with_auth_tokens, world_db_path_for_server_tests,
             },
         },
     };
@@ -476,6 +482,51 @@ mod tests {
             .unwrap();
         assert_eq!(events, vec!["delete_intent", "delete_commit"]);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_reserved_subject_metadata_even_if_header_is_allowlisted() {
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-reserved-header");
+        let state = server_state_with_headers_for_engine_for_tests(
+            engine.clone(),
+            crate::defaults::DEFAULT_MAX_WORLD_BYTES,
+            HeaderAllowlist::parse("auditedb-delete-subject-*"),
+            HeaderAllowlist::empty(),
+        );
+        let world = world_path("home/delete-reserved-header");
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"alive"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "auditedb-delete-subject-seq",
+            HeaderValue::from_static("fake"),
+        );
+        let (status, reason, body) = error_parts(
+            execute_delete(
+                headers,
+                AccessTier::Approve,
+                world.clone(),
+                &state,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(matches!(reason, ErrorReason::PathInvalid(_)));
+        assert_eq!(body, "bad request: reserved-delete-subject-header\n");
+        assert!(engine.read(&world, AccessTier::Read).unwrap().is_some());
+        assert!(!world_db_path_for_server_tests(&dir, "var/log/deletes").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

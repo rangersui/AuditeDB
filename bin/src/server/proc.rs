@@ -335,6 +335,7 @@ fn proc_engine_error(scope: &'static str, err: EngineError) -> Response {
         EngineError::InsufficientStorage => insufficient_storage(),
         EngineError::Storage => server_error(format!("{scope} storage failure")),
         EngineError::InvalidWorldName => bad_request("invalid world path"),
+        EngineError::InvalidMetadata { message } => bad_request(message),
         EngineError::InternalInvariant(message) => {
             server_error(format!("{scope} internal invariant: {message}"))
         }

@@ -32,11 +32,25 @@ pub(crate) fn server_state_with_max_world_bytes_for_engine_for_tests(
     engine: Engine,
     max_world_bytes: usize,
 ) -> ServerState {
-    ServerState::new(
+    server_state_with_headers_for_engine_for_tests(
         engine,
         max_world_bytes,
         HeaderAllowlist::empty(),
         HeaderAllowlist::empty(),
+    )
+}
+
+pub(crate) fn server_state_with_headers_for_engine_for_tests(
+    engine: Engine,
+    max_world_bytes: usize,
+    persist_header_allowlist: HeaderAllowlist,
+    persist_header_user_deny: HeaderAllowlist,
+) -> ServerState {
+    ServerState::new(
+        engine,
+        max_world_bytes,
+        persist_header_allowlist,
+        persist_header_user_deny,
     )
 }
 

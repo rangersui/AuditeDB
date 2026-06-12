@@ -497,6 +497,24 @@ impl ReadCache {
         })
     }
 
+    /// Delete-side subject anchoring. Reads the latest body-bearing audit row
+    /// through the same SlotState protocol as ordinary reads, so delete's
+    /// later tombstone drain cannot race a bare fd.
+    pub(crate) fn cached_latest_body_head(
+        &self,
+        data: &std::path::Path,
+        world: &crate::engine_types::ValidatedWorldPath,
+        key: &crate::engine_types::AuditHmacKey,
+    ) -> rusqlite::Result<Option<crate::audit::AuditResult<Option<crate::audit::VerifiedBodyHead>>>>
+    {
+        let key = key.clone_secret();
+        self.with_tracked_conn(data, world.as_str(), move |conn| {
+            Ok(crate::audit::verified_latest_body_head_via_conn(
+                conn, world, &key,
+            ))
+        })
+    }
+
     /// Run a closure with a `&mut TrackedReadConnection` obtained
     /// through the SlotState protocol. Three-phase split:
     ///   1. Cache hit (any state, regardless of cap)

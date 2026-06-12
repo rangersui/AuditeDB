@@ -155,6 +155,11 @@ pub enum EngineError {
     Auth(AuthGate),
     /// The supplied world name failed canonical-path validation.
     InvalidWorldName,
+    /// The supplied representation metadata failed engine-level validation.
+    InvalidMetadata {
+        /// Static reason string (`reserved-delete-subject-header`, ...).
+        message: &'static str,
+    },
     /// The world does not exist.
     NotFound,
     /// The target world is append-only and refuses delete/overwrite (for

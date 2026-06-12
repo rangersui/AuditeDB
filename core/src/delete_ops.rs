@@ -8,6 +8,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::{
+    audit::{AuditHeaders, VerifiedDeleteSubject},
     auth, can_delete,
     engine::EngineError,
     engine_types::{ChangeVerb, Preconditions, ValidatedWorldPath},
@@ -34,10 +35,18 @@ pub(crate) struct DeletePermit {
 pub(crate) enum DeleteError {
     Auth(AuthGate),
     AppendOnlyLedger,
+    ReservedMetadataHeader,
     PreconditionFailed {
         message: &'static str,
     },
     NotFound,
+    SubjectAudit {
+        world: ValidatedWorldPath,
+        err: crate::audit::AuditError,
+    },
+    SubjectMissingHead {
+        world: ValidatedWorldPath,
+    },
     TransientStorage {
         #[allow(dead_code)]
         scope: &'static str,
@@ -100,10 +109,17 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     req: DeleteRequest,
     hooks: &H,
 ) -> Result<(), DeleteError> {
+    let DeleteRequest {
+        preconditions,
+        content_type,
+        headers,
+    } = req;
     let world_name = permit.world.as_str();
     let _write_guard = core.acquire_world_lock(world_name).await;
     hooks.lock_acquired(world_name);
-    check_preconditions(core, &permit.world, &req.preconditions.into())?;
+    check_preconditions(core, &permit.world, &preconditions.into())?;
+    let user_headers =
+        AuditHeaders::from_user(headers).map_err(|_| DeleteError::ReservedMetadataHeader)?;
 
     let Some(stage) = core
         .read_world(world_name)
@@ -127,7 +143,15 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     } else {
         stage.body.len()
     };
-    let body_sha256_before = BodySha256::for_body(&stage.body);
+    let subject = capture_delete_subject_proof(core, &permit.world)?;
+    let body_sha256_before = subject
+        .as_ref()
+        .map(VerifiedDeleteSubject::body_sha256)
+        .unwrap_or_else(|| BodySha256::for_body(&stage.body));
+    let ledger_headers = match subject {
+        Some(subject) => user_headers.with_delete_subject(subject),
+        None => user_headers,
+    };
 
     if let Err(err) = core
         .append_to_ledger(AuditAppendJob {
@@ -136,8 +160,8 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             target: world_name.to_owned(),
             body_sha256: body_sha256_before.clone(),
             size: 0,
-            content_type: req.content_type.clone(),
-            headers: req.headers.clone(),
+            content_type: content_type.clone(),
+            headers: ledger_headers.clone(),
             key: ledger_hmac_key(core),
         })
         .await
@@ -187,8 +211,8 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             target: world_name.to_owned(),
             body_sha256: body_sha256_before.clone(),
             size: 0,
-            content_type: req.content_type.clone(),
-            headers: req.headers.clone(),
+            content_type: content_type.clone(),
+            headers: ledger_headers.clone(),
             key: ledger_hmac_key(core),
         })
         .await
@@ -207,8 +231,8 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
                 target: world_name.to_owned(),
                 body_sha256: body_sha256_before,
                 size: 0,
-                content_type: req.content_type,
-                headers: req.headers,
+                content_type,
+                headers: ledger_headers,
                 key: ledger_hmac_key(core),
             })
             .await
@@ -234,6 +258,27 @@ fn ledger_hmac_key(core: &Core) -> crate::engine_types::AuditHmacKey {
     core.hmac_key.clone_secret()
 }
 
+fn capture_delete_subject_proof(
+    core: &Core,
+    world: &ValidatedWorldPath,
+) -> Result<Option<VerifiedDeleteSubject>, DeleteError> {
+    if store::is_memory_world(world.as_str()) {
+        return Ok(None);
+    }
+    let Some(head) = core
+        .latest_body_head(world)
+        .map_err(|err| DeleteError::SubjectAudit {
+            world: world.clone(),
+            err,
+        })?
+    else {
+        return Err(DeleteError::SubjectMissingHead {
+            world: world.clone(),
+        });
+    };
+    Ok(Some(VerifiedDeleteSubject::from_body_head(head)))
+}
+
 fn storage_len_missing_error() -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(
         ffi::Error {
@@ -241,6 +286,16 @@ fn storage_len_missing_error() -> rusqlite::Error {
             extended_code: ffi::SQLITE_CORRUPT,
         },
         Some("persistent world vanished while computing storage_len".to_owned()),
+    )
+}
+
+fn subject_head_missing_error() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        ffi::Error {
+            code: ffi::ErrorCode::DatabaseCorrupt,
+            extended_code: ffi::SQLITE_CORRUPT,
+        },
+        Some("persistent world has no audited body head".to_owned()),
     )
 }
 
@@ -319,8 +374,21 @@ impl From<DeleteError> for EngineError {
         match value {
             DeleteError::Auth(gate) => Self::Auth(gate),
             DeleteError::AppendOnlyLedger => Self::AppendOnly,
+            DeleteError::ReservedMetadataHeader => Self::InvalidMetadata {
+                message: "reserved-delete-subject-header",
+            },
             DeleteError::PreconditionFailed { message } => Self::PreconditionFailed { message },
             DeleteError::NotFound => Self::NotFound,
+            DeleteError::SubjectAudit { world, err } => subject_audit_error_to_engine(&world, err),
+            DeleteError::SubjectMissingHead { world } => {
+                crate::engine_ops::log_storage_error(
+                    "subject audit",
+                    &subject_head_missing_error(),
+                    "delete",
+                    Some(world.as_str()),
+                );
+                Self::Storage
+            }
             DeleteError::TransientStorage { scope, world, err } => {
                 crate::engine_ops::log_storage_error(scope, &err, "delete", Some(world.as_str()));
                 Self::TransientStorage
@@ -339,11 +407,35 @@ impl From<DeleteError> for EngineError {
     }
 }
 
+fn subject_audit_error_to_engine(
+    world: &crate::engine_types::ValidatedWorldPath,
+    err: crate::audit::AuditError,
+) -> EngineError {
+    match err {
+        crate::audit::AuditError::ChainBroken(_) => EngineError::Storage,
+        crate::audit::AuditError::Storage(err) => {
+            crate::engine_ops::log_storage_error(
+                "subject audit",
+                &err,
+                "delete",
+                Some(world.as_str()),
+            );
+            match crate::classify_storage_failure(&err) {
+                StorageFailureClass::InsufficientStorage => EngineError::InsufficientStorage,
+                StorageFailureClass::Transient => EngineError::TransientStorage,
+                StorageFailureClass::Other => EngineError::Storage,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine_types::ValidatedWorldPath;
     use crate::test_support::test_core;
+    use crate::world_schema;
+    use rusqlite::Connection;
 
     #[test]
     fn delete_permit_requires_approve_and_binds_world() {
@@ -412,6 +504,185 @@ mod tests {
         assert_eq!(cas_rows, 0);
         assert_eq!(first_retained_seq, None);
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn delete_ledger_records_subject_final_address() {
+        struct NoopTrace;
+        impl DeleteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("delete-ledger-subject-address");
+        let subject = ValidatedWorldPath::new("home/delete-ledger-subject-address").unwrap();
+        core.write_world(subject.as_str(), b"old", "text/plain", &[])
+            .unwrap();
+        core.write_world(subject.as_str(), b"final", "text/plain", &[])
+            .unwrap();
+
+        let subject_conn =
+            Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
+        let subject_generation = world_schema::generation(&subject_conn).unwrap();
+        let (subject_seq, subject_hmac): (i64, String) = subject_conn
+            .query_row(
+                "SELECT id, hmac FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        drop(subject_conn);
+
+        let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
+        delete(
+            &core,
+            &permit,
+            DeleteRequest {
+                preconditions: Preconditions::none(),
+                content_type: "text/plain".to_owned(),
+                headers: vec![("x-meta-operator".to_owned(), "alice".to_owned())],
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+
+        let ledger = Connection::open(crate::world::world_db(&dir, "var/log/deletes")).unwrap();
+        let events: Vec<(i64, String)> = {
+            let mut stmt = ledger
+                .prepare("SELECT id, event_type FROM events ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(
+            events,
+            vec![
+                (1, "delete_intent".to_owned()),
+                (2, "delete_commit".to_owned())
+            ]
+        );
+
+        let expected = [
+            (
+                crate::audit::DELETE_SUBJECT_WORLD,
+                subject.as_str().to_owned(),
+            ),
+            (
+                crate::audit::DELETE_SUBJECT_GENERATION,
+                subject_generation.as_str().to_owned(),
+            ),
+            (crate::audit::DELETE_SUBJECT_SEQ, subject_seq.to_string()),
+            (
+                crate::audit::DELETE_SUBJECT_BODY_SHA256,
+                BodySha256::for_body(b"final").as_str().to_owned(),
+            ),
+            (
+                crate::audit::DELETE_SUBJECT_HMAC,
+                format!("hmac-{subject_hmac}"),
+            ),
+        ];
+        for event_id in [1_i64, 2] {
+            for (name, value) in expected.iter() {
+                let stored: String = ledger
+                    .query_row(
+                        "SELECT value FROM event_headers WHERE event_id=?1 AND name=?2",
+                        rusqlite::params![event_id, name],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(stored, *value);
+            }
+            let operator: String = ledger
+                .query_row(
+                    "SELECT value FROM event_headers WHERE event_id=?1 AND name='x-meta-operator'",
+                    [event_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(operator, "alice");
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_reserved_subject_metadata_headers() {
+        struct NoopTrace;
+        impl DeleteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("delete-ledger-reserved-subject-header");
+        let subject =
+            ValidatedWorldPath::new("home/delete-ledger-reserved-subject-header").unwrap();
+        core.write_world(subject.as_str(), b"body", "text/plain", &[])
+            .unwrap();
+
+        let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
+        let err = delete(
+            &core,
+            &permit,
+            DeleteRequest {
+                preconditions: Preconditions::none(),
+                content_type: "text/plain".to_owned(),
+                headers: vec![("AuditeDB-Delete-Subject-Seq".to_owned(), "fake".to_owned())],
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, DeleteError::ReservedMetadataHeader));
+        assert!(core.read_world(subject.as_str()).unwrap().is_some());
+        assert!(!crate::world::world_db(&dir, "var/log/deletes").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn delete_ledger_subject_generation_distinguishes_recreated_world() {
+        struct NoopTrace;
+        impl DeleteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("delete-ledger-recreate-generation");
+        let subject = ValidatedWorldPath::new("home/delete-ledger-recreate-generation").unwrap();
+        core.write_world(subject.as_str(), b"first", "text/plain", &[])
+            .unwrap();
+        let first_conn = Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
+        let first_generation = world_schema::generation(&first_conn).unwrap();
+        drop(first_conn);
+
+        let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
+        delete(
+            &core,
+            &permit,
+            DeleteRequest {
+                preconditions: Preconditions::none(),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+
+        core.write_world(subject.as_str(), b"second", "text/plain", &[])
+            .unwrap();
+        let second_conn = Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
+        let second_generation = world_schema::generation(&second_conn).unwrap();
+        drop(second_conn);
+        assert_ne!(first_generation, second_generation);
+
+        let ledger = Connection::open(crate::world::world_db(&dir, "var/log/deletes")).unwrap();
+        let stored_generation: String = ledger
+            .query_row(
+                "SELECT value FROM event_headers
+                 WHERE event_id=1 AND name=?1",
+                [crate::audit::DELETE_SUBJECT_GENERATION],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(stored_generation, first_generation.as_str());
+        assert_ne!(stored_generation, second_generation.as_str());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

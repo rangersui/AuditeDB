@@ -281,6 +281,9 @@ pub enum FfiError {
         gate: FfiAuthGate,
     },
     InvalidWorldName,
+    InvalidMetadata {
+        message: String,
+    },
     NotFound,
     AppendOnly,
     PayloadTooLarge {
@@ -604,6 +607,9 @@ impl From<EngineError> for FfiError {
         match value {
             EngineError::Auth(gate) => Self::Auth { gate: gate.into() },
             EngineError::InvalidWorldName => Self::InvalidWorldName,
+            EngineError::InvalidMetadata { message } => Self::InvalidMetadata {
+                message: message.to_owned(),
+            },
             EngineError::NotFound => Self::NotFound,
             EngineError::AppendOnly => Self::AppendOnly,
             EngineError::PayloadTooLarge { max } => Self::PayloadTooLarge { max: max as u64 },
@@ -643,6 +649,7 @@ impl fmt::Display for FfiError {
             | Self::RuntimeInitFailed { message }
             | Self::BuildDataRootIo { message }
             | Self::PreconditionFailed { message }
+            | Self::InvalidMetadata { message }
             | Self::InternalInvariant { message } => f.write_str(message),
             Self::UnknownBuildError { detail } | Self::UnknownEngineError { detail } => {
                 f.write_str(detail)
