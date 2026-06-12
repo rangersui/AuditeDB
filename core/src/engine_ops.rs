@@ -1,7 +1,7 @@
 //! Engine operation seam over protocol-neutral world transitions.
 //!
 //! Public `Engine` methods delegate here, keeping one path from facade to
-//! `world_ops`.
+//! read, write, delete, subscribe, and introspection transitions.
 
 #![cfg_attr(not(feature = "unstable-engine"), allow(dead_code))]
 
@@ -23,7 +23,7 @@ use crate::{
     },
     etag, event,
     timeline::{TimelineAddress, TimelineRead},
-    world_ops, AuthGate, Core,
+    world_ops, world_read_ops, AuthGate, Core,
 };
 
 pub(crate) use crate::engine_error::{log_blocking_storage_error, log_storage_error};
@@ -51,15 +51,15 @@ impl<'a> EngineOps<'a> {
         world: &ValidatedWorldPath,
         tier: auth::Tier,
     ) -> Result<Option<ReadResult>, EngineError> {
-        let permit = world_ops::authorize_read(self.core, world, tier)?;
-        match world_ops::read_world(self.core, &permit)
+        let permit = world_read_ops::authorize_read(self.core, world, tier)?;
+        match world_read_ops::read_world(self.core, &permit)
             .map_err(|err| read_error_to_engine(err, Some(world.as_str())))?
         {
-            world_ops::ReadOutcome::Found { stage, etag } => Ok(Some(ReadResult::new(
+            world_read_ops::ReadOutcome::Found { stage, etag } => Ok(Some(ReadResult::new(
                 Representation::new(Bytes::from(stage.body), stage.content_type, stage.headers),
                 etag,
             ))),
-            world_ops::ReadOutcome::Missing => Ok(None),
+            world_read_ops::ReadOutcome::Missing => Ok(None),
         }
     }
 
@@ -68,8 +68,8 @@ impl<'a> EngineOps<'a> {
         address: &TimelineAddress,
         tier: auth::Tier,
     ) -> Result<TimelineRead, EngineError> {
-        let permit = world_ops::authorize_read(self.core, address.world(), tier)?;
-        world_ops::read_timeline_body(self.core, &permit, address)
+        let permit = world_read_ops::authorize_read(self.core, address.world(), tier)?;
+        world_read_ops::read_timeline_body(self.core, &permit, address)
             .map_err(|err| read_error_to_engine(err, Some(address.world().as_str())))
     }
 

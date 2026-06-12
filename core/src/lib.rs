@@ -185,6 +185,7 @@ mod timeline;
 mod world;
 mod world_generation;
 mod world_ops;
+mod world_read_ops;
 mod world_schema;
 
 // Re-export protocol-neutral helpers at the crate root.

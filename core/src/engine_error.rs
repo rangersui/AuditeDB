@@ -2,7 +2,7 @@
 
 use crate::{
     engine::{self, EngineError},
-    world_ops, BlockingSqliteError,
+    world_ops, world_read_ops, BlockingSqliteError,
 };
 
 fn storage_op_label(op: world_ops::StorageOp) -> &'static str {
@@ -13,31 +13,31 @@ fn storage_op_label(op: world_ops::StorageOp) -> &'static str {
 }
 
 pub(crate) fn read_error_to_engine(
-    value: world_ops::ReadError,
+    value: world_read_ops::ReadError,
     world: Option<&str>,
 ) -> EngineError {
     match value {
-        world_ops::ReadError::Auth(gate) => EngineError::Auth(gate),
-        world_ops::ReadError::TransientStorage { scope, err } => {
+        world_read_ops::ReadError::Auth(gate) => EngineError::Auth(gate),
+        world_read_ops::ReadError::TransientStorage { scope, err } => {
             log_storage_error(scope, &err, "read", world);
             EngineError::TransientStorage
         }
-        world_ops::ReadError::InsufficientStorage { scope, err } => {
+        world_read_ops::ReadError::InsufficientStorage { scope, err } => {
             log_storage_error(scope, &err, "read", world);
             EngineError::InsufficientStorage
         }
-        world_ops::ReadError::StorageRead { scope, err } => {
+        world_read_ops::ReadError::StorageRead { scope, err } => {
             log_storage_error(scope, &err, "read", world);
             EngineError::Storage
         }
-        world_ops::ReadError::AuditChainBroken {
+        world_read_ops::ReadError::AuditChainBroken {
             scope,
             break_report,
         } => {
             log_audit_chain_error(scope, &break_report, "read", world);
             EngineError::Storage
         }
-        world_ops::ReadError::PermitWorldMismatch => {
+        world_read_ops::ReadError::PermitWorldMismatch => {
             EngineError::InternalInvariant("read permit world mismatch")
         }
     }
@@ -128,8 +128,8 @@ fn log_storage_invariant(
     }
 }
 
-impl From<world_ops::ReadError> for EngineError {
-    fn from(value: world_ops::ReadError) -> Self {
+impl From<world_read_ops::ReadError> for EngineError {
+    fn from(value: world_read_ops::ReadError) -> Self {
         read_error_to_engine(value, None)
     }
 }
