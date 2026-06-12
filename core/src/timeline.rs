@@ -128,6 +128,16 @@ impl TimelineAddress {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_only_new(
+        world: ValidatedWorldPath,
+        gen: WorldGeneration,
+        seq: TimelineSeq,
+        body_sha256: BodySha256,
+    ) -> Self {
+        Self::new(world, gen, seq, body_sha256)
+    }
+
     pub(crate) fn from_verified_body_event(event: crate::audit::VerifiedBodyEvent) -> Self {
         Self::new(
             event.world().clone(),

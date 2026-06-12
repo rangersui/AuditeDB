@@ -1,12 +1,16 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
+use bytes::Bytes;
 use rusqlite::{ffi, params, OptionalExtension};
 
 use crate::{
-    engine_types::{AuditHmacKey, ValidatedWorldPath},
+    engine_types::{AuditHmacKey, Representation, ValidatedWorldPath},
     event::AuditEventKind,
     read_cache::TrackedReadConnection,
-    timeline::{BodySha256, TimelineAddress, TimelineAddressLookup, TimelineSeq},
+    timeline::{
+        BodySha256, TimelineAddress, TimelineAddressLookup, TimelineCorruption, TimelineRead,
+        TimelineSeq,
+    },
     world_generation::WorldGeneration,
     world_schema,
 };
@@ -48,6 +52,15 @@ impl VerifiedBodyEvent {
     pub(crate) fn body_sha256(&self) -> &BodySha256 {
         &self.body_sha256
     }
+}
+
+struct TimelineEventSnapshot {
+    event_type: String,
+    target: String,
+    body_sha256: String,
+    size: i64,
+    content_type: String,
+    headers: Vec<(String, String)>,
 }
 
 pub(crate) fn verified_timeline_address_via_conn(
@@ -95,6 +108,147 @@ pub(crate) fn verified_timeline_address_via_conn(
     let lookup = TimelineAddressLookup::Body(TimelineAddress::from_verified_body_event(event));
     tx.commit()?;
     Ok(lookup)
+}
+
+pub(crate) fn read_timeline_body_via_conn(
+    tracked: &mut TrackedReadConnection,
+    address: &TimelineAddress,
+    key: &AuditHmacKey,
+) -> super::AuditResult<TimelineRead> {
+    let conn = tracked.as_mut_conn();
+    let tx = conn.transaction()?;
+    let actual_gen = world_schema::generation(&tx)?;
+    super::require_intact(super::verify_world_connection(&tx, address.world(), key)?)?;
+
+    let read = if &actual_gen != address.gen() {
+        TimelineRead::GenMismatch {
+            requested: address.clone(),
+            actual: actual_gen,
+        }
+    } else {
+        match load_event_snapshot(&tx, address.seq())? {
+            Some(row) => timeline_read_from_snapshot(&tx, address, row)?,
+            None => TimelineRead::MissingRow {
+                address: address.clone(),
+            },
+        }
+    };
+    tx.commit()?;
+    Ok(read)
+}
+
+fn load_event_snapshot(
+    tx: &rusqlite::Transaction<'_>,
+    seq: TimelineSeq,
+) -> rusqlite::Result<Option<TimelineEventSnapshot>> {
+    let Some((event_type, target, body_sha256, size, content_type)) = tx
+        .query_row(
+            "SELECT event_type, target, body_sha256, size, content_type FROM events WHERE id=?1",
+            params![seq.get()],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+
+    let mut headers = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT name, value FROM event_headers WHERE event_id=?1 ORDER BY name, value",
+        )?;
+        let rows = stmt.query_map(params![seq.get()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for pair in rows {
+            headers.push(pair?);
+        }
+    }
+
+    Ok(Some(TimelineEventSnapshot {
+        event_type,
+        target,
+        body_sha256,
+        size,
+        content_type,
+        headers,
+    }))
+}
+
+fn timeline_read_from_snapshot(
+    tx: &rusqlite::Transaction<'_>,
+    address: &TimelineAddress,
+    row: TimelineEventSnapshot,
+) -> rusqlite::Result<TimelineRead> {
+    let Some(kind) = AuditEventKind::from_storage(&row.event_type) else {
+        return Ok(timeline_corrupt(
+            address,
+            TimelineCorruption::InvalidEventShape,
+        ));
+    };
+    if !kind.class().body_bearing {
+        return Ok(timeline_corrupt(
+            address,
+            TimelineCorruption::MissingBodyForPresentRow,
+        ));
+    }
+    if row.target != address.world().as_str() {
+        return Ok(timeline_corrupt(
+            address,
+            TimelineCorruption::InvalidEventShape,
+        ));
+    }
+    let Ok(body_sha256) = BodySha256::new(row.body_sha256) else {
+        return Ok(timeline_corrupt(
+            address,
+            TimelineCorruption::InvalidEventShape,
+        ));
+    };
+    if &body_sha256 != address.body_sha256() {
+        return Ok(timeline_corrupt(
+            address,
+            TimelineCorruption::InvalidEventShape,
+        ));
+    }
+
+    let Some(body) = tx
+        .query_row(
+            "SELECT body FROM cas_bodies WHERE body_sha256=?1",
+            params![address.body_sha256().as_str()],
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .optional()?
+    else {
+        return Ok(TimelineRead::Expired {
+            address: address.clone(),
+        });
+    };
+    if i64::try_from(body.len()).ok() != Some(row.size) {
+        return Ok(timeline_corrupt(
+            address,
+            TimelineCorruption::InvalidEventShape,
+        ));
+    }
+
+    Ok(TimelineRead::body(
+        address.clone(),
+        Representation::new(Bytes::from(body), row.content_type, row.headers),
+    ))
+}
+
+fn timeline_corrupt(address: &TimelineAddress, reason: TimelineCorruption) -> TimelineRead {
+    TimelineRead::Corrupt {
+        address: address.clone(),
+        reason,
+    }
 }
 
 fn corrupt(message: &str) -> rusqlite::Error {
@@ -307,6 +461,197 @@ mod tests {
             TimelineAddressLookup::MissingRow | TimelineAddressLookup::NoBody => {
                 panic!("expected body timeline address")
             }
+        }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn read_timeline_body_uses_retained_cas_not_current_body() {
+        let root = temp_root("read-historical-body");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(key())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/read-history").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"old"),
+                    "text/plain",
+                    vec![("x-meta-version".to_owned(), "old".to_owned())],
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"new"),
+                    "text/plain",
+                    vec![("x-meta-version".to_owned(), "new".to_owned())],
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let conn =
+            rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
+                .unwrap();
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+        let TimelineAddressLookup::Body(address) = verified_timeline_address_via_conn(
+            &mut tracked,
+            &world,
+            TimelineSeq::new(1).unwrap(),
+            &engine.core().hmac_key,
+        )
+        .unwrap() else {
+            panic!("expected body timeline address");
+        };
+
+        let read =
+            read_timeline_body_via_conn(&mut tracked, &address, &engine.core().hmac_key).unwrap();
+
+        match read {
+            TimelineRead::Body(body) => {
+                assert_eq!(body.address(), &address);
+                assert_eq!(body.representation().body, Bytes::from_static(b"old"));
+                assert_eq!(body.representation().content_type, "text/plain");
+                assert_eq!(
+                    body.representation().headers,
+                    vec![("x-meta-version".to_owned(), "old".to_owned())]
+                );
+            }
+            _ => panic!("expected retained historical body"),
+        }
+
+        assert_eq!(
+            engine
+                .read(&world, AccessTier::Read)
+                .unwrap()
+                .unwrap()
+                .representation
+                .body,
+            Bytes::from_static(b"new")
+        );
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn read_timeline_body_reports_generation_mismatch_without_current_read() {
+        let root = temp_root("read-generation-mismatch");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(key())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/read-gen-mismatch").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"old"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let conn =
+            rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
+                .unwrap();
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+        let TimelineAddressLookup::Body(address) = verified_timeline_address_via_conn(
+            &mut tracked,
+            &world,
+            TimelineSeq::new(1).unwrap(),
+            &engine.core().hmac_key,
+        )
+        .unwrap() else {
+            panic!("expected body timeline address");
+        };
+        drop(tracked);
+
+        engine
+            .delete(&world, Preconditions::none(), AccessTier::Approve)
+            .await
+            .unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"new"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let conn =
+            rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
+                .unwrap();
+        let new_gen = world_schema::generation(&conn).unwrap();
+        assert_ne!(&new_gen, address.gen());
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+        let read =
+            read_timeline_body_via_conn(&mut tracked, &address, &engine.core().hmac_key).unwrap();
+
+        match read {
+            TimelineRead::GenMismatch { requested, actual } => {
+                assert_eq!(requested, address);
+                assert_eq!(actual, new_gen);
+            }
+            _ => panic!("expected generation mismatch"),
+        }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn read_timeline_body_reports_missing_row_for_same_generation_gap() {
+        let root = temp_root("read-missing-row");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(key())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/read-missing-row").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"value"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let conn =
+            rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
+                .unwrap();
+        let gen = world_schema::generation(&conn).unwrap();
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+        let address = TimelineAddress::test_only_new(
+            world.clone(),
+            gen,
+            TimelineSeq::new(99).unwrap(),
+            BodySha256::for_body(b"value"),
+        );
+
+        match read_timeline_body_via_conn(&mut tracked, &address, &engine.core().hmac_key).unwrap()
+        {
+            TimelineRead::MissingRow { address: got } => assert_eq!(got, address),
+            _ => panic!("expected missing row"),
         }
 
         drop(engine);
