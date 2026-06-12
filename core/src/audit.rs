@@ -11,6 +11,7 @@ use crate::{engine_types::AuditHmacKey, timeline::TimelineSeq, world};
 use std::{collections::HashSet, fmt, path::Path};
 
 mod append;
+mod live_body;
 mod retention;
 
 #[cfg(test)]
@@ -99,7 +100,11 @@ pub fn verify_world(data_root: &Path, world_name: &str, key: &AuditHmacKey) -> A
     let Some(c) = world::open_existing(data_root, world_name)? else {
         return Ok(());
     };
-    require_intact(verify_connection(&c, key)?)
+    require_intact(verify_connection(&c, key)?)?;
+    if let Some(break_report) = live_body::verify_conn(&c)? {
+        return Err(AuditError::ChainBroken(break_report));
+    }
+    Ok(())
 }
 
 pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
@@ -130,6 +135,9 @@ fn verify_appendable_tx<'tx, 'conn, 'key>(
         allow_empty,
         &retention,
     )?)?;
+    if let Some(break_report) = live_body::verify_tx(tx)? {
+        return Err(AuditError::ChainBroken(break_report));
+    }
     Ok(VerifiedAuditTx { tx, key })
 }
 
@@ -559,6 +567,36 @@ mod tests {
             .unwrap();
         assert_eq!(author, "ranger");
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_world_rejects_tampered_live_body() {
+        let (core, dir) = test_core("audit-live-body-tamper");
+        world::write_with_audit(
+            &core.data,
+            "home/live-body",
+            b"good",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let c = Connection::open(world::world_db(&core.data, "home/live-body")).unwrap();
+        c.execute(
+            "UPDATE stage_meta SET body=?1 WHERE id=1",
+            [b"bad".as_slice()],
+        )
+        .unwrap();
+        drop(c);
+
+        let err = verify_world(&core.data, "home/live-body", &core.hmac_key).unwrap_err();
+
+        assert!(matches!(
+            err,
+            AuditError::ChainBroken(VerifyBreak { actual, .. })
+                if actual.starts_with("live-body-sha256-")
+        ));
         let _ = std::fs::remove_dir_all(dir);
     }
 
