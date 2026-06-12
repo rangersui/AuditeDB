@@ -4,15 +4,16 @@
 //! generation. It is not just a row number: the address also carries the world
 //! path and the SHA-256 of the body the audit row promised.
 //!
-//! Public callers may inspect timeline addresses and read outcomes, but they
-//! cannot mint addresses directly. Production addresses are created only after
-//! audit verification proves that an event row belongs to the requested world
-//! and generation.
+//! Public callers may inspect timeline addresses and read outcomes. Production
+//! addresses are minted after audit verification proves that an event row
+//! belongs to the requested world and generation. Adapters parse untrusted wire
+//! fields into [`TimelineCoordinate`], which validates coordinate shape only and
+//! is intentionally not accepted by timeline reads as a proof.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::engine_types::{Representation, ValidatedWorldPath};
-use crate::world_generation::{MintedWorldGeneration, WorldGeneration};
+use crate::world_generation::{InvalidWorldGeneration, MintedWorldGeneration, WorldGeneration};
 use std::num::NonZeroI64;
 
 /// FIPS 180-4 defines SHA-256 output as 256 bits; hex renders 4 bits per char.
@@ -21,9 +22,9 @@ const BODY_SHA256_HEX_LEN: usize = 64;
 /// Opaque address of one audited body value.
 ///
 /// The fields are private on purpose. A caller can receive, clone, compare, and
-/// inspect a `TimelineAddress`, but cannot construct or recombine the
-/// `{ world, generation, seq, body_sha256 }` coordinate outside verified audit
-/// minting.
+/// inspect a `TimelineAddress`, but cannot construct one with an unchecked
+/// struct literal or raw constructor. Untrusted wire fields parse to
+/// [`TimelineCoordinate`] instead.
 ///
 /// ```compile_fail
 /// fn recombine(address: elastik_core::TimelineAddress) -> elastik_core::TimelineAddress {
@@ -37,6 +38,52 @@ const BODY_SHA256_HEX_LEN: usize = 64;
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineAddress {
+    world: ValidatedWorldPath,
+    gen: WorldGeneration,
+    seq: TimelineSeq,
+    body_sha256: BodySha256,
+}
+
+/// Untrusted timeline coordinate parsed from an adapter wire format.
+///
+/// This type proves only syntax: durable world path shape, generation width,
+/// positive sequence number, and SHA-256 hex shape. It does not prove an audit
+/// row exists and it is not accepted by [`crate::Engine::read_timeline_body`].
+///
+/// ```
+/// # #[cfg(feature = "unstable-engine")]
+/// # fn run() {
+/// use elastik_core::TimelineCoordinate;
+///
+/// let coord = TimelineCoordinate::from_wire_parts(
+///     "home/task/a",
+///     "0123456789abcdef0123456789abcdef",
+///     42,
+///     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+/// )
+/// .unwrap();
+///
+/// assert_eq!(coord.world().as_str(), "home/task/a");
+/// assert_eq!(coord.seq().get(), 42);
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// # #[cfg(feature = "unstable-engine")]
+/// # fn run(engine: &elastik_core::Engine) {
+/// let coord = elastik_core::TimelineCoordinate::from_wire_parts(
+///     "home/task/a",
+///     "0123456789abcdef0123456789abcdef",
+///     42,
+///     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+/// )
+/// .unwrap();
+///
+/// engine.read_timeline_body(&coord, elastik_core::AccessTier::Read);
+/// # }
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineCoordinate {
     world: ValidatedWorldPath,
     gen: WorldGeneration,
     seq: TimelineSeq,
@@ -74,6 +121,26 @@ pub(crate) enum InvalidTimelineSeq {
 pub(crate) enum InvalidBodySha256 {
     WrongLength,
     NotLowerHex,
+}
+
+/// Invalid untrusted timeline coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InvalidTimelineCoordinate {
+    /// The world path was not a canonical engine world path.
+    WorldPath(&'static str),
+    /// The world path names a memory namespace, which has no durable timeline.
+    MemoryWorld,
+    /// The generation was not 32 characters long.
+    GenerationWrongLength,
+    /// The generation was not lowercase hexadecimal.
+    GenerationNotLowerHex,
+    /// The sequence number was not positive.
+    SeqNonPositive,
+    /// The body digest was not 64 characters long.
+    BodySha256WrongLength,
+    /// The body digest was not lowercase hexadecimal.
+    BodySha256NotLowerHex,
 }
 
 /// Corruption detected while resolving a timeline address.
@@ -163,6 +230,67 @@ impl TimelineRead {
             address,
             representation,
         })
+    }
+}
+
+impl TimelineCoordinate {
+    /// Builds an untrusted timeline coordinate from adapter wire fields.
+    ///
+    /// This is an adapter-boundary parser, not an audit proof. It validates the
+    /// syntax and durable namespace of the coordinate, but it does not prove the
+    /// addressed event row exists.
+    ///
+    /// # Errors
+    /// Returns [`InvalidTimelineCoordinate`] if any coordinate part is
+    /// malformed.
+    pub fn from_wire_parts(
+        world: impl Into<String>,
+        generation: impl Into<String>,
+        seq: i64,
+        body_sha256: impl Into<String>,
+    ) -> Result<Self, InvalidTimelineCoordinate> {
+        let world = ValidatedWorldPath::from_canonical(world.into())
+            .map_err(InvalidTimelineCoordinate::WorldPath)?;
+        if crate::store::is_memory_world(world.as_str()) {
+            return Err(InvalidTimelineCoordinate::MemoryWorld);
+        }
+        let gen = WorldGeneration::new(generation).map_err(|err| match err {
+            InvalidWorldGeneration::WrongLength => InvalidTimelineCoordinate::GenerationWrongLength,
+            InvalidWorldGeneration::NotLowerHex => InvalidTimelineCoordinate::GenerationNotLowerHex,
+        })?;
+        let seq = TimelineSeq::new(seq).map_err(|err| match err {
+            InvalidTimelineSeq::NonPositive => InvalidTimelineCoordinate::SeqNonPositive,
+        })?;
+        let body_sha256 = BodySha256::new(body_sha256).map_err(|err| match err {
+            InvalidBodySha256::WrongLength => InvalidTimelineCoordinate::BodySha256WrongLength,
+            InvalidBodySha256::NotLowerHex => InvalidTimelineCoordinate::BodySha256NotLowerHex,
+        })?;
+        Ok(Self {
+            world,
+            gen,
+            seq,
+            body_sha256,
+        })
+    }
+
+    /// Returns the canonical durable world path this coordinate names.
+    pub fn world(&self) -> &ValidatedWorldPath {
+        &self.world
+    }
+
+    /// Returns the durable-world generation this coordinate names.
+    pub fn generation(&self) -> &WorldGeneration {
+        &self.gen
+    }
+
+    /// Returns the event sequence number this coordinate names.
+    pub fn seq(&self) -> TimelineSeq {
+        self.seq
+    }
+
+    /// Returns the body digest promised by the coordinate.
+    pub fn body_sha256(&self) -> &BodySha256 {
+        &self.body_sha256
     }
 }
 
@@ -302,6 +430,23 @@ impl BodySha256 {
     }
 }
 
+impl std::fmt::Display for InvalidTimelineCoordinate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::WorldPath(reason) => reason,
+            Self::MemoryWorld => "timeline coordinate world is not durable",
+            Self::GenerationWrongLength => "timeline coordinate generation has wrong length",
+            Self::GenerationNotLowerHex => "timeline coordinate generation is not lower hex",
+            Self::SeqNonPositive => "timeline coordinate sequence is not positive",
+            Self::BodySha256WrongLength => "timeline coordinate body sha256 has wrong length",
+            Self::BodySha256NotLowerHex => "timeline coordinate body sha256 is not lower hex",
+        };
+        f.write_str(reason)
+    }
+}
+
+impl std::error::Error for InvalidTimelineCoordinate {}
+
 fn is_lower_hex(value: &str) -> bool {
     value
         .bytes()
@@ -350,6 +495,122 @@ mod tests {
         assert_eq!(
             address.body_sha256().as_str(),
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn timeline_coordinate_from_wire_parts_validates_shape_only() {
+        let coord = TimelineCoordinate::from_wire_parts(
+            "home/timeline",
+            "0123456789abcdef0123456789abcdef",
+            42,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+
+        assert_eq!(coord.world().as_str(), "home/timeline");
+        assert_eq!(
+            coord.generation().as_str(),
+            "0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(coord.seq().get(), 42);
+        assert_eq!(
+            coord.body_sha256().as_str(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn timeline_coordinate_from_wire_parts_rejects_malformed_coordinates() {
+        let good_world = "home/timeline";
+        let good_gen = "0123456789abcdef0123456789abcdef";
+        let good_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        assert_eq!(
+            TimelineCoordinate::from_wire_parts("/home/timeline", good_gen, 1, good_hash)
+                .unwrap_err(),
+            InvalidTimelineCoordinate::WorldPath("world path has empty segment")
+        );
+        assert_eq!(
+            TimelineCoordinate::from_wire_parts("tmp/timeline", good_gen, 1, good_hash)
+                .unwrap_err(),
+            InvalidTimelineCoordinate::MemoryWorld
+        );
+        assert_eq!(
+            TimelineCoordinate::from_wire_parts(
+                good_world,
+                "0123456789abcdef0123456789abcdeF",
+                1,
+                good_hash
+            )
+            .unwrap_err(),
+            InvalidTimelineCoordinate::GenerationNotLowerHex
+        );
+        assert_eq!(
+            TimelineCoordinate::from_wire_parts(
+                good_world,
+                "0123456789abcdef0123456789abcde",
+                1,
+                good_hash
+            )
+            .unwrap_err(),
+            InvalidTimelineCoordinate::GenerationWrongLength
+        );
+        assert_eq!(
+            TimelineCoordinate::from_wire_parts(good_world, good_gen, 0, good_hash).unwrap_err(),
+            InvalidTimelineCoordinate::SeqNonPositive
+        );
+        assert_eq!(
+            TimelineCoordinate::from_wire_parts(
+                good_world,
+                good_gen,
+                1,
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF"
+            )
+            .unwrap_err(),
+            InvalidTimelineCoordinate::BodySha256NotLowerHex
+        );
+        assert_eq!(
+            TimelineCoordinate::from_wire_parts(
+                good_world,
+                good_gen,
+                1,
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde"
+            )
+            .unwrap_err(),
+            InvalidTimelineCoordinate::BodySha256WrongLength
+        );
+    }
+
+    #[test]
+    fn timeline_coordinate_errors_display_field_specific_reasons() {
+        assert_eq!(
+            InvalidTimelineCoordinate::WorldPath("world path has empty segment").to_string(),
+            "world path has empty segment"
+        );
+        assert_eq!(
+            InvalidTimelineCoordinate::MemoryWorld.to_string(),
+            "timeline coordinate world is not durable"
+        );
+        assert_eq!(
+            InvalidTimelineCoordinate::GenerationWrongLength.to_string(),
+            "timeline coordinate generation has wrong length"
+        );
+        assert_eq!(
+            InvalidTimelineCoordinate::GenerationNotLowerHex.to_string(),
+            "timeline coordinate generation is not lower hex"
+        );
+        assert_eq!(
+            InvalidTimelineCoordinate::SeqNonPositive.to_string(),
+            "timeline coordinate sequence is not positive"
+        );
+        assert_eq!(
+            InvalidTimelineCoordinate::BodySha256WrongLength.to_string(),
+            "timeline coordinate body sha256 has wrong length"
+        );
+        assert_eq!(
+            InvalidTimelineCoordinate::BodySha256NotLowerHex.to_string(),
+            "timeline coordinate body sha256 is not lower hex"
         );
     }
 

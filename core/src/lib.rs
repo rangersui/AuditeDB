@@ -227,7 +227,8 @@ pub use engine_types::{
 pub use path::{validate_world_name, NAMESPACE_PREFIXES};
 #[cfg(feature = "unstable-engine")]
 pub use timeline::{
-    BodySha256, TimelineAddress, TimelineBody, TimelineCorruption, TimelineRead, TimelineSeq,
+    BodySha256, InvalidTimelineCoordinate, TimelineAddress, TimelineBody, TimelineCoordinate,
+    TimelineCorruption, TimelineRead, TimelineSeq,
 };
 #[cfg(feature = "unstable-engine")]
 pub use world_generation::WorldGeneration;
