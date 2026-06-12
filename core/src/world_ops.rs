@@ -249,7 +249,6 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
             &req.content_type,
             &req.headers,
             &core.hmac_key,
-            None,
         ) {
             Ok(result) => {
                 if !result.cas_body_inserted {
@@ -259,10 +258,6 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
                     core.durable_world_count.fetch_add(1, Ordering::Relaxed);
                 }
                 (existed, etag::hmac_etag(&result.hmac))
-            }
-            Err(world::WriteAuditError::Quota { .. }) => {
-                core.rollback_storage_reservation(prev_len, reserve_new_len);
-                return Err(WriteError::Internal("unexpected quota error"));
             }
             Err(world::WriteAuditError::Audit(err)) => {
                 core.rollback_storage_reservation(prev_len, reserve_new_len);
@@ -393,10 +388,6 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
                     err,
                     StorageOp::WriteAudit,
                 ));
-            }
-            Err(world::WriteAuditError::Quota { .. }) => {
-                core.rollback_storage_reservation(0, reserve_new_len);
-                return Err(WriteError::Internal("unexpected quota error"));
             }
             Err(world::WriteAuditError::CasBodyMismatch { body_sha256 }) => {
                 core.rollback_storage_reservation(0, reserve_new_len);

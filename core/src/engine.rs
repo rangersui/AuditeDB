@@ -695,15 +695,8 @@ mod tests {
     fn build_verifies_audit_chains_before_returning_engine() {
         let root = temp_root("audit-verify");
         let key = AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap();
-        let write_result = world::write_with_audit_checked(
-            &root,
-            "home/audit",
-            b"body",
-            "text/plain",
-            &[],
-            &key,
-            None,
-        );
+        let write_result =
+            world::write_with_audit_checked(&root, "home/audit", b"body", "text/plain", &[], &key);
         assert!(write_result.is_ok(), "fixture write should succeed");
         let db = world::world_db(&root, "home/audit");
         let conn = rusqlite::Connection::open(db).unwrap();
@@ -728,15 +721,8 @@ mod tests {
     fn build_classifies_non_chain_verify_failures_as_storage_errors() {
         let root = temp_root("audit-storage-error");
         let key = AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap();
-        let write_result = world::write_with_audit_checked(
-            &root,
-            "home/schema",
-            b"body",
-            "text/plain",
-            &[],
-            &key,
-            None,
-        );
+        let write_result =
+            world::write_with_audit_checked(&root, "home/schema", b"body", "text/plain", &[], &key);
         assert!(write_result.is_ok(), "fixture write should succeed");
         let db = world::world_db(&root, "home/schema");
         let conn = rusqlite::Connection::open(db).unwrap();

@@ -1458,15 +1458,8 @@ mod tests {
         // produces a `put` event whose hmac chains to a synthetic
         // genesis (prev = ""). `WriteAuditError` doesn't derive
         // Debug, so don't .unwrap() on it -- match instead.
-        match world::write_with_audit_checked(
-            &dir,
-            world,
-            b"hello",
-            "text/plain",
-            &[],
-            &test_key(),
-            None,
-        ) {
+        match world::write_with_audit_checked(&dir, world, b"hello", "text/plain", &[], &test_key())
+        {
             Ok(_) => {}
             Err(_) => panic!("seed write_with_audit_checked failed"),
         }

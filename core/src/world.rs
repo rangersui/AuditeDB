@@ -186,21 +186,8 @@ pub struct WriteAuditResult {
 pub enum WriteAuditError {
     Audit(audit::AuditError),
     Sqlite(rusqlite::Error),
-    CasBodyMismatch {
-        body_sha256: BodySha256,
-    },
+    CasBodyMismatch { body_sha256: BodySha256 },
     StorageInvariant(&'static str),
-    /// Returned only if the caller passes a `quota` argument to
-    /// `write_with_audit_checked`. The active path passes `None` and
-    /// enforces quota via `Core::reserve_storage` instead, so this variant
-    /// is currently unreachable in production. Kept for diagnostic clarity
-    /// and possible test fixtures.
-    #[allow(dead_code)]
-    Quota {
-        used: usize,
-        quota: usize,
-        projected: usize,
-    },
 }
 
 impl From<rusqlite::Error> for WriteAuditError {
@@ -352,7 +339,7 @@ pub fn write_with_audit(
     headers: &[(String, String)],
     key: &AuditHmacKey,
 ) -> Result<String, WriteAuditError> {
-    write_with_audit_checked(data_root, world, body, content_type, headers, key, None)
+    write_with_audit_checked(data_root, world, body, content_type, headers, key)
         .map(|result| result.hmac)
 }
 
@@ -363,21 +350,8 @@ pub fn write_with_audit_checked(
     content_type: &str,
     headers: &[(String, String)],
     key: &AuditHmacKey,
-    quota: Option<(usize, usize)>,
 ) -> Result<WriteAuditResult, WriteAuditError> {
     let existed = world_db(data_root, world).exists();
-    if !existed {
-        if let Some((used, quota)) = quota {
-            let projected = used.saturating_add(body.len());
-            if projected > quota {
-                return Err(WriteAuditError::Quota {
-                    used,
-                    quota,
-                    projected,
-                });
-            }
-        }
-    }
     let mut c = open(data_root, world)?;
     let tx = c.transaction()?;
     let previous_len = tx.query_row(
@@ -385,16 +359,6 @@ pub fn write_with_audit_checked(
         [],
         |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
     )?;
-    if let Some((used, quota)) = quota {
-        let projected = used.saturating_sub(previous_len).saturating_add(body.len());
-        if projected > quota {
-            return Err(WriteAuditError::Quota {
-                used,
-                quota,
-                projected,
-            });
-        }
-    }
     let audit_tx = verify_appendable_world_tx(&tx, key, existed)?;
     let retained = cas::retain_body_tx(&tx, world, body)?;
     tx.execute(
