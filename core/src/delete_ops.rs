@@ -343,6 +343,7 @@ impl From<DeleteError> for EngineError {
 mod tests {
     use super::*;
     use crate::engine_types::ValidatedWorldPath;
+    use crate::test_support::test_core;
 
     #[test]
     fn delete_permit_requires_approve_and_binds_world() {
@@ -365,5 +366,52 @@ mod tests {
             authorize_delete(&world, auth::Tier::Approve),
             Err(DeleteError::AppendOnlyLedger)
         ));
+    }
+
+    #[tokio::test]
+    async fn delete_ledger_metadata_events_do_not_retain_cas_bodies() {
+        struct NoopTrace;
+        impl DeleteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("delete-ledger-no-cas");
+        let subject = ValidatedWorldPath::new("home/delete-ledger-no-cas").unwrap();
+        core.write_world(subject.as_str(), b"body", "text/plain", &[])
+            .unwrap();
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
+        core.write_world(subject.as_str(), b"body", "application/octet-stream", &[])
+            .unwrap();
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
+
+        let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
+        delete(
+            &core,
+            &permit,
+            DeleteRequest {
+                preconditions: Preconditions::none(),
+                content_type: "application/octet-stream".to_owned(),
+                headers: Vec::new(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+
+        let c =
+            rusqlite::Connection::open(crate::world::world_db(&dir, "var/log/deletes")).unwrap();
+        let cas_rows: i64 = c
+            .query_row("SELECT COUNT(*) FROM cas_bodies", [], |r| r.get(0))
+            .unwrap();
+        let first_retained_seq: Option<i64> = c
+            .query_row(
+                "SELECT first_retained_seq FROM cas_state WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(cas_rows, 0);
+        assert_eq!(first_retained_seq, None);
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
