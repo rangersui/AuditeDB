@@ -470,7 +470,7 @@ impl ReadCache {
     ) -> rusqlite::Result<Option<crate::audit::VerifyReport>> {
         let key = key.clone_secret();
         self.with_tracked_conn(data, world, move |conn| {
-            crate::audit::verify_chain_via_conn(conn, &key)
+            crate::audit::verify_chain_via_conn(conn, world, &key)
         })
     }
 

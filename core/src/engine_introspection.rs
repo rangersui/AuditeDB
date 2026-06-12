@@ -1011,4 +1011,46 @@ mod tests {
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[tokio::test]
+    async fn verify_audit_rejects_world_db_copied_under_another_name() {
+        let root = temp_root("verify-world-target");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
+            .build()
+            .unwrap();
+        let source = ValidatedWorldPath::new("home/source-world").unwrap();
+        let copied = ValidatedWorldPath::new("home/copied-world").unwrap();
+
+        engine
+            .replace(
+                &source,
+                Representation::new(Bytes::from_static(b"same bytes"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let source_dir = crate::world::world_dir(&engine.core().data, source.as_str());
+        let copied_dir = crate::world::world_dir(&engine.core().data, copied.as_str());
+        std::fs::create_dir_all(&copied_dir).unwrap();
+        for entry in std::fs::read_dir(&source_dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::copy(entry.path(), copied_dir.join(entry.file_name())).unwrap();
+            }
+        }
+
+        assert!(matches!(
+            engine.verify_audit(&copied, AccessTier::Read).unwrap(),
+            AuditVerify::Broken(break_report)
+                if break_report.expected == "target-home/copied-world"
+                    && break_report.actual == "target-home/source-world"
+        ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

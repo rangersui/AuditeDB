@@ -3,7 +3,7 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::{
-    engine_types::AuditHmacKey,
+    engine_types::{AuditHmacKey, ValidatedWorldPath},
     event::{AuditEventKind, BodyEventKind, EventMetadataKind},
     timeline::{BodySha256, TimelineSeq},
     world,
@@ -32,6 +32,7 @@ impl AppendedAuditRow {
 pub(crate) fn append_with_conn_existing(
     conn: &mut Connection,
     event_type: EventMetadataKind,
+    ledger_world: &ValidatedWorldPath,
     target: &str,
     body_sha256: &BodySha256,
     size: i64,
@@ -42,6 +43,7 @@ pub(crate) fn append_with_conn_existing(
     append_with_conn_verified(
         conn,
         event_type,
+        ledger_world,
         target,
         body_sha256,
         size,
@@ -56,6 +58,7 @@ pub(crate) fn append_with_conn_existing(
 pub(crate) fn append_with_conn_genesis(
     conn: &mut Connection,
     event_type: EventMetadataKind,
+    ledger_world: &ValidatedWorldPath,
     target: &str,
     body_sha256: &BodySha256,
     size: i64,
@@ -66,6 +69,7 @@ pub(crate) fn append_with_conn_genesis(
     append_with_conn_verified(
         conn,
         event_type,
+        ledger_world,
         target,
         body_sha256,
         size,
@@ -80,6 +84,7 @@ pub(crate) fn append_with_conn_genesis(
 fn append_with_conn_verified(
     conn: &mut Connection,
     event_type: EventMetadataKind,
+    ledger_world: &ValidatedWorldPath,
     target: &str,
     body_sha256: &BodySha256,
     size: i64,
@@ -89,7 +94,7 @@ fn append_with_conn_verified(
     empty_chain: EmptyChain,
 ) -> AuditResult<String> {
     let tx = conn.transaction()?;
-    let audit_tx = super::verify_appendable_tx(&tx, key, empty_chain)?;
+    let audit_tx = super::verify_appendable_tx(&tx, ledger_world, key, empty_chain)?;
     let row = append_tx_inner(
         &audit_tx,
         event_type.kind(),

@@ -25,7 +25,7 @@ use std::sync::Mutex as StdMutex;
 use rusqlite::Connection;
 
 use crate::audit;
-use crate::engine_types::AuditHmacKey;
+use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
 use crate::event::EventMetadataKind;
 use crate::timeline::BodySha256;
 use crate::world;
@@ -106,9 +106,12 @@ impl LedgerWriter {
         } else {
             audit::append_with_conn_existing
         };
+        let ledger_world = ValidatedWorldPath::new(job.ledger_world)
+            .map_err(|_| BlockingSqliteError::Sqlite(rusqlite::Error::InvalidQuery))?;
         append(
             conn,
             job.event_type,
+            &ledger_world,
             &job.target,
             &job.body_sha256,
             job.size,

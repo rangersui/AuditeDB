@@ -13,11 +13,7 @@
 //! ```
 //!
 //! Renames vs pre-v5: `stage_html` -> `body`. Drops: `pending_js`,
-//! `js_result`, `state`. v5.2 adds CAS retention tables. No migrator:
-//! stale world dirs fail loudly; wipe `data/` to upgrade.
-//!
-//! `meta_headers` is current metadata; `event_headers` is historical.
-//! The event chain stores structured audit facts, never JSON blobs.
+//! `js_result`, `state`. v5.2 adds CAS tables; stale dirs fail loudly.
 
 use crate::{
     audit,
@@ -358,7 +354,7 @@ pub fn write_with_audit_checked(
         [],
         |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
     )?;
-    let audit_tx = verify_appendable_world_tx(&tx, key, existed)?;
+    let audit_tx = verify_appendable_world_tx(&tx, world, key, existed)?;
     let retained = cas::retain_body_tx(&tx, world, body)?;
     tx.execute(
         r#"UPDATE stage_meta
@@ -442,7 +438,7 @@ pub fn append_with_audit(
     }
     let mut c = open(data_root, world_name)?;
     let tx = c.transaction()?;
-    let audit_tx = verify_appendable_world_tx(&tx, key, true)?;
+    let audit_tx = verify_appendable_world_tx(&tx, world, key, true)?;
     let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
         r.get::<_, Vec<u8>>(0)
     })?;
@@ -475,13 +471,16 @@ pub fn append_with_audit(
 
 fn verify_appendable_world_tx<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
+    world: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     existed_before_open: bool,
 ) -> Result<audit::VerifiedAuditTx<'tx, 'conn, 'key>, WriteAuditError> {
     if !existed_before_open || is_empty_bootstrap_tx(tx)? {
-        Ok(audit::verify_appendable_tx_genesis_checked(tx, key)?)
+        Ok(audit::verify_appendable_tx_genesis_checked(tx, world, key)?)
     } else {
-        Ok(audit::verify_appendable_tx_existing_checked(tx, key)?)
+        Ok(audit::verify_appendable_tx_existing_checked(
+            tx, world, key,
+        )?)
     }
 }
 

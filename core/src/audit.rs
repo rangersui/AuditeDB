@@ -7,7 +7,11 @@ use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
-use crate::{engine_types::AuditHmacKey, timeline::TimelineSeq, world};
+use crate::{
+    engine_types::{AuditHmacKey, ValidatedWorldPath},
+    timeline::TimelineSeq,
+    world,
+};
 use std::{collections::HashSet, fmt, path::Path};
 
 mod append;
@@ -97,10 +101,12 @@ pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()
 }
 
 pub fn verify_world(data_root: &Path, world_name: &str, key: &AuditHmacKey) -> AuditResult<()> {
+    let world_path = ValidatedWorldPath::new(world_name.to_owned())
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
     let Some(c) = world::open_existing(data_root, world_name)? else {
         return Ok(());
     };
-    require_intact(verify_connection(&c, key)?)?;
+    require_intact(verify_world_connection(&c, &world_path, key)?)?;
     if let Some(break_report) = live_body::verify_conn(&c)? {
         return Err(AuditError::ChainBroken(break_report));
     }
@@ -109,20 +115,23 @@ pub fn verify_world(data_root: &Path, world_name: &str, key: &AuditHmacKey) -> A
 
 pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
+    world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
-    verify_appendable_tx(tx, key, EmptyChain::Reject)
+    verify_appendable_tx(tx, world_name, key, EmptyChain::Reject)
 }
 
 pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
+    world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
-    verify_appendable_tx(tx, key, EmptyChain::Allow)
+    verify_appendable_tx(tx, world_name, key, EmptyChain::Allow)
 }
 
 fn verify_appendable_tx<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
+    world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
@@ -134,6 +143,7 @@ fn verify_appendable_tx<'tx, 'conn, 'key>(
         key.as_slice(),
         allow_empty,
         &retention,
+        Some(world_name.as_str()),
     )?)?;
     if let Some(break_report) = live_body::verify_tx(tx)? {
         return Err(AuditError::ChainBroken(break_report));
@@ -213,10 +223,13 @@ pub fn chain_head_via_conn(
 /// usual SlotState write guard.
 pub fn verify_chain_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
+    world_name: &str,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
+    let world_path = ValidatedWorldPath::new(world_name.to_owned())
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
     let conn = tracked.as_mut_conn();
-    let report = verify_connection(conn, key)?;
+    let report = verify_world_connection(conn, &world_path, key)?;
     if matches!(report, VerifyReport::Broken(_)) {
         return Ok(report);
     }
@@ -226,10 +239,27 @@ pub fn verify_chain_via_conn(
     Ok(report)
 }
 
+#[cfg(test)]
 fn verify_connection(c: &Connection, key: &AuditHmacKey) -> rusqlite::Result<VerifyReport> {
     let retention = retention::load(c)?;
     let mut stmt = c.prepare(AUDIT_SELECT)?;
-    verify_statement(&mut stmt, key.as_slice(), false, &retention)
+    verify_statement(&mut stmt, key.as_slice(), false, &retention, None)
+}
+
+fn verify_world_connection(
+    c: &Connection,
+    world_name: &ValidatedWorldPath,
+    key: &AuditHmacKey,
+) -> rusqlite::Result<VerifyReport> {
+    let retention = retention::load(c)?;
+    let mut stmt = c.prepare(AUDIT_SELECT)?;
+    verify_statement(
+        &mut stmt,
+        key.as_slice(),
+        false,
+        &retention,
+        Some(world_name.as_str()),
+    )
 }
 
 fn verify_statement(
@@ -237,6 +267,7 @@ fn verify_statement(
     key: &[u8],
     allow_empty: bool,
     retention: &retention::CasRetentionState,
+    expected_target: Option<&str>,
 ) -> rusqlite::Result<VerifyReport> {
     let mut state = VerifyAccumulator {
         prev: String::new(),
@@ -264,7 +295,14 @@ fn verify_statement(
         };
         if current.as_ref().is_some_and(|event| event.id != row.id) {
             let event = current.take().expect("current event");
-            if let Some(break_report) = verify_event(&event, &headers, key, retention, &mut state) {
+            if let Some(break_report) = verify_event(
+                &event,
+                &headers,
+                key,
+                retention,
+                &mut state,
+                expected_target,
+            ) {
                 return Ok(VerifyReport::Broken(break_report));
             }
             headers.clear();
@@ -280,7 +318,14 @@ fn verify_statement(
     }
 
     if let Some(event) = current {
-        if let Some(break_report) = verify_event(&event, &headers, key, retention, &mut state) {
+        if let Some(break_report) = verify_event(
+            &event,
+            &headers,
+            key,
+            retention,
+            &mut state,
+            expected_target,
+        ) {
             return Ok(VerifyReport::Broken(break_report));
         }
     }
@@ -324,8 +369,18 @@ fn verify_event(
     key: &[u8],
     retention: &retention::CasRetentionState,
     state: &mut VerifyAccumulator,
+    expected_target: Option<&str>,
 ) -> Option<VerifyBreak> {
     let idx = state.events;
+    if matches!(row.event_type.as_str(), "put" | "append")
+        && expected_target.is_some_and(|target| target != row.target)
+    {
+        return Some(VerifyBreak {
+            break_at: idx,
+            expected: format!("target-{}", expected_target.unwrap_or_default()),
+            actual: format!("target-{}", row.target),
+        });
+    }
     if !crate::auth::ct_eq(row.prev_hmac.as_bytes(), state.prev.as_bytes()) {
         return Some(VerifyBreak {
             break_at: idx,
@@ -696,7 +751,8 @@ mod tests {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
         let key = test_key();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        let audit_tx =
+            verify_appendable_tx_genesis_checked(&tx, &validated("home/a"), &key).unwrap();
         append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
@@ -759,7 +815,8 @@ mod tests {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
         let key = test_key();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        let audit_tx =
+            verify_appendable_tx_genesis_checked(&tx, &validated("home/a"), &key).unwrap();
         append_tx_inner(
             &audit_tx,
             AuditEventKind::DeleteIntent,
@@ -860,7 +917,8 @@ mod tests {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
         let key = test_key();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        let audit_tx =
+            verify_appendable_tx_genesis_checked(&tx, &validated("home/a"), &key).unwrap();
         let row1 = append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
@@ -954,7 +1012,7 @@ mod tests {
 
         let tx = c.transaction().unwrap();
         let key = test_key();
-        let err = match verify_appendable_tx_genesis_checked(&tx, &key) {
+        let err = match verify_appendable_tx_genesis_checked(&tx, &validated("home/a"), &key) {
             Ok(_) => panic!("corrupt latest hmac must not be treated as an empty chain"),
             Err(e) => e,
         };
@@ -975,7 +1033,8 @@ mod tests {
         {
             let tx = c.transaction().unwrap();
             let key = test_key();
-            let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+            let audit_tx =
+                verify_appendable_tx_genesis_checked(&tx, &validated("home/a"), &key).unwrap();
             append_tx_inner(
                 &audit_tx,
                 AuditEventKind::Put,
@@ -995,7 +1054,7 @@ mod tests {
 
         let tx = c.transaction().unwrap();
         let key = test_key();
-        let err = match verify_appendable_tx_existing_checked(&tx, &key) {
+        let err = match verify_appendable_tx_existing_checked(&tx, &validated("home/a"), &key) {
             Ok(_) => panic!("tampered audit chain must not be appendable"),
             Err(err) => err,
         };
@@ -1015,7 +1074,8 @@ mod tests {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
         let key = test_key();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        let audit_tx =
+            verify_appendable_tx_genesis_checked(&tx, &validated("home/a"), &key).unwrap();
         append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
@@ -1066,7 +1126,8 @@ mod tests {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
         let key = test_key();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        let audit_tx =
+            verify_appendable_tx_genesis_checked(&tx, &validated("home/a"), &key).unwrap();
         append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
