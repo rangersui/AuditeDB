@@ -303,7 +303,7 @@ pub fn read_with_hmac_via_conn(
 /// `write_with_audit_checked` (which signs the chain). Kept for the
 /// fixtures used by `Core::write_world`.
 #[cfg(test)]
-pub fn write(
+pub fn test_only_write_without_audit(
     data_root: &Path,
     world: &str,
     body: &[u8],
@@ -398,7 +398,11 @@ pub fn write_with_audit_checked(
 /// go through `append_with_audit`.
 #[cfg(test)]
 #[allow(dead_code)]
-fn append(data_root: &Path, world: &str, body: &[u8]) -> rusqlite::Result<Option<AppendResult>> {
+fn test_only_append_without_audit(
+    data_root: &Path,
+    world: &str,
+    body: &[u8],
+) -> rusqlite::Result<Option<AppendResult>> {
     let path = world_db(data_root, world);
     if !path.exists() {
         return Ok(None);
@@ -922,7 +926,7 @@ mod tests {
         let root = test_root("text-body-corruption");
         let _ = std::fs::remove_dir_all(&root);
 
-        write(
+        test_only_write_without_audit(
             &root,
             "home/plain",
             b"seed",
@@ -946,9 +950,9 @@ mod tests {
             let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
             assert!(read_with_hmac_via_conn(&mut tracked).is_err());
         }
-        assert!(append(&root, "home/plain", b"!").is_err());
+        assert!(test_only_append_without_audit(&root, "home/plain", b"!").is_err());
 
-        write(
+        test_only_write_without_audit(
             &root,
             "home/audited",
             b"seed",
@@ -1077,7 +1081,7 @@ mod tests {
             let dir = scratch_dir("open-existing-warm");
             let world = "home/bench";
             let _c = open(&dir, world).unwrap();
-            write(&dir, world, b"hello world", "text/plain", &[]).unwrap();
+            test_only_write_without_audit(&dir, world, b"hello world", "text/plain", &[]).unwrap();
 
             let n = 10_000;
             let start = Instant::now();
@@ -1109,7 +1113,7 @@ mod tests {
             let dir = scratch_dir("open-full-warm");
             let world = "home/bench";
             let _c = open(&dir, world).unwrap();
-            write(&dir, world, b"hello world", "text/plain", &[]).unwrap();
+            test_only_write_without_audit(&dir, world, b"hello world", "text/plain", &[]).unwrap();
 
             let n = 10_000;
             let start = Instant::now();

@@ -825,7 +825,7 @@ mod tests {
         let dir = scratch_dir("hit");
         let world = "home/cache-hit";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"hello", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"hello", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
@@ -919,7 +919,7 @@ mod tests {
         let dir = scratch_dir("generation-regression-cache-hit");
         let world = "home/cached";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"hello", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"hello", "text/plain", &[]).unwrap();
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
         assert!(cache.cached_read_with_hmac(&dir, world).unwrap().is_some());
@@ -939,7 +939,7 @@ mod tests {
         let dir = scratch_dir("last-access");
         for w in ["home/a", "home/b"] {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, b"hello", "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, b"hello", "text/plain", &[]).unwrap();
         }
 
         let cache = ReadCache::new(2);
@@ -993,7 +993,7 @@ mod tests {
         let dir = scratch_dir("tombstone");
         let world = "home/tomb";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"x", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"x", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
@@ -1013,7 +1013,7 @@ mod tests {
         let dir = scratch_dir("cap-evict");
         for w in ["home/a", "home/b", "home/c"] {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, b"x", "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, b"x", "text/plain", &[]).unwrap();
         }
 
         let cache = ReadCache::new(2);
@@ -1049,7 +1049,7 @@ mod tests {
         let dir = scratch_dir("cap-transient-busy");
         for w in ["home/a", "home/b", "home/c"] {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, b"x", "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, b"x", "text/plain", &[]).unwrap();
         }
 
         let cache = ReadCache::new(2);
@@ -1088,7 +1088,8 @@ mod tests {
         let worlds = ["home/a", "home/b", "home/c", "home/d", "home/e"];
         for (idx, w) in worlds.iter().enumerate() {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, &[b'a' + idx as u8], "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, &[b'a' + idx as u8], "text/plain", &[])
+                .unwrap();
         }
 
         let cache = ReadCache::new(1);
@@ -1127,7 +1128,8 @@ mod tests {
         let worlds = ["home/a", "home/b", "home/c", "home/d"];
         for (idx, w) in worlds.iter().enumerate() {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, &[b'a' + idx as u8], "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, &[b'a' + idx as u8], "text/plain", &[])
+                .unwrap();
         }
 
         let cache = StdArc::new(ReadCache::new(1));
@@ -1163,7 +1165,7 @@ mod tests {
         let dir = scratch_dir("cap-hit");
         for w in ["home/a", "home/b"] {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, b"x", "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, b"x", "text/plain", &[]).unwrap();
         }
 
         let cache = ReadCache::new(2);
@@ -1198,7 +1200,8 @@ mod tests {
         let dir = scratch_dir("evicted-retry");
         let world = "home/evicted";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"still here", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"still here", "text/plain", &[])
+            .unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         cache
@@ -1231,7 +1234,7 @@ mod tests {
         let dir = scratch_dir("evict-busy");
         let world = "home/busy";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"busy", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"busy", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
@@ -1256,7 +1259,7 @@ mod tests {
         let dir = scratch_dir("evict-ready-success");
         let world = "home/idle";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"idle", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"idle", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
@@ -1281,7 +1284,7 @@ mod tests {
         let dir = scratch_dir("evict-stale-arc");
         let world = "home/stale";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"stale", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"stale", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
@@ -1311,7 +1314,7 @@ mod tests {
         let dir = scratch_dir("done-none-and-opening");
         let world = "home/done-none";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"x", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"x", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         cache.install_tombstone_blocking(world);
@@ -1353,7 +1356,8 @@ mod tests {
         let dir = scratch_dir("stuck-opening-budget");
         let world = "home/stuck-opening";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"still here", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"still here", "text/plain", &[])
+            .unwrap();
 
         let cache = ReadCache::new(1);
         cache
@@ -1384,7 +1388,7 @@ mod tests {
         let dir = scratch_dir("evict-skip-tombstone");
         for w in ["home/ready", "home/tomb"] {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, b"x", "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, b"x", "text/plain", &[]).unwrap();
         }
 
         let cache = ReadCache::new(2);
@@ -1411,7 +1415,7 @@ mod tests {
         let dir = scratch_dir("evict-exclude-target");
         for w in ["home/a", "home/b", "home/c"] {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, b"x", "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, b"x", "text/plain", &[]).unwrap();
         }
 
         let cache = ReadCache::new(3);
@@ -1515,7 +1519,8 @@ mod tests {
         let dir = StdArc::new(scratch_dir("cap-transient-concurrent"));
         for w in ["home/a", "home/b", "home/c"] {
             let _c = world::open(&dir, w).unwrap();
-            world::write(&dir, w, b"hello world", "text/plain", &[]).unwrap();
+            world::test_only_write_without_audit(&dir, w, b"hello world", "text/plain", &[])
+                .unwrap();
         }
 
         // cap=2 -> A and B fill it; C must go through transient.
@@ -1596,7 +1601,7 @@ mod tests {
         let dir = scratch_dir("cantopen-existing");
         let world = "home/locked";
         let _c = world::open(&dir, world).unwrap();
-        world::write(&dir, world, b"hello", "text/plain", &[]).unwrap();
+        world::test_only_write_without_audit(&dir, world, b"hello", "text/plain", &[]).unwrap();
 
         // chmod 000 the universe.db so SQLite returns CANTOPEN even
         // though the file is genuinely on disk.
