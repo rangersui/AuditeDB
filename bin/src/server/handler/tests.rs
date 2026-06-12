@@ -702,7 +702,7 @@ async fn post_audit_uses_existing_representation_metadata() {
 
 #[tokio::test]
 async fn durable_storage_quota_returns_507_without_writing() {
-    let (engine, dir) = test_engine_for_server_with_storage_quota("storage-quota", 4);
+    let (engine, dir) = test_engine_for_server_with_storage_quota("storage-quota", 8);
     let headers = HeaderMap::new();
 
     let first = unwrap_response(
@@ -730,9 +730,9 @@ async fn durable_storage_quota_returns_507_without_writing() {
         .await,
     );
     assert_eq!(over.status(), StatusCode::INSUFFICIENT_STORAGE);
-    assert_eq!(over.headers().get("x-storage-usage").unwrap(), "4");
-    assert_eq!(over.headers().get("x-storage-quota").unwrap(), "4");
-    assert_eq!(over.headers().get("x-storage-needed").unwrap(), "1");
+    assert_eq!(over.headers().get("x-storage-usage").unwrap(), "8");
+    assert_eq!(over.headers().get("x-storage-quota").unwrap(), "8");
+    assert_eq!(over.headers().get("x-storage-needed").unwrap(), "2");
     assert!(engine
         .read(&world_path("home/b"), AccessTier::Read)
         .unwrap()
@@ -750,9 +750,9 @@ async fn durable_storage_quota_returns_507_without_writing() {
         .await,
     );
     assert_eq!(append.status(), StatusCode::INSUFFICIENT_STORAGE);
-    assert_eq!(append.headers().get("x-storage-usage").unwrap(), "4");
-    assert_eq!(append.headers().get("x-storage-quota").unwrap(), "4");
-    assert_eq!(append.headers().get("x-storage-needed").unwrap(), "1");
+    assert_eq!(append.headers().get("x-storage-usage").unwrap(), "8");
+    assert_eq!(append.headers().get("x-storage-quota").unwrap(), "8");
+    assert_eq!(append.headers().get("x-storage-needed").unwrap(), "6");
     assert_eq!(
         engine
             .read(&world_path("home/a"), AccessTier::Read)
@@ -813,8 +813,11 @@ async fn concurrent_puts_to_distinct_worlds_do_not_overshoot_quota() {
     }
 
     let used = engine.df(AccessTier::Read).unwrap().storage_used;
-    let counted = accepted * body_len;
-    assert_eq!(used, counted, "counter must equal sum of accepted bodies");
+    let counted = accepted * body_len * 2;
+    assert_eq!(
+        used, counted,
+        "counter must equal accepted live bodies plus retained CAS bodies"
+    );
     assert![
         used <= quota,
         "counter must never exceed quota: {used} > {quota}"
