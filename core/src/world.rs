@@ -1,6 +1,6 @@
 //! World storage: one SQLite file per world.
 //!
-//! v5.1 schema (breaking from pre-v5.1 cores):
+//! v5.2 schema (breaking from pre-v5.2 cores):
 //!
 //! ```text
 //!     stage_meta(id, generation, body, content_type)
@@ -8,11 +8,14 @@
 //!     events(id, timestamp, event_type, target, body_sha256, size,
 //!            content_type, meta_sha256, hmac, prev_hmac)
 //!     event_headers(event_id, name, value)
+//!     cas_bodies(body_sha256, body)
+//!     cas_state(id=1, first_retained_seq)
 //! ```
 //!
 //! Renames vs pre-v5: `stage_html` -> `body`. Drops: `pending_js`,
-//! `js_result`, `state`. No migrator. World dirs from older binaries
-//! fail SELECT body; wipe `data/` to upgrade.
+//! `js_result`, `state`. v5.2 adds the inert CAS tables. No migrator:
+//! world dirs from older binaries fail loudly on the first missing or stale
+//! schema surface; wipe `data/` to upgrade.
 //!
 //! `state` is gone on purpose. The old `pending|active|disabled`
 //! triple was a hook for an in-core plugin runtime that no longer
@@ -74,7 +77,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-/// Open or create the world's universe.db with the v5.1 schema.
+/// Open or create the world's universe.db with the v5.2 schema.
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     let dir = world_dir(data_root, world);
     std::fs::create_dir_all(&dir).map_err(create_dir_error)?;
