@@ -2,6 +2,7 @@
 
 use crate::world_generation::{MintedWorldGeneration, WorldGeneration};
 use rusqlite::{ffi, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 
 const CAS_BODIES_TABLE_SQL: &str = r#"
 CREATE TABLE cas_bodies(
@@ -234,19 +235,14 @@ fn is_sql_word_char(ch: char) -> bool {
 
 fn verify_cas_body_rows(c: &Connection) -> rusqlite::Result<()> {
     let mut stmt = c.prepare(
-        "SELECT body_sha256, typeof(body_sha256), typeof(body), length(body) FROM cas_bodies",
+        "SELECT body_sha256, typeof(body_sha256), typeof(body), length(body), body FROM cas_bodies",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-        ))
-    })?;
-
-    for row in rows {
-        let (hash, hash_type, body_type, body_len) = row?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let hash: String = row.get(0)?;
+        let hash_type: String = row.get(1)?;
+        let body_type: String = row.get(2)?;
+        let body_len: Option<i64> = row.get(3)?;
         if hash_type != "text" || !is_lower_hex_sha256(&hash) {
             return Err(schema_error(
                 "cas_bodies.body_sha256 must be 64-byte lower hex TEXT".to_owned(),
@@ -255,9 +251,21 @@ fn verify_cas_body_rows(c: &Connection) -> rusqlite::Result<()> {
         if body_type != "blob" || body_len.is_none() {
             return Err(schema_error("cas_bodies.body must be BLOB".to_owned()));
         }
+        let body: Vec<u8> = row.get(4)?;
+        if sha256_hex(&body) != hash {
+            return Err(schema_error(
+                "cas_bodies.body does not match body_sha256".to_owned(),
+            ));
+        }
     }
 
     Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
 }
 
 fn is_lower_hex_sha256(value: &str) -> bool {
@@ -587,6 +595,21 @@ mod tests {
         let err = verify(&c).unwrap_err();
 
         assert!(err.to_string().contains("cas_bodies.body_sha256"));
+    }
+
+    #[test]
+    fn verify_rejects_cas_body_hash_mismatch() {
+        let c = Connection::open_in_memory().unwrap();
+        create_valid_schema(&c);
+        c.execute(
+            "INSERT INTO cas_bodies(body_sha256, body) VALUES(?1, ?2)",
+            rusqlite::params![sha256_hex(b"expected"), b"different".as_slice()],
+        )
+        .unwrap();
+
+        let err = verify(&c).unwrap_err();
+
+        assert!(err.to_string().contains("does not match body_sha256"));
     }
 
     #[test]
