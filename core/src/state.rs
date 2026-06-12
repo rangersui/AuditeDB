@@ -30,6 +30,7 @@ use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
 use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
 use crate::read_cache::ReadCache;
+use crate::timeline::{TimelineAddress, TimelineRead};
 use crate::world::Stage;
 use crate::{audit, auth, event, store, world};
 
@@ -240,6 +241,29 @@ impl Core {
             .cached_verify_chain(&self.data, world, &self.hmac_key)
     }
 
+    /// Historical body read through the read-cache SlotState protocol.
+    /// Durable timeline reads are fd-lifetime sensitive for the same reason
+    /// ordinary reads and audit verifies are: delete must drain the cached
+    /// connection before removing the world database.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn read_timeline_body(
+        &self,
+        address: &TimelineAddress,
+    ) -> audit::AuditResult<Option<TimelineRead>> {
+        debug_assert!(
+            !store::is_memory_world(address.world().as_str()),
+            "read_timeline_body only applies to durable worlds"
+        );
+        let read = self
+            .read_cache
+            .cached_read_timeline_body(&self.data, address, &self.hmac_key)
+            .map_err(audit::AuditError::from)?;
+        match read {
+            Some(result) => result.map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Test-only fixture: seed a world directly without going through
     /// auth/preconditions/audit. Production writes go through `world_ops`
     /// (durable: `world::write_with_audit_checked` + `reserve_storage`;
@@ -410,7 +434,13 @@ impl Core {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine_types::AuditHmacKey;
+    use bytes::Bytes;
+
+    use crate::{
+        engine_types::{AuditHmacKey, ValidatedWorldPath},
+        timeline::{BodySha256, TimelineAddress, TimelineRead, TimelineSeq},
+        world, world_schema,
+    };
 
     #[test]
     fn core_hmac_key_is_stored_as_audit_hmac_key() {
@@ -418,6 +448,69 @@ mod tests {
 
         fn assert_audit_hmac_key(_: &AuditHmacKey) {}
         assert_audit_hmac_key(&core.hmac_key);
+
+        drop(core);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn core_timeline_body_read_uses_read_cache_tombstone_protocol() {
+        let (core, dir) = crate::test_support::test_core("core-timeline-read-cache");
+        let world = ValidatedWorldPath::new("home/timeline-cache").unwrap();
+
+        world::write_with_audit_checked(
+            &core.data,
+            &world,
+            b"old",
+            "text/plain",
+            &[("x-meta-version".to_owned(), "old".to_owned())],
+            &core.hmac_key,
+        )
+        .unwrap();
+        world::write_with_audit_checked(
+            &core.data,
+            &world,
+            b"new",
+            "application/octet-stream",
+            &[("x-meta-version".to_owned(), "new".to_owned())],
+            &core.hmac_key,
+        )
+        .unwrap();
+
+        let conn = rusqlite::Connection::open(world::world_db(&core.data, world.as_str())).unwrap();
+        let gen = world_schema::generation(&conn).unwrap();
+        drop(conn);
+        let address = TimelineAddress::test_only_new(
+            world.clone(),
+            gen,
+            TimelineSeq::new(1).unwrap(),
+            BodySha256::for_body(b"old"),
+        );
+
+        match core.read_timeline_body(&address).unwrap().unwrap() {
+            TimelineRead::Body(body) => {
+                assert_eq!(body.representation().body, Bytes::from_static(b"old"));
+                assert_eq!(
+                    body.representation().headers,
+                    vec![("x-meta-version".to_owned(), "old".to_owned())]
+                );
+            }
+            _ => panic!("expected retained historical body"),
+        }
+
+        core.install_tombstone(world.as_str()).await;
+        assert!(
+            core.read_timeline_body(&address).unwrap().is_none(),
+            "timeline reads must route through the read-cache tombstone gate"
+        );
+
+        core.clear_tombstone(world.as_str());
+        match core.read_timeline_body(&address).unwrap().unwrap() {
+            TimelineRead::Body(body) => {
+                assert_eq!(body.representation().body, Bytes::from_static(b"old"));
+            }
+            _ => panic!("expected retained historical body after tombstone clear"),
+        }
 
         drop(core);
         std::fs::remove_dir_all(dir).ok();

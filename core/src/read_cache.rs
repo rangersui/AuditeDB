@@ -129,6 +129,9 @@ fn open_verified_read_conn(path: &std::path::Path) -> rusqlite::Result<Connectio
 /// See AGENTS.md section "Physics, not policy."
 pub(crate) struct TrackedReadConnection(Connection);
 
+#[cfg_attr(not(test), allow(dead_code))]
+type TimelineReadResult = crate::audit::AuditResult<crate::timeline::TimelineRead>;
+
 impl TrackedReadConnection {
     /// Module-private constructor. The only call site in the crate
     /// is `OpeningTransition::promote`. Intentionally not exposed
@@ -471,6 +474,26 @@ impl ReadCache {
         let key = key.clone_secret();
         self.with_tracked_conn(data, world, move |conn| {
             crate::audit::verify_chain_via_conn(conn, world, &key)
+        })
+    }
+
+    /// Historical body read through the cached read path. Same SlotState
+    /// protocol as ordinary cached reads: delete drains in-flight timeline
+    /// reads before unlinking the world database, and a tombstone produces
+    /// `Ok(None)` rather than opening a new fd.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn cached_read_timeline_body(
+        &self,
+        data: &std::path::Path,
+        address: &crate::timeline::TimelineAddress,
+        key: &crate::engine_types::AuditHmacKey,
+    ) -> rusqlite::Result<Option<TimelineReadResult>> {
+        let world = address.world().as_str();
+        let key = key.clone_secret();
+        self.with_tracked_conn(data, world, move |conn| {
+            Ok(crate::audit::read_timeline_body_via_conn(
+                conn, address, &key,
+            ))
         })
     }
 
