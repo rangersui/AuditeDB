@@ -7,10 +7,11 @@ use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
-use crate::{engine_types::AuditHmacKey, world};
-use std::{fmt, path::Path};
+use crate::{engine_types::AuditHmacKey, timeline::TimelineSeq, world};
+use std::{collections::HashSet, fmt, path::Path};
 
 mod append;
+mod retention;
 
 #[cfg(test)]
 use append::test_only_append_tx_inner as append_tx_inner;
@@ -120,9 +121,15 @@ fn verify_appendable_tx<'tx, 'conn, 'key>(
     key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+    let retention = retention::load(tx)?;
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let allow_empty = matches!(empty_chain, EmptyChain::Allow);
-    require_intact(verify_statement(&mut stmt, key.as_slice(), allow_empty)?)?;
+    require_intact(verify_statement(
+        &mut stmt,
+        key.as_slice(),
+        allow_empty,
+        &retention,
+    )?)?;
     Ok(VerifiedAuditTx { tx, key })
 }
 
@@ -136,6 +143,15 @@ struct EventRow {
     meta_sha256: String,
     hmac: String,
     prev_hmac: String,
+}
+
+struct VerifyAccumulator {
+    prev: String,
+    genesis: String,
+    events: usize,
+    first_body_event: Option<TimelineSeq>,
+    saw_retention_floor: bool,
+    referenced_retained_bodies: HashSet<String>,
 }
 
 struct EventHmacInput<'a> {
@@ -195,18 +211,25 @@ pub fn verify_chain_via_conn(
 }
 
 fn verify_connection(c: &Connection, key: &AuditHmacKey) -> rusqlite::Result<VerifyReport> {
+    let retention = retention::load(c)?;
     let mut stmt = c.prepare(AUDIT_SELECT)?;
-    verify_statement(&mut stmt, key.as_slice(), false)
+    verify_statement(&mut stmt, key.as_slice(), false, &retention)
 }
 
 fn verify_statement(
     stmt: &mut Statement<'_>,
     key: &[u8],
     allow_empty: bool,
+    retention: &retention::CasRetentionState,
 ) -> rusqlite::Result<VerifyReport> {
-    let mut prev = String::new();
-    let mut genesis = String::new();
-    let mut events = 0usize;
+    let mut state = VerifyAccumulator {
+        prev: String::new(),
+        genesis: String::new(),
+        events: 0,
+        first_body_event: None,
+        saw_retention_floor: retention.floor_is_unset(),
+        referenced_retained_bodies: HashSet::new(),
+    };
     let mut rows = stmt.query([])?;
     let mut current: Option<EventRow> = None;
     let mut headers = Vec::new();
@@ -225,9 +248,7 @@ fn verify_statement(
         };
         if current.as_ref().is_some_and(|event| event.id != row.id) {
             let event = current.take().expect("current event");
-            if let Some(break_report) =
-                verify_event(&event, &headers, key, &mut prev, &mut genesis, &mut events)
-            {
+            if let Some(break_report) = verify_event(&event, &headers, key, retention, &mut state) {
                 return Ok(VerifyReport::Broken(break_report));
             }
             headers.clear();
@@ -243,14 +264,16 @@ fn verify_statement(
     }
 
     if let Some(event) = current {
-        if let Some(break_report) =
-            verify_event(&event, &headers, key, &mut prev, &mut genesis, &mut events)
-        {
+        if let Some(break_report) = verify_event(&event, &headers, key, retention, &mut state) {
             return Ok(VerifyReport::Broken(break_report));
         }
     }
 
-    if events == 0 {
+    if let Some(break_report) = retention::verify_completion(&state, retention) {
+        return Ok(VerifyReport::Broken(break_report));
+    }
+
+    if state.events == 0 {
         if allow_empty {
             return Ok(VerifyReport::Valid(VerifyOk {
                 events: 0,
@@ -266,9 +289,9 @@ fn verify_statement(
     }
 
     Ok(VerifyReport::Valid(VerifyOk {
-        events,
-        genesis: hmac_label(&genesis),
-        latest: hmac_label(&prev),
+        events: state.events,
+        genesis: hmac_label(&state.genesis),
+        latest: hmac_label(&state.prev),
     }))
 }
 
@@ -283,15 +306,14 @@ fn verify_event(
     row: &EventRow,
     headers: &[(String, String)],
     key: &[u8],
-    prev: &mut String,
-    genesis: &mut String,
-    events: &mut usize,
+    retention: &retention::CasRetentionState,
+    state: &mut VerifyAccumulator,
 ) -> Option<VerifyBreak> {
-    let idx = *events;
-    if !crate::auth::ct_eq(row.prev_hmac.as_bytes(), prev.as_bytes()) {
+    let idx = state.events;
+    if !crate::auth::ct_eq(row.prev_hmac.as_bytes(), state.prev.as_bytes()) {
         return Some(VerifyBreak {
             break_at: idx,
-            expected: hmac_label(prev),
+            expected: hmac_label(&state.prev),
             actual: hmac_label(&row.prev_hmac),
         });
     }
@@ -306,7 +328,7 @@ fn verify_event(
     let expected_hmac = event_hmac(
         key,
         EventHmacInput {
-            prev,
+            prev: &state.prev,
             event_type: &row.event_type,
             target: &row.target,
             body_sha256: &row.body_sha256,
@@ -322,11 +344,14 @@ fn verify_event(
             actual: hmac_label(&row.hmac),
         });
     }
-    if idx == 0 {
-        *genesis = row.hmac.clone();
+    if let Some(break_report) = retention::verify_retained_body(row, idx, retention, state) {
+        return Some(break_report);
     }
-    *prev = row.hmac.clone();
-    *events += 1;
+    if idx == 0 {
+        state.genesis = row.hmac.clone();
+    }
+    state.prev = row.hmac.clone();
+    state.events += 1;
     None
 }
 
@@ -427,6 +452,15 @@ mod tests {
                 name TEXT NOT NULL,
                 value TEXT NOT NULL
             );
+            CREATE TABLE cas_bodies(
+                body_sha256 TEXT NOT NULL PRIMARY KEY,
+                body BLOB NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE cas_state(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                first_retained_seq INTEGER
+            );
+            INSERT INTO cas_state(id, first_retained_seq) VALUES(1, NULL);
             "#,
         )
         .unwrap();
@@ -435,6 +469,23 @@ mod tests {
 
     fn test_key() -> AuditHmacKey {
         AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
+    }
+
+    fn retain_test_body(tx: &Transaction<'_>, body: &[u8]) {
+        let body_sha256 = BodySha256::for_body(body);
+        tx.execute(
+            "INSERT OR IGNORE INTO cas_bodies(body_sha256, body) VALUES(?1, ?2)",
+            rusqlite::params![body_sha256.as_str(), body],
+        )
+        .unwrap();
+    }
+
+    fn set_test_retention_floor(tx: &Transaction<'_>, seq: i64) {
+        tx.execute(
+            "UPDATE cas_state SET first_retained_seq=?1 WHERE id=1",
+            rusqlite::params![seq],
+        )
+        .unwrap();
     }
 
     fn hmac_for_fields(event_type: &str, target: &str) -> String {
@@ -512,6 +563,221 @@ mod tests {
     }
 
     #[test]
+    fn verify_connection_rejects_missing_retained_cas_body() {
+        let (core, dir) = test_core("audit-missing-cas-body");
+        world::write_with_audit(
+            &core.data,
+            "home/missing-cas",
+            b"retained",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let c = Connection::open(world::world_db(&core.data, "home/missing-cas")).unwrap();
+        c.execute("DELETE FROM cas_bodies", []).unwrap();
+
+        let report = verify_connection(&c, &core.hmac_key).unwrap();
+
+        assert!(matches!(
+            report,
+            VerifyReport::Broken(VerifyBreak { actual, .. }) if actual == "missing-cas-body"
+        ));
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_connection_rejects_corrupt_retained_cas_body() {
+        let (core, dir) = test_core("audit-corrupt-cas-body");
+        world::write_with_audit(
+            &core.data,
+            "home/corrupt-cas",
+            b"retained",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let c = Connection::open(world::world_db(&core.data, "home/corrupt-cas")).unwrap();
+        c.execute("UPDATE cas_bodies SET body=?1", [b"tampered".as_slice()])
+            .unwrap();
+
+        let err = verify_connection(&c, &core.hmac_key).unwrap_err();
+
+        assert!(err.to_string().contains("does not match body_sha256"));
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_connection_rejects_unreferenced_cas_body() {
+        let (core, dir) = test_core("audit-unreferenced-cas-body");
+        world::write_with_audit(
+            &core.data,
+            "home/unreferenced-cas",
+            b"retained",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let c = Connection::open(world::world_db(&core.data, "home/unreferenced-cas")).unwrap();
+        let extra_hash = BodySha256::for_body(b"extra");
+        c.execute(
+            "INSERT INTO cas_bodies(body_sha256, body) VALUES(?1, ?2)",
+            rusqlite::params![extra_hash.as_str(), b"extra".as_slice()],
+        )
+        .unwrap();
+
+        let report = verify_connection(&c, &core.hmac_key).unwrap();
+
+        assert!(matches!(
+            report,
+            VerifyReport::Broken(VerifyBreak { actual, .. }) if actual == "unreferenced-cas-body"
+        ));
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_connection_rejects_retained_cas_body_size_mismatch() {
+        let mut c = test_connection();
+        let tx = c.transaction().unwrap();
+        let key = test_key();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        append_tx_inner(
+            &audit_tx,
+            AuditEventKind::Put,
+            "home/a",
+            &BodySha256::for_body(b"abc"),
+            4,
+            "text/plain",
+            &[],
+        )
+        .unwrap();
+        retain_test_body(&tx, b"abc");
+        set_test_retention_floor(&tx, 1);
+        tx.commit().unwrap();
+
+        let report = verify_connection(&c, &key).unwrap();
+
+        assert!(matches!(
+            report,
+            VerifyReport::Broken(VerifyBreak { actual, .. }) if actual == "cas-body-size-3"
+        ));
+    }
+
+    #[test]
+    fn verify_connection_rejects_retention_floor_that_skips_body() {
+        let (core, dir) = test_core("audit-floor-skips-body");
+        world::write_with_audit(
+            &core.data,
+            "home/floor-skip",
+            b"one",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        world::write_with_audit(
+            &core.data,
+            "home/floor-skip",
+            b"two",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let c = Connection::open(world::world_db(&core.data, "home/floor-skip")).unwrap();
+        c.execute("UPDATE cas_state SET first_retained_seq=2 WHERE id=1", [])
+            .unwrap();
+
+        let report = verify_connection(&c, &core.hmac_key).unwrap();
+
+        assert!(matches!(
+            report,
+            VerifyReport::Broken(VerifyBreak { actual, .. }) if actual == "first_retained_seq-2"
+        ));
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_connection_rejects_floor_raise_plus_deleted_old_cas_body() {
+        let (core, dir) = test_core("audit-floor-raise-delete-cas");
+        world::write_with_audit(
+            &core.data,
+            "home/floor-raise-delete",
+            b"one",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        world::write_with_audit(
+            &core.data,
+            "home/floor-raise-delete",
+            b"two",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let c = Connection::open(world::world_db(&core.data, "home/floor-raise-delete")).unwrap();
+        let first_hash: String = c
+            .query_row("SELECT body_sha256 FROM events WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        c.execute(
+            "DELETE FROM cas_bodies WHERE body_sha256=?1",
+            [first_hash.as_str()],
+        )
+        .unwrap();
+        c.execute("UPDATE cas_state SET first_retained_seq=2 WHERE id=1", [])
+            .unwrap();
+
+        let report = verify_connection(&c, &core.hmac_key).unwrap();
+
+        assert!(matches!(
+            report,
+            VerifyReport::Broken(VerifyBreak { actual, .. }) if actual == "first_retained_seq-2"
+        ));
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_connection_rejects_null_floor_plus_deleted_cas_bodies() {
+        let (core, dir) = test_core("audit-null-floor-delete-cas");
+        world::write_with_audit(
+            &core.data,
+            "home/null-floor-delete",
+            b"one",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        let c = Connection::open(world::world_db(&core.data, "home/null-floor-delete")).unwrap();
+        c.execute("DELETE FROM cas_bodies", []).unwrap();
+        c.execute(
+            "UPDATE cas_state SET first_retained_seq=NULL WHERE id=1",
+            [],
+        )
+        .unwrap();
+
+        let err = verify_connection(&c, &core.hmac_key).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("body-bearing events exist before first_retained_seq is set"));
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn verify_connection_accepts_intact_chain() {
         let mut c = test_connection();
         let tx = c.transaction().unwrap();
@@ -541,6 +807,9 @@ mod tests {
         assert_eq!(row2.id().get(), 2);
         let h1 = row1.hmac().to_owned();
         let h2 = row2.hmac().to_owned();
+        retain_test_body(&tx, b"abc");
+        retain_test_body(&tx, b"abcdef");
+        set_test_retention_floor(&tx, 1);
         tx.commit().unwrap();
 
         let report = verify_connection(&c, &key).unwrap();
@@ -576,11 +845,32 @@ mod tests {
                 name TEXT NOT NULL,
                 value TEXT NOT NULL
             );
-            INSERT INTO events(timestamp, event_type, target, body_sha256, size,
-                               content_type, meta_sha256, hmac, prev_hmac)
-            VALUES(datetime('now'), 'put', 'home/a', 'abc', 3,
-                   'text/plain', 'meta', x'ff', '');
+            CREATE TABLE cas_bodies(
+                body_sha256 TEXT NOT NULL PRIMARY KEY,
+                body BLOB NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE cas_state(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                first_retained_seq INTEGER
+            );
+            INSERT INTO cas_state(id, first_retained_seq) VALUES(1, NULL);
             "#,
+        )
+        .unwrap();
+        let body_sha256 = BodySha256::for_body(b"abc");
+        c.execute(
+            "INSERT INTO cas_bodies(body_sha256, body) VALUES(?1, ?2)",
+            rusqlite::params![body_sha256.as_str(), b"abc".as_slice()],
+        )
+        .unwrap();
+        c.execute("UPDATE cas_state SET first_retained_seq=1 WHERE id=1", [])
+            .unwrap();
+        c.execute(
+            r#"INSERT INTO events(timestamp, event_type, target, body_sha256, size,
+                                  content_type, meta_sha256, hmac, prev_hmac)
+               VALUES(datetime('now'), 'put', 'home/a', ?1, 3,
+                      'text/plain', 'meta', x'ff', '')"#,
+            rusqlite::params![body_sha256.as_str()],
         )
         .unwrap();
 
@@ -618,6 +908,8 @@ mod tests {
                 &[],
             )
             .unwrap();
+            retain_test_body(&tx, b"abc");
+            set_test_retention_floor(&tx, 1);
             tx.commit().unwrap();
         }
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
@@ -656,6 +948,8 @@ mod tests {
             &[],
         )
         .unwrap();
+        retain_test_body(&tx, b"abc");
+        set_test_retention_floor(&tx, 1);
         tx.commit().unwrap();
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
             .unwrap();
@@ -704,6 +998,8 @@ mod tests {
             &[("x-meta-author".to_owned(), "ranger".to_owned())],
         )
         .unwrap();
+        retain_test_body(&tx, b"abc");
+        set_test_retention_floor(&tx, 1);
         tx.commit().unwrap();
         c.execute(
             "UPDATE event_headers SET value='intruder' WHERE name='x-meta-author'",
