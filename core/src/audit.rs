@@ -512,7 +512,7 @@ mod tests {
         let tx = c.transaction().unwrap();
         let key = test_key();
         let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-        let h1 = append_body_tx_row(
+        let row1 = append_body_tx_row(
             &audit_tx,
             BodyEventKind::PUT,
             "home/a",
@@ -522,7 +522,7 @@ mod tests {
             &[("x-meta-author".to_owned(), "ranger".to_owned())],
         )
         .unwrap();
-        let h2 = append_body_tx_row(
+        let row2 = append_body_tx_row(
             &audit_tx,
             BodyEventKind::APPEND,
             "home/a",
@@ -532,6 +532,10 @@ mod tests {
             &[],
         )
         .unwrap();
+        assert_eq!(row1.id().get(), 1);
+        assert_eq!(row2.id().get(), 2);
+        let h1 = row1.hmac().to_owned();
+        let h2 = row2.hmac().to_owned();
         tx.commit().unwrap();
 
         let report = verify_connection(&c, &key).unwrap();

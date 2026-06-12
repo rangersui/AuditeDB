@@ -5,12 +5,28 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{
     engine_types::AuditHmacKey,
     event::{AuditEventKind, BodyEventKind, EventMetadataKind},
-    timeline::BodySha256,
+    timeline::{BodySha256, TimelineSeq},
 };
 
 use super::{
     canonical_headers, event_hmac, AuditResult, EmptyChain, EventHmacInput, VerifiedAuditTx,
 };
+
+pub(crate) struct AppendedAuditRow {
+    id: TimelineSeq,
+    hmac: String,
+}
+
+impl AppendedAuditRow {
+    #[allow(dead_code)]
+    pub(crate) fn id(&self) -> TimelineSeq {
+        self.id
+    }
+
+    pub(crate) fn hmac(&self) -> &str {
+        &self.hmac
+    }
+}
 
 /// Append a single row to the audit chain, reusing an already-open
 /// `Connection`. Cached writers (the ledger writer
@@ -80,7 +96,7 @@ fn append_with_conn_verified(
 ) -> AuditResult<String> {
     let tx = conn.transaction()?;
     let audit_tx = super::verify_appendable_tx(&tx, key, empty_chain)?;
-    let h = append_tx_inner(
+    let row = append_tx_inner(
         &audit_tx,
         event_type.kind(),
         target,
@@ -90,7 +106,7 @@ fn append_with_conn_verified(
         headers,
     )?;
     tx.commit()?;
-    Ok(h)
+    Ok(row.hmac().to_owned())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -102,7 +118,7 @@ pub(crate) fn append_body_tx_row(
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
-) -> rusqlite::Result<String> {
+) -> rusqlite::Result<AppendedAuditRow> {
     append_tx_inner(
         audit_tx,
         event_type.kind(),
@@ -123,7 +139,7 @@ fn append_tx_inner(
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
-) -> rusqlite::Result<String> {
+) -> rusqlite::Result<AppendedAuditRow> {
     let tx = audit_tx.tx;
     let class = event_type.class();
     debug_assert!(class.notifies, "audit rows are timeline-visible events");
@@ -175,5 +191,6 @@ fn append_tx_inner(
     for (name, value) in canonical {
         stmt.execute(rusqlite::params![event_id, name, value])?;
     }
-    Ok(h)
+    let id = TimelineSeq::new(event_id).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(AppendedAuditRow { id, hmac: h })
 }
