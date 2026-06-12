@@ -215,7 +215,15 @@ pub fn verify_chain_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
-    verify_connection(tracked.as_mut_conn(), key)
+    let conn = tracked.as_mut_conn();
+    let report = verify_connection(conn, key)?;
+    if matches!(report, VerifyReport::Broken(_)) {
+        return Ok(report);
+    }
+    if let Some(break_report) = live_body::verify_conn(conn)? {
+        return Ok(VerifyReport::Broken(break_report));
+    }
+    Ok(report)
 }
 
 fn verify_connection(c: &Connection, key: &AuditHmacKey) -> rusqlite::Result<VerifyReport> {

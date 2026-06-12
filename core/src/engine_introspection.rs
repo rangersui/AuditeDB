@@ -971,4 +971,44 @@ mod tests {
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[tokio::test]
+    async fn verify_audit_rejects_tampered_live_body() {
+        let root = temp_root("verify-live-body");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
+            .build()
+            .unwrap();
+        let disk = ValidatedWorldPath::new("home/live-body").unwrap();
+
+        engine
+            .replace(
+                &disk,
+                Representation::new(Bytes::from_static(b"good"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let c =
+            rusqlite::Connection::open(crate::world::world_db(&engine.core().data, disk.as_str()))
+                .unwrap();
+        c.execute(
+            "UPDATE stage_meta SET body=?1 WHERE id=1",
+            [b"bad".as_slice()],
+        )
+        .unwrap();
+        drop(c);
+
+        assert!(matches!(
+            engine.verify_audit(&disk, AccessTier::Read).unwrap(),
+            AuditVerify::Broken(break_report)
+                if break_report.actual.starts_with("live-body-sha256-")
+        ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
