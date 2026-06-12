@@ -1,8 +1,13 @@
 //! Core timeline address contract for Path 3.
 //!
-//! This module intentionally defines only the typed contract. It does not read
-//! SQLite, retain CAS bodies, render HTTP, expose FFI, or implement migration.
-//! Later layers wire storage into these types.
+//! A timeline address names one durable body event in one durable world
+//! generation. It is not just a row number: the address also carries the world
+//! path and the SHA-256 of the body the audit row promised.
+//!
+//! Public callers may inspect timeline addresses and read outcomes, but they
+//! cannot mint addresses directly. Production addresses are created only after
+//! audit verification proves that an event row belongs to the requested world
+//! and generation.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -13,8 +18,25 @@ use std::num::NonZeroI64;
 /// FIPS 180-4 defines SHA-256 output as 256 bits; hex renders 4 bits per char.
 const BODY_SHA256_HEX_LEN: usize = 64;
 
+/// Opaque address of one audited body value.
+///
+/// The fields are private on purpose. A caller can receive, clone, compare, and
+/// inspect a `TimelineAddress`, but cannot construct or recombine the
+/// `{ world, generation, seq, body_sha256 }` coordinate outside verified audit
+/// minting.
+///
+/// ```compile_fail
+/// fn recombine(address: elastik_core::TimelineAddress) -> elastik_core::TimelineAddress {
+///     let world = address.world().clone();
+///     let generation = address.generation().clone();
+///     let seq = address.seq();
+///     let body_sha256 = address.body_sha256().clone();
+///
+///     elastik_core::TimelineAddress::new(world, generation, seq, body_sha256)
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TimelineAddress {
+pub struct TimelineAddress {
     world: ValidatedWorldPath,
     gen: WorldGeneration,
     seq: TimelineSeq,
@@ -29,13 +51,16 @@ pub(crate) struct MintedTimelineAddress {
     body_sha256: BodySha256,
 }
 
+/// Positive audit-event sequence number inside one durable world generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TimelineSeq(NonZeroI64);
+pub struct TimelineSeq(NonZeroI64);
 
+/// SHA-256 digest of a body value, rendered as 64 lowercase hex characters.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BodySha256(String);
+pub struct BodySha256(String);
 
-pub(crate) struct TimelineBody {
+/// Body value resolved from a timeline address.
+pub struct TimelineBody {
     address: TimelineAddress,
     representation: Representation,
 }
@@ -51,30 +76,56 @@ pub(crate) enum InvalidBodySha256 {
     NotLowerHex,
 }
 
+/// Corruption detected while resolving a timeline address.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TimelineCorruption {
+#[non_exhaustive]
+pub enum TimelineCorruption {
+    /// A body event row exists but its retained CAS body is missing in a state
+    /// where retention metadata said it should still exist.
     MissingBodyForPresentRow,
+    /// The returned bytes did not hash to the address's promised SHA-256.
     BodyHashMismatch,
+    /// The event row shape is not a valid body event for this address.
     InvalidEventShape,
 }
 
-pub(crate) enum TimelineRead {
+/// Result of resolving a timeline address.
+///
+/// `Body` is the only successful byte-bearing outcome. The other variants tell
+/// callers why the exact historical value is not available without falling back
+/// to the current live body.
+#[non_exhaustive]
+pub enum TimelineRead {
+    /// The addressed historical body was found.
     Body(TimelineBody),
+    /// The audit row exists, but the retained CAS body has aged out.
     Expired {
+        /// Address that could not be materialized.
         address: TimelineAddress,
     },
+    /// The addressed durable world no longer exists.
     Gone {
+        /// Address that could not be materialized.
         address: TimelineAddress,
     },
+    /// The path was deleted and recreated; the address belongs to an older
+    /// generation than the current world.
     GenMismatch {
+        /// Address requested by the caller.
         requested: TimelineAddress,
+        /// Current generation stored in the world's SQLite file.
         actual: WorldGeneration,
     },
+    /// No event row with the address's sequence exists in this generation.
     MissingRow {
+        /// Address that could not be materialized.
         address: TimelineAddress,
     },
+    /// The addressed row or retained body failed integrity checks.
     Corrupt {
+        /// Address that failed verification.
         address: TimelineAddress,
+        /// Integrity failure category.
         reason: TimelineCorruption,
     },
 }
@@ -87,11 +138,13 @@ pub(crate) enum TimelineAddressLookup {
 }
 
 impl TimelineBody {
-    pub(crate) fn address(&self) -> &TimelineAddress {
+    /// Returns the address that produced this historical body.
+    pub fn address(&self) -> &TimelineAddress {
         &self.address
     }
 
-    pub(crate) fn representation(&self) -> &Representation {
+    /// Returns the body bytes, content type, and metadata snapshot.
+    pub fn representation(&self) -> &Representation {
         &self.representation
     }
 }
@@ -147,19 +200,27 @@ impl TimelineAddress {
         )
     }
 
-    pub(crate) fn world(&self) -> &ValidatedWorldPath {
+    /// Returns the canonical world path this address belongs to.
+    pub fn world(&self) -> &ValidatedWorldPath {
         &self.world
+    }
+
+    /// Returns the durable-world generation this address belongs to.
+    pub fn generation(&self) -> &WorldGeneration {
+        &self.gen
     }
 
     pub(crate) fn gen(&self) -> &WorldGeneration {
         &self.gen
     }
 
-    pub(crate) fn seq(&self) -> TimelineSeq {
+    /// Returns the audited event sequence number inside this generation.
+    pub fn seq(&self) -> TimelineSeq {
         self.seq
     }
 
-    pub(crate) fn body_sha256(&self) -> &BodySha256 {
+    /// Returns the body digest promised by the audited event row.
+    pub fn body_sha256(&self) -> &BodySha256 {
         &self.body_sha256
     }
 }
@@ -204,7 +265,8 @@ impl TimelineSeq {
             .ok_or(InvalidTimelineSeq::NonPositive)
     }
 
-    pub(crate) fn get(self) -> i64 {
+    /// Returns the positive SQLite row id used as the timeline sequence.
+    pub fn get(self) -> i64 {
         self.0.get()
     }
 }
@@ -225,7 +287,8 @@ impl BodySha256 {
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    /// Returns the 64-character lowercase hexadecimal digest.
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }

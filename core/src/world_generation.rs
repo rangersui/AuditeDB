@@ -8,8 +8,14 @@ use std::fmt;
 /// 32 lowercase hexadecimal characters.
 const WORLD_GEN_HEX_LEN: usize = 32;
 
+/// Durable-world incarnation identity.
+///
+/// A world generation changes when a durable world is physically deleted and
+/// later recreated at the same path. Timeline addresses include the generation
+/// so an old address cannot silently resolve against the new world's audit
+/// rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorldGeneration(String);
+pub struct WorldGeneration(String);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MintedWorldGeneration(WorldGeneration);
@@ -43,7 +49,8 @@ impl WorldGeneration {
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    /// Returns the lowercase hexadecimal generation identifier.
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
