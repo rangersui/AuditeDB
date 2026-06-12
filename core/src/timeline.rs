@@ -184,6 +184,10 @@ impl TimelineSeq {
 }
 
 impl BodySha256 {
+    pub(crate) fn for_body(body: &[u8]) -> Self {
+        Self(crate::world::sha256_hex(body))
+    }
+
     pub(crate) fn new(raw: impl Into<String>) -> Result<Self, InvalidBodySha256> {
         let raw = raw.into();
         if raw.len() != BODY_SHA256_HEX_LEN {

@@ -26,16 +26,17 @@ use rusqlite::Connection;
 
 use crate::audit;
 use crate::engine_types::AuditHmacKey;
-use crate::event::AuditEventKind;
+use crate::event::EventMetadataKind;
+use crate::timeline::BodySha256;
 use crate::world;
 
 /// One audit append's input. Owns its strings/buffers because the
 /// `spawn_blocking` closure that runs the SQL must be `'static`.
 pub(crate) struct AuditAppendJob {
     pub(crate) ledger_world: &'static str,
-    pub(crate) event_type: AuditEventKind,
+    pub(crate) event_type: EventMetadataKind,
     pub(crate) target: String,
-    pub(crate) body_sha256: String,
+    pub(crate) body_sha256: BodySha256,
     pub(crate) size: i64,
     pub(crate) content_type: String,
     pub(crate) headers: Vec<(String, String)>,

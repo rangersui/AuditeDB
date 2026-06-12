@@ -2,7 +2,11 @@
 
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::{engine_types::AuditHmacKey, event::AuditEventKind};
+use crate::{
+    engine_types::AuditHmacKey,
+    event::{AuditEventKind, BodyEventKind, EventMetadataKind},
+    timeline::BodySha256,
+};
 
 use super::{
     canonical_headers, event_hmac, AuditResult, EmptyChain, EventHmacInput, VerifiedAuditTx,
@@ -17,9 +21,9 @@ use super::{
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_with_conn_existing(
     conn: &mut Connection,
-    event_type: AuditEventKind,
+    event_type: EventMetadataKind,
     target: &str,
-    body_sha256: &str,
+    body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
@@ -41,9 +45,9 @@ pub(crate) fn append_with_conn_existing(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_with_conn_genesis(
     conn: &mut Connection,
-    event_type: AuditEventKind,
+    event_type: EventMetadataKind,
     target: &str,
-    body_sha256: &str,
+    body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
@@ -65,9 +69,9 @@ pub(crate) fn append_with_conn_genesis(
 #[allow(clippy::too_many_arguments)]
 fn append_with_conn_verified(
     conn: &mut Connection,
-    event_type: AuditEventKind,
+    event_type: EventMetadataKind,
     target: &str,
-    body_sha256: &str,
+    body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
@@ -76,9 +80,9 @@ fn append_with_conn_verified(
 ) -> AuditResult<String> {
     let tx = conn.transaction()?;
     let audit_tx = super::verify_appendable_tx(&tx, key, empty_chain)?;
-    let h = append_tx(
+    let h = append_tx_inner(
         &audit_tx,
-        event_type,
+        event_type.kind(),
         target,
         body_sha256,
         size,
@@ -90,11 +94,32 @@ fn append_with_conn_verified(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn append_tx(
+pub(crate) fn append_body_tx_row(
+    audit_tx: &VerifiedAuditTx<'_, '_, '_>,
+    event_type: BodyEventKind,
+    target: &str,
+    body_sha256: &BodySha256,
+    size: i64,
+    content_type: &str,
+    headers: &[(String, String)],
+) -> rusqlite::Result<String> {
+    append_tx_inner(
+        audit_tx,
+        event_type.kind(),
+        target,
+        body_sha256,
+        size,
+        content_type,
+        headers,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_tx_inner(
     audit_tx: &VerifiedAuditTx<'_, '_, '_>,
     event_type: AuditEventKind,
     target: &str,
-    body_sha256: &str,
+    body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
     headers: &[(String, String)],
@@ -123,7 +148,7 @@ pub(crate) fn append_tx(
             prev: &prev,
             event_type: event_type.as_str(),
             target,
-            body_sha256,
+            body_sha256: body_sha256.as_str(),
             size,
             content_type,
             meta_sha256: &meta_sha256,
@@ -136,7 +161,7 @@ pub(crate) fn append_tx(
         rusqlite::params![
             event_type.as_str(),
             target,
-            body_sha256,
+            body_sha256.as_str(),
             size,
             content_type,
             meta_sha256,

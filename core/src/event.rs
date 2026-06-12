@@ -25,6 +25,12 @@ pub(crate) enum AuditPayloadHome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EventMetadataKind(AuditEventKind);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BodyEventKind(AuditEventKind);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AuditEventClass {
     pub(crate) body_bearing: bool,
     pub(crate) retention_slot: bool,
@@ -58,6 +64,25 @@ impl AuditEventKind {
                 payload_home: AuditPayloadHome::EventMetadata,
             },
         }
+    }
+}
+
+impl EventMetadataKind {
+    pub(crate) const DELETE_INTENT: Self = Self(AuditEventKind::DeleteIntent);
+    pub(crate) const DELETE_COMMIT: Self = Self(AuditEventKind::DeleteCommit);
+    pub(crate) const DELETE_COMMIT_FAILED: Self = Self(AuditEventKind::DeleteCommitFailed);
+
+    pub(crate) const fn kind(self) -> AuditEventKind {
+        self.0
+    }
+}
+
+impl BodyEventKind {
+    pub(crate) const PUT: Self = Self(AuditEventKind::Put);
+    pub(crate) const APPEND: Self = Self(AuditEventKind::Append);
+
+    pub(crate) const fn kind(self) -> AuditEventKind {
+        self.0
     }
 }
 

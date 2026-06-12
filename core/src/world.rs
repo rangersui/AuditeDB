@@ -25,7 +25,8 @@
 //! audit facts, never JSON blobs.
 
 use crate::{
-    audit, engine_types::AuditHmacKey, event::AuditEventKind, world_generation, world_schema,
+    audit, engine_types::AuditHmacKey, event::BodyEventKind, timeline::BodySha256,
+    world_generation, world_schema,
 };
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use rusqlite::{ffi, params, Connection, OpenFlags, Transaction};
@@ -397,11 +398,11 @@ pub fn write_with_audit_checked(
             stmt.execute(params![name, value])?;
         }
     }
-    let h = audit::append_tx(
+    let h = audit::append_body_tx_row(
         &audit_tx,
-        AuditEventKind::Put,
+        BodyEventKind::PUT,
         world,
-        &sha256_hex(body),
+        &BodySha256::for_body(body),
         body.len() as i64,
         content_type,
         headers,
@@ -473,11 +474,11 @@ pub fn append_with_audit(
            WHERE id=1"#,
         params![new_body],
     )?;
-    let h = audit::append_tx(
+    let h = audit::append_body_tx_row(
         &audit_tx,
-        AuditEventKind::Append,
+        BodyEventKind::APPEND,
         world,
-        &after,
+        &BodySha256::new(after.clone()).map_err(|_| rusqlite::Error::InvalidQuery)?,
         size_after as i64,
         content_type,
         headers,
