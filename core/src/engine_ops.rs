@@ -18,7 +18,9 @@ use crate::{
         AccessTier, ChangeEvent, EngineSubscription, Preconditions, ReadResult, Representation,
         SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
     },
-    etag, event, world_ops, AuthGate, Core,
+    etag, event,
+    timeline::{TimelineAddress, TimelineRead},
+    world_ops, AuthGate, Core,
 };
 
 pub(crate) use crate::engine_error::{log_blocking_storage_error, log_storage_error};
@@ -56,6 +58,16 @@ impl<'a> EngineOps<'a> {
             ))),
             world_ops::ReadOutcome::Missing => Ok(None),
         }
+    }
+
+    pub(crate) fn read_timeline_body(
+        &self,
+        address: &TimelineAddress,
+        tier: auth::Tier,
+    ) -> Result<TimelineRead, EngineError> {
+        let permit = world_ops::authorize_read(self.core, address.world(), tier)?;
+        world_ops::read_timeline_body(self.core, &permit, address)
+            .map_err(|err| read_error_to_engine(err, Some(address.world().as_str())))
     }
 
     pub(crate) async fn replace<H: world_ops::WriteTraceHooks + ?Sized>(
@@ -195,6 +207,33 @@ impl Engine {
         tier: AccessTier,
     ) -> Result<Option<ReadResult>, EngineError> {
         EngineOps::new(self.core()).read(world, tier.into())
+    }
+
+    /// Reads the body snapshot addressed by an audited timeline address.
+    ///
+    /// This is a synchronous API with the same blocking profile as
+    /// [`Engine::read`]. It may reuse a cached SQLite connection and verify the
+    /// audit chain on the caller thread. Async adapters that cannot block an
+    /// executor worker should call it from their blocking-worker boundary.
+    ///
+    /// Unlike [`Engine::read`], this method does not return `Option`: a
+    /// timeline address names a historical fact. If the durable world no
+    /// longer exists, the result is [`TimelineRead::Gone`]. Other
+    /// [`TimelineRead`] variants describe exact historical-read outcomes; this
+    /// method never falls back to the current live body.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
+    /// - [`EngineError::TransientStorage`] for SQLite `BUSY`/`LOCKED`.
+    /// - [`EngineError::InsufficientStorage`] for full-disk failures.
+    /// - [`EngineError::Storage`] for audit-chain corruption or other storage
+    ///   failures.
+    pub fn read_timeline_body(
+        &self,
+        address: &TimelineAddress,
+        tier: AccessTier,
+    ) -> Result<TimelineRead, EngineError> {
+        EngineOps::new(self.core()).read_timeline_body(address, tier.into())
     }
 
     /// Replaces a world with the provided representation.
@@ -433,7 +472,11 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::engine_types::{AuditHmacKey, ChangeVerb};
+    use crate::{
+        engine_types::{AuditHmacKey, ChangeVerb},
+        timeline::{BodySha256, TimelineAddress, TimelineRead, TimelineSeq},
+        world, world_schema,
+    };
 
     fn temp_root(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -457,6 +500,24 @@ mod tests {
             .build()
             .unwrap();
         (engine, root)
+    }
+
+    fn timeline_address_for_body(
+        engine: &Engine,
+        world_path: &ValidatedWorldPath,
+        seq: i64,
+        body: &[u8],
+    ) -> TimelineAddress {
+        let conn =
+            rusqlite::Connection::open(world::world_db(&engine.core().data, world_path.as_str()))
+                .unwrap();
+        let gen = world_schema::generation(&conn).unwrap();
+        TimelineAddress::test_only_new(
+            world_path.clone(),
+            gen,
+            TimelineSeq::new(seq).unwrap(),
+            BodySha256::for_body(body),
+        )
     }
 
     #[test]
@@ -537,6 +598,115 @@ mod tests {
             .await
             .unwrap();
         assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_read_timeline_body_returns_historical_body() {
+        let (engine, root) = test_engine("timeline-public-read");
+        let world = ValidatedWorldPath::new("home/timeline-public-read").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"old"),
+                    "text/plain",
+                    vec![("x-meta-version".to_owned(), "one".to_owned())],
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let address = timeline_address_for_body(&engine, &world, 1, b"old");
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"new"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        match engine
+            .read_timeline_body(&address, AccessTier::Read)
+            .expect("timeline read succeeds")
+        {
+            TimelineRead::Body(body) => {
+                assert_eq!(body.address(), &address);
+                assert_eq!(body.representation().body, Bytes::from_static(b"old"));
+                assert_eq!(body.representation().content_type, "text/plain");
+                assert_eq!(
+                    body.representation().headers.as_slice(),
+                    [("x-meta-version".to_owned(), "one".to_owned())]
+                );
+            }
+            _ => panic!("expected historical body"),
+        }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn engine_read_timeline_body_requires_read_tier() {
+        let root = temp_root("timeline-public-auth");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
+            .read_token(b"reader".to_vec())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/timeline-auth").unwrap();
+        let address = TimelineAddress::test_only_new(
+            world,
+            crate::world_generation::WorldGeneration::new("0123456789abcdef0123456789abcdef")
+                .unwrap(),
+            TimelineSeq::new(1).unwrap(),
+            BodySha256::for_body(b"value"),
+        );
+
+        assert!(matches!(
+            engine.read_timeline_body(&address, AccessTier::Anon),
+            Err(EngineError::Auth(AuthGate::Read))
+        ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_read_timeline_body_maps_missing_world_to_gone() {
+        let (engine, root) = test_engine("timeline-public-gone");
+        let world = ValidatedWorldPath::new("home/timeline-gone").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"old"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let address = timeline_address_for_body(&engine, &world, 1, b"old");
+
+        engine
+            .delete(&world, Preconditions::none(), AccessTier::Approve)
+            .await
+            .unwrap();
+
+        match engine
+            .read_timeline_body(&address, AccessTier::Read)
+            .expect("missing durable world is a typed read outcome")
+        {
+            TimelineRead::Gone { address: got } => assert_eq!(got, address),
+            _ => panic!("expected gone"),
+        }
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);

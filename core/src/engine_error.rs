@@ -30,6 +30,13 @@ pub(crate) fn read_error_to_engine(
             log_storage_error(scope, &err, "read", world);
             EngineError::Storage
         }
+        world_ops::ReadError::AuditChainBroken {
+            scope,
+            break_report,
+        } => {
+            log_audit_chain_error(scope, &break_report, "read", world);
+            EngineError::Storage
+        }
         world_ops::ReadError::PermitWorldMismatch => {
             EngineError::InternalInvariant("read permit world mismatch")
         }

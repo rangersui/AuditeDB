@@ -17,7 +17,7 @@ use crate::{
     audit, auth, can_read, can_write,
     engine_types::{ChangeVerb, ValidatedWorldPath},
     etag, needs_write_approve, store,
-    timeline::BodySha256,
+    timeline::{BodySha256, TimelineAddress, TimelineRead},
     world, AuthGate, Core, StorageFailureClass,
 };
 
@@ -54,6 +54,11 @@ pub(crate) enum ReadError {
         #[allow(dead_code)]
         scope: &'static str,
         err: rusqlite::Error,
+    },
+    AuditChainBroken {
+        #[allow(dead_code)]
+        scope: &'static str,
+        break_report: audit::VerifyBreak,
     },
     PermitWorldMismatch,
 }
@@ -187,6 +192,23 @@ pub(crate) fn authorize_write(
 
 pub(crate) fn read_world(core: &Core, permit: &ReadPermit) -> Result<ReadOutcome, ReadError> {
     read_world_for(core, permit, &permit.world)
+}
+
+pub(crate) fn read_timeline_body(
+    core: &Core,
+    permit: &ReadPermit,
+    address: &TimelineAddress,
+) -> Result<TimelineRead, ReadError> {
+    if permit.world != *address.world() {
+        return Err(ReadError::PermitWorldMismatch);
+    }
+    match core.read_timeline_body(address) {
+        Ok(Some(read)) => Ok(read),
+        Ok(None) => Ok(TimelineRead::Gone {
+            address: address.clone(),
+        }),
+        Err(err) => Err(classify_read_audit_error("timeline read", err)),
+    }
 }
 
 pub(crate) fn read_world_for(
@@ -460,6 +482,16 @@ fn classify_read_error(scope: &'static str, err: rusqlite::Error) -> ReadError {
     }
 }
 
+fn classify_read_audit_error(scope: &'static str, err: audit::AuditError) -> ReadError {
+    match err {
+        audit::AuditError::ChainBroken(break_report) => ReadError::AuditChainBroken {
+            scope,
+            break_report,
+        },
+        audit::AuditError::Storage(err) => classify_read_error(scope, err),
+    }
+}
+
 fn classify_write_audit_error(scope: &'static str, err: audit::AuditError) -> WriteError {
     match err {
         audit::AuditError::ChainBroken(break_report) => WriteError::AuditChainBroken {
@@ -493,9 +525,22 @@ fn classify_write_storage_error(
 mod tests {
     use super::*;
     use crate::test_support::test_core;
+    use crate::{
+        timeline::{TimelineAddress, TimelineSeq},
+        world_generation::WorldGeneration,
+    };
 
     fn world_path(world: &str) -> ValidatedWorldPath {
         ValidatedWorldPath::new(world).unwrap()
+    }
+
+    fn timeline_address(world: ValidatedWorldPath) -> TimelineAddress {
+        TimelineAddress::test_only_new(
+            world,
+            WorldGeneration::new("0123456789abcdef0123456789abcdef").unwrap(),
+            TimelineSeq::new(1).unwrap(),
+            BodySha256::for_body(b"value"),
+        )
     }
 
     #[tokio::test]
@@ -523,6 +568,20 @@ mod tests {
             b"right-door"
         );
         assert!(core.read_world("home/permit-b").unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn timeline_read_permit_is_bound_to_address_world() {
+        let (core, dir) = test_core("timeline-read-permit-bound");
+        let permit = authorize_read(&core, &world_path("home/right"), auth::Tier::Read).unwrap();
+        let address = timeline_address(world_path("home/wrong"));
+
+        assert!(matches!(
+            read_timeline_body(&core, &permit, &address),
+            Err(ReadError::PermitWorldMismatch)
+        ));
 
         let _ = std::fs::remove_dir_all(dir);
     }
