@@ -443,6 +443,7 @@ pub fn latest_hmac(data_root: &Path, world_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine_types::ValidatedWorldPath;
     use crate::timeline::BodySha256;
     use crate::{event::AuditEventKind, test_support::test_core, world};
     use rusqlite::Connection;
@@ -485,6 +486,10 @@ mod tests {
 
     fn test_key() -> AuditHmacKey {
         AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
+    }
+
+    fn validated(world: &str) -> ValidatedWorldPath {
+        ValidatedWorldPath::new(world).unwrap()
     }
 
     fn retain_test_body(tx: &Transaction<'_>, body: &[u8]) {
@@ -544,7 +549,7 @@ mod tests {
         let headers = vec![("x-meta-author".to_string(), "ranger".to_string())];
         let h = world::write_with_audit(
             &core.data,
-            "home/audit-meta",
+            &validated("home/audit-meta"),
             b"hello",
             "text/plain; charset=utf-8",
             &headers,
@@ -583,7 +588,7 @@ mod tests {
         let (core, dir) = test_core("audit-live-body-tamper");
         world::write_with_audit(
             &core.data,
-            "home/live-body",
+            &validated("home/live-body"),
             b"good",
             "text/plain",
             &[],
@@ -613,7 +618,7 @@ mod tests {
         let (core, dir) = test_core("audit-missing-cas-body");
         world::write_with_audit(
             &core.data,
-            "home/missing-cas",
+            &validated("home/missing-cas"),
             b"retained",
             "text/plain",
             &[],
@@ -638,7 +643,7 @@ mod tests {
         let (core, dir) = test_core("audit-corrupt-cas-body");
         world::write_with_audit(
             &core.data,
-            "home/corrupt-cas",
+            &validated("home/corrupt-cas"),
             b"retained",
             "text/plain",
             &[],
@@ -661,7 +666,7 @@ mod tests {
         let (core, dir) = test_core("audit-unreferenced-cas-body");
         world::write_with_audit(
             &core.data,
-            "home/unreferenced-cas",
+            &validated("home/unreferenced-cas"),
             b"retained",
             "text/plain",
             &[],
@@ -719,7 +724,7 @@ mod tests {
         let (core, dir) = test_core("audit-floor-skips-body");
         world::write_with_audit(
             &core.data,
-            "home/floor-skip",
+            &validated("home/floor-skip"),
             b"one",
             "text/plain",
             &[],
@@ -728,7 +733,7 @@ mod tests {
         .unwrap();
         world::write_with_audit(
             &core.data,
-            "home/floor-skip",
+            &validated("home/floor-skip"),
             b"two",
             "text/plain",
             &[],
@@ -754,7 +759,7 @@ mod tests {
         let (core, dir) = test_core("audit-floor-raise-delete-cas");
         world::write_with_audit(
             &core.data,
-            "home/floor-raise-delete",
+            &validated("home/floor-raise-delete"),
             b"one",
             "text/plain",
             &[],
@@ -763,7 +768,7 @@ mod tests {
         .unwrap();
         world::write_with_audit(
             &core.data,
-            "home/floor-raise-delete",
+            &validated("home/floor-raise-delete"),
             b"two",
             "text/plain",
             &[],
@@ -799,7 +804,7 @@ mod tests {
         let (core, dir) = test_core("audit-null-floor-delete-cas");
         world::write_with_audit(
             &core.data,
-            "home/null-floor-delete",
+            &validated("home/null-floor-delete"),
             b"one",
             "text/plain",
             &[],
@@ -1017,7 +1022,8 @@ mod tests {
             std::env::temp_dir().join(format!("elastik-audit-startup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let key = test_key();
-        world::write_with_audit(&root, "home/a", b"abc", "text/plain", &[], &key).unwrap();
+        world::write_with_audit(&root, &validated("home/a"), b"abc", "text/plain", &[], &key)
+            .unwrap();
         {
             let c = Connection::open(world::world_db(&root, "home/a")).unwrap();
             c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])

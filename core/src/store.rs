@@ -285,6 +285,7 @@ pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine_types::ValidatedWorldPath;
     use crate::{audit, test_support::test_core};
 
     #[test]
@@ -341,9 +342,10 @@ mod tests {
     #[test]
     fn disk_worlds_create_sqlite_files_and_audit_chain_when_using_audit_path() {
         let (core, dir) = test_core("disk-world");
+        let world_path = ValidatedWorldPath::new("home/report").unwrap();
         let h = world::write_with_audit(
             &core.data,
-            "home/report",
+            &world_path,
             b"final",
             "text/plain; charset=utf-8",
             &[],

@@ -259,9 +259,12 @@ impl Core {
             Ok(())
         } else {
             let current_len = world::storage_len(&self.data, world)?;
+            let world_path = ValidatedWorldPath::new(world).map_err(|_| {
+                world::WriteAuditError::StorageInvariant("invalid fixture world path")
+            })?;
             world::write_with_audit(
                 &self.data,
-                world,
+                &world_path,
                 body,
                 content_type,
                 headers,

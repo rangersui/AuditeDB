@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 
 use crate::{
+    engine_types::ValidatedWorldPath,
     event::AuditEventKind,
     timeline::{BodySha256, TimelineSeq},
 };
@@ -11,14 +12,14 @@ use crate::{
 use super::{open_existing, WriteAuditError};
 
 pub(crate) struct RetainedCasBody {
-    target: String,
+    target: ValidatedWorldPath,
     body_sha256: BodySha256,
     size: i64,
     inserted: bool,
 }
 
 impl RetainedCasBody {
-    pub(crate) fn target(&self) -> &str {
+    pub(crate) fn target(&self) -> &ValidatedWorldPath {
         &self.target
     }
 
@@ -37,7 +38,7 @@ impl RetainedCasBody {
 
 pub(super) fn retain_body_tx(
     tx: &Transaction<'_>,
-    target: &str,
+    target: &ValidatedWorldPath,
     body: &[u8],
 ) -> Result<RetainedCasBody, WriteAuditError> {
     let body_sha256 = BodySha256::for_body(body);
@@ -58,7 +59,7 @@ pub(super) fn retain_body_tx(
         return Err(WriteAuditError::CasBodyMismatch { body_sha256 });
     }
     Ok(RetainedCasBody {
-        target: target.to_owned(),
+        target: target.clone(),
         body_sha256,
         size,
         inserted,

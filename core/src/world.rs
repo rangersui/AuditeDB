@@ -14,18 +14,16 @@
 //!
 //! Renames vs pre-v5: `stage_html` -> `body`. Drops: `pending_js`,
 //! `js_result`, `state`. v5.2 adds CAS retention tables. No migrator:
-//! world dirs from older binaries fail loudly on the first missing or stale
-//! schema surface; wipe `data/` to upgrade.
+//! stale world dirs fail loudly; wipe `data/` to upgrade.
 //!
-//! `state` is gone on purpose: `/lib/*` is inert storage now; lifecycle
-//! belongs to whatever SDK or endpoint app loads the source.
-//!
-//! `meta_headers` is the current X-Meta-* header view. `event_headers`
-//! is the historical per-write view. The event chain stores structured
-//! audit facts, never JSON blobs.
+//! `meta_headers` is current metadata; `event_headers` is historical.
+//! The event chain stores structured audit facts, never JSON blobs.
 
 use crate::{
-    audit, engine_types::AuditHmacKey, event::BodyEventKind, timeline::BodySha256,
+    audit,
+    engine_types::{AuditHmacKey, ValidatedWorldPath},
+    event::BodyEventKind,
+    timeline::BodySha256,
     world_generation, world_schema,
 };
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
@@ -333,7 +331,7 @@ pub fn test_only_write_without_audit(
 #[cfg(test)]
 pub fn write_with_audit(
     data_root: &Path,
-    world: &str,
+    world: &ValidatedWorldPath,
     body: &[u8],
     content_type: &str,
     headers: &[(String, String)],
@@ -345,14 +343,15 @@ pub fn write_with_audit(
 
 pub fn write_with_audit_checked(
     data_root: &Path,
-    world: &str,
+    world: &ValidatedWorldPath,
     body: &[u8],
     content_type: &str,
     headers: &[(String, String)],
     key: &AuditHmacKey,
 ) -> Result<WriteAuditResult, WriteAuditError> {
-    let existed = world_db(data_root, world).exists();
-    let mut c = open(data_root, world)?;
+    let world_name = world.as_str();
+    let existed = world_db(data_root, world_name).exists();
+    let mut c = open(data_root, world_name)?;
     let tx = c.transaction()?;
     let previous_len = tx.query_row(
         "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
@@ -430,17 +429,18 @@ fn test_only_append_without_audit(
 
 pub fn append_with_audit(
     data_root: &Path,
-    world: &str,
+    world: &ValidatedWorldPath,
     body: &[u8],
     content_type: &str,
     headers: &[(String, String)],
     key: &AuditHmacKey,
 ) -> Result<Option<(AppendResult, String)>, WriteAuditError> {
-    let path = world_db(data_root, world);
+    let world_name = world.as_str();
+    let path = world_db(data_root, world_name);
     if !path.exists() {
         return Ok(None);
     }
-    let mut c = open(data_root, world)?;
+    let mut c = open(data_root, world_name)?;
     let tx = c.transaction()?;
     let audit_tx = verify_appendable_world_tx(&tx, key, true)?;
     let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
@@ -510,6 +510,10 @@ mod tests {
         std::env::temp_dir().join(format!("elastik-world-test-{name}-{}", std::process::id()))
     }
 
+    fn validated(world: &str) -> ValidatedWorldPath {
+        ValidatedWorldPath::new(world).unwrap()
+    }
+
     fn force_text_body(data_root: &Path, world: &str, text: &str) {
         let c = Connection::open(world_db(data_root, world)).unwrap();
         c.execute(
@@ -565,7 +569,8 @@ mod tests {
         let body = b"retained body";
         let body_hash = sha256_hex(body);
 
-        let hmac = write_with_audit(&root, "home/cas", body, "text/plain", &[], &key).unwrap();
+        let hmac =
+            write_with_audit(&root, &validated("home/cas"), body, "text/plain", &[], &key).unwrap();
 
         let c = Connection::open(world_db(&root, "home/cas")).unwrap();
         let retained: Vec<u8> = c
@@ -601,11 +606,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let key = test_key();
 
-        write_with_audit(&root, "home/cas-append", b"one", "text/plain", &[], &key).unwrap();
-        let (result, _) =
-            append_with_audit(&root, "home/cas-append", b"two", "text/plain", &[], &key)
-                .unwrap()
-                .unwrap();
+        write_with_audit(
+            &root,
+            &validated("home/cas-append"),
+            b"one",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap();
+        let (result, _) = append_with_audit(
+            &root,
+            &validated("home/cas-append"),
+            b"two",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap()
+        .unwrap();
 
         let full_body = b"onetwo";
         let full_hash = sha256_hex(full_body);
@@ -644,7 +663,7 @@ mod tests {
 
         write_with_audit(
             &root,
-            "home/cas-idempotent",
+            &validated("home/cas-idempotent"),
             b"same",
             "text/plain",
             &[],
@@ -653,7 +672,7 @@ mod tests {
         .unwrap();
         write_with_audit(
             &root,
-            "home/cas-idempotent",
+            &validated("home/cas-idempotent"),
             b"same",
             "application/octet-stream",
             &[],
@@ -693,7 +712,7 @@ mod tests {
 
         write_with_audit(
             &root,
-            "home/cas-mismatch",
+            &validated("home/cas-mismatch"),
             old_body,
             "text/plain",
             &[],
@@ -711,7 +730,7 @@ mod tests {
 
         let _err = write_with_audit(
             &root,
-            "home/cas-mismatch",
+            &validated("home/cas-mismatch"),
             new_body,
             "text/plain",
             &[],
@@ -748,7 +767,7 @@ mod tests {
 
         write_with_audit(
             &root,
-            "home/cas-append-mismatch",
+            &validated("home/cas-append-mismatch"),
             b"one",
             "text/plain",
             &[],
@@ -767,7 +786,7 @@ mod tests {
 
         let _err = match append_with_audit(
             &root,
-            "home/cas-append-mismatch",
+            &validated("home/cas-append-mismatch"),
             b"two",
             "text/plain",
             &[],
@@ -803,7 +822,7 @@ mod tests {
 
         let err = write_with_audit(
             &root,
-            "home/cas-floor",
+            &validated("home/cas-floor"),
             b"one",
             "text/plain",
             &[],
@@ -963,7 +982,7 @@ mod tests {
         force_text_body(&root, "home/audited", "\u{00e9}");
         assert!(append_with_audit(
             &root,
-            "home/audited",
+            &validated("home/audited"),
             b"!",
             "text/plain; charset=utf-8",
             &[],
@@ -979,14 +998,30 @@ mod tests {
         let root = test_root("tampered-audit-chain");
         let _ = std::fs::remove_dir_all(&root);
         let key = test_key();
-        write_with_audit(&root, "home/tamper", b"one", "text/plain", &[], &key).unwrap();
+        write_with_audit(
+            &root,
+            &validated("home/tamper"),
+            b"one",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap();
         {
             let c = Connection::open(world_db(&root, "home/tamper")).unwrap();
             c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
                 .unwrap();
         }
 
-        assert!(write_with_audit(&root, "home/tamper", b"two", "text/plain", &[], &key,).is_err());
+        assert!(write_with_audit(
+            &root,
+            &validated("home/tamper"),
+            b"two",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .is_err());
 
         let c = Connection::open(world_db(&root, "home/tamper")).unwrap();
         let count: i64 = c
@@ -1002,7 +1037,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         drop(open(&root, "home/retry").unwrap());
 
-        write_with_audit(&root, "home/retry", b"one", "text/plain", &[], &test_key()).unwrap();
+        write_with_audit(
+            &root,
+            &validated("home/retry"),
+            b"one",
+            "text/plain",
+            &[],
+            &test_key(),
+        )
+        .unwrap();
 
         let c = Connection::open(world_db(&root, "home/retry")).unwrap();
         let count: i64 = c
@@ -1022,9 +1065,15 @@ mod tests {
                 .unwrap();
         }
 
-        assert!(
-            write_with_audit(&root, "home/orphan", b"two", "text/plain", &[], &test_key()).is_err()
-        );
+        assert!(write_with_audit(
+            &root,
+            &validated("home/orphan"),
+            b"two",
+            "text/plain",
+            &[],
+            &test_key(),
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1033,16 +1082,30 @@ mod tests {
         let root = test_root("missing-audit-table");
         let _ = std::fs::remove_dir_all(&root);
         let key = test_key();
-        write_with_audit(&root, "home/drop-events", b"one", "text/plain", &[], &key).unwrap();
+        write_with_audit(
+            &root,
+            &validated("home/drop-events"),
+            b"one",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap();
         {
             let c = Connection::open(world_db(&root, "home/drop-events")).unwrap();
             c.execute("DROP TABLE events", []).unwrap();
         }
 
         assert!(open(&root, "home/drop-events").is_err());
-        assert!(
-            write_with_audit(&root, "home/drop-events", b"two", "text/plain", &[], &key,).is_err()
-        );
+        assert!(write_with_audit(
+            &root,
+            &validated("home/drop-events"),
+            b"two",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

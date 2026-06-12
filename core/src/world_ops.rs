@@ -244,7 +244,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
         }
         match world::write_with_audit_checked(
             &core.data,
-            world,
+            &permit.world,
             &req.body,
             &req.content_type,
             &req.headers,
@@ -361,7 +361,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         }
         match world::append_with_audit(
             &core.data,
-            world,
+            &permit.world,
             &req.body,
             &content_type,
             &stored_headers,

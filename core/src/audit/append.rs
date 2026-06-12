@@ -114,7 +114,7 @@ pub(crate) fn append_retained_body_tx_row(
     append_tx_inner(
         audit_tx,
         event_type.kind(),
-        retained.target(),
+        retained.target().as_str(),
         retained.body_sha256(),
         retained.size(),
         content_type,
