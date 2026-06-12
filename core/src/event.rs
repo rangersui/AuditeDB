@@ -3,7 +3,7 @@
 //! The engine owns event ids, replay matching, and the live broadcast stream;
 //! adapters choose how to render those events.
 
-use crate::engine_types::ChangeVerb;
+use crate::{engine_types::ChangeVerb, timeline::TimelineAddress};
 
 /// Audit-chain event kinds the engine may append.
 ///
@@ -104,6 +104,7 @@ pub(crate) struct ChangeEvent {
     pub(crate) verb: ChangeVerb,
     pub(crate) path: String,
     pub(crate) etag: String,
+    pub(crate) timeline_address: Option<TimelineAddress>,
 }
 
 pub(crate) fn pattern(raw: &str) -> String {

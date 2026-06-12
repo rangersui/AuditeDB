@@ -5,8 +5,9 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::{
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     event::{AuditEventKind, BodyEventKind, EventMetadataKind},
-    timeline::{BodySha256, TimelineSeq},
+    timeline::{BodySha256, TimelineAddress, TimelineSeq},
     world,
+    world_generation::WorldGeneration,
 };
 
 use super::{
@@ -16,6 +17,7 @@ use super::{
 pub(crate) struct AppendedAuditRow {
     id: TimelineSeq,
     hmac: String,
+    generation: WorldGeneration,
 }
 
 impl AppendedAuditRow {
@@ -25,6 +27,64 @@ impl AppendedAuditRow {
 
     pub(crate) fn hmac(&self) -> &str {
         &self.hmac
+    }
+}
+
+pub(crate) struct AppendedBodyEvent {
+    target: ValidatedWorldPath,
+    generation: WorldGeneration,
+    seq: TimelineSeq,
+    body_sha256: BodySha256,
+}
+
+impl AppendedBodyEvent {
+    fn new(
+        target: ValidatedWorldPath,
+        generation: WorldGeneration,
+        seq: TimelineSeq,
+        body_sha256: BodySha256,
+    ) -> Self {
+        Self {
+            target,
+            generation,
+            seq,
+            body_sha256,
+        }
+    }
+
+    pub(crate) fn target(&self) -> &ValidatedWorldPath {
+        &self.target
+    }
+
+    pub(crate) fn generation(&self) -> &WorldGeneration {
+        &self.generation
+    }
+
+    pub(crate) fn seq(&self) -> TimelineSeq {
+        self.seq
+    }
+
+    pub(crate) fn body_sha256(&self) -> &BodySha256 {
+        &self.body_sha256
+    }
+}
+
+pub(crate) struct AppendedBodyAuditRow {
+    row: AppendedAuditRow,
+    timeline_address: TimelineAddress,
+}
+
+impl AppendedBodyAuditRow {
+    pub(crate) fn id(&self) -> TimelineSeq {
+        self.row.id()
+    }
+
+    pub(crate) fn hmac(&self) -> &str {
+        self.row.hmac()
+    }
+
+    pub(crate) fn timeline_address(&self) -> &TimelineAddress {
+        &self.timeline_address
     }
 }
 
@@ -115,8 +175,8 @@ pub(crate) fn append_retained_body_tx_row(
     retained: &world::RetainedCasBody,
     content_type: &str,
     headers: &[(String, String)],
-) -> rusqlite::Result<AppendedAuditRow> {
-    append_tx_inner(
+) -> rusqlite::Result<AppendedBodyAuditRow> {
+    let row = append_tx_inner(
         audit_tx,
         event_type.kind(),
         retained.target().as_str(),
@@ -124,7 +184,17 @@ pub(crate) fn append_retained_body_tx_row(
         retained.size(),
         content_type,
         headers,
-    )
+    )?;
+    let event = AppendedBodyEvent::new(
+        retained.target().clone(),
+        row.generation.clone(),
+        row.id(),
+        retained.body_sha256().clone(),
+    );
+    Ok(AppendedBodyAuditRow {
+        row,
+        timeline_address: TimelineAddress::from_appended_body_event(event),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -191,7 +261,11 @@ fn append_tx_inner(
         stmt.execute(rusqlite::params![event_id, name, value])?;
     }
     let id = TimelineSeq::new(event_id).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    Ok(AppendedAuditRow { id, hmac: h })
+    Ok(AppendedAuditRow {
+        id,
+        hmac: h,
+        generation,
+    })
 }
 
 #[cfg(test)]

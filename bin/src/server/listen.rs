@@ -164,6 +164,10 @@ mod tests {
         assert!(wire.contains("/home/task/a"));
         assert!(wire.contains("hmac-"));
         assert!(!wire.contains("body"));
+        assert!(!wire.contains("timeline"));
+        assert!(!wire.contains("generation"));
+        assert!(!wire.contains("seq"));
+        assert!(!wire.contains("body_sha256"));
         assert!(!wire.contains("secret-body"));
 
         let _ = std::fs::remove_dir_all(dir);

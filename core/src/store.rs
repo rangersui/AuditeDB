@@ -137,6 +137,7 @@ impl MemoryStore {
         Some(AppendResult {
             body_sha256_after: after,
             cas_body_inserted: false,
+            timeline_address: None,
         })
     }
 
@@ -209,6 +210,7 @@ impl MemoryStore {
         Ok(Some(AppendResult {
             body_sha256_after: after,
             cas_body_inserted: false,
+            timeline_address: None,
         }))
     }
 

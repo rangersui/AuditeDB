@@ -19,7 +19,7 @@ use crate::{
     audit,
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     event::BodyEventKind,
-    timeline::BodySha256,
+    timeline::{BodySha256, TimelineAddress},
     world_generation, world_schema,
 };
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
@@ -158,11 +158,13 @@ pub type WorldMetadata = (usize, String, MetaHeaders);
 pub struct AppendResult {
     pub body_sha256_after: String,
     pub(crate) cas_body_inserted: bool,
+    pub(crate) timeline_address: Option<TimelineAddress>,
 }
 
 pub struct WriteAuditResult {
     pub hmac: String,
     pub(crate) cas_body_inserted: bool,
+    pub(crate) timeline_address: TimelineAddress,
     /// Body length before this write. Populated for callers that may want
     /// it (e.g. counter accounting). Currently unused by the production
     /// code path because `Core::reserve_storage` reads `previous_len`
@@ -382,6 +384,7 @@ pub fn write_with_audit_checked(
     Ok(WriteAuditResult {
         hmac: row.hmac().to_owned(),
         cas_body_inserted: retained.inserted(),
+        timeline_address: row.timeline_address().clone(),
         previous_len,
         existed,
     })
@@ -420,6 +423,7 @@ fn test_only_append_without_audit(
     Ok(Some(AppendResult {
         body_sha256_after: after,
         cas_body_inserted: false,
+        timeline_address: None,
     }))
 }
 
@@ -464,6 +468,7 @@ pub fn append_with_audit(
         AppendResult {
             body_sha256_after: retained.body_sha256().as_str().to_owned(),
             cas_body_inserted: retained.inserted(),
+            timeline_address: Some(row.timeline_address().clone()),
         },
         row.hmac().to_owned(),
     )))

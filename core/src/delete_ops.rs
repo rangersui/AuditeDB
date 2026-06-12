@@ -177,7 +177,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             .ok();
     }
     hooks.counter_decremented();
-    core.notify(ChangeVerb::Delete, &permit.world, "");
+    core.notify(ChangeVerb::Delete, &permit.world, "", None);
     hooks.notify_sent();
 
     if let Err(commit_err) = core

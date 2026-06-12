@@ -200,6 +200,15 @@ impl TimelineAddress {
         )
     }
 
+    pub(crate) fn from_appended_body_event(event: crate::audit::AppendedBodyEvent) -> Self {
+        Self::new(
+            event.target().clone(),
+            event.generation().clone(),
+            event.seq(),
+            event.body_sha256().clone(),
+        )
+    }
+
     /// Returns the canonical world path this address belongs to.
     pub fn world(&self) -> &ValidatedWorldPath {
         &self.world

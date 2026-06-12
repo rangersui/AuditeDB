@@ -9,7 +9,10 @@ use std::collections::VecDeque;
 
 use tokio::sync::{broadcast, watch, OwnedSemaphorePermit};
 
-use crate::engine_types::{ChangeVerb, ValidatedWorldPath};
+use crate::{
+    engine_types::{ChangeVerb, ValidatedWorldPath},
+    timeline::TimelineAddress,
+};
 
 /// Normalized subscription pattern matching the existing `/listen/*` grammar.
 ///
@@ -38,6 +41,10 @@ pub struct ChangeEvent {
     pub path: ValidatedWorldPath,
     /// Strong ETag after the change (empty string for [`ChangeVerb::Delete`]).
     pub etag: String,
+    /// Audited body address for durable replace/append events.
+    ///
+    /// `None` for transient memory writes and delete events.
+    pub timeline_address: Option<TimelineAddress>,
 }
 
 /// Subscription to protocol-neutral engine change events.
@@ -125,7 +132,13 @@ impl From<crate::event::ChangeEvent> for ChangeEvent {
         let canonical = value.path.trim_start_matches('/').to_owned();
         let path = ValidatedWorldPath::from_canonical(canonical)
             .expect("listen events are emitted only for validated world paths");
-        Self::new(value.id, value.verb, path, value.etag)
+        Self::new(
+            value.id,
+            value.verb,
+            path,
+            value.etag,
+            value.timeline_address,
+        )
     }
 }
 
@@ -160,12 +173,19 @@ impl SubscribePattern {
 }
 
 impl ChangeEvent {
-    pub(crate) fn new(id: u64, verb: ChangeVerb, path: ValidatedWorldPath, etag: String) -> Self {
+    pub(crate) fn new(
+        id: u64,
+        verb: ChangeVerb,
+        path: ValidatedWorldPath,
+        etag: String,
+        timeline_address: Option<TimelineAddress>,
+    ) -> Self {
         Self {
             id,
             verb,
             path,
             etag,
+            timeline_address,
         }
     }
 }

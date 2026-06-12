@@ -534,6 +534,7 @@ mod tests {
                     verb: ChangeVerb::Replace,
                     path: format!("/home/task/{id}"),
                     etag: format!("hmac-{id}"),
+                    timeline_address: None,
                 });
             }
         }
@@ -561,6 +562,7 @@ mod tests {
                 verb: ChangeVerb::Replace,
                 path: "/home/task/max".to_string(),
                 etag: "hmac-max".to_string(),
+                timeline_address: None,
             });
         }
 
@@ -748,6 +750,185 @@ mod tests {
         let event = subscription.recv().await.expect("replay event");
         assert_eq!(event.verb, ChangeVerb::Replace);
         assert_eq!(event.path.as_str(), "home/events/a");
+        let address = event
+            .timeline_address
+            .as_ref()
+            .expect("durable body write event carries timeline address");
+        match engine
+            .read_timeline_body(address, AccessTier::Read)
+            .expect("event address resolves")
+        {
+            TimelineRead::Body(body) => {
+                assert_eq!(body.representation().body, Bytes::from_static(b"event"));
+            }
+            _ => panic!("expected event address body"),
+        }
+
+        drop(subscription);
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_subscription_timeline_address_survives_later_overwrite() {
+        let (engine, root) = test_engine("subscribe-address-overwrite");
+        let pattern = SubscribePattern::new("home/events/*");
+        let mut subscription = engine
+            .subscribe(&pattern, AccessTier::Anon, None)
+            .expect("subscription opens");
+        let world = ValidatedWorldPath::new("home/events/race").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"B"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let event_b = subscription.recv().await.expect("event B");
+        let address_b = event_b
+            .timeline_address
+            .clone()
+            .expect("durable event B carries timeline address");
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"C"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let current = engine
+            .read(&world, AccessTier::Anon)
+            .unwrap()
+            .expect("current body exists");
+        assert_eq!(current.representation.body, Bytes::from_static(b"C"));
+        match engine
+            .read_timeline_body(&address_b, AccessTier::Anon)
+            .expect("event B address resolves after overwrite")
+        {
+            TimelineRead::Body(body) => {
+                assert_eq!(body.representation().body, Bytes::from_static(b"B"));
+            }
+            _ => panic!("expected event B body"),
+        }
+
+        drop(subscription);
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_subscription_memory_events_do_not_carry_timeline_address() {
+        let (engine, root) = test_engine("subscribe-memory-no-address");
+        let pattern = SubscribePattern::new("tmp/events/*");
+        let mut subscription = engine
+            .subscribe(&pattern, AccessTier::Anon, Some(0))
+            .expect("subscription opens");
+        let world = ValidatedWorldPath::new("tmp/events/a").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"memory"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let event = subscription.recv().await.expect("memory event");
+        assert_eq!(event.verb, ChangeVerb::Replace);
+        assert_eq!(event.path.as_str(), "tmp/events/a");
+        assert!(event.timeline_address.is_none());
+
+        drop(subscription);
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_subscription_delete_events_do_not_carry_timeline_address() {
+        let (engine, root) = test_engine("subscribe-delete-no-address");
+        let world = ValidatedWorldPath::new("home/events/delete").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"gone"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let pattern = SubscribePattern::new("home/events/*");
+        let mut subscription = engine
+            .subscribe(&pattern, AccessTier::Anon, None)
+            .expect("subscription opens");
+        engine
+            .delete(&world, Preconditions::none(), AccessTier::Approve)
+            .await
+            .unwrap();
+
+        let event = subscription.recv().await.expect("delete event");
+        assert_eq!(event.verb, ChangeVerb::Delete);
+        assert_eq!(event.path.as_str(), "home/events/delete");
+        assert!(event.timeline_address.is_none());
+
+        drop(subscription);
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_subscription_append_events_carry_timeline_address() {
+        let (engine, root) = test_engine("subscribe-append-address");
+        let world = ValidatedWorldPath::new("home/events/append").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"base"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let pattern = SubscribePattern::new("home/events/*");
+        let mut subscription = engine
+            .subscribe(&pattern, AccessTier::Anon, None)
+            .expect("subscription opens");
+        engine
+            .append(
+                &world,
+                Bytes::from_static(b"-tail"),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let event = subscription.recv().await.expect("append event");
+        assert_eq!(event.verb, ChangeVerb::Append);
+        assert_eq!(event.path.as_str(), "home/events/append");
+        let address = event
+            .timeline_address
+            .as_ref()
+            .expect("durable append event carries timeline address");
+        match engine
+            .read_timeline_body(address, AccessTier::Anon)
+            .expect("append event address resolves")
+        {
+            TimelineRead::Body(body) => {
+                assert_eq!(body.representation().body, Bytes::from_static(b"base-tail"));
+            }
+            _ => panic!("expected append event address body"),
+        }
 
         drop(subscription);
         drop(engine);

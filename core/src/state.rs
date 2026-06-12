@@ -342,6 +342,7 @@ impl Core {
         verb: crate::engine_types::ChangeVerb,
         world: &ValidatedWorldPath,
         etag: &str,
+        timeline_address: Option<TimelineAddress>,
     ) {
         let id = next_event_id(&self.next_event);
         let change = event::ChangeEvent {
@@ -349,6 +350,7 @@ impl Core {
             verb,
             path: format!("/{}", world.as_str()),
             etag: etag.to_owned(),
+            timeline_address,
         };
         {
             let mut log = self

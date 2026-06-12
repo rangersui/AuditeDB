@@ -159,7 +159,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     core.clear_tombstone(world);
     check_write_preconditions(core, world, &req.preconditions)?;
 
-    let (existed, etag) = if store::is_persistent(world) {
+    let (existed, etag, timeline_address) = if store::is_persistent(world) {
         let prev_len_opt = world::body_len(&core.data, world).map_err(|err| {
             classify_write_storage_error("storage metadata", err, StorageOp::Read)
         })?;
@@ -193,7 +193,8 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
                 if !existed {
                     core.durable_world_count.fetch_add(1, Ordering::Relaxed);
                 }
-                (existed, etag::hmac_etag(&result.hmac))
+                let etag = etag::hmac_etag(&result.hmac);
+                (existed, etag, Some(result.timeline_address))
             }
             Err(world::WriteAuditError::Audit(err)) => {
                 core.rollback_storage_reservation(prev_len, reserve_new_len);
@@ -228,7 +229,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
             &req.headers,
             core.max_memory_bytes,
         ) {
-            Ok(outcome) => (outcome.existed, etag::body_etag(&req.body)),
+            Ok(outcome) => (outcome.existed, etag::body_etag(&req.body), None),
             Err(store::MemoryQuotaError { quota, .. }) => {
                 return Err(WriteError::PayloadTooLarge { max: quota });
             }
@@ -236,7 +237,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     };
 
     hooks.sqlite_committed(&etag);
-    core.notify(ChangeVerb::Replace, &permit.world, &etag);
+    core.notify(ChangeVerb::Replace, &permit.world, &etag, timeline_address);
     hooks.notify_sent();
     Ok(WriteOutcome {
         status_kind: if existed {
@@ -280,7 +281,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         });
     }
 
-    let etag = if store::is_persistent(world) {
+    let (etag, timeline_address) = if store::is_persistent(world) {
         if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
         }
@@ -307,7 +308,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
                 if !result.cas_body_inserted {
                     core.rollback_storage_reservation(0, cas_candidate_len);
                 }
-                etag::hmac_etag(&h)
+                (etag::hmac_etag(&h), result.timeline_address)
             }
             Ok(None) => {
                 core.rollback_storage_reservation(0, reserve_new_len);
@@ -343,7 +344,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
             .mem
             .append_with_quota(world, &req.body, core.max_memory_bytes)
         {
-            Ok(Some(result)) => format!("sha256-{}", result.body_sha256_after),
+            Ok(Some(result)) => (format!("sha256-{}", result.body_sha256_after), None),
             Ok(None) => return Err(WriteError::NotFound),
             Err(store::MemoryQuotaError { quota, .. }) => {
                 return Err(WriteError::PayloadTooLarge { max: quota });
@@ -352,7 +353,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     };
 
     hooks.sqlite_committed(&etag);
-    core.notify(ChangeVerb::Append, &permit.world, &etag);
+    core.notify(ChangeVerb::Append, &permit.world, &etag, timeline_address);
     hooks.notify_sent();
     Ok(WriteOutcome {
         status_kind: WriteStatusKind::Updated,
