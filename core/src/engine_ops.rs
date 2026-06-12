@@ -14,9 +14,12 @@ use crate::{
     delete_ops::{self, DeleteRequest, DeleteTraceHooks},
     engine::{Engine, EngineError},
     engine_error::{read_error_to_engine, write_error_to_engine},
+    engine_subscription::{
+        ChangeEvent, EngineSubscription, SubscribePattern, SubscriptionRecvError,
+    },
     engine_types::{
-        AccessTier, ChangeEvent, EngineSubscription, Preconditions, ReadResult, Representation,
-        SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
+        AccessTier, Preconditions, ReadResult, Representation, ValidatedWorldPath, WriteKind,
+        WriteResult,
     },
     etag, event,
     timeline::{TimelineAddress, TimelineRead},

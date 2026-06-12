@@ -168,6 +168,7 @@ mod engine;
 mod engine_error;
 mod engine_introspection;
 mod engine_ops;
+mod engine_subscription;
 mod engine_trace;
 mod engine_types;
 mod etag;
@@ -210,13 +211,16 @@ pub use engine_introspection::{
     ProcEndpoint, ValidatedProcPath, WorldUsage,
 };
 #[cfg(feature = "unstable-engine")]
+pub use engine_subscription::{
+    ChangeEvent, EngineSubscription, SubscribePattern, SubscriptionRecvError,
+};
+#[cfg(feature = "unstable-engine")]
 pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};
 #[cfg(feature = "unstable-engine")]
 pub use engine_types::{
-    parse_etag_matchers, AccessTier, AuditHmacKey, ChangeEvent, ChangeVerb, EmptyKeyError,
-    EngineSubscription, EtagMatcher, InvalidHmacKey, InvalidWorldPath, Preconditions, ReadResult,
-    Representation, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
-    WriteKind, WriteResult, MIN_HMAC_KEY_BYTES,
+    parse_etag_matchers, AccessTier, AuditHmacKey, ChangeVerb, EmptyKeyError, EtagMatcher,
+    InvalidHmacKey, InvalidWorldPath, Preconditions, ReadResult, Representation, SecretBytes,
+    ValidatedWorldPath, WriteKind, WriteResult, MIN_HMAC_KEY_BYTES,
 };
 #[cfg(feature = "unstable-engine")]
 pub use path::{validate_world_name, NAMESPACE_PREFIXES};
