@@ -17,12 +17,8 @@
 //! world dirs from older binaries fail loudly on the first missing or stale
 //! schema surface; wipe `data/` to upgrade.
 //!
-//! `state` is gone on purpose. The old `pending|active|disabled`
-//! triple was a hook for an in-core plugin runtime that no longer
-//! exists. `/lib/*` is inert storage in the new architecture, and
-//! lifecycle (if any) belongs to whatever SDK / endpoint app loads
-//! the source. Keeping the column would falsely suggest core decides
-//! when a plugin runs.
+//! `state` is gone on purpose: `/lib/*` is inert storage now; lifecycle
+//! belongs to whatever SDK or endpoint app loads the source.
 //!
 //! `meta_headers` is the current X-Meta-* header view. `event_headers`
 //! is the historical per-write view. The event chain stores structured
