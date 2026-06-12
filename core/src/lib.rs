@@ -165,6 +165,7 @@ mod data_lock;
 mod defaults;
 mod delete_ops;
 mod engine;
+mod engine_error;
 mod engine_introspection;
 mod engine_ops;
 mod engine_trace;
