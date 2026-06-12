@@ -90,11 +90,9 @@ impl LedgerWriter {
         job: AuditAppendJob,
     ) -> Result<String, BlockingSqliteError> {
         let mut guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let mut created_ledger = false;
         if guard.is_none() {
             // Lazy init. `world::open` creates the schema; safe to
             // call whether or not the ledger DB exists on disk.
-            created_ledger = !world::world_db(data, job.ledger_world).exists();
             let conn = world::open(data, job.ledger_world).map_err(BlockingSqliteError::Sqlite)?;
             *guard = Some(conn);
             self.inits.fetch_add(1, Ordering::Relaxed);
@@ -102,7 +100,8 @@ impl LedgerWriter {
         let Some(conn) = guard.as_mut() else {
             return Err(BlockingSqliteError::Worker);
         };
-        let append = if created_ledger {
+        let is_empty = ledger_is_empty(conn).map_err(BlockingSqliteError::Sqlite)?;
+        let append = if is_empty {
             audit::append_with_conn_genesis
         } else {
             audit::append_with_conn_existing
@@ -118,5 +117,56 @@ impl LedgerWriter {
             &job.key,
         )
         .map_err(BlockingSqliteError::Audit)
+    }
+}
+
+fn ledger_is_empty(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row("SELECT COUNT(*) FROM events", [], |r| {
+        Ok(r.get::<_, i64>(0)? == 0)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_key() -> AuditHmacKey {
+        AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
+    }
+
+    #[test]
+    fn append_uses_genesis_for_existing_empty_ledger() {
+        let dir = std::env::temp_dir().join(format!("elastik-ledger-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(world::open(&dir, "var/log/deletes").unwrap());
+
+        let ledger = LedgerWriter::new();
+        let hmac = ledger
+            .append(
+                &dir,
+                AuditAppendJob {
+                    ledger_world: "var/log/deletes",
+                    event_type: EventMetadataKind::DELETE_INTENT,
+                    target: "home/deleted".to_owned(),
+                    body_sha256: BodySha256::for_body(b"body"),
+                    size: 0,
+                    content_type: "application/octet-stream".to_owned(),
+                    headers: Vec::new(),
+                    key: test_key(),
+                },
+            )
+            .unwrap();
+
+        let c = Connection::open(world::world_db(&dir, "var/log/deletes")).unwrap();
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        let stored_hmac: String = c
+            .query_row("SELECT hmac FROM events WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(stored_hmac, hmac);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
