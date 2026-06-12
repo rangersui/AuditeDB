@@ -679,6 +679,149 @@ mod tests {
     }
 
     #[test]
+    fn audited_write_rejects_cas_mismatch_before_event_commit() {
+        let root = test_root("cas-mismatch");
+        let _ = std::fs::remove_dir_all(&root);
+        let key = test_key();
+        let old_body = b"old-value";
+        let new_body = b"new-value";
+        let new_body_hash = sha256_hex(new_body);
+
+        write_with_audit(
+            &root,
+            "home/cas-mismatch",
+            old_body,
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap();
+        {
+            let c = Connection::open(world_db(&root, "home/cas-mismatch")).unwrap();
+            c.execute(
+                "INSERT INTO cas_bodies(body_sha256, body) VALUES(?1, x'00')",
+                params![new_body_hash],
+            )
+            .unwrap();
+        }
+
+        let _err = write_with_audit(
+            &root,
+            "home/cas-mismatch",
+            new_body,
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap_err();
+
+        let c = Connection::open(world_db(&root, "home/cas-mismatch")).unwrap();
+        let events: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        let stage_body: Vec<u8> = c
+            .query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        let first_retained_seq: i64 = c
+            .query_row(
+                "SELECT first_retained_seq FROM cas_state WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(events, 1);
+        assert_eq!(stage_body, old_body);
+        assert_eq!(first_retained_seq, 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audited_append_rejects_cas_mismatch_before_event_commit() {
+        let root = test_root("cas-append-mismatch");
+        let _ = std::fs::remove_dir_all(&root);
+        let key = test_key();
+
+        write_with_audit(
+            &root,
+            "home/cas-append-mismatch",
+            b"one",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap();
+        let next_hash = sha256_hex(b"onetwo");
+        {
+            let c = Connection::open(world_db(&root, "home/cas-append-mismatch")).unwrap();
+            c.execute(
+                "INSERT INTO cas_bodies(body_sha256, body) VALUES(?1, x'00')",
+                params![next_hash],
+            )
+            .unwrap();
+        }
+
+        let _err = match append_with_audit(
+            &root,
+            "home/cas-append-mismatch",
+            b"two",
+            "text/plain",
+            &[],
+            &key,
+        ) {
+            Ok(_) => panic!("corrupt CAS body row must reject append"),
+            Err(err) => err,
+        };
+
+        let c = Connection::open(world_db(&root, "home/cas-append-mismatch")).unwrap();
+        let events: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        let body: Vec<u8> = c
+            .query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(events, 1);
+        assert_eq!(body, b"one");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audited_write_rejects_cas_floor_ahead_of_event() {
+        let root = test_root("cas-floor-ahead");
+        let _ = std::fs::remove_dir_all(&root);
+        drop(open(&root, "home/cas-floor").unwrap());
+        {
+            let c = Connection::open(world_db(&root, "home/cas-floor")).unwrap();
+            c.execute("UPDATE cas_state SET first_retained_seq=999 WHERE id=1", [])
+                .unwrap();
+        }
+
+        let err = write_with_audit(
+            &root,
+            "home/cas-floor",
+            b"one",
+            "text/plain",
+            &[],
+            &test_key(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            WriteAuditError::Audit(audit::AuditError::ChainBroken(break_report))
+                if break_report.actual == "missing-retention-floor-event"
+        ));
+
+        let c = Connection::open(world_db(&root, "home/cas-floor")).unwrap();
+        let events: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(events, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn disk_names_do_not_alias_literal_percent_with_encoded_slash() {
         assert_ne!(disk_name("home/a%2Fb"), disk_name("home/a/b"));
     }
