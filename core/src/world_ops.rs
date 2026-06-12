@@ -16,7 +16,9 @@ use bytes::Bytes;
 use crate::{
     audit, auth, can_read, can_write,
     engine_types::{ChangeVerb, ValidatedWorldPath},
-    etag, needs_write_approve, store, world, AuthGate, Core, StorageFailureClass,
+    etag, needs_write_approve, store,
+    timeline::BodySha256,
+    world, AuthGate, Core, StorageFailureClass,
 };
 
 #[derive(Debug)]
@@ -122,12 +124,19 @@ pub(crate) enum WriteError {
         scope: &'static str,
         err: rusqlite::Error,
     },
+    StorageInvariant(StorageInvariantReason),
     AuditChainBroken {
         #[allow(dead_code)]
         scope: &'static str,
         break_report: audit::VerifyBreak,
     },
     Internal(&'static str),
+}
+
+#[derive(Debug)]
+pub(crate) enum StorageInvariantReason {
+    CasBodyMismatch(BodySha256),
+    CasState(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,7 +232,10 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
         if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
         }
-        if let Err(quota) = core.reserve_storage(prev_len, req.body.len()) {
+        let cas_candidate_len = world::cas_body_len_if_missing(&core.data, world, &req.body)
+            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?;
+        let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
+        if let Err(quota) = core.reserve_storage(prev_len, reserve_new_len) {
             return Err(WriteError::QuotaExceeded {
                 used: quota.used,
                 quota: quota.quota,
@@ -240,25 +252,40 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
             None,
         ) {
             Ok(result) => {
+                if !result.cas_body_inserted {
+                    core.rollback_storage_reservation(0, cas_candidate_len);
+                }
                 if !existed {
                     core.durable_world_count.fetch_add(1, Ordering::Relaxed);
                 }
                 (existed, etag::hmac_etag(&result.hmac))
             }
             Err(world::WriteAuditError::Quota { .. }) => {
-                core.rollback_storage_reservation(prev_len, req.body.len());
+                core.rollback_storage_reservation(prev_len, reserve_new_len);
                 return Err(WriteError::Internal("unexpected quota error"));
             }
             Err(world::WriteAuditError::Audit(err)) => {
-                core.rollback_storage_reservation(prev_len, req.body.len());
+                core.rollback_storage_reservation(prev_len, reserve_new_len);
                 return Err(classify_write_audit_error("storage/audit", err));
             }
             Err(world::WriteAuditError::Sqlite(err)) => {
-                core.rollback_storage_reservation(prev_len, req.body.len());
+                core.rollback_storage_reservation(prev_len, reserve_new_len);
                 return Err(classify_write_storage_error(
                     "storage/audit",
                     err,
                     StorageOp::WriteAudit,
+                ));
+            }
+            Err(world::WriteAuditError::CasBodyMismatch { body_sha256 }) => {
+                core.rollback_storage_reservation(prev_len, reserve_new_len);
+                return Err(WriteError::StorageInvariant(
+                    StorageInvariantReason::CasBodyMismatch(body_sha256),
+                ));
+            }
+            Err(world::WriteAuditError::StorageInvariant(reason)) => {
+                core.rollback_storage_reservation(prev_len, reserve_new_len);
+                return Err(WriteError::StorageInvariant(
+                    StorageInvariantReason::CasState(reason),
                 ));
             }
         }
@@ -326,7 +353,11 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
         }
-        if let Err(quota) = core.reserve_storage(0, req.body.len()) {
+        let cas_candidate_len = world::append_cas_body_len_if_missing(&core.data, world, &req.body)
+            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
+            .ok_or(WriteError::NotFound)?;
+        let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
+        if let Err(quota) = core.reserve_storage(0, reserve_new_len) {
             return Err(WriteError::QuotaExceeded {
                 used: quota.used,
                 quota: quota.quota,
@@ -341,17 +372,22 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
             &stored_headers,
             &core.hmac_key,
         ) {
-            Ok(Some((_result, h))) => etag::hmac_etag(&h),
+            Ok(Some((result, h))) => {
+                if !result.cas_body_inserted {
+                    core.rollback_storage_reservation(0, cas_candidate_len);
+                }
+                etag::hmac_etag(&h)
+            }
             Ok(None) => {
-                core.rollback_storage_reservation(0, req.body.len());
+                core.rollback_storage_reservation(0, reserve_new_len);
                 return Err(WriteError::NotFound);
             }
             Err(world::WriteAuditError::Audit(err)) => {
-                core.rollback_storage_reservation(0, req.body.len());
+                core.rollback_storage_reservation(0, reserve_new_len);
                 return Err(classify_write_audit_error("storage/audit", err));
             }
             Err(world::WriteAuditError::Sqlite(err)) => {
-                core.rollback_storage_reservation(0, req.body.len());
+                core.rollback_storage_reservation(0, reserve_new_len);
                 return Err(classify_write_storage_error(
                     "storage/audit",
                     err,
@@ -359,8 +395,20 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
                 ));
             }
             Err(world::WriteAuditError::Quota { .. }) => {
-                core.rollback_storage_reservation(0, req.body.len());
+                core.rollback_storage_reservation(0, reserve_new_len);
                 return Err(WriteError::Internal("unexpected quota error"));
+            }
+            Err(world::WriteAuditError::CasBodyMismatch { body_sha256 }) => {
+                core.rollback_storage_reservation(0, reserve_new_len);
+                return Err(WriteError::StorageInvariant(
+                    StorageInvariantReason::CasBodyMismatch(body_sha256),
+                ));
+            }
+            Err(world::WriteAuditError::StorageInvariant(reason)) => {
+                core.rollback_storage_reservation(0, reserve_new_len);
+                return Err(WriteError::StorageInvariant(
+                    StorageInvariantReason::CasState(reason),
+                ));
             }
         }
     } else {
@@ -529,6 +577,73 @@ mod tests {
         );
 
         drop(holder);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn durable_quota_counts_retained_cas_bodies() {
+        struct NoopTrace;
+        impl WriteTraceHooks for NoopTrace {}
+
+        let (mut core, dir) = test_core("quota-counts-cas");
+        core.max_storage_bytes = Some(8);
+        let world = world_path("home/quota-cas");
+        let permit = authorize_write(&world, auth::Tier::Write).unwrap();
+
+        replace_write(
+            &core,
+            &permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"aaaa"),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
+
+        replace_write(
+            &core,
+            &permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"aaaa"),
+                content_type: "application/octet-stream".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
+
+        let err = replace_write(
+            &core,
+            &permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"bbbb"),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            WriteError::QuotaExceeded { projected: 12, .. }
+        ));
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
+        assert_eq!(
+            core.read_world("home/quota-cas").unwrap().unwrap().body,
+            b"aaaa"
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

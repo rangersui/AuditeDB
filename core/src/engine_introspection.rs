@@ -830,13 +830,13 @@ mod tests {
         let usage = engine.du(AccessTier::Read).unwrap();
         assert!(usage
             .iter()
-            .any(|row| row.world == disk && row.bytes == b"hello".len()));
+            .any(|row| row.world == disk && row.bytes == b"hello".len() * 2));
         assert!(usage
             .iter()
             .any(|row| row.world == memory && row.bytes == b"hello".len()));
 
         let df = engine.df(AccessTier::Read).unwrap();
-        assert_eq!(df.storage_used, b"hello".len());
+        assert_eq!(df.storage_used, b"hello".len() * 2);
         assert_eq!(df.storage_quota, Some(64));
         assert_eq!(df.memory_used, b"hello".len());
         assert_eq!(df.worlds, 2);

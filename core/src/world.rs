@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Renames vs pre-v5: `stage_html` -> `body`. Drops: `pending_js`,
-//! `js_result`, `state`. v5.2 adds the inert CAS tables. No migrator:
+//! `js_result`, `state`. v5.2 adds CAS retention tables. No migrator:
 //! world dirs from older binaries fail loudly on the first missing or stale
 //! schema surface; wipe `data/` to upgrade.
 //!
@@ -35,8 +35,14 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod cas;
 mod files;
 
+pub(crate) use cas::RetainedCasBody;
+pub use cas::{
+    append_body_len_if_missing as append_cas_body_len_if_missing,
+    body_len_if_missing as cas_body_len_if_missing, storage_len,
+};
 #[cfg(test)]
 use files::open_checkpoint_conn;
 pub use files::{delete, list, list_with_prefix, list_with_prefix_bounded};
@@ -157,10 +163,12 @@ pub type WorldMetadata = (usize, String, MetaHeaders);
 
 pub struct AppendResult {
     pub body_sha256_after: String,
+    pub(crate) cas_body_inserted: bool,
 }
 
 pub struct WriteAuditResult {
     pub hmac: String,
+    pub(crate) cas_body_inserted: bool,
     /// Body length before this write. Populated for callers that may want
     /// it (e.g. counter accounting). Currently unused by the production
     /// code path because `Core::reserve_storage` reads `previous_len`
@@ -178,6 +186,10 @@ pub struct WriteAuditResult {
 pub enum WriteAuditError {
     Audit(audit::AuditError),
     Sqlite(rusqlite::Error),
+    CasBodyMismatch {
+        body_sha256: BodySha256,
+    },
+    StorageInvariant(&'static str),
     /// Returned only if the caller passes a `quota` argument to
     /// `write_with_audit_checked`. The active path passes `None` and
     /// enforces quota via `Core::reserve_storage` instead, so this variant
@@ -240,7 +252,7 @@ pub fn body_len(data_root: &Path, world: &str) -> rusqlite::Result<Option<usize>
 pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(String, usize)>> {
     let mut out = Vec::new();
     for world in list(data_root)? {
-        if let Some(size) = body_len(data_root, &world)? {
+        if let Some(size) = storage_len(data_root, &world)? {
             out.push((world, size));
         }
     }
@@ -384,6 +396,7 @@ pub fn write_with_audit_checked(
         }
     }
     let audit_tx = verify_appendable_world_tx(&tx, key, existed)?;
+    let retained = cas::retain_body_tx(&tx, world, body)?;
     tx.execute(
         r#"UPDATE stage_meta
            SET body=?,
@@ -398,18 +411,18 @@ pub fn write_with_audit_checked(
             stmt.execute(params![name, value])?;
         }
     }
-    let row = audit::append_body_tx_row(
+    let row = audit::append_retained_body_tx_row(
         &audit_tx,
         BodyEventKind::PUT,
-        world,
-        &BodySha256::for_body(body),
-        body.len() as i64,
+        &retained,
         content_type,
         headers,
     )?;
+    cas::mark_retention_started_tx(&tx, row.id())?;
     tx.commit()?;
     Ok(WriteAuditResult {
         hmac: row.hmac().to_owned(),
+        cas_body_inserted: retained.inserted(),
         previous_len,
         existed,
     })
@@ -443,6 +456,7 @@ fn append(data_root: &Path, world: &str, body: &[u8]) -> rusqlite::Result<Option
     tx.commit()?;
     Ok(Some(AppendResult {
         body_sha256_after: after,
+        cas_body_inserted: false,
     }))
 }
 
@@ -466,27 +480,26 @@ pub fn append_with_audit(
     })?;
     let mut new_body = current;
     new_body.extend_from_slice(body);
-    let after = sha256_hex(&new_body);
-    let size_after = new_body.len();
+    let retained = cas::retain_body_tx(&tx, world, &new_body)?;
     tx.execute(
         r#"UPDATE stage_meta
            SET body=?
            WHERE id=1"#,
         params![new_body],
     )?;
-    let row = audit::append_body_tx_row(
+    let row = audit::append_retained_body_tx_row(
         &audit_tx,
         BodyEventKind::APPEND,
-        world,
-        &BodySha256::new(after.clone()).map_err(|_| rusqlite::Error::InvalidQuery)?,
-        size_after as i64,
+        &retained,
         content_type,
         headers,
     )?;
+    cas::mark_retention_started_tx(&tx, row.id())?;
     tx.commit()?;
     Ok(Some((
         AppendResult {
-            body_sha256_after: after,
+            body_sha256_after: retained.body_sha256().as_str().to_owned(),
+            cas_body_inserted: retained.inserted(),
         },
         row.hmac().to_owned(),
     )))
@@ -574,6 +587,131 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn audited_write_retains_cas_body_and_starts_floor() {
+        let root = test_root("cas-retain-write");
+        let _ = std::fs::remove_dir_all(&root);
+        let key = test_key();
+        let body = b"retained body";
+        let body_hash = sha256_hex(body);
+
+        let hmac = write_with_audit(&root, "home/cas", body, "text/plain", &[], &key).unwrap();
+
+        let c = Connection::open(world_db(&root, "home/cas")).unwrap();
+        let retained: Vec<u8> = c
+            .query_row(
+                "SELECT body FROM cas_bodies WHERE body_sha256=?1",
+                params![body_hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let first_retained_seq: i64 = c
+            .query_row(
+                "SELECT first_retained_seq FROM cas_state WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let (event_hmac, event_hash): (String, String) = c
+            .query_row("SELECT hmac, body_sha256 FROM events WHERE id=1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+
+        assert_eq!(retained, body);
+        assert_eq!(first_retained_seq, 1);
+        assert_eq!(event_hmac, hmac);
+        assert_eq!(event_hash, body_hash);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audited_append_retains_full_body_without_moving_floor() {
+        let root = test_root("cas-retain-append");
+        let _ = std::fs::remove_dir_all(&root);
+        let key = test_key();
+
+        write_with_audit(&root, "home/cas-append", b"one", "text/plain", &[], &key).unwrap();
+        let (result, _) =
+            append_with_audit(&root, "home/cas-append", b"two", "text/plain", &[], &key)
+                .unwrap()
+                .unwrap();
+
+        let full_body = b"onetwo";
+        let full_hash = sha256_hex(full_body);
+        assert_eq!(result.body_sha256_after, full_hash);
+
+        let c = Connection::open(world_db(&root, "home/cas-append")).unwrap();
+        let retained: Vec<u8> = c
+            .query_row(
+                "SELECT body FROM cas_bodies WHERE body_sha256=?1",
+                params![full_hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let first_retained_seq: i64 = c
+            .query_row(
+                "SELECT first_retained_seq FROM cas_state WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let cas_rows: i64 = c
+            .query_row("SELECT COUNT(*) FROM cas_bodies", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(retained, full_body);
+        assert_eq!(first_retained_seq, 1);
+        assert_eq!(cas_rows, 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audited_write_reuses_same_cas_body_without_moving_floor() {
+        let root = test_root("cas-idempotent");
+        let _ = std::fs::remove_dir_all(&root);
+        let key = test_key();
+
+        write_with_audit(
+            &root,
+            "home/cas-idempotent",
+            b"same",
+            "text/plain",
+            &[],
+            &key,
+        )
+        .unwrap();
+        write_with_audit(
+            &root,
+            "home/cas-idempotent",
+            b"same",
+            "application/octet-stream",
+            &[],
+            &key,
+        )
+        .unwrap();
+
+        let c = Connection::open(world_db(&root, "home/cas-idempotent")).unwrap();
+        let cas_rows: i64 = c
+            .query_row("SELECT COUNT(*) FROM cas_bodies", [], |r| r.get(0))
+            .unwrap();
+        let events: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        let first_retained_seq: i64 = c
+            .query_row(
+                "SELECT first_retained_seq FROM cas_state WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(cas_rows, 1);
+        assert_eq!(events, 2);
+        assert_eq!(first_retained_seq, 1);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

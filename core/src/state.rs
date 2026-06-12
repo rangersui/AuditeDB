@@ -258,7 +258,7 @@ impl Core {
             self.mem.write(world, body, content_type, headers);
             Ok(())
         } else {
-            let current_len = world::body_len(&self.data, world)?;
+            let current_len = world::storage_len(&self.data, world)?;
             world::write_with_audit(
                 &self.data,
                 world,
@@ -268,10 +268,11 @@ impl Core {
                 &self.hmac_key,
             )?;
             let prev = current_len.unwrap_or(0);
+            let new_len = world::storage_len(&self.data, world)?.unwrap_or(0);
             let _ = self.storage_body_bytes.fetch_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
-                |used| Some(used.saturating_sub(prev).saturating_add(body.len())),
+                |used| Some(used.saturating_sub(prev).saturating_add(new_len)),
             );
             if current_len.is_none() {
                 self.durable_world_count.fetch_add(1, Ordering::Relaxed);
@@ -336,17 +337,20 @@ impl Core {
     }
 
     /// Atomic reservation: check the quota and reserve `new_len - prev_len`
-    /// in a single CAS step. Replaces the old "snapshot then write then
+    /// in a single CAS step. `new_len` includes current durable body bytes
+    /// plus any candidate retained CAS body bytes for this write.
+    /// Replaces the old "snapshot then write then
     /// adjust" pattern, which raced under per-world locking when two
     /// concurrent writes on different worlds both observed usage below
     /// quota and only afterwards pushed it past.
     ///
     /// Caller must hold `acquire_world_lock(world)` so that `prev_len`
-    /// reflects the world's true current body length (cannot change
+    /// reflects the world's true current accounted length (cannot change
     /// underneath us). On success the global counter has already been
-    /// updated; on success of the subsequent storage write, no further
-    /// counter change is needed. On failure of the storage write, call
-    /// `rollback_storage_reservation` to credit back.
+    /// updated; on success of the subsequent storage write, refund any
+    /// pessimistically reserved CAS bytes that were already present. On
+    /// failure of the storage write, call `rollback_storage_reservation` to
+    /// credit back the whole reservation.
     ///
     /// `prev_len` is 0 for new worlds and for append (where the existing
     /// bytes stay and we only add `new_len` new).

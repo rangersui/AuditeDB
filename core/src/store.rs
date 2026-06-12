@@ -49,7 +49,7 @@ pub struct MemoryStore {
 /// write would push the total memory store size past `max_total_bytes`.
 /// The check happens under the same mutex as the write so concurrent
 /// writers cannot both pass a stale snapshot and then both commit
-/// (mirror of the durable `WriteAuditError::Quota` path).
+/// (durable quota is reserved before SQLite write transactions).
 pub struct MemoryQuotaError {
     /// Pre-write total bytes across all memory worlds. Currently the
     /// callers only need `quota` for payload-cap mapping, but `used` and
@@ -136,6 +136,7 @@ impl MemoryStore {
         e.body_hash = after.clone();
         Some(AppendResult {
             body_sha256_after: after,
+            cas_body_inserted: false,
         })
     }
 
@@ -207,6 +208,7 @@ impl MemoryStore {
         entry.body_hash = after.clone();
         Ok(Some(AppendResult {
             body_sha256_after: after,
+            cas_body_inserted: false,
         }))
     }
 

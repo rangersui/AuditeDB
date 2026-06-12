@@ -72,6 +72,10 @@ pub(crate) fn write_error_to_engine(
             log_storage_error(scope, &err, "write_audit", world);
             EngineError::Storage
         }
+        world_ops::WriteError::StorageInvariant(reason) => {
+            log_storage_invariant("storage/cas", &reason, "write_audit", world);
+            EngineError::Storage
+        }
         world_ops::WriteError::AuditChainBroken {
             scope,
             break_report,
@@ -80,6 +84,40 @@ pub(crate) fn write_error_to_engine(
             EngineError::Storage
         }
         world_ops::WriteError::Internal(message) => EngineError::InternalInvariant(message),
+    }
+}
+
+fn log_storage_invariant(
+    scope: &'static str,
+    reason: &world_ops::StorageInvariantReason,
+    operation: &'static str,
+    world: Option<&str>,
+) {
+    let reason_text = match reason {
+        world_ops::StorageInvariantReason::CasBodyMismatch(body_sha256) => {
+            format!(
+                "cas body hash row contains different bytes: {}",
+                body_sha256.as_str()
+            )
+        }
+        world_ops::StorageInvariantReason::CasState(reason) => (*reason).to_owned(),
+    };
+
+    #[cfg(feature = "unstable-engine")]
+    tracing::error!(
+        scope,
+        operation,
+        world = world.unwrap_or(""),
+        reason = reason_text.as_str(),
+        "engine storage invariant violation"
+    );
+
+    #[cfg(not(feature = "unstable-engine"))]
+    match world {
+        Some(world) => {
+            eprintln!("elastik-core internal {scope} ({operation}) world={world}: {reason_text}");
+        }
+        None => eprintln!("elastik-core internal {scope} ({operation}): {reason_text}"),
     }
 }
 

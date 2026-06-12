@@ -12,7 +12,11 @@ use std::{fmt, path::Path};
 
 mod append;
 
-pub(crate) use append::{append_body_tx_row, append_with_conn_existing, append_with_conn_genesis};
+#[cfg(test)]
+use append::test_only_append_tx_inner as append_tx_inner;
+pub(crate) use append::{
+    append_retained_body_tx_row, append_with_conn_existing, append_with_conn_genesis,
+};
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
                   e.content_type, e.meta_sha256, e.hmac, e.prev_hmac,
@@ -398,7 +402,8 @@ pub fn latest_hmac(data_root: &Path, world_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{event::BodyEventKind, test_support::test_core, timeline::BodySha256, world};
+    use crate::timeline::BodySha256;
+    use crate::{event::AuditEventKind, test_support::test_core, world};
     use rusqlite::Connection;
 
     fn test_connection() -> Connection {
@@ -512,9 +517,9 @@ mod tests {
         let tx = c.transaction().unwrap();
         let key = test_key();
         let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-        let row1 = append_body_tx_row(
+        let row1 = append_tx_inner(
             &audit_tx,
-            BodyEventKind::PUT,
+            AuditEventKind::Put,
             "home/a",
             &BodySha256::for_body(b"abc"),
             3,
@@ -522,9 +527,9 @@ mod tests {
             &[("x-meta-author".to_owned(), "ranger".to_owned())],
         )
         .unwrap();
-        let row2 = append_body_tx_row(
+        let row2 = append_tx_inner(
             &audit_tx,
-            BodyEventKind::APPEND,
+            AuditEventKind::Append,
             "home/a",
             &BodySha256::for_body(b"abcdef"),
             6,
@@ -603,9 +608,9 @@ mod tests {
             let tx = c.transaction().unwrap();
             let key = test_key();
             let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-            append_body_tx_row(
+            append_tx_inner(
                 &audit_tx,
-                BodyEventKind::PUT,
+                AuditEventKind::Put,
                 "home/a",
                 &BodySha256::for_body(b"abc"),
                 3,
@@ -641,9 +646,9 @@ mod tests {
         let tx = c.transaction().unwrap();
         let key = test_key();
         let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-        append_body_tx_row(
+        append_tx_inner(
             &audit_tx,
-            BodyEventKind::PUT,
+            AuditEventKind::Put,
             "home/a",
             &BodySha256::for_body(b"abc"),
             3,
@@ -689,9 +694,9 @@ mod tests {
         let tx = c.transaction().unwrap();
         let key = test_key();
         let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-        append_body_tx_row(
+        append_tx_inner(
             &audit_tx,
-            BodyEventKind::PUT,
+            AuditEventKind::Put,
             "home/a",
             &BodySha256::for_body(b"abc"),
             3,

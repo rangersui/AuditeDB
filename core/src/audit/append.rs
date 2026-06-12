@@ -6,6 +6,7 @@ use crate::{
     engine_types::AuditHmacKey,
     event::{AuditEventKind, BodyEventKind, EventMetadataKind},
     timeline::{BodySha256, TimelineSeq},
+    world,
 };
 
 use super::{
@@ -18,7 +19,6 @@ pub(crate) struct AppendedAuditRow {
 }
 
 impl AppendedAuditRow {
-    #[allow(dead_code)]
     pub(crate) fn id(&self) -> TimelineSeq {
         self.id
     }
@@ -28,12 +28,6 @@ impl AppendedAuditRow {
     }
 }
 
-/// Append a single row to the audit chain, reusing an already-open
-/// `Connection`. Cached writers (the ledger writer
-/// `Mutex<Option<Connection>>` on `Core`) call this directly so the
-/// hot delete path doesn't re-open `var/log/deletes` 2-3 times per
-/// operation. Per-write paths that don't cache a connection compose
-/// `world::open` + the explicit existing/genesis append entrypoint.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_with_conn_existing(
     conn: &mut Connection,
@@ -110,21 +104,19 @@ fn append_with_conn_verified(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn append_body_tx_row(
+pub(crate) fn append_retained_body_tx_row(
     audit_tx: &VerifiedAuditTx<'_, '_, '_>,
     event_type: BodyEventKind,
-    target: &str,
-    body_sha256: &BodySha256,
-    size: i64,
+    retained: &world::RetainedCasBody,
     content_type: &str,
     headers: &[(String, String)],
 ) -> rusqlite::Result<AppendedAuditRow> {
     append_tx_inner(
         audit_tx,
         event_type.kind(),
-        target,
-        body_sha256,
-        size,
+        retained.target(),
+        retained.body_sha256(),
+        retained.size(),
         content_type,
         headers,
     )
@@ -193,4 +185,26 @@ fn append_tx_inner(
     }
     let id = TimelineSeq::new(event_id).map_err(|_| rusqlite::Error::InvalidQuery)?;
     Ok(AppendedAuditRow { id, hmac: h })
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn test_only_append_tx_inner(
+    audit_tx: &VerifiedAuditTx<'_, '_, '_>,
+    event_type: AuditEventKind,
+    target: &str,
+    body_sha256: &BodySha256,
+    size: i64,
+    content_type: &str,
+    headers: &[(String, String)],
+) -> rusqlite::Result<AppendedAuditRow> {
+    append_tx_inner(
+        audit_tx,
+        event_type,
+        target,
+        body_sha256,
+        size,
+        content_type,
+        headers,
+    )
 }

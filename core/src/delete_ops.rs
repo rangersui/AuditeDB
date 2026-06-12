@@ -15,8 +15,9 @@ use crate::{
     event::EventMetadataKind,
     store,
     timeline::BodySha256,
-    AuditAppendJob, AuthGate, BlockingSqliteError, Core, StorageFailureClass,
+    world, AuditAppendJob, AuthGate, BlockingSqliteError, Core, StorageFailureClass,
 };
+use rusqlite::ffi;
 
 pub(crate) struct DeleteRequest {
     pub(crate) preconditions: Preconditions,
@@ -110,6 +111,22 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     else {
         return Err(DeleteError::NotFound);
     };
+    let storage_len_before = if store::is_persistent(world_name) {
+        match world::storage_len(&core.data, world_name)
+            .map_err(|err| classify_storage_error("storage size", &permit.world, err))?
+        {
+            Some(len) => len,
+            None => {
+                return Err(classify_storage_error(
+                    "storage size",
+                    &permit.world,
+                    storage_len_missing_error(),
+                ));
+            }
+        }
+    } else {
+        stage.body.len()
+    };
     let body_sha256_before = BodySha256::for_body(&stage.body);
 
     if let Err(err) = core
@@ -150,7 +167,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     if store::is_persistent(world_name) {
         core.storage_body_bytes
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                Some(used.saturating_sub(stage.body.len()))
+                Some(used.saturating_sub(storage_len_before))
             })
             .ok();
         core.durable_world_count
@@ -215,6 +232,16 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
 
 fn ledger_hmac_key(core: &Core) -> crate::engine_types::AuditHmacKey {
     core.hmac_key.clone_secret()
+}
+
+fn storage_len_missing_error() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        ffi::Error {
+            code: ffi::ErrorCode::DatabaseCorrupt,
+            extended_code: ffi::SQLITE_CORRUPT,
+        },
+        Some("persistent world vanished while computing storage_len".to_owned()),
+    )
 }
 
 fn check_preconditions(
