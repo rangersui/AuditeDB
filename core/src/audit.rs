@@ -755,6 +755,33 @@ mod tests {
     }
 
     #[test]
+    fn verify_connection_rejects_retention_floor_pointing_at_metadata_event() {
+        let mut c = test_connection();
+        let tx = c.transaction().unwrap();
+        let key = test_key();
+        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
+        append_tx_inner(
+            &audit_tx,
+            AuditEventKind::DeleteIntent,
+            "home/a",
+            &BodySha256::for_body(b""),
+            0,
+            "",
+            &[],
+        )
+        .unwrap();
+        set_test_retention_floor(&tx, 1);
+        tx.commit().unwrap();
+
+        let report = verify_connection(&c, &key).unwrap();
+
+        assert!(matches!(
+            report,
+            VerifyReport::Broken(VerifyBreak { actual, .. }) if actual == "delete_intent"
+        ));
+    }
+
+    #[test]
     fn verify_connection_rejects_floor_raise_plus_deleted_old_cas_body() {
         let (core, dir) = test_core("audit-floor-raise-delete-cas");
         world::write_with_audit(

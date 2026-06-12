@@ -638,6 +638,190 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn replace_cas_mismatch_rolls_back_storage_reservation() {
+        struct NoopTrace;
+        impl WriteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("replace-cas-mismatch-accounting");
+        let world = world_path("home/replace-cas-mismatch");
+        let permit = authorize_write(&world, auth::Tier::Write).unwrap();
+        replace_write(
+            &core,
+            &permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"old"),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+        let before = core.storage_body_bytes.load(Ordering::Relaxed);
+        assert_eq!(before, 6);
+        let c = rusqlite::Connection::open(world::world_db(&dir, world.as_str())).unwrap();
+        c.execute_batch(
+            r#"CREATE TRIGGER corrupt_new_cas_body
+               AFTER INSERT ON cas_bodies
+               BEGIN
+                   UPDATE cas_bodies SET body=x'00' WHERE body_sha256=NEW.body_sha256;
+               END"#,
+        )
+        .unwrap();
+
+        let err = replace_write(
+            &core,
+            &permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"new"),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            WriteError::StorageInvariant(StorageInvariantReason::CasBodyMismatch(_))
+        ));
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
+        assert_eq!(
+            core.read_world("home/replace-cas-mismatch")
+                .unwrap()
+                .unwrap()
+                .body,
+            b"old"
+        );
+        let events: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 1);
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn append_cas_mismatch_rolls_back_storage_reservation() {
+        struct NoopTrace;
+        impl WriteTraceHooks for NoopTrace {}
+
+        let (core, dir) = test_core("append-cas-mismatch-accounting");
+        let world = world_path("home/append-cas-mismatch");
+        let permit = authorize_write(&world, auth::Tier::Write).unwrap();
+        replace_write(
+            &core,
+            &permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"one"),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+        let before = core.storage_body_bytes.load(Ordering::Relaxed);
+        assert_eq!(before, 6);
+        let c = rusqlite::Connection::open(world::world_db(&dir, world.as_str())).unwrap();
+        c.execute_batch(
+            r#"CREATE TRIGGER corrupt_appended_cas_body
+               AFTER INSERT ON cas_bodies
+               BEGIN
+                   UPDATE cas_bodies SET body=x'00' WHERE body_sha256=NEW.body_sha256;
+               END"#,
+        )
+        .unwrap();
+
+        let err = append_write(
+            &core,
+            &permit,
+            AppendRequest {
+                body: Bytes::from_static(b"two"),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            WriteError::StorageInvariant(StorageInvariantReason::CasBodyMismatch(_))
+        ));
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
+        assert_eq!(
+            core.read_world("home/append-cas-mismatch")
+                .unwrap()
+                .unwrap()
+                .body,
+            b"one"
+        );
+        let events: i64 = c
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 1);
+        drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn append_quota_counts_retained_full_body() {
+        struct NoopTrace;
+        impl WriteTraceHooks for NoopTrace {}
+
+        let (mut core, dir) = test_core("append-quota-counts-retained");
+        core.max_storage_bytes = Some(9);
+        let world = world_path("home/append-quota");
+        let permit = authorize_write(&world, auth::Tier::Write).unwrap();
+        replace_write(
+            &core,
+            &permit,
+            ReplaceRequest {
+                body: Bytes::from_static(b"aa"),
+                content_type: "text/plain".to_owned(),
+                headers: Vec::new(),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 4);
+
+        let err = append_write(
+            &core,
+            &permit,
+            AppendRequest {
+                body: Bytes::from_static(b"bb"),
+                preconditions: etag::Preconditions::default(),
+            },
+            &NoopTrace,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            WriteError::QuotaExceeded {
+                quota: 9,
+                projected: 10,
+                ..
+            }
+        ));
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 4);
+        assert_eq!(
+            core.read_world("home/append-quota").unwrap().unwrap().body,
+            b"aa"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn write_permit_preserves_path_based_approve_gate() {
         assert!(matches!(
