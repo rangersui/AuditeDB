@@ -11,18 +11,21 @@ use crate::{
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     timeline::TimelineSeq,
     world,
+    world_generation::WorldGeneration,
 };
 use std::{collections::HashSet, fmt, path::Path};
 
 mod append;
 mod live_body;
 mod retention;
+mod timeline_address;
 
 #[cfg(test)]
 use append::test_only_append_tx_inner as append_tx_inner;
 pub(crate) use append::{
     append_retained_body_tx_row, append_with_conn_existing, append_with_conn_genesis,
 };
+pub(crate) use timeline_address::VerifiedBodyEvent;
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
                   e.content_type, e.meta_sha256, e.hmac, e.prev_hmac,
@@ -135,15 +138,17 @@ fn verify_appendable_tx<'tx, 'conn, 'key>(
     key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+    let generation = crate::world_schema::generation(tx)?;
     let retention = retention::load(tx)?;
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let allow_empty = matches!(empty_chain, EmptyChain::Allow);
     require_intact(verify_statement(
         &mut stmt,
-        key.as_slice(),
+        key,
         allow_empty,
         &retention,
         Some(world_name.as_str()),
+        &generation,
     )?)?;
     if let Some(break_report) = live_body::verify_tx(tx)? {
         return Err(AuditError::ChainBroken(break_report));
@@ -176,27 +181,17 @@ struct EventHmacInput<'a> {
     prev: &'a str,
     event_type: &'a str,
     target: &'a str,
+    generation: &'a WorldGeneration,
     body_sha256: &'a str,
     size: i64,
     content_type: &'a str,
     meta_sha256: &'a str,
 }
 
-/// O(1) chain-head read through the SlotState-tracked read path: the
-/// newest event's `(id, hmac)` without re-walking the chain.
-///
-/// This is the unit of external anchoring (the O(1) subset of what
-/// `verify_chain_via_conn` reports as `latest`): a host that remembers the
-/// returned stamp can later prove tail truncation or rollback whenever the
-/// observed head is behind the anchored seq -- which in-file verification
-/// structurally cannot. (A rolled-back or replaced chain re-grown past the
-/// anchor needs the at-seq divergence check, a later PR.) Returns
-/// `Ok(None)` for an empty chain (bootstrap-shape DB) -- nothing to anchor
-/// yet.
-///
-/// Same type gate as `verify_chain_via_conn`: no bare-connection path, so
-/// a delete on the same world drains in-flight head reads via the usual
-/// SlotState write guard.
+/// O(1) chain-head read through the SlotState-tracked read path: newest
+/// `(id, hmac)` without re-walking the chain. `Ok(None)` means an empty
+/// bootstrap-shape DB. Same type gate as `verify_chain_via_conn`, so delete
+/// drains in-flight head reads through SlotState.
 pub fn chain_head_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
 ) -> rusqlite::Result<Option<(i64, String)>> {
@@ -205,22 +200,15 @@ pub fn chain_head_via_conn(
         .query_row(
             "SELECT id, hmac FROM events ORDER BY id DESC LIMIT 1",
             [],
-            // hmac_label: same `hmac-` rendering as VerifyOk's
-            // genesis/latest, so a stamp compares byte-for-byte with
-            // what verify reports and what subscribers witness.
+            // Same `hmac-` rendering as VerifyOk.
             |r| Ok((r.get::<_, i64>(0)?, hmac_label(&r.get::<_, String>(1)?))),
         )
         .optional()
 }
 
-/// Verify the audit chain through a `TrackedReadConnection` (the
-/// SlotState-tracked read path). Mirrors `world::read_with_hmac_via_conn`
-/// -- the cache layer drives the slot-before-open dance and hands us
-/// the connection through the type gate. The bare per-operation
-/// `verify_chain(data, world, key)` path is gone (Bug 58); admin
-/// audit-verify surfaces now go through `Core::cached_verify_chain`,
-/// so a delete on the same world drains in-flight verifies via the
-/// usual SlotState write guard.
+/// Verify through the SlotState-tracked read path. There is no bare
+/// per-operation verify path, so delete drains in-flight verifies through the
+/// same guard as ordinary cached reads.
 pub fn verify_chain_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
     world_name: &str,
@@ -241,9 +229,10 @@ pub fn verify_chain_via_conn(
 
 #[cfg(test)]
 fn verify_connection(c: &Connection, key: &AuditHmacKey) -> rusqlite::Result<VerifyReport> {
+    let generation = crate::world_schema::generation(c)?;
     let retention = retention::load(c)?;
     let mut stmt = c.prepare(AUDIT_SELECT)?;
-    verify_statement(&mut stmt, key.as_slice(), false, &retention, None)
+    verify_statement(&mut stmt, key, false, &retention, None, &generation)
 }
 
 fn verify_world_connection(
@@ -251,23 +240,26 @@ fn verify_world_connection(
     world_name: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
+    let generation = crate::world_schema::generation(c)?;
     let retention = retention::load(c)?;
     let mut stmt = c.prepare(AUDIT_SELECT)?;
     verify_statement(
         &mut stmt,
-        key.as_slice(),
+        key,
         false,
         &retention,
         Some(world_name.as_str()),
+        &generation,
     )
 }
 
 fn verify_statement(
     stmt: &mut Statement<'_>,
-    key: &[u8],
+    key: &AuditHmacKey,
     allow_empty: bool,
     retention: &retention::CasRetentionState,
     expected_target: Option<&str>,
+    generation: &WorldGeneration,
 ) -> rusqlite::Result<VerifyReport> {
     let mut state = VerifyAccumulator {
         prev: String::new(),
@@ -302,6 +294,7 @@ fn verify_statement(
                 retention,
                 &mut state,
                 expected_target,
+                generation,
             ) {
                 return Ok(VerifyReport::Broken(break_report));
             }
@@ -325,6 +318,7 @@ fn verify_statement(
             retention,
             &mut state,
             expected_target,
+            generation,
         ) {
             return Ok(VerifyReport::Broken(break_report));
         }
@@ -366,10 +360,11 @@ fn require_intact(report: VerifyReport) -> AuditResult<()> {
 fn verify_event(
     row: &EventRow,
     headers: &[(String, String)],
-    key: &[u8],
+    key: &AuditHmacKey,
     retention: &retention::CasRetentionState,
     state: &mut VerifyAccumulator,
     expected_target: Option<&str>,
+    generation: &WorldGeneration,
 ) -> Option<VerifyBreak> {
     let idx = state.events;
     if matches!(row.event_type.as_str(), "put" | "append")
@@ -402,6 +397,7 @@ fn verify_event(
             prev: &state.prev,
             event_type: &row.event_type,
             target: &row.target,
+            generation,
             body_sha256: &row.body_sha256,
             size: row.size,
             content_type: &row.content_type,
@@ -449,11 +445,12 @@ fn hmac_field(mac: &mut Hmac<Sha256>, label: &[u8], value: &str) {
     mac.update(b"\0");
 }
 
-fn event_hmac(key: &[u8], input: EventHmacInput<'_>) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac key");
+fn event_hmac(key: &AuditHmacKey, input: EventHmacInput<'_>) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key.as_slice()).expect("hmac key");
     hmac_field(&mut mac, b"prev", input.prev);
     hmac_field(&mut mac, b"type", input.event_type);
     hmac_field(&mut mac, b"target", input.target);
+    hmac_field(&mut mac, b"gen", input.generation.as_str());
     hmac_field(&mut mac, b"body-sha256", input.body_sha256);
     hmac_field(&mut mac, b"size", &input.size.to_string());
     hmac_field(&mut mac, b"content-type", input.content_type);
@@ -524,6 +521,8 @@ mod tests {
                 name TEXT NOT NULL,
                 value TEXT NOT NULL
             );
+            CREATE VIEW stage_meta AS
+            SELECT 1 AS id, '0123456789abcdef0123456789abcdef' AS generation;
             CREATE TABLE cas_bodies(
                 body_sha256 TEXT NOT NULL PRIMARY KEY,
                 body BLOB NOT NULL
@@ -566,12 +565,14 @@ mod tests {
 
     fn hmac_for_fields(event_type: &str, target: &str) -> String {
         let key = test_key();
+        let generation = WorldGeneration::new("0123456789abcdef0123456789abcdef").unwrap();
         event_hmac(
-            key.as_slice(),
+            &key,
             EventHmacInput {
                 prev: "",
                 event_type,
                 target,
+                generation: &generation,
                 body_sha256: "abc",
                 size: 3,
                 content_type: "text/plain",
@@ -981,6 +982,8 @@ mod tests {
                 name TEXT NOT NULL,
                 value TEXT NOT NULL
             );
+            CREATE VIEW stage_meta AS
+            SELECT 1 AS id, '0123456789abcdef0123456789abcdef' AS generation;
             CREATE TABLE cas_bodies(
                 body_sha256 TEXT NOT NULL PRIMARY KEY,
                 body BLOB NOT NULL

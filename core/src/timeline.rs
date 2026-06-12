@@ -79,6 +79,13 @@ pub(crate) enum TimelineRead {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TimelineAddressLookup {
+    Body(TimelineAddress),
+    MissingRow,
+    NoBody,
+}
+
 impl TimelineBody {
     pub(crate) fn address(&self) -> &TimelineAddress {
         &self.address
@@ -119,6 +126,15 @@ impl TimelineAddress {
             seq,
             body_sha256,
         }
+    }
+
+    pub(crate) fn from_verified_body_event(event: crate::audit::VerifiedBodyEvent) -> Self {
+        Self::new(
+            event.world().clone(),
+            event.gen().clone(),
+            event.seq(),
+            event.body_sha256().clone(),
+        )
     }
 
     pub(crate) fn world(&self) -> &ValidatedWorldPath {
@@ -391,6 +407,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn timeline_address_lookup_distinguishes_missing_and_non_body_events() {
+        match TimelineAddressLookup::Body(address(8)) {
+            TimelineAddressLookup::Body(address) => assert_eq!(address.seq().get(), 8),
+            TimelineAddressLookup::MissingRow | TimelineAddressLookup::NoBody => {
+                panic!("expected body address")
+            }
+        }
+
+        assert!(matches!(
+            TimelineAddressLookup::MissingRow,
+            TimelineAddressLookup::MissingRow
+        ));
+        assert!(matches!(
+            TimelineAddressLookup::NoBody,
+            TimelineAddressLookup::NoBody
+        ));
     }
 
     #[test]

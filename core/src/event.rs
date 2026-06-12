@@ -39,6 +39,18 @@ pub(crate) struct AuditEventClass {
 }
 
 impl AuditEventKind {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn from_storage(raw: &str) -> Option<Self> {
+        match raw {
+            "put" => Some(Self::Put),
+            "append" => Some(Self::Append),
+            "delete_intent" => Some(Self::DeleteIntent),
+            "delete_commit" => Some(Self::DeleteCommit),
+            "delete_commit_failed" => Some(Self::DeleteCommitFailed),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Put => "put",
@@ -167,5 +179,19 @@ mod tests {
             AuditEventKind::DeleteCommitFailed.as_str(),
             "delete_commit_failed"
         );
+    }
+
+    #[test]
+    fn audit_event_kind_parses_storage_strings() {
+        for kind in [
+            AuditEventKind::Put,
+            AuditEventKind::Append,
+            AuditEventKind::DeleteIntent,
+            AuditEventKind::DeleteCommit,
+            AuditEventKind::DeleteCommitFailed,
+        ] {
+            assert_eq!(AuditEventKind::from_storage(kind.as_str()), Some(kind));
+        }
+        assert_eq!(AuditEventKind::from_storage("custom"), None);
     }
 }

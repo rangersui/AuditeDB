@@ -147,6 +147,7 @@ fn append_tx_inner(
     );
     let canonical = canonical_headers(headers);
     let meta_sha256 = super::meta_sha256_canonical(content_type, &canonical);
+    let generation = crate::world_schema::generation(tx)?;
     let prev = tx
         .query_row(
             "SELECT hmac FROM events ORDER BY id DESC LIMIT 1",
@@ -156,11 +157,12 @@ fn append_tx_inner(
         .optional()?
         .unwrap_or_default();
     let h = event_hmac(
-        audit_tx.key.as_slice(),
+        audit_tx.key,
         EventHmacInput {
             prev: &prev,
             event_type: event_type.as_str(),
             target,
+            generation: &generation,
             body_sha256: body_sha256.as_str(),
             size,
             content_type,
