@@ -605,8 +605,8 @@ const unsub = e.listen("home/task/*", (ev) => {
         console.error(ev.error);
         return;
     }
-    console.log(ev.method, ev.path, ev.etag);
-    // → "PUT /home/task/123 hmac-..."
+    console.log(ev.method, ev.path, ev.etag, ev.timelineSeq);
+    // → "PUT /home/task/123 hmac-... 42"
 });
 
 // Later:
@@ -622,7 +622,11 @@ Event shape:
     path:   "/home/task/123",
     method: "PUT",
     etag:   "hmac-...",
-    data:   "path: /home/task/123\nmethod: PUT\netag: hmac-...",  // raw multi-line, rarely needed
+    timelineWorld:      "home/task/123",       // durable body writes only
+    timelineGeneration: "0123456789abcdef0123456789abcdef",
+    timelineSeq:        "42",
+    timelineBodySha256: "...",
+    data:   "path: /home/task/123\nmethod: PUT\netag: hmac-...\ntimeline-world: home/task/123\n...",  // raw multi-line, rarely needed
 }
 ```
 
@@ -637,7 +641,8 @@ rejected promise because `listen()` is a long-lived stream, not a one-shot
 request. Handle that branch in the callback and keep your unsubscribe function.
 
 The stream is control-plane only — **the body of each write is NOT included in the event**.
-If you need the bytes, follow up with `e.get(ev.path)`.
+Durable body writes include timeline fields that identify the historical write.
+`e.get(ev.path)` reads the current value and may observe a later write.
 
 ### Convenience
 
@@ -776,9 +781,10 @@ own via `options.fetch`.
 import { Elastik } from "@elastikjs/client";
 const e = new Elastik("http://127.0.0.1:3105", { writeToken: "w" });
 
-// Worker: process tasks
+// Worker: react to changes where "latest value wins" is acceptable.
 e.listen("home/task/*", async (ev) => {
     if (ev.type !== "put") return;
+    // This is a current read, not a historical dereference of ev.timelineSeq.
     const body = await e.get(ev.path);
     const result = await doWork(body);
     const id = ev.path.split("/").pop();

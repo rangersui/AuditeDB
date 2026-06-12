@@ -282,7 +282,7 @@ export class Elastik {
 
     // ─── LISTEN ──────────────────────────────────────────
     // Subscribe to /listen/<pattern>. Calls callback(event) for each SSE event.
-    // event: { type, id, path, method, etag, data }
+    // event: { type, id, path, method, etag, timeline*, data }
     //   type   "put" | "post" | "delete" | "lag" | "message" | "error"
     //   data   raw multi-line data string (rarely needed; structured fields above suffice)
     // Returns: () => void (unsubscribe)
@@ -755,7 +755,8 @@ async function consumeSSE(body, callback, signal) {
 //   path: /home/note
 //   method: PUT
 //   etag: hmac-abc...
-// Pull them out as named fields so the callback gets event.path / .method / .etag.
+//   timeline-world: home/note
+// Pull them out as named fields so callbacks do not parse raw SSE text.
 function parseElastikSseData(data) {
     const out = { path: "", method: "", etag: "" };
     if (!data) return out;
@@ -768,6 +769,10 @@ function parseElastikSseData(data) {
         if (k === "path") out.path = v;
         else if (k === "method") out.method = v;
         else if (k === "etag") out.etag = v;
+        else if (k === "timeline-world") out.timelineWorld = v;
+        else if (k === "timeline-generation") out.timelineGeneration = v;
+        else if (k === "timeline-seq") out.timelineSeq = v;
+        else if (k === "timeline-body-sha256") out.timelineBodySha256 = v;
     }
     return out;
 }

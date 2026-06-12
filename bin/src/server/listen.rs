@@ -19,9 +19,9 @@ pub(crate) const ALLOW: &str = "GET, OPTIONS";
 // SSE event tap. Curl-first:
 //   curl -N http://127.0.0.1:3105/listen/home/task/*
 //
-// The stream is control-plane only. It says which world changed; it
-// never embeds the world's body, so stored Content-Type semantics stay
-// entirely on GET/HEAD.
+// The stream is control-plane only. Durable body writes carry a timeline
+// address; they still never embed the world's body, so stored Content-Type
+// semantics stay outside the SSE event.
 pub(crate) async fn handler(
     State(state): State<ServerState>,
     method: Method,
@@ -104,6 +104,25 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
         data.push_str("\netag: ");
         data.push_str(&change.etag);
     }
+    if let Some(address) = change.timeline_address.as_ref() {
+        if address.world() == &change.path {
+            data.push_str("\ntimeline-world: ");
+            data.push_str(address.world().as_str());
+            data.push_str("\ntimeline-generation: ");
+            data.push_str(address.generation().as_str());
+            data.push_str("\ntimeline-seq: ");
+            data.push_str(&address.seq().get().to_string());
+            data.push_str("\ntimeline-body-sha256: ");
+            data.push_str(address.body_sha256().as_str());
+        } else {
+            #[cfg(feature = "unstable-engine")]
+            tracing::warn!(
+                event_path = %change.path,
+                timeline_world = %address.world(),
+                "dropping mismatched timeline address from SSE event"
+            );
+        }
+    }
     Event::default()
         .event(method.to_ascii_lowercase())
         .id(change.id.to_string())
@@ -133,7 +152,7 @@ mod tests {
     use axum::body::Bytes;
 
     #[tokio::test]
-    async fn sse_change_event_is_control_plane_only() {
+    async fn sse_change_event_carries_timeline_address_without_body() {
         let (engine, dir) = test_engine_for_server("listen-sse-event");
         let mut subscription = engine
             .subscribe(
@@ -163,12 +182,47 @@ mod tests {
         assert!(wire.contains("put"));
         assert!(wire.contains("/home/task/a"));
         assert!(wire.contains("hmac-"));
-        assert!(!wire.contains("body"));
-        assert!(!wire.contains("timeline"));
-        assert!(!wire.contains("generation"));
-        assert!(!wire.contains("seq"));
-        assert!(!wire.contains("body_sha256"));
+        assert!(wire.contains("timeline-world: home/task/a"));
+        assert!(wire.contains("timeline-generation: "));
+        assert!(wire.contains("timeline-seq: 1"));
+        assert!(wire.contains("timeline-body-sha256: "));
         assert!(!wire.contains("secret-body"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn sse_change_event_drops_mismatched_timeline_address() {
+        let (engine, dir) = test_engine_for_server("listen-sse-mismatch");
+        let mut subscription = engine
+            .subscribe(
+                &SubscribePattern::new("home/task/*"),
+                AccessTier::Read,
+                None,
+            )
+            .expect("test subscription should be accepted");
+        let world = ValidatedWorldPath::new("home/task/source").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"body"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .expect("test write should notify subscription");
+
+        let mut event = subscription
+            .recv()
+            .await
+            .expect("test subscription should receive change");
+        assert!(event.timeline_address.is_some());
+        event.path = ValidatedWorldPath::new("home/task/other").unwrap();
+
+        let wire = format!("{:?}", sse_change_event(event));
+        assert!(wire.contains("path: /home/task/other"));
+        assert!(!wire.contains("timeline-world"));
+        assert!(!wire.contains("home/task/source"));
 
         let _ = std::fs::remove_dir_all(dir);
     }

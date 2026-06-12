@@ -138,6 +138,10 @@ export interface ListenEvent {
     path?: string;
     method?: string;
     etag?: string;
+    timelineWorld?: string;
+    timelineGeneration?: string;
+    timelineSeq?: string;
+    timelineBodySha256?: string;
     data?: string;
     error?: unknown;
 }

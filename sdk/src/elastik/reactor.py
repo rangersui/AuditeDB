@@ -35,6 +35,10 @@ def listen(pattern: str, *, replace: bool = False) -> Callable[[F], F]:
     any named kwargs it asks for: `path`, `world` (compat alias),
     `etag`, `pattern`, `meta`, `e`.
 
+    `body` is fetched with `GET path` when the event is dispatched. It is
+    the current value at dispatch time, not a historical dereference of the
+    SSE event's timeline fields.
+
     Registering the same pattern twice is usually a bug, so it raises
     ValueError unless `replace=True` is explicit.
     """

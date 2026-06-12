@@ -540,6 +540,8 @@ Handler rules:
 - Extra context is injected by name: `path`, `etag`, `pattern`, `meta`, `e`,
   `method`, and `event`.
 - `world` is still accepted as a compatibility alias for `path`.
+- `body` is a current `GET path` result at dispatch time. It is not a
+  historical dereference of the SSE event's timeline fields.
 - You can do normal Python side effects inside the handler.
 - Advanced users may return `Reply`, `Archive`, `MoveTo`, or `Drop` action
   objects, but they are not required.

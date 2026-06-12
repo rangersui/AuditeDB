@@ -1172,9 +1172,14 @@ class Elastik(MutableMapping[str, bytes]):
           data: path: /home/task/a
           data: method: PUT
           data: etag: hmac-...
+          data: timeline-world: home/task/a
+          data: timeline-generation: 0123456789abcdef0123456789abcdef
+          data: timeline-seq: 42
+          data: timeline-body-sha256: ...
 
-        The body is never embedded in the stream. Consumers that need
-        content call GET/HEAD with the path from the event.
+        The body is never embedded in the stream. Timeline fields are
+        historical coordinates for durable body writes; GET/HEAD with the
+        path reads the current value, not necessarily the signalled value.
         """
         url = self.url + "/listen/" + _quote_listen_pattern(pattern)
         h = {}

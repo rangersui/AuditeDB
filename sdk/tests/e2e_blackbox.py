@@ -1278,6 +1278,16 @@ def main() -> int:
             check(ev.get("path") == "/home/sdk/listen/a", "SSE event path")
             check(ev.get("method") == "PUT", "SSE event method")
             check("etag" in ev and ev["etag"].startswith("hmac-"), "SSE event has etag")
+            check(ev.get("timeline-world") == "home/sdk/listen/a", "SSE event has timeline world")
+            check(
+                len(ev.get("timeline-generation", "")) == 32,
+                "SSE event has timeline generation",
+            )
+            check(ev.get("timeline-seq") == "1", "SSE event has timeline seq")
+            check(
+                len(ev.get("timeline-body-sha256", "")) == 64,
+                "SSE event has timeline body hash",
+            )
             check("payload" not in ev.get("data", ""), "SSE event does not embed body")
 
             replay_events: list[dict[str, str]] = []
@@ -1299,6 +1309,37 @@ def main() -> int:
             replay = replay_events[0]
             check(replay.get("path") == "/home/sdk/listen/b", "replayed SSE event path")
             check(int(replay.get("id", "0")) > int(ev.get("id", "0")), "replayed SSE id advances")
+
+            append_events: list[dict[str, str]] = []
+            append_done = threading.Event()
+
+            def consume_append() -> None:
+                for event in reader.listen("/home/sdk/listen/*"):
+                    append_events.append(event)
+                    append_done.set()
+                    break
+
+            append_t = threading.Thread(target=consume_append, daemon=True)
+            append_t.start()
+            time.sleep(0.2)
+            writer.post("/home/sdk/listen/a", b"-append-secret")
+            check(append_done.wait(5), "sdk listen receives append SSE event")
+            append_ev = append_events[0]
+            check(append_ev.get("event") == "post", "append SSE event type is post")
+            check(append_ev.get("method") == "POST", "append SSE event method")
+            check(
+                append_ev.get("timeline-world") == "home/sdk/listen/a",
+                "append SSE event has timeline world",
+            )
+            check(append_ev.get("timeline-seq") == "2", "append SSE event has timeline seq")
+            check(
+                len(append_ev.get("timeline-body-sha256", "")) == 64,
+                "append SSE event has timeline body hash",
+            )
+            check(
+                "-append-secret" not in append_ev.get("data", ""),
+                "append SSE event does not embed body",
+            )
 
             elastik.clear_routes()
             elastik.clear_lifecycle_hooks()

@@ -70,6 +70,29 @@ them before calling Engine methods.
 Bare HTTP paths such as `/foo` are adapter-side conveniences and map to
 `home/foo` before validation. The Engine library itself rejects bare names.
 
+## `/listen/*`
+
+`GET /listen/<pattern>` opens a Server-Sent Events stream. Each event is a
+control-plane notification: it says which world changed, but it never embeds
+the world's body.
+
+```text
+event: put
+id: 42
+data: path: /home/task/a
+data: method: PUT
+data: etag: hmac-...
+data: timeline-world: home/task/a
+data: timeline-generation: ...
+data: timeline-seq: 1
+data: timeline-body-sha256: ...
+```
+
+`timeline-*` fields appear for durable body writes when the Engine has a
+timeline address for that exact world. They identify the historical write; they
+are not a body payload. A later `GET /home/task/a` reads the current value and
+may observe a newer write than the event that woke the client.
+
 ## `/proc/*`
 
 The binary exposes text-shaped `/proc/*` endpoints over HTTP. These are adapter

@@ -364,8 +364,28 @@ check(ev?.type === "put", "event.type is 'put'", ev?.type);
 check(ev?.path === "/home/sdk-test/listen/a", "event.path", ev?.path);
 check(ev?.method === "PUT", "event.method", ev?.method);
 check(typeof ev?.etag === "string" && ev.etag.startsWith("hmac-"), "event.etag", ev?.etag);
+check(ev?.timelineWorld === "home/sdk-test/listen/a", "event.timelineWorld", ev?.timelineWorld);
+check(typeof ev?.timelineGeneration === "string" && ev.timelineGeneration.length === 32, "event.timelineGeneration", ev?.timelineGeneration);
+check(ev?.timelineSeq === "1", "event.timelineSeq", ev?.timelineSeq);
+check(typeof ev?.timelineBodySha256 === "string" && ev.timelineBodySha256.length === 64, "event.timelineBodySha256", ev?.timelineBodySha256);
 check(typeof ev?.id === "string" && ev.id.length > 0, "event.id present", ev?.id);
 check(!String(ev?.data ?? "").includes("evt-payload-secret"), "event.data does not leak body");
+
+const appendEvents = [];
+const appendUnsub = e.listen("home/sdk-test/listen/*", (appendEv) => {
+    if (appendEv.type !== "error") appendEvents.push(appendEv);
+});
+await sleep(300);
+await e.post("home/sdk-test/listen/a", "-append-secret");
+await sleep(500);
+appendUnsub();
+const appendEv = appendEvents[appendEvents.length - 1];
+check(appendEv?.type === "post", "append event.type is 'post'", appendEv?.type);
+check(appendEv?.method === "POST", "append event.method", appendEv?.method);
+check(appendEv?.timelineWorld === "home/sdk-test/listen/a", "append event.timelineWorld", appendEv?.timelineWorld);
+check(appendEv?.timelineSeq === "2", "append event.timelineSeq", appendEv?.timelineSeq);
+check(typeof appendEv?.timelineBodySha256 === "string" && appendEv.timelineBodySha256.length === 64, "append event.timelineBodySha256", appendEv?.timelineBodySha256);
+check(!String(appendEv?.data ?? "").includes("-append-secret"), "append event.data does not leak body");
 
 // ─── Test 16: listen unsubscribe terminates cleanly ──────────
 console.log("\n=== unsubscribe cleanup ===");
