@@ -38,8 +38,11 @@ mod post;
 #[cfg(test)]
 #[path = "handler/tests.rs"]
 mod tests;
+#[path = "handler/timeline.rs"]
+mod timeline;
 pub(crate) use delete::execute_delete;
 pub(crate) use post::execute_post;
+pub(crate) use timeline::execute_timeline;
 
 use axum::{
     body::Bytes,

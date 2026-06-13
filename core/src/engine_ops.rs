@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use bytes::Bytes;
 
 use crate::{
+    audit::timeline_dereference::TimelineDereference,
     auth,
     delete_ops::{self, DeleteRequest, DeleteTraceHooks},
     engine::{Engine, EngineError},
@@ -22,7 +23,7 @@ use crate::{
         WriteResult,
     },
     etag, event,
-    timeline::{TimelineAddress, TimelineRead},
+    timeline::{TimelineAddress, TimelineCoordinate, TimelineRead},
     world_ops, world_read_ops, AuthGate, Core,
 };
 
@@ -71,6 +72,16 @@ impl<'a> EngineOps<'a> {
         let permit = world_read_ops::authorize_read(self.core, address.world(), tier)?;
         world_read_ops::read_timeline_body(self.core, &permit, address)
             .map_err(|err| read_error_to_engine(err, Some(address.world().as_str())))
+    }
+
+    pub(crate) fn dereference_timeline_coordinate(
+        &self,
+        coordinate: &TimelineCoordinate,
+        tier: auth::Tier,
+    ) -> Result<TimelineDereference, EngineError> {
+        let permit = world_read_ops::authorize_read(self.core, coordinate.world(), tier)?;
+        world_read_ops::dereference_timeline_coordinate(self.core, &permit, coordinate)
+            .map_err(|err| read_error_to_engine(err, Some(coordinate.world().as_str())))
     }
 
     pub(crate) async fn replace<H: world_ops::WriteTraceHooks + ?Sized>(
@@ -226,17 +237,37 @@ impl Engine {
     /// method never falls back to the current live body.
     ///
     /// # Errors
-    /// - [`EngineError::Auth`] if `tier` is below `Read`.
-    /// - [`EngineError::TransientStorage`] for SQLite `BUSY`/`LOCKED`.
-    /// - [`EngineError::InsufficientStorage`] for full-disk failures.
-    /// - [`EngineError::Storage`] for audit-chain corruption or other storage
-    ///   failures.
+    /// Returns [`EngineError::Auth`] for insufficient read tier, and the normal
+    /// storage-classified [`EngineError`] variants for SQLite/audit failures.
     pub fn read_timeline_body(
         &self,
         address: &TimelineAddress,
         tier: AccessTier,
     ) -> Result<TimelineRead, EngineError> {
         EngineOps::new(self.core()).read_timeline_body(address, tier.into())
+    }
+
+    /// Dereferences untrusted timeline wire syntax into a historical outcome.
+    ///
+    /// The coordinate's world is read-authorized first; the core resolver then
+    /// verifies the subject audit row before minting an internal
+    /// [`TimelineAddress`](crate::TimelineAddress). Missing proof remains
+    /// [`TimelineDereference::UnprovenCoordinate`]. This synchronous API has the
+    /// same blocking profile as [`Engine::read`] and never falls back to the
+    /// current live body.
+    ///
+    /// # Errors
+    /// - [`EngineError::Auth`] if `tier` is below `Read`.
+    /// - [`EngineError::TransientStorage`] for SQLite `BUSY`/`LOCKED`.
+    /// - [`EngineError::InsufficientStorage`] for full-disk failures.
+    /// - [`EngineError::Storage`] for audit-chain corruption or other storage
+    ///   failures.
+    pub fn dereference_timeline_coordinate(
+        &self,
+        coordinate: &TimelineCoordinate,
+        tier: AccessTier,
+    ) -> Result<TimelineDereference, EngineError> {
+        EngineOps::new(self.core()).dereference_timeline_coordinate(coordinate, tier.into())
     }
 
     /// Replaces a world with the provided representation.

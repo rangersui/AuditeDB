@@ -41,9 +41,11 @@
 
 mod context;
 mod query;
+mod timeline_mode;
 #[cfg(test)]
 use context::trace_enabled_for_tests;
 pub(crate) use context::{init_trace_from_env, RawQuery, RequestId, TraceCtx};
+pub(crate) use timeline_mode::{TimelineVerb, TIMELINE_ALLOW};
 
 use axum::{
     body::Bytes,
@@ -54,8 +56,12 @@ use axum::{
 use crate::{
     engine_types::{AccessTier, ValidatedWorldPath},
     server::{bad_request, method_not_allowed, path::canonicalize_path, ServerState, WORLD_ALLOW},
+    timeline::TimelineCoordinate,
     AuthGate,
 };
+
+use query::{TimelineQueryError, TimelineRequestMode};
+use timeline_mode::classify_timeline_request;
 
 // ─── Phase enum ──────────────────────────────────────────────────
 
@@ -101,6 +107,11 @@ pub(crate) enum Phase {
         body: Bytes,
         tier: AccessTier,
         world: ValidatedWorldPath,
+    },
+    TimelineDispatched {
+        verb: TimelineVerb,
+        coordinate: TimelineCoordinate,
+        tier: AccessTier,
     },
     /// GET / HEAD finished. No audit, no notify.
     ExecutedRead(Response),
@@ -151,6 +162,9 @@ pub(crate) enum ErrorReason {
     /// of literal strings defined in `path.rs`).
     PathInvalid(&'static str),
     MethodNotAllowed,
+    TimelineMethodNotAllowed,
+    TimelineRequestTargetTooLong,
+    TimelineQuery(TimelineQueryError),
     NotFound,
     PreconditionFailed,
     /// 416 — `Range` header asks for bytes outside the resource.
@@ -163,6 +177,13 @@ pub(crate) enum ErrorReason {
     QuotaExceeded,
     InsufficientStorage,
     StorageRead,
+    TimelineStorageRead,
+    TimelineGenMismatch,
+    TimelineBodyHashMismatch,
+    TimelineNonBodyEvent,
+    TimelineMissingRow,
+    TimelineUnprovenCoordinate,
+    TimelineCorrupt,
     StorageWriteAudit,
     /// 409 — `/proc/audit/verify` discovers an HMAC chain break.
     /// Reserved for the proc-side audit verifier (proc.rs); the
@@ -182,6 +203,7 @@ fn phase_summary(p: &Phase) -> String {
         Phase::Authenticated { tier, .. } => format!("Authenticated  tier={tier:?}"),
         Phase::PathValidated { world, .. } => format!("PathValidated  world={world}"),
         Phase::Dispatched { verb, .. } => format!("Dispatched     verb={verb:?}"),
+        Phase::TimelineDispatched { verb, .. } => format!("Timeline       verb={verb:?}"),
         Phase::ExecutedRead(resp) => format!("ExecutedRead   status={}", resp.status()),
         Phase::CommittedWrite(resp) => format!("CommittedWrite status={}", resp.status()),
         Phase::Done(resp) => format!("Done           status={}", resp.status()),
@@ -352,12 +374,12 @@ pub(crate) async fn run(
 
             Phase::PathValidated {
                 method,
-                raw_query: _raw_query,
+                raw_query,
                 headers,
                 body,
                 tier,
                 world,
-            } => dispatch(method, headers, body, tier, world),
+            } => classify_timeline_request(method, raw_query, headers, body, tier, world),
 
             Phase::Dispatched {
                 verb,
@@ -368,6 +390,21 @@ pub(crate) async fn run(
             } => {
                 crate::server::handler::execute(verb, headers, body, tier, world, state, &trace)
                     .await
+            }
+
+            Phase::TimelineDispatched {
+                verb,
+                coordinate,
+                tier,
+            } => {
+                crate::server::handler::execute_timeline(
+                    coordinate,
+                    tier,
+                    state,
+                    &trace,
+                    matches!(verb, TimelineVerb::Head),
+                )
+                .await
             }
 
             Phase::ExecutedRead(resp) | Phase::CommittedWrite(resp) => Phase::Done(resp),
@@ -394,6 +431,17 @@ pub(crate) async fn run(
     }
 }
 
+pub(crate) fn allow_for_options(path: &str, raw_query: RawQuery) -> &'static str {
+    let canonical = canonicalize_path(path);
+    let Ok(world) = ValidatedWorldPath::new(&canonical) else {
+        return WORLD_ALLOW;
+    };
+    match raw_query.classify_timeline_mode(&world) {
+        Ok(TimelineRequestMode::Timeline(_)) => TIMELINE_ALLOW,
+        Ok(TimelineRequestMode::Current) | Err(_) => WORLD_ALLOW,
+    }
+}
+
 // ─── Local response helpers ──────────────────────────────────────
 //
 // `method_not_allowed` for unsupported verbs uses the canonical helper
@@ -414,7 +462,7 @@ pub(crate) async fn run(
 mod tests {
     use super::*;
     use crate::{
-        engine_types::ValidatedWorldPath,
+        engine_types::{Preconditions, Representation, SubscribePattern, ValidatedWorldPath},
         server::test_support::{
             server_state_for_engine_for_tests, test_engine_for_server,
             test_engine_for_server_with_read_token, write_text_world_for_tests,
@@ -444,6 +492,88 @@ mod tests {
 
     fn bearer(token: &str) -> String {
         format!("{} {token}", "Bearer")
+    }
+
+    fn raw_query(raw: &str) -> RawQuery {
+        RawQuery::from_uri(&format!("/home/query?{raw}").parse().unwrap())
+    }
+
+    fn timeline_query(address: &crate::timeline::TimelineAddress) -> String {
+        timeline_query_parts(
+            address.generation().as_str(),
+            address.seq().get(),
+            address.body_sha256().as_str(),
+        )
+    }
+
+    fn encoded_timeline_keys(query: &str) -> String {
+        query.replace("timel", "time%6c")
+    }
+
+    fn timeline_query_parts(generation: &str, seq: i64, body_sha256: &str) -> String {
+        format!(
+            "timeline=1&timeline-generation={}&timeline-seq={}&timeline-body-sha256={}",
+            generation, seq, body_sha256
+        )
+    }
+
+    async fn write_body_and_capture_timeline_address_with_tier(
+        engine: &crate::engine::Engine,
+        world: &str,
+        body: &'static [u8],
+        headers: Vec<(String, String)>,
+        tier: AccessTier,
+    ) -> crate::timeline::TimelineAddress {
+        let mut subscription = engine
+            .subscribe(&SubscribePattern::new(world), tier, None)
+            .expect("test subscription should open");
+        engine
+            .replace(
+                &world_path(world),
+                Representation::new(Bytes::from_static(body), "text/plain", headers),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .expect("test write should succeed");
+        let event = subscription.recv().await.expect("test write event");
+        event
+            .timeline_address
+            .expect("durable write should carry timeline address")
+    }
+
+    async fn write_body_and_capture_timeline_address(
+        engine: &crate::engine::Engine,
+        world: &str,
+        body: &'static [u8],
+        headers: Vec<(String, String)>,
+    ) -> crate::timeline::TimelineAddress {
+        write_body_and_capture_timeline_address_with_tier(
+            engine,
+            world,
+            body,
+            headers,
+            AccessTier::Anon,
+        )
+        .await
+    }
+
+    async fn write_body_and_capture_timeline_query(
+        engine: &crate::engine::Engine,
+        world: &str,
+        body: &'static [u8],
+        headers: Vec<(String, String)>,
+    ) -> String {
+        let address = write_body_and_capture_timeline_address(engine, world, body, headers).await;
+        timeline_query(&address)
+    }
+
+    fn assert_current_body(engine: &crate::engine::Engine, world: &str, expected: &[u8]) {
+        let current = engine
+            .read(&world_path(world), AccessTier::Read)
+            .unwrap()
+            .expect("current body should exist");
+        assert_eq!(current.representation.body.as_ref(), expected);
     }
 
     // ── authenticate ───────────────────────────────────────────
@@ -1025,6 +1155,316 @@ mod tests {
             Some("bytes 1-3/6")
         );
         assert_eq!(response_text(resp).await, "bcd");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_timeline_get_returns_historical_body_and_proof_headers() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-get");
+        let query = write_body_and_capture_timeline_query(
+            &engine,
+            "home/timeline/http",
+            b"old",
+            vec![
+                ("content-language".to_string(), "en-GB".to_string()),
+                ("x-timeline-seq".to_string(), "999".to_string()),
+            ],
+        )
+        .await;
+        write_text_world_for_tests(&engine, "home/timeline/http", "new").await;
+        let state = server_state_for_engine_for_tests(engine.clone());
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-0"));
+        headers.insert(
+            header::IF_RANGE,
+            HeaderValue::from_static("\"hmac-current\""),
+        );
+        headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_static("\"hmac-current\""),
+        );
+
+        let resp = run(
+            Method::GET,
+            "/home/timeline/http".to_string(),
+            raw_query(&query),
+            headers,
+            Bytes::new(),
+            &state,
+            300,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(header::CONTENT_LENGTH).unwrap(), "3");
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain"
+        );
+        assert_eq!(resp.headers().get("content-language").unwrap(), "en-GB");
+        assert_eq!(
+            resp.headers().get("x-timeline-world").unwrap(),
+            "home/timeline/http"
+        );
+        assert_eq!(resp.headers().get("x-timeline-seq").unwrap(), "1");
+        assert_eq!(resp.headers().get_all("x-timeline-seq").iter().count(), 1);
+        assert!(resp.headers().get(header::ETAG).is_none());
+        assert!(resp.headers().get(header::ACCEPT_RANGES).is_none());
+        assert!(resp.headers().get(header::CONTENT_RANGE).is_none());
+        assert_eq!(resp.headers().get_all(header::LINK).iter().count(), 0);
+        assert_eq!(response_text(resp).await, "old");
+
+        let current = engine
+            .read(&world_path("home/timeline/http"), AccessTier::Read)
+            .unwrap()
+            .expect("current body should exist");
+        assert_eq!(current.representation.body.as_ref(), b"new");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_timeline_head_returns_headers_without_body() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-head");
+        let query = write_body_and_capture_timeline_query(
+            &engine,
+            "home/timeline/head",
+            b"old",
+            Vec::new(),
+        )
+        .await;
+        write_text_world_for_tests(&engine, "home/timeline/head", "new").await;
+        let state = server_state_for_engine_for_tests(engine);
+
+        let resp = run(
+            Method::HEAD,
+            "/home/timeline/head".to_string(),
+            raw_query(&query),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            301,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(header::CONTENT_LENGTH).unwrap(), "3");
+        assert_eq!(resp.headers().get("x-timeline-seq").unwrap(), "1");
+        assert!(resp.headers().get(header::ETAG).is_none());
+        assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_timeline_method_wall_prevents_current_mutation() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-method-wall");
+        let query = write_body_and_capture_timeline_query(
+            &engine,
+            "home/timeline/wall",
+            b"old",
+            Vec::new(),
+        )
+        .await;
+        write_text_world_for_tests(&engine, "home/timeline/wall", "new").await;
+        let state = server_state_for_engine_for_tests(engine.clone());
+
+        for (idx, method) in [Method::PUT, Method::POST, Method::DELETE, Method::PATCH]
+            .into_iter()
+            .enumerate()
+        {
+            let request_query = if method == Method::PATCH {
+                encoded_timeline_keys(&query)
+            } else {
+                query.clone()
+            };
+            let resp = run(
+                method,
+                "/home/timeline/wall".to_string(),
+                raw_query(&request_query),
+                HeaderMap::new(),
+                Bytes::from_static(b"evil"),
+                &state,
+                302 + idx as u64,
+            )
+            .await;
+
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+            assert_eq!(resp.headers().get(header::ALLOW).unwrap(), TIMELINE_ALLOW);
+            assert_current_body(&engine, "home/timeline/wall", b"new");
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_timeline_get_honors_read_token_gate() {
+        let (engine, dir) =
+            test_engine_for_server_with_read_token("pipeline-timeline-auth", b"reader".to_vec());
+        let address = write_body_and_capture_timeline_address_with_tier(
+            &engine,
+            "home/timeline/auth",
+            b"secret",
+            Vec::new(),
+            AccessTier::Read,
+        )
+        .await;
+        let query = timeline_query(&address);
+        let state = server_state_for_engine_for_tests(engine);
+
+        let anon = run(
+            Method::GET,
+            "/home/timeline/auth".to_string(),
+            raw_query(&query),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            306,
+        )
+        .await;
+        assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+
+        let bad = run(
+            Method::HEAD,
+            "/home/timeline/auth".to_string(),
+            raw_query(&query),
+            header_map_with_auth(&bearer("wrong")),
+            Bytes::new(),
+            &state,
+            307,
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response_text(bad).await, "");
+
+        let good = run(
+            Method::GET,
+            "/home/timeline/auth".to_string(),
+            raw_query(&query),
+            header_map_with_auth(&bearer("reader")),
+            Bytes::new(),
+            &state,
+            308,
+        )
+        .await;
+        assert_eq!(good.status(), StatusCode::OK);
+        assert_eq!(response_text(good).await, "secret");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_timeline_head_errors_have_no_body() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-head-errors");
+        let address = write_body_and_capture_timeline_address(
+            &engine,
+            "home/timeline/head-errors",
+            b"old",
+            Vec::new(),
+        )
+        .await;
+        let state = server_state_for_engine_for_tests(engine);
+
+        let missing_row = timeline_query_parts(
+            address.generation().as_str(),
+            99,
+            address.body_sha256().as_str(),
+        );
+        let missing = run(
+            Method::HEAD,
+            "/home/timeline/head-errors".to_string(),
+            raw_query(&missing_row),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            309,
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_text(missing).await, "");
+
+        let wrong_generation = timeline_query_parts(
+            "fedcba9876543210fedcba9876543210",
+            address.seq().get(),
+            address.body_sha256().as_str(),
+        );
+        let gen_mismatch = run(
+            Method::HEAD,
+            "/home/timeline/head-errors".to_string(),
+            raw_query(&wrong_generation),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            310,
+        )
+        .await;
+        assert_eq!(gen_mismatch.status(), StatusCode::CONFLICT);
+        assert_eq!(response_text(gen_mismatch).await, "");
+
+        let wrong_hash = timeline_query_parts(
+            address.generation().as_str(),
+            address.seq().get(),
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        );
+        let hash_mismatch = run(
+            Method::HEAD,
+            "/home/timeline/head-errors".to_string(),
+            raw_query(&wrong_hash),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            311,
+        )
+        .await;
+        assert_eq!(hash_mismatch.status(), StatusCode::CONFLICT);
+        assert_eq!(response_text(hash_mismatch).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pipeline_timeline_query_errors_are_closed_and_head_empty() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-query-errors");
+        let state = server_state_for_engine_for_tests(engine);
+
+        let get = run(
+            Method::GET,
+            "/home/timeline/errors".to_string(),
+            raw_query("timeline-generation=abc"),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            303,
+        )
+        .await;
+        assert_eq!(get.status(), StatusCode::BAD_REQUEST);
+
+        let head = run(
+            Method::HEAD,
+            "/home/timeline/errors".to_string(),
+            raw_query("timeline-generation=abc"),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            304,
+        )
+        .await;
+        assert_eq!(head.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_text(head).await, "");
+
+        let huge = format!("{}x", "a=".repeat(4097));
+        let resp = run(
+            Method::GET,
+            "/home/timeline/errors".to_string(),
+            raw_query(&huge),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            305,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::URI_TOO_LONG);
 
         let _ = std::fs::remove_dir_all(dir);
     }

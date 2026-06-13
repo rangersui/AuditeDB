@@ -13,9 +13,7 @@ use crate::{
     server::{to_header_map, unsatisfied_range_value},
 };
 
-/// Entries are normalized to lowercase. A trailing `*` makes an
-/// entry a prefix match (e.g. `x-my-*` matches `x-my-anything`).
-/// Anything else is exact match.
+/// Lowercase exact matches plus trailing-`*` prefix matches.
 #[derive(Default, Clone)]
 pub(crate) struct HeaderAllowlist {
     exact: HashSet<String>,
@@ -23,19 +21,13 @@ pub(crate) struct HeaderAllowlist {
 }
 
 impl HeaderAllowlist {
-    /// Empty allowlist (default-deny custom headers). Used by
-    /// test fixtures and as the inert state for `ServerState` constructors
-    /// that don't read environment. The production startup path uses
-    /// `header_allowlist_from_env()` instead, which returns
-    /// an `empty()` for an unset env var anyway.
+    /// Empty allowlist for test fixtures and inert `ServerState` constructors.
     #[allow(dead_code)]
     pub(crate) fn empty() -> Self {
         Self::default()
     }
 
-    /// Parse a comma-separated list. Whitespace per entry is
-    /// trimmed; entries are lowercased. A trailing `*` denotes a
-    /// prefix match. Empty or `*`-only entries are skipped.
+    /// Parse comma-separated exact/prefix entries.
     pub(crate) fn parse(raw: &str) -> Self {
         let mut exact = HashSet::new();
         let mut prefixes: Vec<String> = Vec::new();
@@ -65,23 +57,14 @@ impl HeaderAllowlist {
     }
 }
 
-/// Parse `ELASTIK_PERSIST_HEADERS` into the user-configured
-/// allowlist (Layer 3 of the persist policy). Comma-separated;
-/// trailing `*` = prefix match. An unset, empty, or all-whitespace
-/// value yields `HeaderAllowlist::empty()`, which means "no custom
-/// headers beyond the built-in default-allow set."
+/// Parse `ELASTIK_PERSIST_HEADERS` into the user-configured allowlist.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn header_allowlist_from_env() -> HeaderAllowlist {
     let raw = std::env::var("ELASTIK_PERSIST_HEADERS").unwrap_or_default();
     HeaderAllowlist::parse(&raw)
 }
 
-/// Parse `ELASTIK_DENY_HEADERS` into the user-configured deny set
-/// (Layer 1.5 of the persist policy). Same matcher shape as
-/// `header_allowlist_from_env`; lets the operator subtract a header
-/// from the built-in `DEFAULT_PERSIST_HEADERS` allow set (e.g. "this
-/// deployment doesn't want `cache-control` round-tripping"). L1
-/// hard-deny still wins over this; this beats L2 default and L3 allow.
+/// Parse `ELASTIK_DENY_HEADERS` into the user-configured deny set.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn header_user_deny_from_env() -> HeaderAllowlist {
     let raw = std::env::var("ELASTIK_DENY_HEADERS").unwrap_or_default();
@@ -346,6 +329,9 @@ pub(crate) fn is_never_persisted_header(name_lower: &str) -> bool {
         // describe stored representation; all describe the request's
         // path through Cloudflare's edge.
         || name.starts_with("cf-")
+        // Timeline proof headers are minted by historical dereference, not by
+        // stored metadata. A persisted copy would make the proof ambiguous.
+        || name.starts_with("x-timeline-")
         || matches!(
             name,
             // Credentials and ambient identity must never come back as stored data.

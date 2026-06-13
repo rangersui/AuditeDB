@@ -45,4 +45,10 @@ pub(crate) mod engine_types {
     };
 }
 
+pub(crate) mod timeline {
+    #[cfg(test)]
+    pub(crate) use elastik_core::TimelineAddress;
+    pub(crate) use elastik_core::{TimelineBody, TimelineCoordinate, TimelineDereference};
+}
+
 pub(crate) use elastik_core::AuthGate;

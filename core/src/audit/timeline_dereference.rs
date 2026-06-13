@@ -10,7 +10,7 @@ use bytes::Bytes;
 use rusqlite::{params, OptionalExtension};
 
 use crate::{
-    engine_types::{AuditHmacKey, Representation},
+    engine_types::{AuditHmacKey, Representation, ValidatedWorldPath},
     event::AuditEventKind,
     read_cache::TrackedReadConnection,
     timeline::{
@@ -27,6 +27,37 @@ struct TimelineEventSnapshot {
     size: i64,
     content_type: String,
     headers: Vec<(String, String)>,
+}
+
+pub(super) struct VerifiedCoordinateBodyEvent {
+    world: ValidatedWorldPath,
+    gen: WorldGeneration,
+    seq: TimelineSeq,
+    body_sha256: BodySha256,
+}
+
+impl VerifiedCoordinateBodyEvent {
+    fn new(
+        coordinate: &TimelineCoordinate,
+        gen: WorldGeneration,
+        body_sha256: BodySha256,
+    ) -> Option<Self> {
+        if coordinate.generation() != &gen || coordinate.body_sha256() != &body_sha256 {
+            return None;
+        }
+        Some(Self {
+            world: coordinate.world().clone(),
+            gen,
+            seq: coordinate.seq(),
+            body_sha256,
+        })
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (ValidatedWorldPath, WorldGeneration, TimelineSeq, BodySha256) {
+        (self.world, self.gen, self.seq, self.body_sha256)
+    }
 }
 
 pub(crate) fn dereference_timeline_coordinate_via_conn(
@@ -133,10 +164,15 @@ fn dereference_snapshot(
         );
     }
 
+    let Some(event) = VerifiedCoordinateBodyEvent::new(coordinate, gen, body_sha256) else {
+        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+    };
+    let address =
+        super::timeline_address::timeline_address_from_verified_coordinate_body_event(event);
     let Some(body) = tx
         .query_row(
             "SELECT body FROM cas_bodies WHERE body_sha256=?1",
-            params![coordinate.body_sha256().as_str()],
+            params![address.body_sha256().as_str()],
             |r| r.get::<_, Vec<u8>>(0),
         )
         .optional()?
@@ -150,13 +186,6 @@ fn dereference_snapshot(
         return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
     }
 
-    let Some(event) =
-        super::timeline_address::VerifiedCoordinateBodyEvent::new(coordinate, gen, body_sha256)
-    else {
-        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
-    };
-    let address =
-        super::timeline_address::timeline_address_from_verified_coordinate_body_event(event);
     match TimelineRead::body(
         address,
         Representation::new(Bytes::from(body), row.content_type, row.headers),
@@ -718,6 +747,47 @@ mod tests {
         match dereference(&engine, &missing) {
             TimelineDereference::MissingRow(proof) => assert_eq!(proof.requested(), &missing),
             _ => panic!("expected missing row"),
+        }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn coordinate_resolver_returns_generation_mismatch_after_chain_verification() {
+        let root = temp_root("generation-mismatch");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(key())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/timeline-generation").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"value"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let actual = coordinate_for_event(&engine, &world, 1);
+        let requested = TimelineCoordinate::from_wire_parts(
+            world.as_str(),
+            "fedcba9876543210fedcba9876543210",
+            actual.seq().get(),
+            actual.body_sha256().as_str(),
+        )
+        .unwrap();
+
+        match dereference(&engine, &requested) {
+            TimelineDereference::GenMismatch(proof) => {
+                assert_eq!(proof.requested(), &requested);
+                assert_eq!(proof.actual(), actual.generation());
+            }
+            _ => panic!("expected generation mismatch"),
         }
 
         drop(engine);

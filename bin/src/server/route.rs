@@ -19,7 +19,7 @@ use axum::{
 
 use crate::server::{
     listen, options_response, pipeline, proc_audit_verify, proc_df, proc_du, proc_pool,
-    proc_reserved, proc_version, proc_worlds, root_hint, ServerState, WORLD_ALLOW,
+    proc_reserved, proc_version, proc_worlds, root_hint, ServerState,
 };
 
 #[cfg(feature = "mqtt")]
@@ -72,7 +72,10 @@ pub(crate) async fn world_handler(
     // request extensions -- same id stamped on `x-request-id` so
     // trace output and response header agree.
     if method == Method::OPTIONS {
-        return options_response(WORLD_ALLOW);
+        return options_response(pipeline::allow_for_options(
+            &path,
+            pipeline::RawQuery::from_uri(&uri),
+        ));
     }
     let raw_query = pipeline::RawQuery::from_uri(&uri);
     pipeline::run(method, path, raw_query, headers, body, &state, req_id).await
@@ -191,16 +194,76 @@ mod tests {
         let state = server_state_for_engine_for_tests(engine);
         let app = build_app(state);
 
+        for uri in [
+            "/home/hello?timeline%ZZ=1",
+            "/home/hello?timeline=1",
+            "/home/hello?timeline-generation=abc",
+        ] {
+            let req = HttpRequest::builder()
+                .method("OPTIONS")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+            assert_eq!(
+                resp.headers().get(header::ALLOW).unwrap(),
+                crate::server::WORLD_ALLOW
+            );
+            assert_eq!(response_text(resp).await, "");
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn world_handler_options_narrows_allow_for_valid_timeline_query() {
+        let (engine, dir) = test_engine_for_server("world-handler-options-valid-timeline");
+        let state = server_state_for_engine_for_tests(engine);
+        let app = build_app(state);
+        let query = concat!(
+            "timeline=1&",
+            "timeline-generation=0123456789abcdef0123456789abcdef&",
+            "timeline-seq=1&",
+            "timeline-body-sha256=",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        )
+        .replace("timel", "time%6c");
+
         let req = HttpRequest::builder()
             .method("OPTIONS")
-            .uri("/home/hello?timeline%ZZ=1")
+            .uri(format!("/home/hello?{query}"))
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        assert_eq!(resp.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
+        assert_eq!(
+            resp.headers().get(header::ALLOW).unwrap(),
+            crate::server::pipeline::TIMELINE_ALLOW
+        );
         assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn timeline_path_is_still_an_ordinary_home_world() {
+        let (engine, dir) = test_engine_for_server("timeline-path-is-world");
+        write_text_world_for_tests(&engine, "home/timeline/foo", "ordinary").await;
+        let state = server_state_for_engine_for_tests(engine);
+        let app = build_app(state);
+
+        let req = HttpRequest::builder()
+            .method("GET")
+            .uri("/timeline/foo")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(response_text(resp).await, "ordinary");
 
         let _ = std::fs::remove_dir_all(dir);
     }

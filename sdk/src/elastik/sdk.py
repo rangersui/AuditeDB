@@ -1725,6 +1725,8 @@ def _is_never_persisted_header(n: str) -> bool:
         or n.startswith("x-b3-")
         or n.startswith("x-amzn-")
         or n.startswith("cf-")
+        # Core-owned historical dereference proof headers.
+        or n.startswith("x-timeline-")
         or n in _NON_PERSISTED_RESPONSE_HEADERS
     )
 

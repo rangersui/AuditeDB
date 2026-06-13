@@ -72,7 +72,8 @@ fn unwrap_response(phase: Phase) -> Response {
         Phase::Received { .. }
         | Phase::Authenticated { .. }
         | Phase::PathValidated { .. }
-        | Phase::Dispatched { .. } => {
+        | Phase::Dispatched { .. }
+        | Phase::TimelineDispatched { .. } => {
             panic!("execute_* returned a non-terminal Phase variant")
         }
     }

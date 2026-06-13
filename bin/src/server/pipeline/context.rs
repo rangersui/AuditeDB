@@ -30,10 +30,6 @@ impl RawQuery {
         Self(uri.query().map(str::to_owned))
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into the pipeline in the classifier layer")
-    )]
     pub(crate) fn classify_timeline_mode(
         &self,
         world: &ValidatedWorldPath,

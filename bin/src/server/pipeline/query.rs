@@ -37,7 +37,8 @@ struct TimelineFields {
     saw_unknown_timeline_field: bool,
     saw_timeline_world: bool,
     saw_unsupported_field: bool,
-    total_pairs: usize,
+    saw_pre_timeline_ordinary_field: bool,
+    timeline_pairs: usize,
 }
 
 pub(super) fn classify_raw_query(
@@ -53,21 +54,36 @@ pub(super) fn classify_raw_query(
 
     let mut fields = TimelineFields::default();
     for raw_pair in raw.split('&') {
-        fields.total_pairs += 1;
         let (raw_key, raw_value) = raw_pair.split_once('=').unwrap_or((raw_pair, ""));
-        let key = decode_query_component(raw_key)?;
-        let value = decode_query_component(raw_value)?;
+        let key = match decode_query_component(raw_key) {
+            Ok(key) => key,
+            Err(err)
+                if fields.saw_timeline_field
+                    || raw_key.starts_with("timeline")
+                    || raw_key_may_be_timeline(raw_key) =>
+            {
+                return Err(err);
+            }
+            Err(_) => {
+                fields.saw_pre_timeline_ordinary_field = true;
+                continue;
+            }
+        };
         let timeline_key = key == "timeline" || key.starts_with("timeline-");
 
+        if !fields.saw_timeline_field && !timeline_key {
+            fields.saw_pre_timeline_ordinary_field = true;
+        }
         if timeline_key {
             fields.saw_timeline_field = true;
-        }
-        if fields.saw_timeline_field && fields.total_pairs > TIMELINE_PAIR_LIMIT {
-            return Err(TimelineQueryError::TooManyTimelineFields);
+            fields.timeline_pairs += 1;
+        } else if fields.saw_timeline_field {
+            fields.saw_unsupported_field = true;
         }
 
         match key.as_str() {
             "timeline" => {
+                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.mode,
                     value,
@@ -75,6 +91,7 @@ pub(super) fn classify_raw_query(
                 )?;
             }
             "timeline-generation" => {
+                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.generation,
                     value,
@@ -82,6 +99,7 @@ pub(super) fn classify_raw_query(
                 )?;
             }
             "timeline-seq" => {
+                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.seq,
                     value,
@@ -89,6 +107,7 @@ pub(super) fn classify_raw_query(
                 )?;
             }
             "timeline-body-sha256" => {
+                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.body_sha256,
                     value,
@@ -100,9 +119,6 @@ pub(super) fn classify_raw_query(
             }
             other if other.starts_with("timeline-") => {
                 fields.saw_unknown_timeline_field = true;
-            }
-            _ if fields.saw_timeline_field => {
-                fields.saw_unsupported_field = true;
             }
             _ => {}
         }
@@ -123,6 +139,23 @@ fn set_once(
     Ok(())
 }
 
+fn raw_key_may_be_timeline(raw: &str) -> bool {
+    let mut pos = 0;
+    for byte in raw.bytes() {
+        if pos >= b"timeline".len() {
+            return byte == b'-' || byte == b'%';
+        }
+        if byte == b'%' {
+            return true;
+        }
+        if byte != b"timeline"[pos] {
+            return false;
+        }
+        pos += 1;
+    }
+    pos == b"timeline".len()
+}
+
 fn finish_classification(
     fields: TimelineFields,
     world: &ValidatedWorldPath,
@@ -137,17 +170,17 @@ fn finish_classification(
     if mode != "1" {
         return Err(TimelineQueryError::InvalidTimelineMode);
     }
-    if fields.total_pairs > TIMELINE_PAIR_LIMIT {
-        return Err(TimelineQueryError::TooManyTimelineFields);
-    }
     if fields.saw_timeline_world {
         return Err(TimelineQueryError::TimelineWorldComesFromPath);
     }
     if fields.saw_unknown_timeline_field {
         return Err(TimelineQueryError::UnknownTimelineCoordinateField);
     }
-    if fields.saw_unsupported_field {
+    if fields.saw_unsupported_field || fields.saw_pre_timeline_ordinary_field {
         return Err(TimelineQueryError::UnsupportedTimelineQueryField);
+    }
+    if fields.timeline_pairs > TIMELINE_PAIR_LIMIT {
+        return Err(TimelineQueryError::TooManyTimelineFields);
     }
 
     let generation = fields
@@ -251,6 +284,30 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_malformed_value_stays_current_compatible() {
+        assert!(matches!(
+            classify("/home/config?x=%ZZ").unwrap(),
+            TimelineRequestMode::Current
+        ));
+    }
+
+    #[test]
+    fn unrelated_plain_malformed_key_stays_current_compatible() {
+        assert!(matches!(
+            classify("/home/config?x%ZZ=1").unwrap(),
+            TimelineRequestMode::Current
+        ));
+    }
+
+    #[test]
+    fn malformed_timeline_like_key_is_rejected() {
+        assert_eq!(
+            classify("/home/config?time%ZZline=1").unwrap_err(),
+            TimelineQueryError::MalformedPercentEncoding
+        );
+    }
+
+    #[test]
     fn duplicate_detection_happens_after_decoding() {
         let query = "timeline=1&timeline-generation=0123456789abcdef0123456789abcdef&timeline%2dgeneration=0123456789abcdef0123456789abcdef&timeline-seq=42";
         assert_eq!(
@@ -272,6 +329,15 @@ mod tests {
     }
 
     #[test]
+    fn encoded_timeline_stem_keys_are_classified() {
+        let query = good_query().replace("timel", "time%6c");
+        match classify(&format!("/home/config?{query}")).unwrap() {
+            TimelineRequestMode::Timeline(coordinate) => assert_eq!(coordinate.seq().get(), 42),
+            TimelineRequestMode::Current => panic!("encoded timeline keys must not be current"),
+        }
+    }
+
+    #[test]
     fn encoded_coordinate_keys_are_classified() {
         let query = good_query()
             .replace("timeline-generation", "timeline%2dgeneration")
@@ -287,11 +353,20 @@ mod tests {
     }
 
     #[test]
-    fn timeline_namespace_rejects_fifth_decoded_pair() {
+    fn timeline_namespace_rejects_extra_ordinary_pair_as_unsupported() {
         let query = format!("{}&x=1", good_query());
         assert_eq!(
             classify(&format!("/home/config?{query}")).unwrap_err(),
-            TimelineQueryError::TooManyTimelineFields
+            TimelineQueryError::UnsupportedTimelineQueryField
+        );
+    }
+
+    #[test]
+    fn timeline_world_error_is_not_masked_by_pair_cap() {
+        let query = format!("{}&timeline-world=home/other", good_query());
+        assert_eq!(
+            classify(&format!("/home/config?{query}")).unwrap_err(),
+            TimelineQueryError::TimelineWorldComesFromPath
         );
     }
 

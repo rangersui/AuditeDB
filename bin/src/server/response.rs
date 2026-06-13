@@ -74,6 +74,15 @@ pub(crate) fn bad_request(msg: &str) -> Response {
         .into_response()
 }
 
+pub(crate) fn uri_too_long(msg: &str) -> Response {
+    (
+        StatusCode::URI_TOO_LONG,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("uri too long: {msg}\n"),
+    )
+        .into_response()
+}
+
 pub(crate) fn payload_too_large(max_bytes: usize) -> Response {
     (
         StatusCode::PAYLOAD_TOO_LARGE,
