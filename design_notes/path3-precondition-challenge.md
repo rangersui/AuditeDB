@@ -235,9 +235,10 @@ deliberate storage-policy tradeoff, not a replay bug.
 
 But expiry is a claim, not absence. CAS GC must leave a durable expiry proof,
 or maintain a retention watermark sufficient to prove the address is older than
-the retained window. Otherwise a chain row whose `body_sha256` no longer
-resolves is `Corrupt`/`MissingBody`, because the engine cannot distinguish
-legitimate pruning from storage loss.
+the retained window. The proof must cover the specific timeline coordinate and
+body relation, not only a vague wall-clock cutoff. Otherwise a chain row whose
+`body_sha256` no longer resolves is `Corrupt`/`MissingBody`, because the engine
+cannot distinguish legitimate pruning from storage loss.
 
 ## 6. Implementation Gate
 
