@@ -283,7 +283,11 @@ pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{audit, test_support::test_core};
+    use crate::{audit, engine_types::ValidatedWorldPath, test_support::test_core};
+
+    fn world_path(world: &str) -> ValidatedWorldPath {
+        ValidatedWorldPath::new(world).unwrap()
+    }
 
     #[test]
     fn worlds_store_content_type_not_private_extensions() {
@@ -291,7 +295,7 @@ mod tests {
         core.write_world("home/pdf", b"%PDF-1.7", "application/pdf", &[])
             .unwrap();
 
-        let stage = core.read_world("home/pdf").unwrap().unwrap();
+        let stage = core.read_world(&world_path("home/pdf")).unwrap().unwrap();
         assert_eq!(stage.content_type, "application/pdf");
         assert_eq!(stage.body, b"%PDF-1.7");
 
@@ -320,7 +324,10 @@ mod tests {
         )
         .unwrap();
 
-        let stage = core.read_world("tmp/scratch").unwrap().unwrap();
+        let stage = core
+            .read_world(&world_path("tmp/scratch"))
+            .unwrap()
+            .unwrap();
         assert_eq!(stage.body, b"draft");
         assert_eq!(stage.content_type, "text/plain; charset=utf-8");
         assert_eq!(
@@ -349,7 +356,10 @@ mod tests {
         )
         .unwrap();
 
-        let stage = core.read_world("home/report").unwrap().unwrap();
+        let stage = core
+            .read_world(&world_path("home/report"))
+            .unwrap()
+            .unwrap();
         assert_eq!(stage.body, b"final");
         assert!(world::world_db(&core.data, "home/report").exists());
         assert_eq!(audit::latest_hmac(&core.data, "home/report"), Some(h));

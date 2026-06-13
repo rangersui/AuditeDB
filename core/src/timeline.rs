@@ -112,7 +112,7 @@ impl TimelineBody {
 impl TimelineRead {
     pub(crate) fn body(address: TimelineAddress, representation: Representation) -> Self {
         let actual = crate::world::sha256_hex(&representation.body);
-        if actual != address.body_sha256().as_str() {
+        if !crate::auth::ct_eq(actual.as_bytes(), address.body_sha256().as_str().as_bytes()) {
             return Self::Corrupt {
                 address,
                 reason: TimelineCorruption::BodyHashMismatch,
@@ -208,13 +208,13 @@ impl WorldGeneration {
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl MintedWorldGeneration {
-    pub(crate) fn as_str(&self) -> &str {
+    fn as_str(&self) -> &str {
         self.0.as_str()
     }
 
@@ -236,6 +236,8 @@ impl fmt::Display for MintWorldGenerationError {
 impl std::error::Error for MintWorldGenerationError {}
 
 impl TimelineSeq {
+    /// Internal SQLite `events.id` coordinate only. This is not an SSE `id`,
+    /// not `Last-Event-ID`, and not a durable external cursor by itself.
     pub(crate) fn new(raw: i64) -> Result<Self, InvalidTimelineSeq> {
         NonZeroI64::new(raw)
             .filter(|seq| seq.get() > 0)
@@ -243,7 +245,7 @@ impl TimelineSeq {
             .ok_or(InvalidTimelineSeq::NonPositive)
     }
 
-    pub(crate) fn get(self) -> i64 {
+    fn get(self) -> i64 {
         self.0.get()
     }
 }
@@ -260,7 +262,7 @@ impl BodySha256 {
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    fn as_str(&self) -> &str {
         &self.0
     }
 }
