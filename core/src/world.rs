@@ -79,10 +79,29 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Open or create the world's universe.db with the v5.2 schema.
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
+    open_with_generation_minter(data_root, world, || {
+        world_generation::WorldGeneration::mint().map_err(mint_generation_error)
+    })
+}
+
+fn open_with_generation_minter<F>(
+    data_root: &Path,
+    world: &str,
+    mint_generation: F,
+) -> rusqlite::Result<Connection>
+where
+    F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
+{
     let dir = world_dir(data_root, world);
-    std::fs::create_dir_all(&dir).map_err(create_dir_error)?;
     let db = world_db(data_root, world);
     let db_existed = db.exists();
+    let generation = if db_existed {
+        None
+    } else {
+        Some(mint_generation()?)
+    };
+
+    std::fs::create_dir_all(&dir).map_err(create_dir_error)?;
     let c = Connection::open(db)?;
     c.busy_timeout(Duration::from_millis(5000))?;
     c.execute_batch(
@@ -94,9 +113,8 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     if db_existed {
         world_schema::verify(&c)?;
     } else {
-        let generation =
-            world_generation::WorldGeneration::mint().map_err(mint_generation_error)?;
         let schema = world_schema::new_world(&c)?;
+        let generation = generation.ok_or_else(missing_minted_generation_error)?;
         world_schema::create(schema, generation)?;
     }
     Ok(c)
@@ -106,6 +124,13 @@ fn mint_generation_error(err: world_generation::MintWorldGenerationError) -> rus
     rusqlite::Error::SqliteFailure(
         ffi::Error::new(ffi::SQLITE_IOERR),
         Some(format!("mint world generation failed: {err}")),
+    )
+}
+
+fn missing_minted_generation_error() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        ffi::Error::new(ffi::SQLITE_INTERNAL),
+        Some("new world schema creation reached without minted generation".to_owned()),
     )
 }
 
@@ -776,19 +801,46 @@ mod tests {
         let stored = {
             let c = open(&root, "home/generated").unwrap();
             let generation = crate::world_schema::generation(&c).unwrap();
-            assert_eq!(generation.as_str().len(), 32);
-            assert!(generation
-                .as_str()
+            let raw: String = c
+                .query_row("SELECT generation FROM stage_meta WHERE id=1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(raw.len(), 32);
+            assert!(raw
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
-            generation.as_str().to_owned()
+            assert_eq!(
+                generation,
+                crate::world_generation::WorldGeneration::new(raw.clone()).unwrap()
+            );
+            raw
         };
 
         let c = open(&root, "home/generated").unwrap();
         assert_eq!(
-            crate::world_schema::generation(&c).unwrap().as_str(),
-            stored
+            crate::world_schema::generation(&c).unwrap(),
+            crate::world_generation::WorldGeneration::new(stored).unwrap()
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_mint_failure_does_not_create_world_artifacts() {
+        let root = test_root("world-generation-mint-failure");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let err = open_with_generation_minter(&root, "home/generated", || {
+            Err(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_IOERR),
+                Some("forced mint failure".to_owned()),
+            ))
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("forced mint failure"));
+        assert!(!world_dir(&root, "home/generated").exists());
+        assert!(!world_db(&root, "home/generated").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
