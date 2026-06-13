@@ -8,13 +8,19 @@
 use crate::{
     audit, auth, can_read,
     engine_types::ValidatedWorldPath,
-    timeline::{TimelineAddress, TimelineRead},
+    timeline::{TimelineAddress, TimelineCoordinate, TimelineRead},
     world, AuthGate, Core, StorageFailureClass,
 };
 
 #[derive(Debug)]
 pub(crate) struct ReadPermit {
     world: ValidatedWorldPath,
+}
+
+impl ReadPermit {
+    pub(crate) fn world(&self) -> &ValidatedWorldPath {
+        &self.world
+    }
 }
 
 pub(crate) enum ReadOutcome {
@@ -83,6 +89,32 @@ pub(crate) fn read_timeline_body(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn dereference_timeline_coordinate(
+    core: &Core,
+    permit: &ReadPermit,
+    coordinate: &TimelineCoordinate,
+) -> Result<audit::timeline_dereference::TimelineDereference, ReadError> {
+    if permit.world != *coordinate.world() {
+        return Err(ReadError::PermitWorldMismatch);
+    }
+    let read = core
+        .read_cache
+        .cached_dereference_timeline_coordinate(&core.data, permit, coordinate, &core.hmac_key)
+        .map_err(audit::AuditError::from)
+        .map_err(|err| classify_read_audit_error("timeline dereference", err))?;
+    match read {
+        Some(result) => {
+            result.map_err(|err| classify_read_audit_error("timeline dereference", err))
+        }
+        None => Ok(
+            audit::timeline_dereference::TimelineDereference::UnprovenCoordinate(
+                coordinate.clone(),
+            ),
+        ),
+    }
+}
+
 pub(crate) fn read_world_for(
     core: &Core,
     permit: &ReadPermit,
@@ -122,7 +154,7 @@ mod tests {
     use crate::{
         engine_types::AuditHmacKey,
         test_support::test_core,
-        timeline::{BodySha256, TimelineAddress, TimelineSeq},
+        timeline::{BodySha256, TimelineAddress, TimelineCoordinate, TimelineSeq},
         world,
         world_generation::WorldGeneration,
     };
@@ -140,6 +172,16 @@ mod tests {
         )
     }
 
+    fn timeline_coordinate(world: &str) -> TimelineCoordinate {
+        TimelineCoordinate::from_wire_parts(
+            world,
+            "0123456789abcdef0123456789abcdef",
+            1,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap()
+    }
+
     #[test]
     fn timeline_read_permit_is_bound_to_address_world() {
         let (core, dir) = test_core("timeline-permit-bound");
@@ -151,6 +193,39 @@ mod tests {
             read_timeline_body(&core, &permit, &address),
             Err(ReadError::PermitWorldMismatch)
         ));
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn timeline_dereference_permit_is_bound_to_coordinate_world() {
+        let (core, dir) = test_core("timeline-coordinate-permit-bound");
+        let permit_world = world_path("home/right");
+        let permit = authorize_read(&core, &permit_world, auth::Tier::Read).unwrap();
+        let coordinate = timeline_coordinate("home/wrong");
+
+        assert!(matches!(
+            dereference_timeline_coordinate(&core, &permit, &coordinate),
+            Err(ReadError::PermitWorldMismatch)
+        ));
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn timeline_dereference_missing_world_is_unproven_coordinate() {
+        let (core, dir) = test_core("timeline-coordinate-missing-world");
+        let coordinate = timeline_coordinate("home/missing");
+        let permit = authorize_read(&core, coordinate.world(), auth::Tier::Read).unwrap();
+
+        match dereference_timeline_coordinate(&core, &permit, &coordinate).unwrap() {
+            audit::timeline_dereference::TimelineDereference::UnprovenCoordinate(got) => {
+                assert_eq!(got, coordinate)
+            }
+            _ => panic!("missing subject DB must not prove a timeline state"),
+        }
 
         drop(core);
         let _ = std::fs::remove_dir_all(dir);

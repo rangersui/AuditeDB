@@ -6,8 +6,178 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::timeline::{BodySha256, TimelineBody, TimelineCoordinate, TimelineCorruption};
-use crate::world_generation::WorldGeneration;
+use bytes::Bytes;
+use rusqlite::{params, OptionalExtension};
+
+use crate::{
+    engine_types::{AuditHmacKey, Representation},
+    event::AuditEventKind,
+    read_cache::TrackedReadConnection,
+    timeline::{
+        BodySha256, TimelineBody, TimelineCoordinate, TimelineCorruption, TimelineRead, TimelineSeq,
+    },
+    world_generation::WorldGeneration,
+    world_schema,
+};
+
+struct TimelineEventSnapshot {
+    event_type: String,
+    target: String,
+    body_sha256: String,
+    size: i64,
+    content_type: String,
+    headers: Vec<(String, String)>,
+}
+
+pub(crate) fn dereference_timeline_coordinate_via_conn(
+    tracked: &mut TrackedReadConnection,
+    coordinate: &TimelineCoordinate,
+    key: &AuditHmacKey,
+) -> super::AuditResult<TimelineDereference> {
+    let conn = tracked.as_mut_conn();
+    let tx = conn.transaction()?;
+    let actual_gen = world_schema::generation(&tx)?;
+    super::require_intact(super::verify_world_connection(
+        &tx,
+        coordinate.world(),
+        key,
+    )?)?;
+
+    let result = if &actual_gen != coordinate.generation() {
+        match VerifiedGenerationMismatch::new(coordinate.clone(), actual_gen) {
+            Some(proof) => TimelineDereference::GenMismatch(proof),
+            None => corrupt(coordinate, TimelineCorruption::InvalidEventShape),
+        }
+    } else {
+        match load_event_snapshot(&tx, coordinate.seq())? {
+            Some(row) => dereference_snapshot(&tx, coordinate, row, actual_gen)?,
+            None => TimelineDereference::MissingRow(VerifiedMissingRow::new(coordinate.clone())),
+        }
+    };
+    tx.commit()?;
+    Ok(result)
+}
+
+fn load_event_snapshot(
+    tx: &rusqlite::Transaction<'_>,
+    seq: TimelineSeq,
+) -> rusqlite::Result<Option<TimelineEventSnapshot>> {
+    let Some((event_type, target, body_sha256, size, content_type)) = tx
+        .query_row(
+            "SELECT event_type, target, body_sha256, size, content_type FROM events WHERE id=?1",
+            params![seq.get()],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+
+    let mut headers = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT name, value FROM event_headers WHERE event_id=?1 ORDER BY name, value",
+        )?;
+        let rows = stmt.query_map(params![seq.get()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for pair in rows {
+            headers.push(pair?);
+        }
+    }
+
+    Ok(Some(TimelineEventSnapshot {
+        event_type,
+        target,
+        body_sha256,
+        size,
+        content_type,
+        headers,
+    }))
+}
+
+fn dereference_snapshot(
+    tx: &rusqlite::Transaction<'_>,
+    coordinate: &TimelineCoordinate,
+    row: TimelineEventSnapshot,
+    gen: WorldGeneration,
+) -> rusqlite::Result<TimelineDereference> {
+    let Some(kind) = AuditEventKind::from_storage(&row.event_type) else {
+        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+    };
+    if row.target != coordinate.world().as_str() {
+        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+    }
+    if !kind.class().body_bearing {
+        return Ok(TimelineDereference::NonBodyEvent(
+            VerifiedNonBodyEvent::new(coordinate.clone()),
+        ));
+    }
+    let Ok(body_sha256) = BodySha256::new(row.body_sha256) else {
+        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+    };
+    if &body_sha256 != coordinate.body_sha256() {
+        return Ok(
+            match VerifiedBodyHashMismatch::new(coordinate.clone(), body_sha256) {
+                Some(proof) => TimelineDereference::BodyHashMismatch(proof),
+                None => corrupt(coordinate, TimelineCorruption::InvalidEventShape),
+            },
+        );
+    }
+
+    let Some(body) = tx
+        .query_row(
+            "SELECT body FROM cas_bodies WHERE body_sha256=?1",
+            params![coordinate.body_sha256().as_str()],
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .optional()?
+    else {
+        return Ok(corrupt(
+            coordinate,
+            TimelineCorruption::MissingBodyForPresentRow,
+        ));
+    };
+    if i64::try_from(body.len()).ok() != Some(row.size) {
+        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+    }
+
+    let Some(event) =
+        super::timeline_address::VerifiedCoordinateBodyEvent::new(coordinate, gen, body_sha256)
+    else {
+        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+    };
+    let address =
+        super::timeline_address::timeline_address_from_verified_coordinate_body_event(event);
+    match TimelineRead::body(
+        address,
+        Representation::new(Bytes::from(body), row.content_type, row.headers),
+    ) {
+        TimelineRead::Body(body) => Ok(TimelineDereference::Body(body)),
+        TimelineRead::Corrupt { reason, .. } => Ok(corrupt(coordinate, reason)),
+        TimelineRead::Expired { .. }
+        | TimelineRead::Gone { .. }
+        | TimelineRead::GenMismatch { .. }
+        | TimelineRead::MissingRow { .. } => {
+            Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape))
+        }
+    }
+}
+
+fn corrupt(coordinate: &TimelineCoordinate, reason: TimelineCorruption) -> TimelineDereference {
+    TimelineDereference::Corrupt {
+        coordinate: coordinate.clone(),
+        reason,
+    }
+}
 
 /// Verified generation mismatch for coordinate-based timeline dereference.
 ///
@@ -248,6 +418,16 @@ impl VerifiedMissingRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        engine::Engine,
+        engine_types::{AccessTier, Preconditions, Representation, ValidatedWorldPath},
+    };
+    use bytes::Bytes;
+    use rusqlite::Connection;
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn coordinate_with_hash(seq: i64, hash: &str) -> TimelineCoordinate {
         TimelineCoordinate::from_wire_parts(
@@ -268,6 +448,121 @@ mod tests {
 
     fn other_body_hash() -> BodySha256 {
         BodySha256::new("fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210").unwrap()
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "elastik-audit-timeline-deref-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    fn key() -> AuditHmacKey {
+        AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
+    }
+
+    fn coordinate_for_event(
+        engine: &Engine,
+        world: &ValidatedWorldPath,
+        id: i64,
+    ) -> TimelineCoordinate {
+        let conn =
+            Connection::open(crate::world::world_db(&engine.core().data, world.as_str())).unwrap();
+        let generation = world_schema::generation(&conn).unwrap();
+        let body_sha256: String = conn
+            .query_row("SELECT body_sha256 FROM events WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        TimelineCoordinate::from_wire_parts(world.as_str(), generation.as_str(), id, body_sha256)
+            .unwrap()
+    }
+
+    fn dereference(engine: &Engine, coordinate: &TimelineCoordinate) -> TimelineDereference {
+        let conn = Connection::open(crate::world::world_db(
+            &engine.core().data,
+            coordinate.world().as_str(),
+        ))
+        .unwrap();
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+        dereference_timeline_coordinate_via_conn(&mut tracked, coordinate, &engine.core().hmac_key)
+            .unwrap()
+    }
+
+    fn single_metadata_event_conn(
+        event_type: &str,
+        target: &str,
+        key: &AuditHmacKey,
+    ) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE stage_meta(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                generation TEXT NOT NULL,
+                body BLOB DEFAULT x'',
+                content_type TEXT DEFAULT 'application/octet-stream'
+            );
+            INSERT INTO stage_meta(id, generation, body)
+                VALUES(1, '0123456789abcdef0123456789abcdef', x'');
+            CREATE TABLE events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                target TEXT NOT NULL,
+                body_sha256 TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                content_type TEXT NOT NULL,
+                meta_sha256 TEXT NOT NULL,
+                hmac TEXT NOT NULL,
+                prev_hmac TEXT NOT NULL
+            );
+            CREATE TABLE event_headers(
+                event_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE cas_bodies(
+                body_sha256 TEXT NOT NULL PRIMARY KEY,
+                body BLOB NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE cas_state(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                first_retained_seq INTEGER
+            );
+            INSERT INTO cas_state(id, first_retained_seq) VALUES(1, NULL);
+            "#,
+        )
+        .unwrap();
+        let generation = world_schema::generation(&conn).unwrap();
+        let meta_sha256 = super::super::meta_sha256_canonical("", &[]);
+        let hmac = super::super::event_hmac(
+            key,
+            super::super::EventHmacInput {
+                prev: "",
+                event_type,
+                target,
+                generation: &generation,
+                body_sha256: "",
+                size: 0,
+                content_type: "",
+                meta_sha256: &meta_sha256,
+            },
+        );
+        conn.execute(
+            r#"INSERT INTO events(timestamp, event_type, target, body_sha256, size,
+                                  content_type, meta_sha256, hmac, prev_hmac)
+               VALUES(datetime('now'), ?1, ?2, '', 0, '', ?3, ?4, '')"#,
+            rusqlite::params![event_type, target, meta_sha256, hmac],
+        )
+        .unwrap();
+        conn
     }
 
     #[test]
@@ -331,5 +626,146 @@ mod tests {
             VerifiedBodyHashMismatch::new(requested.clone(), requested.body_sha256().clone())
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn coordinate_resolver_returns_historical_body() {
+        let root = temp_root("body");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(key())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/timeline-body").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"old"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"new"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let coordinate = coordinate_for_event(&engine, &world, 1);
+        match dereference(&engine, &coordinate) {
+            TimelineDereference::Body(body) => {
+                assert_eq!(body.address().world(), &world);
+                assert_eq!(body.address().seq().get(), 1);
+                assert_eq!(body.representation().body.as_ref(), b"old");
+            }
+            _ => panic!("expected body"),
+        }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn coordinate_resolver_returns_body_hash_mismatch_and_missing_row() {
+        let root = temp_root("negative");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(key())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/timeline-negative").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"value"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let coordinate = coordinate_for_event(&engine, &world, 1);
+        let wrong_hash = other_body_hash();
+        let mismatch = TimelineCoordinate::from_wire_parts(
+            world.as_str(),
+            coordinate.generation().as_str(),
+            1,
+            wrong_hash.as_str(),
+        )
+        .unwrap();
+        match dereference(&engine, &mismatch) {
+            TimelineDereference::BodyHashMismatch(proof) => {
+                assert_eq!(proof.requested(), &mismatch);
+                assert_eq!(proof.actual_body_sha256(), coordinate.body_sha256());
+            }
+            _ => panic!("expected hash mismatch"),
+        }
+
+        let missing = TimelineCoordinate::from_wire_parts(
+            world.as_str(),
+            coordinate.generation().as_str(),
+            99,
+            coordinate.body_sha256().as_str(),
+        )
+        .unwrap();
+        match dereference(&engine, &missing) {
+            TimelineDereference::MissingRow(proof) => assert_eq!(proof.requested(), &missing),
+            _ => panic!("expected missing row"),
+        }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coordinate_resolver_returns_non_body_event_after_chain_verification() {
+        let key = key();
+        let world = ValidatedWorldPath::new("home/timeline-metadata").unwrap();
+        let conn = single_metadata_event_conn("delete_intent", world.as_str(), &key);
+        let coordinate = TimelineCoordinate::from_wire_parts(
+            world.as_str(),
+            "0123456789abcdef0123456789abcdef",
+            1,
+            other_body_hash().as_str(),
+        )
+        .unwrap();
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+
+        match dereference_timeline_coordinate_via_conn(&mut tracked, &coordinate, &key).unwrap() {
+            TimelineDereference::NonBodyEvent(proof) => {
+                assert_eq!(proof.requested(), &coordinate)
+            }
+            _ => panic!("expected non-body event"),
+        }
+    }
+
+    #[test]
+    fn coordinate_resolver_rejects_wrong_target_non_body_event() {
+        let key = key();
+        let world = ValidatedWorldPath::new("home/timeline-metadata-target").unwrap();
+        let conn = single_metadata_event_conn("delete_intent", "home/other", &key);
+        let coordinate = TimelineCoordinate::from_wire_parts(
+            world.as_str(),
+            "0123456789abcdef0123456789abcdef",
+            1,
+            other_body_hash().as_str(),
+        )
+        .unwrap();
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+
+        match dereference_timeline_coordinate_via_conn(&mut tracked, &coordinate, &key).unwrap() {
+            TimelineDereference::Corrupt {
+                coordinate: got,
+                reason: TimelineCorruption::InvalidEventShape,
+            } => assert_eq!(got, coordinate),
+            _ => panic!("wrong-target metadata event must be corrupt"),
+        }
     }
 }

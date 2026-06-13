@@ -1,7 +1,4 @@
-//! HMAC event chain. One row per write, hash includes prev_hmac so
-//! tampering with any row breaks every row after it. The chain is a
-//! core storage invariant, independent of which SDK or bridge produced
-//! the write.
+//! HMAC event chain: one row per write, linked by `prev_hmac`.
 
 use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
@@ -22,7 +19,7 @@ mod retention;
 #[cfg(test)]
 mod test_support;
 mod timeline_address;
-mod timeline_dereference;
+pub(crate) mod timeline_dereference;
 
 #[cfg(test)]
 use append::test_only_append_tx_inner as append_tx_inner;

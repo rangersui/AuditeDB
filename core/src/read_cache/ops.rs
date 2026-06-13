@@ -4,6 +4,9 @@ use super::ReadCache;
 
 #[cfg_attr(not(test), allow(dead_code))]
 type TimelineReadResult = crate::audit::AuditResult<crate::timeline::TimelineRead>;
+#[cfg_attr(not(test), allow(dead_code))]
+type TimelineDereferenceResult =
+    crate::audit::AuditResult<crate::audit::timeline_dereference::TimelineDereference>;
 
 impl ReadCache {
     /// Read body + meta + latest hmac via the cached read path.
@@ -63,6 +66,32 @@ impl ReadCache {
             Ok(crate::audit::read_timeline_body_via_conn(
                 conn, address, &key,
             ))
+        })
+    }
+
+    /// Coordinate dereference through the cached read path. The resolver runs
+    /// inside one tracked read transaction so audit verification, row proof,
+    /// and retained-CAS lookup share one SQLite snapshot.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn cached_dereference_timeline_coordinate(
+        &self,
+        data: &std::path::Path,
+        // Deliberately require the read permit here so cache helpers cannot
+        // turn raw coordinate syntax into a proof outside the read gate.
+        permit: &crate::world_read_ops::ReadPermit,
+        coordinate: &crate::timeline::TimelineCoordinate,
+        key: &crate::engine_types::AuditHmacKey,
+    ) -> rusqlite::Result<Option<TimelineDereferenceResult>> {
+        if permit.world() != coordinate.world() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let key = key.clone_secret();
+        self.with_tracked_conn(data, coordinate.world().as_str(), move |conn| {
+            Ok(
+                crate::audit::timeline_dereference::dereference_timeline_coordinate_via_conn(
+                    conn, coordinate, &key,
+                ),
+            )
         })
     }
 

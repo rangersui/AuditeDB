@@ -8,14 +8,21 @@ use crate::{
     event::AuditEventKind,
     read_cache::TrackedReadConnection,
     timeline::{
-        BodySha256, TimelineAddress, TimelineAddressLookup, TimelineCorruption, TimelineRead,
-        TimelineSeq,
+        BodySha256, TimelineAddress, TimelineAddressLookup, TimelineCoordinate, TimelineCorruption,
+        TimelineRead, TimelineSeq,
     },
     world_generation::WorldGeneration,
     world_schema,
 };
 
 pub(crate) struct VerifiedBodyEvent {
+    world: ValidatedWorldPath,
+    gen: WorldGeneration,
+    seq: TimelineSeq,
+    body_sha256: BodySha256,
+}
+
+pub(super) struct VerifiedCoordinateBodyEvent {
     world: ValidatedWorldPath,
     gen: WorldGeneration,
     seq: TimelineSeq,
@@ -52,6 +59,35 @@ impl VerifiedBodyEvent {
     pub(crate) fn body_sha256(&self) -> &BodySha256 {
         &self.body_sha256
     }
+}
+
+impl VerifiedCoordinateBodyEvent {
+    pub(super) fn new(
+        coordinate: &TimelineCoordinate,
+        gen: WorldGeneration,
+        body_sha256: BodySha256,
+    ) -> Option<Self> {
+        if coordinate.generation() != &gen || coordinate.body_sha256() != &body_sha256 {
+            return None;
+        }
+        Some(Self {
+            world: coordinate.world().clone(),
+            gen,
+            seq: coordinate.seq(),
+            body_sha256,
+        })
+    }
+}
+
+pub(super) fn timeline_address_from_verified_coordinate_body_event(
+    event: VerifiedCoordinateBodyEvent,
+) -> TimelineAddress {
+    TimelineAddress::from_verified_body_event(VerifiedBodyEvent::new(
+        event.world,
+        event.gen,
+        event.seq,
+        event.body_sha256,
+    ))
 }
 
 pub(crate) struct VerifiedBodyHead {
