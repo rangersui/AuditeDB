@@ -9,15 +9,18 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     engine_types::{AuditHmacKey, ValidatedWorldPath},
-    timeline::{TimelineAddress, TimelineSeq},
+    timeline::TimelineSeq,
     world,
     world_generation::WorldGeneration,
 };
 use std::{collections::HashSet, fmt, path::Path};
 
 mod append;
+mod headers;
 mod live_body;
 mod retention;
+#[cfg(test)]
+mod test_support;
 mod timeline_address;
 
 #[cfg(test)]
@@ -26,6 +29,14 @@ pub(crate) use append::{
     append_retained_body_tx_row, append_with_conn_existing, append_with_conn_genesis,
     AppendedBodyEvent,
 };
+pub(crate) use headers::{AuditHeaders, VerifiedDeleteSubject};
+#[cfg(test)]
+pub(crate) use headers::{
+    DELETE_SUBJECT_BODY_SHA256, DELETE_SUBJECT_GENERATION, DELETE_SUBJECT_HMAC, DELETE_SUBJECT_SEQ,
+    DELETE_SUBJECT_WORLD,
+};
+#[cfg(test)]
+pub use test_support::latest_hmac;
 pub(crate) use timeline_address::read_timeline_body_via_conn;
 pub(crate) use timeline_address::{
     verified_latest_body_head_via_conn, VerifiedBodyEvent, VerifiedBodyHead,
@@ -38,12 +49,6 @@ const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256
            LEFT JOIN event_headers h ON h.event_id=e.id
            ORDER BY e.id ASC, h.name ASC, h.value ASC"#;
 pub(crate) const AUDIT_CHAIN_BROKEN_PREFIX: &str = "audit chain broken at event ";
-pub(crate) const DELETE_SUBJECT_WORLD: &str = "auditedb-delete-subject-world";
-pub(crate) const DELETE_SUBJECT_GENERATION: &str = "auditedb-delete-subject-generation";
-pub(crate) const DELETE_SUBJECT_SEQ: &str = "auditedb-delete-subject-seq";
-pub(crate) const DELETE_SUBJECT_BODY_SHA256: &str = "auditedb-delete-subject-body-sha256";
-pub(crate) const DELETE_SUBJECT_HMAC: &str = "auditedb-delete-subject-hmac";
-const DELETE_SUBJECT_RESERVED_PREFIX: &str = "auditedb-delete-subject-";
 
 pub struct VerifiedAuditTx<'tx, 'conn, 'key> {
     tx: &'tx Transaction<'conn>,
@@ -77,97 +82,6 @@ impl From<rusqlite::Error> for AuditError {
     fn from(value: rusqlite::Error) -> Self {
         Self::Storage(value)
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReservedAuditHeader;
-
-#[derive(Clone)]
-pub(crate) struct VerifiedDeleteSubject {
-    address: TimelineAddress,
-    hmac: String,
-}
-
-impl VerifiedDeleteSubject {
-    pub(crate) fn from_body_head(head: VerifiedBodyHead) -> Self {
-        Self {
-            address: head.address().clone(),
-            hmac: head.hmac().to_owned(),
-        }
-    }
-
-    fn headers(&self) -> [(String, String); 5] {
-        [
-            (
-                DELETE_SUBJECT_WORLD.to_owned(),
-                self.address.world().as_str().to_owned(),
-            ),
-            (
-                DELETE_SUBJECT_GENERATION.to_owned(),
-                self.address.generation().as_str().to_owned(),
-            ),
-            (
-                DELETE_SUBJECT_SEQ.to_owned(),
-                self.address.seq().get().to_string(),
-            ),
-            (
-                DELETE_SUBJECT_BODY_SHA256.to_owned(),
-                self.address.body_sha256().as_str().to_owned(),
-            ),
-            (DELETE_SUBJECT_HMAC.to_owned(), self.hmac.clone()),
-        ]
-    }
-
-    pub(crate) fn body_sha256(&self) -> crate::timeline::BodySha256 {
-        self.address.body_sha256().clone()
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct AuditHeaders {
-    user: Vec<(String, String)>,
-    delete_subject: Option<VerifiedDeleteSubject>,
-}
-
-impl AuditHeaders {
-    #[cfg(test)]
-    pub(crate) fn empty() -> Self {
-        Self {
-            user: Vec::new(),
-            delete_subject: None,
-        }
-    }
-
-    pub(crate) fn from_user(headers: Vec<(String, String)>) -> Result<Self, ReservedAuditHeader> {
-        if headers
-            .iter()
-            .any(|(name, _)| is_reserved_audit_header(name))
-        {
-            return Err(ReservedAuditHeader);
-        }
-        Ok(Self {
-            user: headers,
-            delete_subject: None,
-        })
-    }
-
-    pub(crate) fn with_delete_subject(mut self, subject: VerifiedDeleteSubject) -> Self {
-        self.delete_subject = Some(subject);
-        self
-    }
-
-    fn to_storage_pairs(&self) -> Vec<(String, String)> {
-        let mut pairs = self.user.clone();
-        if let Some(subject) = &self.delete_subject {
-            pairs.extend(subject.headers());
-        }
-        pairs
-    }
-}
-
-fn is_reserved_audit_header(name: &str) -> bool {
-    name.to_ascii_lowercase()
-        .starts_with(DELETE_SUBJECT_RESERVED_PREFIX)
 }
 
 #[derive(Clone, Copy)]
@@ -576,21 +490,6 @@ fn canonical_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
         .collect();
     out.sort();
     out
-}
-
-#[cfg(test)]
-pub fn latest_hmac(data_root: &Path, world_name: &str) -> Option<String> {
-    let path = world::world_db(data_root, world_name);
-    if !path.exists() {
-        return None;
-    }
-    let c = rusqlite::Connection::open(path).ok()?;
-    c.query_row(
-        "SELECT hmac FROM events ORDER BY id DESC LIMIT 1",
-        [],
-        |r| r.get::<_, String>(0),
-    )
-    .ok()
 }
 
 #[cfg(test)]
