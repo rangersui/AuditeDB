@@ -40,6 +40,7 @@
 //! shapes are SSE streams and generated introspection responses.
 
 mod context;
+mod query;
 #[cfg(test)]
 use context::trace_enabled_for_tests;
 pub(crate) use context::{init_trace_from_env, RawQuery, RequestId, TraceCtx};

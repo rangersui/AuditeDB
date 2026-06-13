@@ -7,6 +7,7 @@ use axum::{
     http::{StatusCode, Uri},
     response::Response,
 };
+use elastik_core::ValidatedWorldPath;
 
 use super::{phase_summary, ErrorReason, Phase};
 
@@ -22,17 +23,22 @@ use super::{phase_summary, ErrorReason, Phase};
 pub(crate) struct RequestId(pub(crate) u64);
 
 #[derive(Clone)]
-pub(crate) struct RawQuery(
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "raw query is opaque until the classifier layer")
-    )]
-    Option<String>,
-);
+pub(crate) struct RawQuery(Option<String>);
 
 impl RawQuery {
     pub(crate) fn from_uri(uri: &Uri) -> Self {
         Self(uri.query().map(str::to_owned))
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into the pipeline in the classifier layer")
+    )]
+    pub(crate) fn classify_timeline_mode(
+        &self,
+        world: &ValidatedWorldPath,
+    ) -> Result<super::query::TimelineRequestMode, super::query::TimelineQueryError> {
+        super::query::classify_raw_query(self.0.as_deref(), world)
     }
 
     #[cfg(test)]
