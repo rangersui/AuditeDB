@@ -53,7 +53,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use rusqlite::{ffi::ErrorCode, Connection, OpenFlags};
 
-use crate::{world, world_schema};
+use crate::{engine_types::ValidatedWorldPath, world, world_schema};
 
 /// Default ceiling on the number of cached read slots. Per-conn
 /// memory is bounded to ~250KB (PRAGMA cache_size=-200), so 5000
@@ -202,7 +202,7 @@ struct ReadSlot {
     last_access: AtomicU64,
 }
 
-/// RAII guard for the Opening -> Ready/Tombstone transition. Without
+/// RAII guard for the Opening -> Ready/Evicted transition. Without
 /// it, a panic during `Connection::open`, `busy_timeout`, or
 /// `pragma_update` would leave the slot stuck in `Opening`.
 ///
@@ -233,8 +233,10 @@ impl<'a> OpeningTransition<'a> {
         self.finalized = true;
     }
 
+    /// Open or schema verification failed. This is a retry signal, not a
+    /// delete tombstone: a waiting reader must not turn it into `Ok(None)`.
     fn fail(mut self) {
-        *self.state = SlotState::Tombstone;
+        *self.state = SlotState::Evicted;
         self.finalized = true;
     }
 }
@@ -242,7 +244,7 @@ impl<'a> OpeningTransition<'a> {
 impl<'a> Drop for OpeningTransition<'a> {
     fn drop(&mut self) {
         if !self.finalized {
-            *self.state = SlotState::Tombstone;
+            *self.state = SlotState::Evicted;
         }
     }
 }
@@ -439,12 +441,12 @@ impl ReadCache {
     pub(crate) fn cached_read_with_hmac(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<(world::Stage, Option<String>)>> {
         self.with_tracked_conn(data, world, world::read_with_hmac_via_conn)
     }
 
-    /// O(1) chain-head read through the cached read path. Same
+    /// Chain-head read through the cached read path. Same
     /// SlotState protocol as `cached_verify_chain` -- delete drains
     /// in-flight head reads via the slot's write guard. Outer `None`
     /// means the world's DB is missing; inner `None` means the chain
@@ -452,7 +454,7 @@ impl ReadCache {
     pub(crate) fn cached_chain_head(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<Option<(i64, String)>>> {
         self.with_tracked_conn(data, world, crate::audit::chain_head_via_conn)
     }
@@ -465,7 +467,7 @@ impl ReadCache {
     pub(crate) fn cached_verify_chain(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<crate::audit::VerifyReport>> {
         let key = key.clone_secret();
@@ -486,12 +488,13 @@ impl ReadCache {
     fn with_tracked_conn<F, R>(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
         f: F,
     ) -> rusqlite::Result<Option<R>>
     where
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
+        let world = world.as_str();
         let path = world::world_db(data, world);
         let mut f = Some(f);
         let mut counted_miss = false;
@@ -806,6 +809,10 @@ mod tests {
             .unwrap()
     }
 
+    fn v(world: &str) -> crate::engine_types::ValidatedWorldPath {
+        crate::engine_types::ValidatedWorldPath::new(world).unwrap()
+    }
+
     fn scratch_dir(label: &str) -> PathBuf {
         let mut d = std::env::temp_dir();
         d.push(format!(
@@ -829,12 +836,12 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
-        let r1 = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let r1 = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(r1.is_some());
         assert_eq!(cache.metrics.read_cache_hits.load(Ordering::Relaxed), 0);
         assert_eq!(cache.metrics.read_cache_misses.load(Ordering::Relaxed), 1);
 
-        let r2 = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let r2 = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(r2.is_some());
         assert_eq!(cache.metrics.read_cache_hits.load(Ordering::Relaxed), 1);
         assert_eq!(cache.metrics.read_cache_misses.load(Ordering::Relaxed), 1);
@@ -904,7 +911,7 @@ mod tests {
         create_legacy_world_without_generation(&dir, "home/legacy");
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
-        let err = match cache.cached_read_with_hmac(&dir, "home/legacy") {
+        let err = match cache.cached_read_with_hmac(&dir, &v("home/legacy")) {
             Ok(_) => panic!("legacy schema must fail before read-cache promotion"),
             Err(err) => err,
         };
@@ -922,10 +929,13 @@ mod tests {
         world::write(&dir, world, b"hello", "text/plain", &[]).unwrap();
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
-        assert!(cache.cached_read_with_hmac(&dir, world).unwrap().is_some());
+        assert!(cache
+            .cached_read_with_hmac(&dir, &v(world))
+            .unwrap()
+            .is_some());
         drop_generation_column_from_cached_world(&dir, world);
 
-        let err = match cache.cached_read_with_hmac(&dir, world) {
+        let err = match cache.cached_read_with_hmac(&dir, &v(world)) {
             Ok(_) => panic!("cached read must revalidate stage_meta.generation"),
             Err(err) => err,
         };
@@ -943,7 +953,7 @@ mod tests {
         }
 
         let cache = ReadCache::new(2);
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
         let a_first = cache
             .read_conns
             .get("home/a")
@@ -951,7 +961,7 @@ mod tests {
             .last_access
             .load(Ordering::Relaxed);
 
-        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
         let b_first = cache
             .read_conns
             .get("home/b")
@@ -963,7 +973,7 @@ mod tests {
             "later insert should receive a newer access tick"
         );
 
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
         let a_second = cache
             .read_conns
             .get("home/a")
@@ -982,7 +992,7 @@ mod tests {
     fn missing_world_returns_none_via_phase3() {
         let dir = scratch_dir("missing");
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        let r = cache.cached_read_with_hmac(&dir, "home/none").unwrap();
+        let r = cache.cached_read_with_hmac(&dir, &v("home/none")).unwrap();
         assert!(r.is_none());
         assert!(cache.read_conns.get("home/none").is_none());
         let _ = std::fs::remove_dir_all(&dir);
@@ -996,13 +1006,13 @@ mod tests {
         world::write(&dir, world, b"x", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         cache.install_tombstone_blocking(world);
-        let r = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let r = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(r.is_none());
 
         cache.clear_tombstone(world);
-        let r2 = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let r2 = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(r2.is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1017,12 +1027,12 @@ mod tests {
         }
 
         let cache = ReadCache::new(2);
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
-        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
         assert_eq!(cache.read_conns.len(), 2);
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 0);
 
-        let r = cache.cached_read_with_hmac(&dir, "home/c").unwrap();
+        let r = cache.cached_read_with_hmac(&dir, &v("home/c")).unwrap();
         assert!(r.is_some());
         assert!(
             cache.read_conns.get("home/a").is_none(),
@@ -1053,15 +1063,15 @@ mod tests {
         }
 
         let cache = ReadCache::new(2);
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
-        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
 
         let a_arc = cache.read_conns.get("home/a").unwrap().value().clone();
         let b_arc = cache.read_conns.get("home/b").unwrap().value().clone();
         let a_guard = a_arc.inner.read().unwrap();
         let b_guard = b_arc.inner.read().unwrap();
 
-        let r = cache.cached_read_with_hmac(&dir, "home/c").unwrap();
+        let r = cache.cached_read_with_hmac(&dir, &v("home/c")).unwrap();
         assert!(r.is_some());
         assert!(cache.read_conns.get("home/c").is_none());
         assert!(cache.read_conns.get("home/a").is_some());
@@ -1093,7 +1103,7 @@ mod tests {
 
         let cache = ReadCache::new(1);
         for (idx, w) in worlds.iter().enumerate() {
-            let read = cache.cached_read_with_hmac(&dir, w).unwrap();
+            let read = cache.cached_read_with_hmac(&dir, &v(w)).unwrap();
             let (stage, _hmac) = read.expect("existing world must not look missing at cap=1");
             assert_eq!(stage.body, vec![b'a' + idx as u8]);
             assert!(
@@ -1138,7 +1148,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 for _ in 0..8 {
                     let read = cache
-                        .cached_read_with_hmac(&dir, world)
+                        .cached_read_with_hmac(&dir, &v(world))
                         .expect("cache-size-one concurrent read");
                     let (stage, _hmac) =
                         read.expect("existing world must not look missing at cache size 1");
@@ -1167,10 +1177,10 @@ mod tests {
         }
 
         let cache = ReadCache::new(2);
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
-        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
         let hits_before = cache.metrics.read_cache_hits.load(Ordering::Relaxed);
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
         let hits_after = cache.metrics.read_cache_hits.load(Ordering::Relaxed);
         assert_eq!(hits_after, hits_before + 1);
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 0);
@@ -1179,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_transition_drop_sets_tombstone_on_panic_path() {
+    fn opening_transition_drop_sets_evicted_on_panic_path() {
         let slot = Arc::new(ReadSlot {
             inner: StdRwLock::new(SlotState::Opening),
             last_access: AtomicU64::new(0),
@@ -1190,7 +1200,32 @@ mod tests {
             // Drop _t without finalize.
         }
         let g = slot.inner.read().unwrap();
-        assert!(matches!(*g, SlotState::Tombstone));
+        assert!(matches!(*g, SlotState::Evicted));
+    }
+
+    #[test]
+    fn opening_failure_is_retry_signal_not_cached_absence() {
+        let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
+        let slot = cache.new_slot(SlotState::Opening);
+        {
+            let mut g = slot.inner.write().unwrap();
+            OpeningTransition::new(&mut g).fail();
+        }
+
+        let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
+            panic!("failed Opening must retry, not run the read closure")
+        });
+        let read = cache.invoke_via_slot(slot, &mut f).unwrap();
+        assert!(
+            matches!(read, SlotRead::Evicted),
+            "open/schema failure must not be represented as Tombstone/Ok(None)"
+        );
+        assert!(f.is_some(), "retry signal must leave FnOnce intact");
+        assert_eq!(
+            cache.metrics.read_cache_hits.load(Ordering::Relaxed),
+            0,
+            "opening failure retries must not count as cache hits"
+        );
     }
 
     #[test]
@@ -1205,7 +1240,7 @@ mod tests {
             .read_conns
             .insert(world.to_string(), cache.new_slot(SlotState::Evicted));
 
-        let read = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let read = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         let (stage, _hmac) = read.expect("evicted cache slot must reopen existing world");
         assert_eq!(stage.body, b"still here");
         assert_eq!(
@@ -1234,7 +1269,7 @@ mod tests {
         world::write(&dir, world, b"busy", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         let arc = cache.read_conns.get(world).unwrap().value().clone();
         let read_guard = arc.inner.read().unwrap();
 
@@ -1259,7 +1294,7 @@ mod tests {
         world::write(&dir, world, b"idle", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         let arc = cache.read_conns.get(world).unwrap().value().clone();
 
         assert!(
@@ -1284,7 +1319,7 @@ mod tests {
         world::write(&dir, world, b"stale", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        let _ = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         let stale_arc = cache.read_conns.get(world).unwrap().value().clone();
         cache
             .read_conns
@@ -1315,7 +1350,7 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         cache.install_tombstone_blocking(world);
-        let tombstone = cache.cached_read_with_hmac(&dir, world).unwrap();
+        let tombstone = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(tombstone.is_none());
         assert_eq!(
             cache.metrics.read_cache_hits.load(Ordering::Relaxed),
@@ -1360,7 +1395,7 @@ mod tests {
             .read_conns
             .insert(world.to_string(), cache.new_slot(SlotState::Opening));
 
-        let err = match cache.cached_read_with_hmac(&dir, world) {
+        let err = match cache.cached_read_with_hmac(&dir, &v(world)) {
             Ok(Some(_)) => panic!("stuck Opening must not resolve as a body"),
             Ok(None) => panic!("stuck Opening must not report a false 404"),
             Err(err) => err,
@@ -1388,7 +1423,7 @@ mod tests {
         }
 
         let cache = ReadCache::new(2);
-        let _ = cache.cached_read_with_hmac(&dir, "home/ready").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/ready")).unwrap();
         cache.install_tombstone_blocking("home/tomb");
 
         assert!(
@@ -1400,7 +1435,7 @@ mod tests {
             cache.read_conns.get("home/tomb").is_some(),
             "Tombstone is delete state, not an LRU eviction candidate"
         );
-        let tombstone_read = cache.cached_read_with_hmac(&dir, "home/tomb").unwrap();
+        let tombstone_read = cache.cached_read_with_hmac(&dir, &v("home/tomb")).unwrap();
         assert!(tombstone_read.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1415,9 +1450,9 @@ mod tests {
         }
 
         let cache = ReadCache::new(3);
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
-        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
-        let _ = cache.cached_read_with_hmac(&dir, "home/c").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/c")).unwrap();
 
         let a_arc = cache.read_conns.get("home/a").unwrap().value().clone();
         let b_arc = cache.read_conns.get("home/b").unwrap().value().clone();
@@ -1475,7 +1510,7 @@ mod tests {
 
         // Phase 3 lazy-init: first verify warms the cache.
         let key = test_key();
-        let r1 = cache.cached_verify_chain(&dir, world, &key).unwrap();
+        let r1 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
         assert!(matches!(r1, Some(crate::audit::VerifyReport::Valid(_))));
         assert!(
             cache.read_conns.get(world).is_some(),
@@ -1485,18 +1520,18 @@ mod tests {
         );
 
         // Phase 1 cache hit: second verify reuses the cached slot.
-        let r2 = cache.cached_verify_chain(&dir, world, &key).unwrap();
+        let r2 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
         assert!(matches!(r2, Some(crate::audit::VerifyReport::Valid(_))));
 
         // Tombstone short-circuits verify (delete intent).
         cache.install_tombstone_blocking(world);
-        let r3 = cache.cached_verify_chain(&dir, world, &key).unwrap();
+        let r3 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
         assert!(r3.is_none());
 
         // After clear_tombstone the next verify re-opens through
         // Phase 3 lazy-init.
         cache.clear_tombstone(world);
-        let r4 = cache.cached_verify_chain(&dir, world, &key).unwrap();
+        let r4 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
         assert!(matches!(r4, Some(crate::audit::VerifyReport::Valid(_))));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1527,8 +1562,8 @@ mod tests {
 
         // cap=2 -> A and B fill it; C must go through transient.
         let cache = StdArc::new(ReadCache::new(2));
-        let _ = cache.cached_read_with_hmac(&dir, "home/a").unwrap();
-        let _ = cache.cached_read_with_hmac(&dir, "home/b").unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
+        let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
         let a_arc = cache.read_conns.get("home/a").unwrap().value().clone();
         let b_arc = cache.read_conns.get("home/b").unwrap().value().clone();
         let a_guard = a_arc.inner.read().unwrap();
@@ -1558,7 +1593,9 @@ mod tests {
             let cache = cache.clone();
             let dir = dir.clone();
             handles.push(thread::spawn(move || {
-                cache.cached_read_with_hmac(&dir, "home/c").expect("read")
+                cache
+                    .cached_read_with_hmac(&dir, &v("home/c"))
+                    .expect("read")
             }));
         }
         for h in handles {
@@ -1613,7 +1650,7 @@ mod tests {
         std::fs::set_permissions(&db_path, perms).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        let result = cache.cached_read_with_hmac(&dir, world);
+        let result = cache.cached_read_with_hmac(&dir, &v(world));
 
         // path.try_exists() returns Ok(true) for the still-on-disk
         // (but unreadable) file. The CANTOPEN error must propagate
