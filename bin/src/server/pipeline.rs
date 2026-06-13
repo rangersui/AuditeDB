@@ -42,7 +42,7 @@
 mod context;
 #[cfg(test)]
 use context::trace_enabled_for_tests;
-pub(crate) use context::{init_trace_from_env, RequestId, TraceCtx};
+pub(crate) use context::{init_trace_from_env, RawQuery, RequestId, TraceCtx};
 
 use axum::{
     body::Bytes,
@@ -74,18 +74,21 @@ pub(crate) enum Phase {
     Received {
         method: Method,
         path: String,
+        raw_query: RawQuery,
         headers: HeaderMap,
         body: Bytes,
     },
     Authenticated {
         method: Method,
         path: String,
+        raw_query: RawQuery,
         headers: HeaderMap,
         body: Bytes,
         tier: AccessTier,
     },
     PathValidated {
         method: Method,
+        raw_query: RawQuery,
         headers: HeaderMap,
         body: Bytes,
         tier: AccessTier,
@@ -196,6 +199,7 @@ fn phase_summary(p: &Phase) -> String {
 fn authenticate(
     method: Method,
     path: String,
+    raw_query: RawQuery,
     headers: HeaderMap,
     body: Bytes,
     tier: AccessTier,
@@ -203,6 +207,7 @@ fn authenticate(
     Phase::Authenticated {
         method,
         path,
+        raw_query,
         headers,
         body,
         tier,
@@ -217,6 +222,7 @@ fn authenticate(
 fn validate_path(
     method: Method,
     path: String,
+    raw_query: RawQuery,
     headers: HeaderMap,
     body: Bytes,
     tier: AccessTier,
@@ -240,6 +246,7 @@ fn validate_path(
     };
     Phase::PathValidated {
         method,
+        raw_query,
         headers,
         body,
         tier,
@@ -299,6 +306,7 @@ fn dispatch(
 pub(crate) async fn run(
     method: Method,
     path: String,
+    raw_query: RawQuery,
     headers: HeaderMap,
     body: Bytes,
     state: &ServerState,
@@ -313,6 +321,7 @@ pub(crate) async fn run(
     let mut phase = Phase::Received {
         method,
         path,
+        raw_query,
         headers,
         body,
     };
@@ -323,23 +332,26 @@ pub(crate) async fn run(
             Phase::Received {
                 method,
                 path,
+                raw_query,
                 headers,
                 body,
             } => {
                 let tier = state.access_tier_from_headers(&headers);
-                authenticate(method, path, headers, body, tier)
+                authenticate(method, path, raw_query, headers, body, tier)
             }
 
             Phase::Authenticated {
                 method,
                 path,
+                raw_query,
                 headers,
                 body,
                 tier,
-            } => validate_path(method, path, headers, body, tier),
+            } => validate_path(method, path, raw_query, headers, body, tier),
 
             Phase::PathValidated {
                 method,
+                raw_query: _raw_query,
                 headers,
                 body,
                 tier,
@@ -440,6 +452,7 @@ mod tests {
         let phase = authenticate(
             Method::GET,
             "/home/foo".into(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             AccessTier::Anon,
@@ -455,6 +468,7 @@ mod tests {
         let phase = authenticate(
             Method::PUT,
             "/home/foo".into(),
+            RawQuery::absent(),
             header_map_with_auth(&bearer("writer")),
             Bytes::from_static(b"hi"),
             AccessTier::Write,
@@ -470,6 +484,7 @@ mod tests {
         let phase = authenticate(
             Method::PUT,
             "/home/foo".into(),
+            RawQuery::absent(),
             header_map_with_auth(&bearer("wrong")),
             Bytes::new(),
             AccessTier::Anon,
@@ -487,6 +502,7 @@ mod tests {
         let phase = validate_path(
             Method::GET,
             "/foo".into(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             AccessTier::Anon,
@@ -502,6 +518,7 @@ mod tests {
         let phase = validate_path(
             Method::GET,
             "/etc/foo".into(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             AccessTier::Approve,
@@ -513,10 +530,30 @@ mod tests {
     }
 
     #[test]
+    fn validate_path_preserves_raw_query_for_later_classification() {
+        let raw_query = RawQuery::from_uri(&"/home/foo?timeline%2dgeneration=abc".parse().unwrap());
+        let phase = validate_path(
+            Method::GET,
+            "/home/foo".into(),
+            raw_query,
+            HeaderMap::new(),
+            Bytes::new(),
+            AccessTier::Anon,
+        );
+        match phase {
+            Phase::PathValidated { raw_query, .. } => {
+                assert_eq!(raw_query.as_deref(), Some("timeline%2dgeneration=abc"));
+            }
+            _ => panic!("expected PathValidated"),
+        }
+    }
+
+    #[test]
     fn validate_path_rejects_dot_segments_with_pathinvalid() {
         let phase = validate_path(
             Method::PUT,
             "/home/../etc/secret".into(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             AccessTier::Write,
@@ -535,6 +572,7 @@ mod tests {
         let phase = validate_path(
             Method::PUT,
             "/home".into(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             AccessTier::Write,
@@ -553,6 +591,7 @@ mod tests {
         let phase = validate_path(
             Method::GET,
             "/home/%2E%2E/etc/secret".into(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             AccessTier::Read,
@@ -646,6 +685,7 @@ mod tests {
         let phase = Phase::Received {
             method: Method::GET,
             path: "/home/foo".into(),
+            raw_query: RawQuery::absent(),
             headers: HeaderMap::new(),
             body: Bytes::new(),
         };
@@ -714,6 +754,7 @@ mod tests {
         let patch = run(
             Method::PATCH,
             "home/allow".to_string(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             &state,
@@ -735,6 +776,7 @@ mod tests {
         let resp = run(
             Method::GET,
             "/home/hello".to_string(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             &state,
@@ -763,6 +805,7 @@ mod tests {
         let resp = run(
             Method::HEAD,
             "/home/hello".to_string(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             &state,
@@ -791,6 +834,7 @@ mod tests {
         let resp = run(
             Method::GET,
             "/home/missing".to_string(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             &state,
@@ -811,6 +855,7 @@ mod tests {
         let resp = run(
             Method::GET,
             "/home/../etc/secret".to_string(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             &state,
@@ -833,6 +878,7 @@ mod tests {
         let resp = run(
             Method::GET,
             "/home/secret".to_string(),
+            RawQuery::absent(),
             HeaderMap::new(), // no Authorization header
             Bytes::new(),
             &state,
@@ -858,6 +904,7 @@ mod tests {
         let first = run(
             Method::GET,
             "/home/cached".to_string(),
+            RawQuery::absent(),
             HeaderMap::new(),
             Bytes::new(),
             &state,
@@ -876,6 +923,7 @@ mod tests {
         let resp = run(
             Method::GET,
             "/home/cached".to_string(),
+            RawQuery::absent(),
             headers,
             Bytes::new(),
             &state,
@@ -912,6 +960,7 @@ mod tests {
         let resp = run(
             Method::GET,
             "/home/short".to_string(),
+            RawQuery::absent(),
             headers,
             Bytes::new(),
             &state,
@@ -959,6 +1008,7 @@ mod tests {
         let resp = run(
             Method::GET,
             "/home/range".to_string(),
+            RawQuery::absent(),
             headers,
             Bytes::new(),
             &state,

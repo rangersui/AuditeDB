@@ -10,7 +10,7 @@
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path as AxPath, State},
-    http::{HeaderMap, Method},
+    http::{HeaderMap, Method, Uri},
     middleware::from_fn_with_state,
     response::Response,
     routing::any,
@@ -55,6 +55,7 @@ pub(crate) async fn world_handler(
         crate::server::pipeline::RequestId,
     >,
     method: Method,
+    uri: Uri,
     AxPath(path): AxPath<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -73,7 +74,8 @@ pub(crate) async fn world_handler(
     if method == Method::OPTIONS {
         return options_response(WORLD_ALLOW);
     }
-    pipeline::run(method, path, headers, body, &state, req_id).await
+    let raw_query = pipeline::RawQuery::from_uri(&uri);
+    pipeline::run(method, path, raw_query, headers, body, &state, req_id).await
 }
 
 #[cfg(test)]
@@ -178,6 +180,26 @@ mod tests {
         );
         assert!(resp.headers().get("x-request-id").is_some());
         // HEAD body must be empty even though Content-Length says 11.
+        assert_eq!(response_text(resp).await, "");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn world_handler_options_ignores_malformed_timeline_query() {
+        let (engine, dir) = test_engine_for_server("world-handler-options-query");
+        let state = server_state_for_engine_for_tests(engine);
+        let app = build_app(state);
+
+        let req = HttpRequest::builder()
+            .method("OPTIONS")
+            .uri("/home/hello?timeline%ZZ=1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers().get(header::ALLOW).unwrap(), WORLD_ALLOW);
         assert_eq!(response_text(resp).await, "");
 
         let _ = std::fs::remove_dir_all(dir);

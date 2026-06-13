@@ -3,7 +3,10 @@ use std::{
     time::Instant,
 };
 
-use axum::{http::StatusCode, response::Response};
+use axum::{
+    http::{StatusCode, Uri},
+    response::Response,
+};
 
 use super::{phase_summary, ErrorReason, Phase};
 
@@ -17,6 +20,31 @@ use super::{phase_summary, ErrorReason, Phase};
 /// said `42`.
 #[derive(Clone, Copy)]
 pub(crate) struct RequestId(pub(crate) u64);
+
+#[derive(Clone)]
+pub(crate) struct RawQuery(
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "raw query is opaque until the classifier layer")
+    )]
+    Option<String>,
+);
+
+impl RawQuery {
+    pub(crate) fn from_uri(uri: &Uri) -> Self {
+        Self(uri.query().map(str::to_owned))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn absent() -> Self {
+        Self(None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_deref(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
 
 static PIPELINE_TRACE: AtomicBool = AtomicBool::new(false);
 
