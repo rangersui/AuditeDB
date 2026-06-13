@@ -18,6 +18,7 @@ import csv
 import difflib
 import fnmatch
 import gzip as gzip_mod
+import hashlib
 import io
 import struct
 import textwrap
@@ -25,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
-from collections.abc import Iterable, MutableMapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ _RESERVED_WORLD_NAMES = {
     "var",
     "var/log",
 }
+_MAX_TIMELINE_SEQ = 2**63 - 1
 _REPRESENTATION_KWARGS = {
     "content_type",
     "content_encoding",
@@ -295,6 +297,107 @@ WorldMeta = TypedDict(
     },
     total=False,
 )
+
+
+TimelineMeta = TypedDict(
+    "TimelineMeta",
+    {
+        "content-type": str,
+        "content-length": str,
+        "content-encoding": str,
+        "content-language": str,
+        "content-disposition": str,
+        "cache-control": str,
+        "x-timeline-world": str,
+        "x-timeline-generation": str,
+        "x-timeline-seq": str,
+        "x-timeline-body-sha256": str,
+    },
+    total=False,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineCoordinate:
+    """Wire coordinate for a historical body emitted by `/listen/*`.
+
+    This is syntax, not proof. The SDK validates shape and builds the
+    timeline query; the server still proves the coordinate against the audit
+    row before returning bytes.
+    """
+
+    world: str
+    generation: str
+    seq: int
+    body_sha256: str
+
+    def __post_init__(self) -> None:
+        world = _canonical_world_name(str(self.world))
+        _validate_world_name(world)
+        if world.split("/", 1)[0] in {"tmp", "dev", "sys"}:
+            raise ValueError("timeline coordinates require durable worlds")
+
+        generation = str(self.generation)
+        if not _is_lower_hex(generation, 32):
+            raise ValueError("timeline generation must be 32 lowercase hex characters")
+
+        if isinstance(self.seq, bool) or not isinstance(self.seq, (int, str)):
+            raise ValueError("timeline seq must be a positive integer")
+        try:
+            seq = int(self.seq)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("timeline seq must be a positive integer") from exc
+        if seq <= 0 or seq > _MAX_TIMELINE_SEQ:
+            raise ValueError("timeline seq must be a positive signed 64-bit integer")
+
+        body_sha256 = str(self.body_sha256)
+        if not _is_lower_hex(body_sha256, 64):
+            raise ValueError("timeline body sha256 must be 64 lowercase hex characters")
+
+        object.__setattr__(self, "world", world)
+        object.__setattr__(self, "generation", generation)
+        object.__setattr__(self, "seq", seq)
+        object.__setattr__(self, "body_sha256", body_sha256)
+
+    @classmethod
+    def from_parts(
+        cls,
+        world: str,
+        generation: str,
+        seq: int | str,
+        body_sha256: str,
+    ) -> "TimelineCoordinate":
+        """Build a coordinate from explicit wire fields."""
+        return cls(world, generation, seq, body_sha256)
+
+    @classmethod
+    def from_event(cls, event: Mapping[str, str]) -> "TimelineCoordinate":
+        """Build a coordinate from an SDK `/listen/*` event dict."""
+        missing = [
+            name
+            for name in (
+                "path",
+                "timeline-world",
+                "timeline-generation",
+                "timeline-seq",
+                "timeline-body-sha256",
+            )
+            if not event.get(name)
+        ]
+        if missing:
+            raise ValueError("event is missing timeline fields: " + ", ".join(missing))
+
+        coordinate = cls.from_parts(
+            event["timeline-world"],
+            event["timeline-generation"],
+            event["timeline-seq"],
+            event["timeline-body-sha256"],
+        )
+        path_world = _canonical_world_name(event["path"])
+        _validate_world_name(path_world)
+        if path_world != coordinate.world:
+            raise ValueError("event path does not match timeline world")
+        return coordinate
 
 
 class ElastikError(Exception):
@@ -808,6 +911,26 @@ class Elastik(MutableMapping[str, bytes]):
             return None
         return json.loads(text)
 
+    def get_timeline(self, coordinate: TimelineCoordinate) -> bytes:
+        """GET the historical body named by a `/listen/*` timeline coordinate."""
+        _require_timeline_coordinate(coordinate, "get_timeline")
+        target = _timeline_request_target(coordinate)
+        resp = self._timeline_request("GET", coordinate)
+        if resp.status >= 400:
+            _raise_for_response(resp, "GET", target)
+        _validate_timeline_response(resp, coordinate, "GET", target, verify_body=True)
+        return resp.body
+
+    def head_timeline(self, coordinate: TimelineCoordinate) -> TimelineMeta:
+        """HEAD the historical representation named by a timeline coordinate."""
+        _require_timeline_coordinate(coordinate, "head_timeline")
+        target = _timeline_request_target(coordinate)
+        resp = self._timeline_request("HEAD", coordinate)
+        if resp.status >= 400:
+            _raise_for_response(resp, "HEAD", target)
+        _validate_timeline_response(resp, coordinate, "HEAD", target)
+        return resp.headers  # type: ignore[return-value]
+
     def get_gzip(self, path: str) -> bytes:
         """GET and gzip-decompress the body."""
         body = self.get(path)
@@ -1180,6 +1303,8 @@ class Elastik(MutableMapping[str, bytes]):
         The body is never embedded in the stream. Timeline fields are
         historical coordinates for durable body writes; GET/HEAD with the
         path reads the current value, not necessarily the signalled value.
+        Use TimelineCoordinate.from_event(event) plus get_timeline() when
+        the handler needs the exact body named by the event.
         """
         url = self.url + "/listen/" + _quote_listen_pattern(pattern)
         h = {}
@@ -1323,7 +1448,20 @@ class Elastik(MutableMapping[str, bytes]):
         headers: dict[str, str] | None = None,
     ) -> Response:
         """Raw HTTP escape hatch for methods plus headers that pass wire checks."""
-        url = self.url + _quote_path(path)
+        return self._request_url(method, self.url + _quote_path(path), path, body, headers)
+
+    def _timeline_request(self, method: str, coordinate: TimelineCoordinate) -> Response:
+        target = _timeline_request_target(coordinate)
+        return self._request_url(method, self.url + target, target, None, None)
+
+    def _request_url(
+        self,
+        method: str,
+        url: str,
+        debug_path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
         h = dict(headers or {})
         _reject_wire_headers(h)
         if self.bearer_token:
@@ -1341,12 +1479,12 @@ class Elastik(MutableMapping[str, bytes]):
                 _log.debug(
                     "%s %s -> %d %dB %.1fms",
                     method,
-                    path,
+                    debug_path,
                     response.status,
                     len(response.body),
                     elapsed_ms,
                 )
-                self._debug_after_response(method, path, h, response, elapsed_ms)
+                self._debug_after_response(method, debug_path, h, response, elapsed_ms)
                 return response
         except urllib.error.HTTPError as e:
             response = Response(
@@ -1358,12 +1496,12 @@ class Elastik(MutableMapping[str, bytes]):
             _log.debug(
                 "%s %s -> %d %dB %.1fms",
                 method,
-                path,
+                debug_path,
                 response.status,
                 len(response.body),
                 elapsed_ms,
             )
-            self._debug_after_response(method, path, h, response, elapsed_ms)
+            self._debug_after_response(method, debug_path, h, response, elapsed_ms)
             return response
 
     def _raw(
@@ -1829,6 +1967,74 @@ def _etag_value(value: str | None) -> str | None:
     if v.startswith('"') and v.endswith('"'):
         return v
     return f'"{v}"'
+
+
+def _timeline_request_target(coordinate: TimelineCoordinate) -> str:
+    query = urllib.parse.urlencode(
+        (
+            ("timeline", "1"),
+            ("timeline-generation", coordinate.generation),
+            ("timeline-seq", str(coordinate.seq)),
+            ("timeline-body-sha256", coordinate.body_sha256),
+        )
+    )
+    return _quote_path(coordinate.world) + "?" + query
+
+
+def _require_timeline_coordinate(value: TimelineCoordinate, method: str) -> None:
+    if not isinstance(value, TimelineCoordinate):
+        raise TypeError(
+            f"{method}() requires TimelineCoordinate; "
+            "use TimelineCoordinate.from_event(event)"
+        )
+
+
+def _validate_timeline_response(
+    resp: Response,
+    coordinate: TimelineCoordinate,
+    method: str,
+    target: str,
+    *,
+    verify_body: bool = False,
+) -> None:
+    if resp.status != 200:
+        message = b"timeline response status must be 200\n"
+        raise ServerError(
+            500,
+            message,
+            method=method,
+            path=target,
+            headers=resp.headers,
+        )
+    expected = {
+        "x-timeline-world": coordinate.world,
+        "x-timeline-generation": coordinate.generation,
+        "x-timeline-seq": str(coordinate.seq),
+        "x-timeline-body-sha256": coordinate.body_sha256,
+    }
+    for name, value in expected.items():
+        if resp.headers.get(name) != value:
+            message = f"timeline proof header {name} mismatch\n".encode("utf-8")
+            raise ServerError(
+                500,
+                message,
+                method=method,
+                path=target,
+                headers=resp.headers,
+            )
+    if verify_body and hashlib.sha256(resp.body).hexdigest() != coordinate.body_sha256:
+        message = b"timeline body sha256 mismatch\n"
+        raise ServerError(
+            500,
+            message,
+            method=method,
+            path=target,
+            headers=resp.headers,
+        )
+
+
+def _is_lower_hex(value: str, expected_len: int) -> bool:
+    return len(value) == expected_len and all(ch in "0123456789abcdef" for ch in value)
 
 
 def _is_debug_path(path: str) -> bool:

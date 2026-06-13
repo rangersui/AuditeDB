@@ -139,7 +139,7 @@ def main() -> int:
     sys.path.insert(0, str(SDK_SRC))
     import elastik
     from elastik import _spawn
-    from elastik.sdk import Elastik
+    from elastik.sdk import Elastik, TimelineCoordinate
 
     check = Check()
     saved_tokens = {
@@ -1339,6 +1339,22 @@ def main() -> int:
             check(
                 "-append-secret" not in append_ev.get("data", ""),
                 "append SSE event does not embed body",
+            )
+            append_coord = TimelineCoordinate.from_event(append_ev)
+            writer.put("/home/sdk/listen/a", b"current-after-append")
+            check(
+                reader.get_timeline(append_coord) == b"payload-append-secret",
+                "SDK timeline GET returns signalled historical body after overwrite",
+            )
+            timeline_head = reader.head_timeline(append_coord)
+            check(
+                timeline_head.get("x-timeline-seq") == append_ev.get("timeline-seq"),
+                "SDK timeline HEAD returns proof headers",
+            )
+            check("etag" not in timeline_head, "SDK timeline HEAD does not expose current ETag")
+            check(
+                reader.get("/home/sdk/listen/a") == b"current-after-append",
+                "current GET still returns current body after timeline read",
             )
 
             elastik.clear_routes()

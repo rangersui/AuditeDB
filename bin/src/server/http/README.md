@@ -93,6 +93,18 @@ timeline address for that exact world. They identify the historical write; they
 are not a body payload. A later `GET /home/task/a` reads the current value and
 may observe a newer write than the event that woke the client.
 
+Use the timeline coordinate to read that exact historical body:
+
+```text
+GET  /home/task/a?timeline=1&timeline-generation=<gen>&timeline-seq=<seq>&timeline-body-sha256=<sha256>
+HEAD /home/task/a?timeline=1&timeline-generation=<gen>&timeline-seq=<seq>&timeline-body-sha256=<sha256>
+```
+
+The path supplies the world. `timeline-world` is never accepted in the query.
+Historical `GET` responses return the full body. Historical `GET` and `HEAD`
+responses include `X-Timeline-*` proof headers. `HEAD` returns headers only.
+They do not emit current-world `ETag`, range, or monitor-link headers.
+
 ## `/proc/*`
 
 The binary exposes text-shaped `/proc/*` endpoints over HTTP. These are adapter

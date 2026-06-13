@@ -7,6 +7,7 @@ import shlex
 import socket
 import sys
 import time
+import hashlib
 from pathlib import Path
 
 
@@ -14,13 +15,18 @@ ROOT = Path(__file__).resolve().parents[2]
 SDK_SRC = ROOT / "sdk" / "src"
 sys.path.insert(0, str(SDK_SRC))
 
+import elastik as elastik_module  # noqa: E402
 from elastik.sdk import (  # noqa: E402
+    Elastik,
     InsufficientStorage,
     Response,
+    ServerError,
+    TimelineCoordinate,
     _NON_PERSISTED_RESPONSE_HEADERS,
     _quote_path,
     _raise_for_response,
 )
+from elastik.testing import FakeElastik  # noqa: E402
 from elastik._coap_client import _path_segments  # noqa: E402
 from elastik._coap_client import get as coap_get  # noqa: E402
 from elastik.tools import ShellPoolError, TrustedShellPool  # noqa: E402
@@ -114,6 +120,162 @@ def check_507_maps_to_insufficient_storage() -> None:
     raise AssertionError("507 did not raise InsufficientStorage")
 
 
+def check_timeline_coordinate_validation() -> None:
+    event = {
+        "path": "/home/timeline/sdk",
+        "id": "999",
+        "etag": "hmac-not-the-body-hash",
+        "timeline-world": "home/timeline/sdk",
+        "timeline-generation": "0" * 32,
+        "timeline-seq": "7",
+        "timeline-body-sha256": "a" * 64,
+    }
+    coord = TimelineCoordinate.from_event(event)
+    assert coord.world == "home/timeline/sdk"
+    assert coord.seq == 7
+
+    try:
+        TimelineCoordinate.from_parts("home/timeline/sdk", "0" * 32, 7.5, "a" * 64)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("float timeline seq was accepted")
+
+    for bad in (
+        {**event, "timeline-world": "home/other"},
+        {**event, "timeline-generation": "A" * 32},
+        {**event, "timeline-seq": "0"},
+        {**event, "timeline-seq": str(2**63)},
+        {key: value for key, value in event.items() if key != "path"},
+        {key: value for key, value in event.items() if key != "timeline-seq"},
+        {**event, "timeline-body-sha256": "g" * 64},
+        {**event, "timeline-world": "tmp/timeline/sdk", "path": "/tmp/timeline/sdk"},
+    ):
+        try:
+            TimelineCoordinate.from_event(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"invalid timeline event accepted: {bad!r}")
+
+
+def check_timeline_request_uses_query_not_path() -> None:
+    import urllib.request
+
+    seen: dict[str, str | list[str]] = {}
+    coord = TimelineCoordinate.from_parts(
+        "home/a b",
+        "0" * 32,
+        7,
+        hashlib.sha256(b"old").hexdigest(),
+    )
+
+    class FakeHTTPResponse:
+        def __init__(
+            self,
+            *,
+            bad_proof: bool = False,
+            bad_status: bool = False,
+            bad_body: bool = False,
+        ) -> None:
+            self.status = 206 if bad_status else 200
+            self.body = b"partial" if bad_body else b"old"
+            self.headers = {
+                "Content-Type": "text/plain",
+                "Content-Length": str(len(self.body)),
+                "X-Timeline-World": coord.world,
+                "X-Timeline-Generation": coord.generation,
+                "X-Timeline-Seq": "8" if bad_proof else str(coord.seq),
+                "X-Timeline-Body-Sha256": coord.body_sha256,
+            }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(req, timeout=30):  # noqa: ANN001
+        seen["url"] = req.full_url
+        methods = seen.setdefault("methods", [])
+        assert isinstance(methods, list)
+        methods.append(req.get_method())
+        seen["auth"] = req.headers.get("Authorization", "")
+        return FakeHTTPResponse(
+            bad_proof=seen.get("bad_proof") == "1",
+            bad_status=seen.get("bad_status") == "1",
+            bad_body=seen.get("bad_body") == "1",
+        )
+
+    prior = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        client = Elastik("http://example.test", bearer_token="reader")
+        assert client.get_timeline(coord) == b"old"
+        assert seen["auth"] == "Bearer reader"
+        assert seen["url"].startswith("http://example.test/home/a%20b?")
+        assert "?timeline=1&timeline-generation=" in seen["url"]
+        assert "%3Ftimeline" not in seen["url"]
+        assert "timeline-world" not in seen["url"]
+
+        headers = client.head_timeline(coord)
+        assert headers["x-timeline-seq"] == "7"
+        assert seen["methods"] == ["GET", "HEAD"]
+
+        assert "get_timeline" in elastik_module.__all__
+        assert "head_timeline" in elastik_module.__all__
+        elastik_module._set_default(client)
+        try:
+            assert elastik_module.get_timeline(coord) == b"old"
+            assert elastik_module.head_timeline(coord)["x-timeline-seq"] == "7"
+            assert seen["methods"] == ["GET", "HEAD", "GET", "HEAD"]
+        finally:
+            elastik_module._default_client = None
+
+        try:
+            FakeElastik().get_timeline(coord)
+        except NotImplementedError:
+            pass
+        else:
+            raise AssertionError("FakeElastik timeline helper should be explicit unsupported")
+        try:
+            FakeElastik().get_timeline("home/a b")  # type: ignore[arg-type]
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("FakeElastik accepted a raw timeline coordinate")
+
+        seen["bad_proof"] = "1"
+        try:
+            client.get_timeline(coord)
+        except ServerError as exc:
+            assert "x-timeline-seq mismatch" in str(exc), exc
+        else:
+            raise AssertionError("timeline proof header mismatch was accepted")
+        seen.pop("bad_proof")
+
+        seen["bad_status"] = "1"
+        try:
+            client.head_timeline(coord)
+        except ServerError as exc:
+            assert "status must be 200" in str(exc), exc
+        else:
+            raise AssertionError("timeline non-200 success was accepted")
+        seen.pop("bad_status")
+
+        seen["bad_body"] = "1"
+        try:
+            client.get_timeline(coord)
+        except ServerError as exc:
+            assert "body sha256 mismatch" in str(exc), exc
+        else:
+            raise AssertionError("timeline body hash mismatch was accepted")
+    finally:
+        urllib.request.urlopen = prior
+
+
 def main() -> int:
     check_header_blacklist_parity()
     check_coap_unreachable_is_timeout()
@@ -121,6 +283,8 @@ def main() -> int:
     check_proc_paths_are_sdk_allowed()
     check_encoded_dot_segments_are_rejected()
     check_507_maps_to_insufficient_storage()
+    check_timeline_coordinate_validation()
+    check_timeline_request_uses_query_not_path()
 
     with TrustedShellPool(size=1, timeout=2) as pool:
         r = pool.run("echo elastik-ready", check=True)

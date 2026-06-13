@@ -542,6 +542,15 @@ Handler rules:
 - `world` is still accepted as a compatibility alias for `path`.
 - `body` is a current `GET path` result at dispatch time. It is not a
   historical dereference of the SSE event's timeline fields.
+- When a handler needs the exact body named by the SSE event, build a
+  `TimelineCoordinate` from the event and dereference it explicitly:
+
+  ```python
+  coord = elastik.TimelineCoordinate.from_event(event)
+  old_body = e.get_timeline(coord)
+  old_meta = e.head_timeline(coord)
+  ```
+
 - You can do normal Python side effects inside the handler.
 - Advanced users may return `Reply`, `Archive`, `MoveTo`, or `Drop` action
   objects, but they are not required.
@@ -567,6 +576,8 @@ manual control.
 These are exported but not part of the beginner path:
 
 - `request()`: raw HTTP escape hatch.
+- `TimelineCoordinate.from_event(event)`, `get_timeline()`, and
+  `head_timeline()`: exact historical body dereference for `/listen/*` events.
 - `binary_info()`, `is_running()`, `default_url()`: launcher diagnostics.
 - `TrustedShellPool`: warm local shell process pool for trusted `@listen`
   handlers. It can execute arbitrary commands; do not feed it untrusted input.

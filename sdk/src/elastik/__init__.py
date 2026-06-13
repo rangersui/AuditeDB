@@ -60,6 +60,12 @@ Handlers may either do side effects directly (normal Python) or return
 Action objects like Reply/Archive/MoveTo/Drop for declarative routing.
 `world` is accepted as an older name for the same value as `path`.
 
+For exact historical reads from `/listen/*`, parse the event's timeline fields
+and dereference that coordinate:
+
+    coord = elastik.TimelineCoordinate.from_event(event)
+    body = elastik.get_timeline(coord)
+
 Bundled binary lives at `elastik/_bin/elastik-core[.exe]` and is invoked
 as a child process. No FFI, no compile-on-install. Same shape as
 NumPy shipping precompiled C kernels.
@@ -86,6 +92,8 @@ from elastik.sdk import (
     Response,
     ServerError,
     Unauthorized,
+    TimelineCoordinate,
+    TimelineMeta,
     WorldMeta,
     WorldRef,
     WorldReader,
@@ -142,6 +150,7 @@ __all__ = [
     "Unauthorized", "Forbidden", "NotFound", "PreconditionFailed",
     "PayloadTooLarge", "InsufficientStorage", "ServerError",
     "Response",
+    "TimelineCoordinate", "TimelineMeta",
     "WorldMeta", "WorldRef", "WorldReader", "FakeElastik",
     # Reactor sugar
     "listen", "run", "clear_routes", "clear_lifecycle_hooks",
@@ -157,6 +166,7 @@ __all__ = [
     # Module-level convenience (NumPy-shaped)
     "put", "put_text", "put_json", "put_gzip", "put_csv", "put_struct",
     "post", "get", "get_cached", "get_gzip", "get_text", "get_json",
+    "get_timeline", "head_timeline",
     "get_csv", "get_struct", "head", "delete", "exists", "sizeof",
     "checksum", "is_audited", "verify", "diff", "preview", "copy",
     "ls", "tree", "rm", "mv", "du",
@@ -424,6 +434,16 @@ def get_json(
         if_range=if_range,
         headers=headers,
     )
+
+
+def get_timeline(coordinate: TimelineCoordinate) -> bytes:
+    """elastik.get_timeline(TimelineCoordinate.from_event(event)) -> bytes"""
+    return _client().get_timeline(coordinate)
+
+
+def head_timeline(coordinate: TimelineCoordinate) -> TimelineMeta:
+    """elastik.head_timeline(coordinate) -> historical response headers."""
+    return _client().head_timeline(coordinate)
 
 
 def get_gzip(path: str) -> bytes:

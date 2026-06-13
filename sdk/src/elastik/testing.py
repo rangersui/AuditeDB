@@ -14,6 +14,8 @@ from elastik.sdk import (
     HeaderAllowlist,
     NotFound,
     Response,
+    TimelineCoordinate,
+    TimelineMeta,
     WorldMeta,
     _body_bytes,
     _canonical_world_name,
@@ -151,6 +153,26 @@ class FakeElastik(Elastik):
             return dict(self._store[world][1])  # type: ignore[return-value]
         except KeyError:
             raise NotFound(404, b"not found", method="HEAD", path=path) from None
+
+    def get_timeline(self, coordinate: TimelineCoordinate) -> bytes:
+        if not isinstance(coordinate, TimelineCoordinate):
+            raise TypeError(
+                "get_timeline() requires TimelineCoordinate; "
+                "use TimelineCoordinate.from_event(event)"
+            )
+        raise NotImplementedError(
+            "FakeElastik does not retain audit timeline bodies; use black-box tests"
+        )
+
+    def head_timeline(self, coordinate: TimelineCoordinate) -> TimelineMeta:
+        if not isinstance(coordinate, TimelineCoordinate):
+            raise TypeError(
+                "head_timeline() requires TimelineCoordinate; "
+                "use TimelineCoordinate.from_event(event)"
+            )
+        raise NotImplementedError(
+            "FakeElastik does not retain audit timeline bodies; use black-box tests"
+        )
 
     def verify(self, path: str) -> bool:
         self.head(path)
