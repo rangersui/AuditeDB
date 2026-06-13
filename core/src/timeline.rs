@@ -236,6 +236,8 @@ impl fmt::Display for MintWorldGenerationError {
 impl std::error::Error for MintWorldGenerationError {}
 
 impl TimelineSeq {
+    /// Internal SQLite `events.id` coordinate only. This is not an SSE `id`,
+    /// not `Last-Event-ID`, and not a durable external cursor by itself.
     pub(crate) fn new(raw: i64) -> Result<Self, InvalidTimelineSeq> {
         NonZeroI64::new(raw)
             .filter(|seq| seq.get() > 0)
@@ -243,8 +245,6 @@ impl TimelineSeq {
             .ok_or(InvalidTimelineSeq::NonPositive)
     }
 
-    /// Internal SQLite `events.id` coordinate only. This is not an SSE `id`,
-    /// not `Last-Event-ID`, and not a durable external cursor by itself.
     fn get(self) -> i64 {
         self.0.get()
     }
