@@ -22,6 +22,7 @@ mod retention;
 #[cfg(test)]
 mod test_support;
 mod timeline_address;
+mod timeline_dereference;
 
 #[cfg(test)]
 use append::test_only_append_tx_inner as append_tx_inner;
@@ -40,6 +41,11 @@ pub use test_support::latest_hmac;
 pub(crate) use timeline_address::read_timeline_body_via_conn;
 pub(crate) use timeline_address::{
     verified_latest_body_head_via_conn, VerifiedBodyEvent, VerifiedBodyHead,
+};
+#[cfg(feature = "unstable-engine")]
+pub use timeline_dereference::{
+    TimelineDereference, VerifiedBodyHashMismatch, VerifiedGenerationMismatch, VerifiedMissingRow,
+    VerifiedNonBodyEvent,
 };
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,

@@ -182,7 +182,6 @@ mod store;
 #[cfg(test)]
 mod test_support;
 mod timeline;
-mod timeline_dereference;
 mod world;
 mod world_generation;
 mod world_ops;
@@ -192,6 +191,11 @@ mod world_schema;
 // Re-export protocol-neutral helpers at the crate root.
 pub(crate) use crate::state::*;
 pub(crate) use crate::storage_class::*;
+#[cfg(feature = "unstable-engine")]
+pub use audit::{
+    TimelineDereference, VerifiedBodyHashMismatch, VerifiedGenerationMismatch, VerifiedMissingRow,
+    VerifiedNonBodyEvent,
+};
 #[cfg(not(feature = "unstable-engine"))]
 pub(crate) use auth::AuthGate;
 #[cfg(feature = "unstable-engine")]
@@ -230,11 +234,6 @@ pub use path::{validate_world_name, NAMESPACE_PREFIXES};
 pub use timeline::{
     BodySha256, InvalidTimelineCoordinate, TimelineAddress, TimelineBody, TimelineCoordinate,
     TimelineCorruption, TimelineRead, TimelineSeq,
-};
-#[cfg(feature = "unstable-engine")]
-pub use timeline_dereference::{
-    TimelineDereference, VerifiedBodyHashMismatch, VerifiedGenerationMismatch, VerifiedMissingRow,
-    VerifiedNonBodyEvent,
 };
 #[cfg(feature = "unstable-engine")]
 pub use world_generation::WorldGeneration;
