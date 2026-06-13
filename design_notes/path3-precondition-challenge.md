@@ -32,7 +32,7 @@ but behaved like a hint.
 |---|---|---|
 | Subscribers need every changed body pushed to them. | Policy. | Dissolved. AuditeDB is a storage engine; push is a signal. Bodies are fetched by address. Small body inlining is an optimisation, not the contract. |
 | A notification without body is useless. | Policy, unless there is no historical read. | Dissolved by a full timeline-address read: `(world, gen, seq, body_sha256)`. The address makes the signal meaningful without making subscribe a delivery broker. |
-| Durable history requires storing every body forever. | Policy over finite-storage physics. | Dissolved. Chain rows are permanent; CAS bodies are retained by policy. Expired body returns a typed expired/410-class result, never silent current-read substitution. |
+| Durable history requires storing every body forever. | Policy over finite-storage physics. | Dissolved. Chain rows are permanent; CAS bodies are retained by policy. Expiry must be provable by a durable expiry marker, GC watermark, or equivalent retention proof. Without that proof, a missing CAS body is corruption/missing-body, not Expired. |
 | SSE ids must be small or integer-like. | Policy. | Dissolved. The parent plan's stale `12-hex` wording is superseded before any Path 3 cursor implementation. `gen` must be a minted incarnation id with at least 128 bits of entropy, rendered as 32 hex chars. It is not a deterministic first-event HMAC. SSE `id` is an opaque string; cursor readability is secondary. |
 | `body_sha256` should become the HTTP ETag because CAS exists. | Policy and unsafe by default unless a separate position validator lands. | Rejected for initial Path 3. ETag remains chain-position identity (`hmac-{event_hmac}`) until an ETag-split stack lands with an explicit position validator. `body_sha256` is the CAS/content address exposed separately. |
 | The engine should track per-subscriber delivery state. | Policy. | Rejected. The engine stores timeline facts and emits best-effort signals. Clients keep notebooks/cursors. Pattern catch-up is a client-side vector over matched worlds, not a scalar SSE id. |
@@ -53,6 +53,8 @@ After dissolving the policy assumptions, the remaining hard constraints are:
 - migration changes on-disk meaning, so format markers must fail loudly;
 - historical reads can prove chain-row presence, but cannot resurrect pruned
   bodies;
+- historical reads cannot classify missing CAS bodies as expired unless GC left
+  durable expiry proof or a retention watermark covering that body address;
 - addressable timeline catch-up and historical value recovery are different:
   Path 3 guarantees "do not silently read current C for signalled B"; it does
   not guarantee B's body remains recoverable after retention expiry.
@@ -83,7 +85,9 @@ client calls read(TimelineAddress)
 Expected outcomes:
 
 - body present -> returns B;
-- body expired -> returns Expired/410-class with the same chain coordinate;
+- body expired with durable retention proof -> returns Expired/410-class with
+  the same chain coordinate;
+- body missing without expiry proof -> Corrupt/MissingBody, not Expired;
 - gen mismatch -> reset/incarnation mismatch, not a read from the new world;
 - subject deleted -> Gone/ledger-backed tombstone for that subject gen;
 - chain row missing without a matching tombstone -> corruption/truncation
@@ -229,6 +233,12 @@ Consequence: retention can degrade historical *value* recovery to
 Expired/410-class while preserving historical *fact* recovery. That is a
 deliberate storage-policy tradeoff, not a replay bug.
 
+But expiry is a claim, not absence. CAS GC must leave a durable expiry proof,
+or maintain a retention watermark sufficient to prove the address is older than
+the retained window. Otherwise a chain row whose `body_sha256` no longer
+resolves is `Corrupt`/`MissingBody`, because the engine cannot distinguish
+legitimate pruning from storage loss.
+
 ## 6. Implementation Gate
 
 L0 is the already-open chain-head plumbing layer. Long `gen` plumbing is still
@@ -236,12 +246,16 @@ planned and must land before Path 3 cursor implementation. After L0, the
 first Path-3 CAS semantic layer should not touch HTTP, FFI, SDKs, or
 migration.
 
+No user-visible persisted CAS/timeline writes may land before the format marker
+and expiry-proof story are explicit. New readers can fail loudly on unknown
+layout; they cannot silently reinterpret an unmarked world as timeline-capable.
+
 The first safe CAS semantic layer starts with the core timeline-address
 contract and the normative event classifier together:
 
 ```text
 TimelineAddress = { world, gen, seq, body_sha256 }
-read(TimelineAddress) -> Body | Expired | Gone | GenMismatch | MissingRow | Corrupt
+read(TimelineAddress) -> Body | Expired | Gone | GenMismatch | MissingRow | MissingBody | Corrupt
 ```
 
 `gen` is not only an SSE cursor decoration. It is part of the storage-engine
