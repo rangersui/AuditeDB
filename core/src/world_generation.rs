@@ -43,13 +43,13 @@ impl WorldGeneration {
         Ok(Self(raw))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl MintedWorldGeneration {
-    pub(crate) fn as_str(&self) -> &str {
+    fn as_str(&self) -> &str {
         self.0.as_str()
     }
 

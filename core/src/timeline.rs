@@ -245,7 +245,7 @@ mod tests {
             TimelineAddress::new(world(), gen(), TimelineSeq::new(42).unwrap(), body_hash());
 
         assert_eq!(address.world().as_str(), "home/timeline");
-        assert_eq!(address.gen().as_str(), "0123456789abcdef0123456789abcdef");
+        assert_eq!(address.gen(), &gen());
         assert_eq!(address.seq().get(), 42);
         assert_eq!(
             address.body_sha256().as_str(),
@@ -255,16 +255,18 @@ mod tests {
 
     #[test]
     fn minted_timeline_address_consumes_minted_generation() {
-        let minted = MintedWorldGeneration::test_only_from_entropy_bytes([
+        let entropy = [
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
             0x0e, 0x0f,
-        ]);
+        ];
+        let minted = MintedWorldGeneration::test_only_from_entropy_bytes(entropy);
+        let expected = MintedWorldGeneration::test_only_from_entropy_bytes(entropy);
 
         let address =
             MintedTimelineAddress::new(world(), minted, TimelineSeq::new(7).unwrap(), body_hash());
 
         assert_eq!(address.world().as_str(), "home/timeline");
-        assert_eq!(address.gen().as_str(), "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(address.gen(), &expected);
         assert_eq!(address.seq().get(), 7);
         assert_eq!(
             address.body_sha256().as_str(),
