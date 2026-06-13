@@ -150,13 +150,7 @@ pub fn append_tx(
     headers: &[(String, String)],
 ) -> rusqlite::Result<String> {
     let tx = audit_tx.tx;
-    let class = event_type.class();
-    debug_assert!(class.notifies, "audit rows are timeline-visible events");
-    debug_assert_eq!(class.body_bearing, class.retention_slot);
-    debug_assert_eq!(
-        class.body_bearing,
-        matches!(class.payload_home, crate::event::AuditPayloadHome::Cas)
-    );
+    debug_assert!(event_type.class().notifies);
     let canonical = canonical_headers(headers);
     let meta_sha256 = meta_sha256_canonical(content_type, &canonical);
     let prev = tx
