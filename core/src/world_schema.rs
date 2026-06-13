@@ -43,7 +43,7 @@ pub(crate) fn create(
     )?;
     c.execute(
         "INSERT INTO stage_meta(id, generation, body) VALUES(1, ?1, x'')",
-        [generation.as_str()],
+        rusqlite::params![generation],
     )?;
     c.execute_batch(
         r#"
@@ -182,7 +182,13 @@ mod tests {
         create(schema, minted_generation()).unwrap();
 
         let stored = self::generation(&c).unwrap();
-        assert_eq!(stored.as_str(), "000102030405060708090a0b0c0d0e0f");
+        let raw: String = c
+            .query_row("SELECT generation FROM stage_meta WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(raw, "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(stored, WorldGeneration::new(raw).unwrap());
         verify(&c).unwrap();
     }
 

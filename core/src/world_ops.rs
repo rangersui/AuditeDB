@@ -188,7 +188,7 @@ pub(crate) fn read_world_for(
     if &permit.world != world {
         return Err(ReadError::PermitWorldMismatch);
     }
-    match core.read_world_with_etag(world.as_str()) {
+    match core.read_world_with_etag(world) {
         Ok(Some((stage, etag))) => Ok(ReadOutcome::Found { stage, etag }),
         Ok(None) => Ok(ReadOutcome::Missing),
         Err(err) => Err(classify_read_error("storage read", err)),
@@ -202,7 +202,8 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     hooks: &H,
 ) -> Result<WriteOutcome, WriteError> {
     ensure_write_permit(permit)?;
-    let world = permit.world.as_str();
+    let world_path = &permit.world;
+    let world = world_path.as_str();
     if req.body.len() > core.max_world_bytes {
         return Err(WriteError::PayloadTooLarge {
             max: core.max_world_bytes,
@@ -212,7 +213,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     let _write_guard = core.acquire_world_lock(world).await;
     hooks.lock_acquired();
     core.clear_tombstone(world);
-    check_write_preconditions(core, world, &req.preconditions)?;
+    check_write_preconditions(core, world_path, &req.preconditions)?;
 
     let (existed, etag) = if store::is_persistent(world) {
         let prev_len_opt = world::body_len(&core.data, world).map_err(|err| {
@@ -297,11 +298,12 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     hooks: &H,
 ) -> Result<WriteOutcome, WriteError> {
     ensure_write_permit(permit)?;
-    let world = permit.world.as_str();
+    let world_path = &permit.world;
+    let world = world_path.as_str();
     let _write_guard = core.acquire_world_lock(world).await;
     hooks.lock_acquired();
     core.clear_tombstone(world);
-    check_write_preconditions(core, world, &req.preconditions)?;
+    check_write_preconditions(core, world_path, &req.preconditions)?;
 
     let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(world) {
         core.mem.metadata(world)
@@ -399,7 +401,7 @@ fn ensure_write_permit(permit: &WritePermit) -> Result<(), WriteError> {
 
 fn check_write_preconditions(
     core: &Core,
-    world: &str,
+    world: &ValidatedWorldPath,
     preconditions: &etag::Preconditions,
 ) -> Result<(), WriteError> {
     if preconditions.is_empty() {
@@ -480,10 +482,16 @@ mod tests {
             .expect("permit writes only its bound world");
 
         assert_eq!(
-            core.read_world("home/permit-a").unwrap().unwrap().body,
+            core.read_world(&world_path("home/permit-a"))
+                .unwrap()
+                .unwrap()
+                .body,
             b"right-door"
         );
-        assert!(core.read_world("home/permit-b").unwrap().is_none());
+        assert!(core
+            .read_world(&world_path("home/permit-b"))
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }

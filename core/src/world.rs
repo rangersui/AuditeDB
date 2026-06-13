@@ -773,18 +773,26 @@ mod tests {
         let stored = {
             let c = open(&root, "home/generated").unwrap();
             let generation = crate::world_schema::generation(&c).unwrap();
-            assert_eq!(generation.as_str().len(), 32);
-            assert!(generation
-                .as_str()
+            let raw: String = c
+                .query_row("SELECT generation FROM stage_meta WHERE id=1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(raw.len(), 32);
+            assert!(raw
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
-            generation.as_str().to_owned()
+            assert_eq!(
+                generation,
+                crate::world_generation::WorldGeneration::new(raw.clone()).unwrap()
+            );
+            raw
         };
 
         let c = open(&root, "home/generated").unwrap();
         assert_eq!(
-            crate::world_schema::generation(&c).unwrap().as_str(),
-            stored
+            crate::world_schema::generation(&c).unwrap(),
+            crate::world_generation::WorldGeneration::new(stored).unwrap()
         );
         let _ = std::fs::remove_dir_all(root);
     }
