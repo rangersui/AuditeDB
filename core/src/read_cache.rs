@@ -33,7 +33,8 @@
 //!    remove."
 //! 4. **Type-system enforcement** -- `TrackedReadConnection` wraps
 //!    `rusqlite::Connection`. Its constructor (`from_raw`) is
-//!    module-private and called only from `OpeningTransition::promote`.
+//!    private to the state-machine module and called only from
+//!    `OpeningTransition::promote`.
 //!    Read functions in `world.rs` consume `&mut TrackedReadConnection`,
 //!    so opening a bare `Connection` and reading through it is a
 //!    type error. See AGENTS.md section "Physics, not policy."
@@ -48,12 +49,15 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
-use std::time::Duration;
 
 use dashmap::DashMap;
-use rusqlite::{ffi::ErrorCode, Connection, OpenFlags};
 
-use crate::{world, world_schema};
+#[cfg(test)]
+pub(crate) use state_machine::test_only_wrap_raw_connection;
+pub(crate) use state_machine::TrackedReadConnection;
+
+mod ops;
+mod state_machine;
 
 /// Default ceiling on the number of cached read slots. Per-conn
 /// memory is bounded to ~250KB (PRAGMA cache_size=-200), so 5000
@@ -111,57 +115,11 @@ fn read_cache_retry_budget_error(world: &str, mode: &str) -> rusqlite::Error {
     )
 }
 
-fn open_verified_read_conn(path: &std::path::Path) -> rusqlite::Result<Connection> {
-    let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
-    c.pragma_update(None, "cache_size", -200)?;
-    world_schema::verify(&c)?;
-    Ok(c)
-}
-
-/// Newtype around `rusqlite::Connection` that gates read access at
-/// the type level. The only constructor (`from_raw`) is reachable
-/// solely from `OpeningTransition::promote` below -- no other code
-/// in the crate can mint one. `world::read_with_hmac_via_conn`
-/// consumes `&mut TrackedReadConnection`, which means the bypass
-/// "open a Connection and run the SQL on it" doesn't compile.
-///
-/// See AGENTS.md section "Physics, not policy."
-pub(crate) struct TrackedReadConnection(Connection);
-
-#[cfg_attr(not(test), allow(dead_code))]
-type TimelineReadResult = crate::audit::AuditResult<crate::timeline::TimelineRead>;
-
-impl TrackedReadConnection {
-    /// Module-private constructor. The only call site in the crate
-    /// is `OpeningTransition::promote`. Intentionally not exposed
-    /// outside this file.
-    fn from_raw(conn: Connection) -> Self {
-        Self(conn)
-    }
-
-    /// Mutable access to the wrapped Connection for the SQL body of
-    /// `world::read_with_hmac_via_conn`. `pub(crate)` -- callers must
-    /// already hold a `&mut TrackedReadConnection`, and the only
-    /// path to that is through `read_via_slot`. Future `world.rs`
-    /// read helpers must also take `&mut TrackedReadConnection` to
-    /// preserve the type gate.
-    pub(crate) fn as_mut_conn(&mut self) -> &mut Connection {
-        &mut self.0
-    }
-
-    fn verify_schema(&self) -> rusqlite::Result<()> {
-        world_schema::verify(&self.0)
-    }
-}
-
 /// Per-world read slot lifecycle state.
 ///
-/// Visibility note (Codex P1): no `pub` modifier -- module-private.
-/// Sibling modules cannot construct `SlotState::Opening` and feed
-/// it through `OpeningTransition::promote` to mint a
-/// `TrackedReadConnection`. The bypass that an earlier draft of this
-/// PR allowed is now uncompilable from outside `read_cache.rs`.
+/// Visibility note: no `pub` modifier. This is private to the
+/// `read_cache` implementation tree, and only the state-machine module
+/// can promote an `Opening` slot into a `Ready(TrackedReadConnection)`.
 enum SlotState {
     Opening,
     Ready(StdMutex<TrackedReadConnection>),
@@ -203,70 +161,6 @@ struct ReadSlot {
     /// `try_evict_ready_slot`: take the write guard, require Ready, replace
     /// with Evicted, then remove the same Arc from the map.
     last_access: AtomicU64,
-}
-
-/// RAII guard for the Opening -> Ready/Tombstone transition. Without
-/// it, a panic during `Connection::open`, `busy_timeout`, or
-/// `pragma_update` would leave the slot stuck in `Opening`.
-///
-/// Visibility (Codex P1): no `pub` modifier. The whole point of v10
-/// is that `OpeningTransition::promote` is the only call site for
-/// `TrackedReadConnection::from_raw`; if `OpeningTransition::new`
-/// itself were `pub(crate)`, sibling modules could chain
-/// `OpeningTransition::new(&mut SlotState::Opening).promote(c)` and
-/// the type seal would be "ugly to write" rather than uncompilable.
-struct OpeningTransition<'a> {
-    state: &'a mut SlotState,
-    finalized: bool,
-}
-
-impl<'a> OpeningTransition<'a> {
-    fn new(state: &'a mut SlotState) -> Self {
-        Self {
-            state,
-            finalized: false,
-        }
-    }
-
-    /// Open succeeded. Wrap the connection (the ONLY
-    /// `TrackedReadConnection::from_raw` call site in the crate).
-    fn promote(mut self, conn: Connection) {
-        let tracked = TrackedReadConnection::from_raw(conn);
-        *self.state = SlotState::Ready(StdMutex::new(tracked));
-        self.finalized = true;
-    }
-
-    fn fail(mut self) {
-        *self.state = SlotState::Tombstone;
-        self.finalized = true;
-    }
-}
-
-impl<'a> Drop for OpeningTransition<'a> {
-    fn drop(&mut self) {
-        if !self.finalized {
-            *self.state = SlotState::Tombstone;
-        }
-    }
-}
-
-/// Test-only constructor for `TrackedReadConnection`. Available
-/// to other modules' `#[cfg(test)]` blocks (notably the schema-
-/// corruption test in `world.rs`) so a raw `Connection` can be
-/// wrapped without going through `OpeningTransition::promote`.
-///
-/// `pub(crate)` ONLY under `#[cfg(test)]`. In production builds
-/// this function does not exist; the only path to a
-/// `TrackedReadConnection` remains `OpeningTransition::promote`.
-/// The function name is deliberately verbose so any future call
-/// site is self-documenting as a test bypass.
-///
-/// See AGENTS.md section "Physics, not policy" -- production code path
-/// has zero bypasses; test code is allowed a single, named
-/// bypass that lives in `cfg(test)`.
-#[cfg(test)]
-pub(crate) fn test_only_wrap_raw_connection(conn: Connection) -> TrackedReadConnection {
-    TrackedReadConnection::from_raw(conn)
 }
 
 /// Atomic counters for /proc/pool.
@@ -437,364 +331,6 @@ impl ReadCache {
         }
     }
 
-    /// Read body + meta + latest hmac via the cached read path.
-    /// Thin wrapper over the generic `with_tracked_conn` machinery.
-    pub(crate) fn cached_read_with_hmac(
-        &self,
-        data: &std::path::Path,
-        world: &str,
-    ) -> rusqlite::Result<Option<(world::Stage, Option<String>)>> {
-        self.with_tracked_conn(data, world, world::read_with_hmac_via_conn)
-    }
-
-    /// O(1) chain-head read through the cached read path. Same
-    /// SlotState protocol as `cached_verify_chain` -- delete drains
-    /// in-flight head reads via the slot's write guard. Outer `None`
-    /// means the world's DB is missing; inner `None` means the chain
-    /// is empty (bootstrap shape).
-    pub(crate) fn cached_chain_head(
-        &self,
-        data: &std::path::Path,
-        world: &str,
-    ) -> rusqlite::Result<Option<Option<(i64, String)>>> {
-        self.with_tracked_conn(data, world, crate::audit::chain_head_via_conn)
-    }
-
-    /// Verify the audit chain through the cached read path (Bug 58).
-    /// Same SlotState protocol as `cached_read_with_hmac` -- delete
-    /// drains in-flight verifies via the slot's write guard. Closes
-    /// the v10 type-gate gap on the admin
-    /// `/proc/audit/{world}/verify` endpoint.
-    pub(crate) fn cached_verify_chain(
-        &self,
-        data: &std::path::Path,
-        world: &str,
-        key: &crate::engine_types::AuditHmacKey,
-    ) -> rusqlite::Result<Option<crate::audit::VerifyReport>> {
-        let key = key.clone_secret();
-        self.with_tracked_conn(data, world, move |conn| {
-            crate::audit::verify_chain_via_conn(conn, world, &key)
-        })
-    }
-
-    /// Historical body read through the cached read path. Same SlotState
-    /// protocol as ordinary cached reads: delete drains in-flight timeline
-    /// reads before unlinking the world database, and a tombstone produces
-    /// `Ok(None)` rather than opening a new fd.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn cached_read_timeline_body(
-        &self,
-        data: &std::path::Path,
-        address: &crate::timeline::TimelineAddress,
-        key: &crate::engine_types::AuditHmacKey,
-    ) -> rusqlite::Result<Option<TimelineReadResult>> {
-        let world = address.world().as_str();
-        let key = key.clone_secret();
-        self.with_tracked_conn(data, world, move |conn| {
-            Ok(crate::audit::read_timeline_body_via_conn(
-                conn, address, &key,
-            ))
-        })
-    }
-
-    /// Delete-side subject anchoring. Reads the latest body-bearing audit row
-    /// through the same SlotState protocol as ordinary reads, so delete's
-    /// later tombstone drain cannot race a bare fd.
-    pub(crate) fn cached_latest_body_head(
-        &self,
-        data: &std::path::Path,
-        world: &crate::engine_types::ValidatedWorldPath,
-        key: &crate::engine_types::AuditHmacKey,
-    ) -> rusqlite::Result<Option<crate::audit::AuditResult<Option<crate::audit::VerifiedBodyHead>>>>
-    {
-        let key = key.clone_secret();
-        self.with_tracked_conn(data, world.as_str(), move |conn| {
-            Ok(crate::audit::verified_latest_body_head_via_conn(
-                conn, world, &key,
-            ))
-        })
-    }
-
-    /// Run a closure with a `&mut TrackedReadConnection` obtained
-    /// through the SlotState protocol. Three-phase split:
-    ///   1. Cache hit (any state, regardless of cap)
-    ///   2. Cache miss + cap reached -> approximate eviction, or transient
-    ///   3. Cache miss + room -> slot-before-open lazy-init
-    ///
-    /// `Ok(None)` means the world's DB is missing (404). `Err(_)`
-    /// is propagated for real storage errors. The closure runs at
-    /// most once and returns its own `rusqlite::Result<R>`.
-    fn with_tracked_conn<F, R>(
-        &self,
-        data: &std::path::Path,
-        world: &str,
-        f: F,
-    ) -> rusqlite::Result<Option<R>>
-    where
-        F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
-    {
-        let path = world::world_db(data, world);
-        let mut f = Some(f);
-        let mut counted_miss = false;
-        let mut counted_capped = false;
-
-        for _ in 0..READ_CACHE_RETRY_BUDGET {
-            // PHASE 1 -- Cache hit (any state).
-            if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
-                self.touch_slot(&arc);
-                match self.invoke_via_slot(arc.clone(), &mut f)? {
-                    SlotRead::Done(value) => {
-                        self.best_effort_trim_over_cap(world);
-                        self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
-                        return Ok(value);
-                    }
-                    SlotRead::Opening => continue,
-                    SlotRead::Evicted => {
-                        self.remove_evicted_entry(world, &arc);
-                        continue;
-                    }
-                }
-            }
-
-            if !counted_miss {
-                self.metrics
-                    .read_cache_misses
-                    .fetch_add(1, Ordering::Relaxed);
-                counted_miss = true;
-            }
-
-            // PHASE 2 -- Cache miss + cap reached: approximate eviction, or
-            // transient tracked slot fallback.
-            if self.read_conns.len() >= self.max_entries {
-                if !counted_capped {
-                    self.metrics
-                        .read_cache_capped
-                        .fetch_add(1, Ordering::Relaxed);
-                    counted_capped = true;
-                }
-                if self.try_evict_oldest_sample(world) {
-                    continue;
-                }
-                return self.invoke_transient(&path, world, f.take().expect("read closure"));
-            }
-
-            // PHASE 3 -- Cache miss + room: slot-before-open lazy-init.
-            match path.try_exists() {
-                Ok(false) => return Ok(None),
-                Ok(true) => {}
-                Err(_) => {
-                    // Defer to the open: if metadata is unreadable, the
-                    // open itself will surface the actual error.
-                }
-            }
-
-            let new_slot = self.new_slot(SlotState::Opening);
-            // Cache the pointer up front so we can compare after the
-            // `or_insert_with` closure moves `insert_slot` into DashMap.
-            // Equivalent to `Arc::ptr_eq(&arc, &new_slot)`.
-            let new_slot_ptr = Arc::as_ptr(&new_slot);
-            let insert_slot = new_slot.clone();
-            // Take the write guard before publishing the Opening slot. Any
-            // racing reader that sees our slot will block until it is Ready,
-            // Tombstone, or Evicted instead of observing Opening as absence.
-            let new_guard = new_slot.inner.write().unwrap_or_else(|p| p.into_inner());
-            let arc = self
-                .read_conns
-                .entry(world.to_string())
-                .or_insert_with(move || insert_slot)
-                .value()
-                .clone();
-            let we_own_slot = Arc::as_ptr(&arc) == new_slot_ptr;
-
-            if we_own_slot {
-                let mut g = new_guard;
-                if matches!(&*g, SlotState::Opening) {
-                    let transition = OpeningTransition::new(&mut g);
-                    let init = open_verified_read_conn(&path);
-                    match init {
-                        Ok(c) => transition.promote(c),
-                        Err(e) => {
-                            transition.fail();
-                            drop(g);
-                            self.read_conns
-                                .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
-                            self.metrics
-                                .read_cache_open_fails
-                                .fetch_add(1, Ordering::Relaxed);
-                            if matches!(e.sqlite_error_code(), Some(ErrorCode::CannotOpen))
-                                && matches!(path.try_exists(), Ok(false))
-                            {
-                                return Ok(None);
-                            }
-                            return Err(e);
-                        }
-                    }
-                }
-            } else {
-                drop(new_guard);
-            }
-
-            self.touch_slot(&arc);
-            match self.invoke_via_slot(arc.clone(), &mut f)? {
-                SlotRead::Done(value) => {
-                    self.best_effort_trim_over_cap(world);
-                    return Ok(value);
-                }
-                SlotRead::Opening => {}
-                SlotRead::Evicted => {
-                    self.remove_evicted_entry(world, &arc);
-                }
-            }
-        }
-
-        log_read_cache_retry_budget_exhausted(world, "tracked");
-        self.invoke_transient(
-            &path,
-            world,
-            f.take().expect(
-                "read cache retry budget exhausted with no closure; \
-                 SlotRead::Done should have returned before budget fallback",
-            ),
-        )
-    }
-
-    fn invoke_transient<F, R>(
-        &self,
-        path: &std::path::Path,
-        world: &str,
-        f: F,
-    ) -> rusqlite::Result<Option<R>>
-    where
-        F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
-    {
-        let mut f = Some(f);
-        for _ in 0..READ_CACHE_RETRY_BUDGET {
-            // Fast-path: slot already exists (concurrent reader installed
-            // one, delete installed a tombstone, or eviction has not removed
-            // the map entry yet).
-            if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
-                self.touch_slot(&arc);
-                match self.invoke_via_slot(arc.clone(), &mut f)? {
-                    SlotRead::Done(value) => {
-                        self.best_effort_trim_over_cap(world);
-                        return Ok(value);
-                    }
-                    SlotRead::Opening => continue,
-                    SlotRead::Evicted => {
-                        self.remove_evicted_entry(world, &arc);
-                        continue;
-                    }
-                }
-            }
-
-            let transient_slot = self.new_slot(SlotState::Opening);
-            // Cache the pointer up front so we can compare after the
-            // `or_insert_with` closure moves `insert_slot` into DashMap.
-            // Equivalent to `Arc::ptr_eq(&arc, &transient_slot)`.
-            let transient_slot_ptr = Arc::as_ptr(&transient_slot);
-            let insert_slot = transient_slot.clone();
-            // Publish Opening only after its write guard is held; otherwise a
-            // racing reader can see Opening and mistake "not ready yet" for
-            // absence.
-            let new_guard = transient_slot
-                .inner
-                .write()
-                .unwrap_or_else(|p| p.into_inner());
-            let arc = self
-                .read_conns
-                .entry(world.to_string())
-                .or_insert_with(move || insert_slot)
-                .value()
-                .clone();
-            let we_own_slot = Arc::as_ptr(&arc) == transient_slot_ptr;
-
-            if we_own_slot {
-                let mut g = new_guard;
-                if matches!(&*g, SlotState::Opening) {
-                    let transition = OpeningTransition::new(&mut g);
-                    let init = open_verified_read_conn(path);
-                    match init {
-                        Ok(c) => transition.promote(c),
-                        Err(e) => {
-                            transition.fail();
-                            drop(g);
-                            self.read_conns
-                                .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
-                            self.metrics
-                                .read_cache_open_fails
-                                .fetch_add(1, Ordering::Relaxed);
-                            if matches!(e.sqlite_error_code(), Some(ErrorCode::CannotOpen))
-                                && matches!(path.try_exists(), Ok(false))
-                            {
-                                return Ok(None);
-                            }
-                            return Err(e);
-                        }
-                    }
-                }
-            } else {
-                drop(new_guard);
-            }
-
-            self.touch_slot(&arc);
-            let result = match self.invoke_via_slot(arc.clone(), &mut f)? {
-                SlotRead::Done(value) => Ok(value),
-                SlotRead::Opening => continue,
-                SlotRead::Evicted => {
-                    self.remove_evicted_entry(world, &arc);
-                    continue;
-                }
-            };
-
-            // Drain-before-remove (Bug 54, tightened by #138): write guard,
-            // mem::replace Evicted (drops Connection inside guard window --
-            // fd close happens here), drop guard, then remove_if. Evicted is
-            // deliberately not Tombstone: concurrent readers must retry and
-            // reopen an existing world rather than returning a spurious 404.
-            if we_own_slot {
-                {
-                    let mut g = arc.inner.write().unwrap_or_else(|p| p.into_inner());
-                    let old = std::mem::replace(&mut *g, SlotState::Evicted);
-                    drop(old);
-                    drop(g);
-                }
-                self.read_conns
-                    .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
-            }
-            self.best_effort_trim_over_cap(world);
-            return result;
-        }
-
-        log_read_cache_retry_budget_exhausted(world, "transient");
-        Err(read_cache_retry_budget_error(world, "transient"))
-    }
-
-    fn invoke_via_slot<F, R>(
-        &self,
-        arc: Arc<ReadSlot>,
-        f: &mut Option<F>,
-    ) -> rusqlite::Result<SlotRead<R>>
-    where
-        F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
-    {
-        let read_guard = arc.inner.read().unwrap_or_else(|p| p.into_inner());
-        match &*read_guard {
-            SlotState::Ready(tracked_mutex) => {
-                let mut tracked = tracked_mutex.lock().unwrap_or_else(|p| p.into_inner());
-                tracked.verify_schema()?;
-                let f = f.take().expect(
-                    "invoke_via_slot closure slot is empty; SlotRead::Opening \
-                     and SlotRead::Evicted may re-enter with the closure intact, \
-                     and SlotRead::Done must return immediately",
-                );
-                f(&mut tracked).map(|value| SlotRead::Done(Some(value)))
-            }
-            SlotState::Tombstone => Ok(SlotRead::Done(None)),
-            SlotState::Opening => Ok(SlotRead::Opening),
-            SlotState::Evicted => Ok(SlotRead::Evicted),
-        }
-    }
-
     /// Sync version. delete callers wrap this in `spawn_blocking` so
     /// the drain wait doesn't stall a Tokio worker.
     pub(crate) fn install_tombstone_blocking(&self, world: &str) {
@@ -840,6 +376,8 @@ impl ReadCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world;
+    use rusqlite::{ffi::ErrorCode, Connection};
     use std::path::PathBuf;
 
     fn test_key() -> crate::engine_types::AuditHmacKey {
@@ -1219,21 +757,6 @@ mod tests {
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn opening_transition_drop_sets_tombstone_on_panic_path() {
-        let slot = Arc::new(ReadSlot {
-            inner: StdRwLock::new(SlotState::Opening),
-            last_access: AtomicU64::new(0),
-        });
-        {
-            let mut g = slot.inner.write().unwrap();
-            let _t = OpeningTransition::new(&mut g);
-            // Drop _t without finalize.
-        }
-        let g = slot.inner.read().unwrap();
-        assert!(matches!(*g, SlotState::Tombstone));
     }
 
     #[test]
