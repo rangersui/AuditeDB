@@ -182,6 +182,7 @@ mod store;
 #[cfg(test)]
 mod test_support;
 mod timeline;
+mod timeline_dereference;
 mod world;
 mod world_generation;
 mod world_ops;
@@ -229,6 +230,11 @@ pub use path::{validate_world_name, NAMESPACE_PREFIXES};
 pub use timeline::{
     BodySha256, InvalidTimelineCoordinate, TimelineAddress, TimelineBody, TimelineCoordinate,
     TimelineCorruption, TimelineRead, TimelineSeq,
+};
+#[cfg(feature = "unstable-engine")]
+pub use timeline_dereference::{
+    TimelineDereference, VerifiedBodyHashMismatch, VerifiedGenerationMismatch, VerifiedMissingRow,
+    VerifiedNonBodyEvent,
 };
 #[cfg(feature = "unstable-engine")]
 pub use world_generation::WorldGeneration;

@@ -221,7 +221,7 @@ TimelineCoordinate
   -> live event row exists but is not body-bearing
      -> mint VerifiedNonBodyEvent and return NonBodyEvent
   -> event row exists but body hash differs from the requested coordinate
-     -> mint VerifiedAddressMismatch and return AddressMismatch
+     -> mint VerifiedBodyHashMismatch and return BodyHashMismatch
   -> verified subject DB and generation exist, but the requested seq is absent
      -> mint VerifiedMissingRow and return MissingRow
   -> event row shape is impossible or malformed after chain verification
@@ -251,7 +251,7 @@ such as:
 TimelineDereferenceV1 =
     Body(TimelineBody)                  // contains verified TimelineAddress
   | GenMismatch(VerifiedGenerationMismatch)
-  | AddressMismatch(VerifiedAddressMismatch)
+  | BodyHashMismatch(VerifiedBodyHashMismatch)
   | NonBodyEvent(VerifiedNonBodyEvent)
   | MissingRow(VerifiedMissingRow)
   | UnprovenCoordinate(TimelineCoordinate)
@@ -262,7 +262,7 @@ The exact Rust names can change, but the proof rule cannot:
 
 - only variants whose event row has been verified may carry `TimelineAddress`;
 - verified negative historical facts are proof values too. `GenMismatch`,
-  `AddressMismatch`, `NonBodyEvent`, and `MissingRow` must use opaque
+  `BodyHashMismatch`, `NonBodyEvent`, and `MissingRow` must use opaque
   private-field proof structs or private resolver-only constructors. A raw
   `TimelineCoordinate` is syntax, not proof;
 - `GenMismatch` requires an intact subject audit-chain verification before the
@@ -270,9 +270,9 @@ The exact Rust names can change, but the proof rule cannot:
   as harmless generation mismatch;
 - `NonBodyEvent` is distinct from `MissingRow` and `Corrupt`: the row exists and
   the chain is intact, but the event class does not carry a body;
-- `AddressMismatch` is distinct from `MissingRow` and `Corrupt`: the row exists,
-  but its body hash disagrees with the requested coordinate, so the resolver
-  must stop before any CAS lookup;
+- `BodyHashMismatch` is distinct from `MissingRow` and `Corrupt`: the row
+  exists, but its body hash disagrees with the requested coordinate, so the
+  resolver must stop before any CAS lookup;
 - retention states (`NeverRetained`, `Expired`) are not v1 HTTP outcomes. They
   require a verified address plus the retention / pruning proof described in
   `PLAN-cas-body-schema.md`;
@@ -313,7 +313,7 @@ The HTTP route maps the resolver outcome without substituting current state.
 | `Body` | 200 | historical body bytes |
 | `Body` via `HEAD` | 200 | empty |
 | `GenMismatch` | 409 | text reason |
-| `AddressMismatch` | 409 | text reason |
+| `BodyHashMismatch` | 409 | text reason |
 | `NonBodyEvent` | 404 | text reason |
 | `MissingRow` | 404 | text reason |
 | `UnprovenCoordinate` | 404 | text reason |
@@ -445,7 +445,7 @@ client asks for body_sha256=B
 ```
 
 If the resolver returns `MissingRow`, `Corrupt`, or performs a CAS lookup for
-`B`, the resolver failed. Correct result: typed `AddressMismatch` before CAS
+`B`, the resolver failed. Correct result: typed `BodyHashMismatch` before CAS
 lookup, mapped to `409 Conflict`.
 
 ### Counterexample I: Generation Mismatch Precedes Row Lookup
@@ -656,7 +656,7 @@ record the AGENTS endpoint checklist result:
   `Range`, `If-None-Match`, and `If-Range` for v1: no `304`, `206`, `416`,
   current-world ETag, or partial historical body;
 - proof-state tests for `GenMismatch` after intact audit-chain verification,
-  `AddressMismatch`, `NonBodyEvent`, `MissingRow`, `UnprovenCoordinate`,
+  `BodyHashMismatch`, `NonBodyEvent`, `MissingRow`, `UnprovenCoordinate`,
   malformed/corrupt event-row shape, internal distinction before HTTP mapping
   when two states share status, and explicit proof that v1 does not scan the
   delete ledger or emit `Gone`;

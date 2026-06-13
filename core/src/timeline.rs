@@ -143,7 +143,7 @@ pub enum InvalidTimelineCoordinate {
     BodySha256NotLowerHex,
 }
 
-/// Corruption detected while resolving a timeline address.
+/// Corruption detected while resolving a timeline address or coordinate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TimelineCorruption {
