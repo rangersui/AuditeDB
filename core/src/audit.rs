@@ -7,7 +7,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
-use crate::{engine_types::AuditHmacKey, world};
+use crate::{engine_types::AuditHmacKey, event::AuditEventKind, world};
 use std::{fmt, path::Path};
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
@@ -67,7 +67,7 @@ enum EmptyChain {
 #[allow(clippy::too_many_arguments)]
 pub fn append_with_conn_existing(
     conn: &mut Connection,
-    event_type: &str,
+    event_type: AuditEventKind,
     target: &str,
     body_sha256: &str,
     size: i64,
@@ -91,7 +91,7 @@ pub fn append_with_conn_existing(
 #[allow(clippy::too_many_arguments)]
 pub fn append_with_conn_genesis(
     conn: &mut Connection,
-    event_type: &str,
+    event_type: AuditEventKind,
     target: &str,
     body_sha256: &str,
     size: i64,
@@ -115,7 +115,7 @@ pub fn append_with_conn_genesis(
 #[allow(clippy::too_many_arguments)]
 fn append_with_conn_verified(
     conn: &mut Connection,
-    event_type: &str,
+    event_type: AuditEventKind,
     target: &str,
     body_sha256: &str,
     size: i64,
@@ -142,7 +142,7 @@ fn append_with_conn_verified(
 #[allow(clippy::too_many_arguments)]
 pub fn append_tx(
     audit_tx: &VerifiedAuditTx<'_, '_, '_>,
-    event_type: &str,
+    event_type: AuditEventKind,
     target: &str,
     body_sha256: &str,
     size: i64,
@@ -150,6 +150,7 @@ pub fn append_tx(
     headers: &[(String, String)],
 ) -> rusqlite::Result<String> {
     let tx = audit_tx.tx;
+    debug_assert!(event_type.class().notifies);
     let canonical = canonical_headers(headers);
     let meta_sha256 = meta_sha256_canonical(content_type, &canonical);
     let prev = tx
@@ -164,7 +165,7 @@ pub fn append_tx(
         audit_tx.key.as_slice(),
         EventHmacInput {
             prev: &prev,
-            event_type,
+            event_type: event_type.as_str(),
             target,
             body_sha256,
             size,
@@ -177,7 +178,7 @@ pub fn append_tx(
                               content_type, meta_sha256, hmac, prev_hmac)
            VALUES(datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?)"#,
         rusqlite::params![
-            event_type,
+            event_type.as_str(),
             target,
             body_sha256,
             size,
@@ -513,7 +514,7 @@ pub fn latest_hmac(data_root: &Path, world_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_support::test_core, world};
+    use crate::{event::AuditEventKind, test_support::test_core, world};
     use rusqlite::Connection;
 
     fn test_connection() -> Connection {
@@ -547,12 +548,20 @@ mod tests {
         AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
     }
 
-    fn hmac_for(event_type: &str, target: &str) -> String {
-        let c = test_connection();
-        let tx = c.unchecked_transaction().unwrap();
+    fn hmac_for_fields(event_type: &str, target: &str) -> String {
         let key = test_key();
-        let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-        append_tx(&audit_tx, event_type, target, "abc", 3, "text/plain", &[]).unwrap()
+        event_hmac(
+            key.as_slice(),
+            EventHmacInput {
+                prev: "",
+                event_type,
+                target,
+                body_sha256: "abc",
+                size: 3,
+                content_type: "text/plain",
+                meta_sha256: &meta_sha256_canonical("text/plain", &[]),
+            },
+        )
     }
 
     #[test]
@@ -568,8 +577,8 @@ mod tests {
     #[test]
     fn hmac_chain_domain_separates_adjacent_fields() {
         assert_ne!(
-            hmac_for("replace/home/", "x"),
-            hmac_for("replace", "/home/x")
+            hmac_for_fields("replace/home/", "x"),
+            hmac_for_fields("replace", "/home/x")
         );
     }
 
@@ -621,7 +630,7 @@ mod tests {
         let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
         let h1 = append_tx(
             &audit_tx,
-            "put",
+            AuditEventKind::Put,
             "home/a",
             "abc",
             3,
@@ -629,7 +638,16 @@ mod tests {
             &[("x-meta-author".to_owned(), "ranger".to_owned())],
         )
         .unwrap();
-        let h2 = append_tx(&audit_tx, "append", "home/a", "def", 6, "text/plain", &[]).unwrap();
+        let h2 = append_tx(
+            &audit_tx,
+            AuditEventKind::Append,
+            "home/a",
+            "def",
+            6,
+            "text/plain",
+            &[],
+        )
+        .unwrap();
         tx.commit().unwrap();
 
         let report = verify_connection(&c, &key).unwrap();
@@ -697,7 +715,16 @@ mod tests {
             let tx = c.transaction().unwrap();
             let key = test_key();
             let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-            append_tx(&audit_tx, "put", "home/a", "abc", 3, "text/plain", &[]).unwrap();
+            append_tx(
+                &audit_tx,
+                AuditEventKind::Put,
+                "home/a",
+                "abc",
+                3,
+                "text/plain",
+                &[],
+            )
+            .unwrap();
             tx.commit().unwrap();
         }
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
@@ -726,7 +753,16 @@ mod tests {
         let tx = c.transaction().unwrap();
         let key = test_key();
         let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
-        append_tx(&audit_tx, "put", "home/a", "abc", 3, "text/plain", &[]).unwrap();
+        append_tx(
+            &audit_tx,
+            AuditEventKind::Put,
+            "home/a",
+            "abc",
+            3,
+            "text/plain",
+            &[],
+        )
+        .unwrap();
         tx.commit().unwrap();
         c.execute("UPDATE events SET hmac='bad' WHERE id=1", [])
             .unwrap();
@@ -767,7 +803,7 @@ mod tests {
         let audit_tx = verify_appendable_tx_genesis_checked(&tx, &key).unwrap();
         append_tx(
             &audit_tx,
-            "put",
+            AuditEventKind::Put,
             "home/a",
             "abc",
             3,
