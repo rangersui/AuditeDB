@@ -453,6 +453,246 @@ last fence on this chase. Future Arc-backed resources (plugin
 worlds, sidecar caches, FastCGI connection pools) get the same
 treatment up front.
 
+## Sealed-Type Boundary Rules
+
+Three enforcement rules that make the "physics, not policy" doctrine
+concrete at API boundaries. These are review-blocking, not advisory.
+
+### Type Seal Policy
+
+This section takes precedence over the older "when not to bother"
+ergonomics guidance above whenever the value is proof-bearing. If a
+new or touched API accepts, returns, stores, or forwards a domain,
+security, authority, resource-lifetime, or storage-layout value, the
+proof travels with the value. Ergonomics can choose runtime vs
+compile-time enforcement only for invariants that do not carry such a
+proof.
+
+New and touched internal APIs MUST consume validated/sealed types
+(`ValidatedWorldPath`, `SecretBytes`, `AuditHmacKey`,
+`TrackedReadConnection`, …) whenever the value carries domain,
+security, authority, resource-lifetime, or storage-layout meaning.
+Existing unsealed APIs are debt, not precedent: a PR may leave
+unrelated legacy debt alone, but it may not spread it to new call
+sites.
+
+Raw primitives (`&str`, `&[u8]`, `u64`) are permitted only in four
+places:
+
+1. Parse/validation constructors that mint the sealed type.
+2. The final intended primitive sink that binds to OS / SQLite /
+   FFI / wire APIs. "Final" is not enough: the sink must be the
+   operation the seal exists to permit. Binding a validated world path
+   into a SQL query is a sink; logging a secret or returning it over a
+   response body is exfiltration, not a boundary exception.
+3. Plain mechanical values whose primitive form is the domain
+   (counts, lengths, byte offsets, durations) and carries no missing
+   proof. The examples are not blanket permission: a quota, generation,
+   TTL, cursor, or offset that carries authority or storage identity
+   needs a type.
+4. Opaque payload bytes whose primitive form is the stored data
+   (`&[u8]`, `Bytes`, `Vec<u8>`). Payload helpers may hash, copy, or
+   transform bytes. The path/key/secret/cursor describing those bytes
+   still needs its own seal.
+
+"SQLite boundary" means the final bind/unbind expression, not any
+helper that happens to run near SQL. `world_db(data, world: &str)` is
+not a boundary; `params![world.as_str()]` at the call site may be.
+
+If a non-boundary proof-bearing raw value seems unavoidable, the fix is
+a sealed type or a narrower final-boundary wrapper that accepts the
+sealed type and unwraps it only inside the boundary expression. A
+PR-description waiver or naming convention is not a type seal.
+
+**Origin:** the core/ path audit found `ValidatedWorldPath` reaches the
+public Engine API, then gets unwrapped before lower storage helpers:
+`world.rs` internals (`open`/`world_db`/`metadata`) all take `&str`, so
+the seal is strong at the facade and thin near the side effect. The
+proof must reach the side-effect site, the way `TrackedReadConnection`
+carries it all the way to SQL.
+
+### FFI Boundary Rule
+
+FFI exports lower through generated ABI / FFI-shaped types — that is
+physics, not a style choice.
+
+After crossing back into Rust, FFI code may do only boundary work on
+raw values: null checks, length checks, `CStr` / slice construction,
+UTF-8 decoding, ownership conversion, and calls to validators. Before
+dispatching to any non-boundary Rust function/method or any engine/core
+operation, it MUST re-seal into validated types. If no seal exists for
+a new/touched domain-security-resource value, creating that seal is
+part of the change. Existing unsealed FFI values such as raw numeric
+resume cursors are debt, not precedent: touching that path must either
+seal it or keep the raw value trapped at the boundary. A proof-bearing
+raw `String`/`Vec<u8>`/`u64` that reaches any non-boundary helper on
+the Rust side of an FFI entry is a review-blocking defect. Opaque
+payload bytes may remain raw payloads.
+
+**Origin:** the v8.3.0 HMAC key seal (#322): `ffi` re-seals HMAC
+secrets at the boundary via `AuditHmacKey::new` and maps rejections to
+`FfiError::InvalidSecret` with the reason intact. Raw payload bytes
+remain payload bytes; raw HMAC secrets do not. Existing raw token and
+cursor paths are debt covered by this rule, not proof that the boundary
+is safe.
+
+### Error Handling Policy
+
+Reason-erasing calls on validation results are BANNED outside
+`#[cfg(test)]`: `.ok()`, `.unwrap_or(..)`, `.unwrap_or_default()`,
+`.unwrap_or_else(..)`, `filter_map(Result::ok)`, and broad
+`map_err(|_| ...)` conversions that discard the validator's reason.
+Validation errors MUST propagate with their reason.
+
+A validator that returns `Err("must be at least 32 bytes; got 16")`
+exists for exactly one reader: the operator who set the value. Eating
+the error with `.ok()` converts "your key is too short" into
+"no key configured" — a worse lie than a crash.
+
+For validation-bearing types, lossy or coercive constructors must be
+boundary-only and named as such (`from_wire_lossy`, `canonicalize_*`,
+etc.). Internal protected paths use fail-loud constructors (`try_new`,
+`parse`, `validate`) or already-sealed values. Silent coercion plus
+silent filtering is how a typo'd subscribe pattern becomes a
+subscription that never fires and never errors.
+
+**Origin:** the v8.3.0 HMAC key seal (#322): the `bin` env parser had
+to become `Result<Option<AuditHmacKey>, InvalidHmacKey>` instead of an
+optional raw byte parser, so short-key rejections reached the operator.
+This rule keeps validation paths from drifting back toward "absence,"
+"invalid," and "silently ignored" all meaning the same thing.
+
+## Panic Discipline
+
+Target state: production crates carry
+`#![deny(clippy::unwrap_used, clippy::expect_used)]` at the crate root
+(tests get a module-level `allow`). Until the lint gate is landed in a
+dedicated PR, reviewers enforce the same rule on new and touched
+production code.
+
+A new production `unwrap`/`expect` requires a local `#[allow]` with a
+one-line invariant comment. That escape is only for impossible states
+inside this codebase, never for validation, IO, config, storage, FFI,
+auth, audit, or user-controlled input. Expected failures are protocol
+states (`507`/`413`/`503`/`401`), never panics. Panics are reserved for
+invariant violations that indicate a bug in *this* codebase, and even
+those prefer typed `InternalInvariant` errors at public boundaries.
+
+**Origin:** the core/ audit found that most `unwrap`/`expect` use was
+test-only, while production relied on review discipline. The lint gate
+is the planned physics; this rule prevents new debt before that gate
+lands.
+
+## Security Constants Cite Their Standard
+
+New and touched security-relevant constants — key lengths, hash output
+sizes, nonce sizes, iteration counts, length prefixes,
+security-meaningful timeouts — carry a doc comment citing the governing
+standard when one determines the value. When the value is local policy
+or capacity engineering, cite the local threat model or design invariant
+instead. Existing bare constants are debt, not precedent.
+
+A bare `const MIN_KEY: usize = 32;` is magic: a reviewer cannot evaluate
+whether 32 is right, and a future "simplifier" can lower it without
+tripping anything but vibes. `/// RFC 2104: HMAC keys SHOULD be at least
+the hash output length (SHA-256 = 32 bytes)` makes the constant
+falsifiable — wrong values now contradict a citation, not a feeling.
+
+**Origin:** `MIN_HMAC_KEY_BYTES = 32` (#322), grounded in RFC 2104. The
+domain-separation framing in `hmac_field` carries the same obligation
+when a standard governs the choice; operational caps carry local
+rationale instead.
+
+## Design First
+
+Behavior-level changes — new semantics, new wire contracts, storage format
+changes, new subsystems — get a `PLAN-*.md` design document reviewed to
+convergence BEFORE the first implementation line. Code-level changes
+(bug fixes within existing semantics, refactors, doc sync) do not.
+
+Every behavior-level plan carries a **Precondition Challenge** section:
+
+- hidden assumptions in the proposal;
+- each assumption classified as physics or policy;
+- policy assumptions either dissolved or explicitly kept with rationale;
+- residual physics after the policy assumptions are removed;
+- the smallest counterexample that would falsify the proposed frame.
+
+This is mandatory for listen/resume, CAS, storage-history, auth, audit,
+wire-contract, and delete semantics. A plan that says "given X cannot
+exist" must prove X is physics. If X is only current implementation
+policy, the plan either dissolves it or states why the policy is being
+kept. Do not optimize inside a false premise.
+
+Changing a plan is usually much cheaper than changing code. The design
+review's job is to ask "should this machine exist, and is its frame
+right?" — questions a code review structurally cannot ask, because by
+then the frame is poured concrete.
+
+Design review exists to catch frame errors before implementation. Keep
+those fights in the plan while the code is still cheap to change.
+
+## Implementation Stack Discipline
+
+Behavior-level implementation follows the reviewed plan as tiny stacked
+PRs. Each implementation PR is based on the previous layer, not on
+master, until the stack is drained. A layer must have one concern, a
+small reviewable diff, and a base that already passed review. If the
+next change would make the stack deeper than the cascade limits above,
+drain from the bottom before adding more layers.
+
+Implementation PR bodies record:
+
+- base branch / prior layer;
+- exact plan section implemented;
+- production-line diff size;
+- tests or checks run;
+- review round ledger: scientist lenses used, QA/enforcement reviewer,
+  confirmed P0–P2 findings, and the fresh round that cleared them.
+
+No implementation PR may skip the prior layer's unresolved P0–P2
+findings by changing base or batching the next layer on top.
+
+## Fleet Review Convergence Gate
+
+From this rule onward, every substantive PR and every substantive
+design-document change goes through multi-agent Monte Carlo review
+rounds: independent blind scientist-lens reviewers (different
+failure-mode assignments, no shared context, no author reasoning) plus
+a separate QA/enforcement reviewer that checks the process itself
+against this file and the active skills. Behavior-level plans and
+semantic PRs include at least one Popper/Precondition reviewer whose job
+is to falsify the frame before implementation. For purely mechanical
+changes, the QA reviewer records why that precondition pass is not
+needed. P0–P2 findings get two
+adversarial verifiers. The merge/freeze gate is a **full fresh round
+with zero confirmed P0–P2**. P3 notes are fixed on the spot with the
+reviewer's prescribed wording or explicitly ledgered.
+
+Every gated PR or design freeze records its review evidence in the PR
+body, tracked design note, or another durable review artifact. The
+ledger names the scientist lenses used, the QA/enforcement reviewer,
+the active skills checked, confirmed P0–P2 findings, verifier evidence
+for those findings, fixes applied, and the fresh round that cleared
+them.
+
+Round hygiene, non-negotiable:
+
+- Fresh agents every round — reviewers never see prior judgments
+  (independence is the entry ticket; correlated reviewers are an echo).
+- Briefs carry facts (file coordinates, neutral intent statements, a
+  minimal known-accepted list only when needed to avoid re-litigating
+  closed P3/spec-noise) — never the author's self-assessment. This is
+  a deliberate independence tradeoff, not pure blindness.
+- Conflicting verdicts between verifiers are adjudicated by reading the
+  source, never by averaging agents.
+- Each round's repair text is the next round's primary target — docs and
+  claims get ground down until they are exactly true.
+
+The purpose is mechanical: narrower artifacts plus fresh lenses make
+review evidence auditable, and the same loop at design stage makes
+Design First enforceable rather than aspirational.
+
 ## Endpoint Change Checklist
 
 Every new binary-adapter route should pass the same small checklist before review:
