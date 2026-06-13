@@ -277,6 +277,18 @@ struct EventHmacInput<'a> {
     content_type: &'a str,
     meta_sha256: &'a str,
 }
+pub fn chain_head_via_conn(
+    tracked: &mut crate::read_cache::TrackedReadConnection,
+) -> rusqlite::Result<Option<(i64, String)>> {
+    tracked
+        .as_mut_conn()
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), hmac FROM events ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, hmac_label(&r.get::<_, String>(1)?))),
+        )
+        .optional()
+}
 
 /// Verify the audit chain through a `TrackedReadConnection` (the
 /// SlotState-tracked read path). Mirrors `world::read_with_hmac_via_conn`

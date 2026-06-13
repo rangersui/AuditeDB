@@ -202,8 +202,8 @@ pub use engine::ShutdownToken;
 pub use engine::{Engine, EngineBuildError, EngineBuilder, EngineError};
 #[cfg(feature = "unstable-engine")]
 pub use engine_introspection::{
-    AuditBroken, AuditValid, AuditVerify, DfSnapshot, InvalidProcPath, PoolSnapshot, ProcEndpoint,
-    ValidatedProcPath, WorldUsage,
+    AuditBroken, AuditValid, AuditVerify, DfSnapshot, HeadStamp, InvalidProcPath, PoolSnapshot,
+    ProcEndpoint, ValidatedProcPath, WorldUsage,
 };
 #[cfg(feature = "unstable-engine")]
 pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};
