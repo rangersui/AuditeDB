@@ -414,3 +414,60 @@ Focused validation:
 
 This addendum still does not claim GitHub CI is green. The live source of truth
 after push remains GitHub CI.
+
+## FFI Dereference + Opaque Cursor Addendum
+
+Fresh review round after the local cascade repair:
+
+- Wegener the 2nd, Mencius/Locke type-seal review: CLEAN. Verified that raw
+  FFI timeline coordinate fields stop at the adapter boundary, are immediately
+  converted with `TimelineCoordinate::from_wire_parts`, then pass through
+  read auth, `ReadPermit`, read-cache tracking, audit-chain verification, and
+  proof-bearing `TimelineDereference` outcomes. No P0-P3 authority leaks.
+- Turing the 2nd, Popper/Bacon falsification review: BLOCK. Found P1 SDK
+  blackbox still accepted integer-only SSE ids; P2 FFI dereference test read
+  the coordinate before overwriting the world; P3 FFI invalid-coordinate test
+  covered only the memory-world case. Also noted that decimal
+  `Last-Event-ID` is still intentionally accepted as a legacy resume input,
+  so the correct claim is: newly emitted SSE ids are opaque `epoch:seq`
+  cursors, while legacy decimal resume input remains compatibility syntax and
+  is treated as a foreign/stale cursor by core replay planning.
+- Cicero the 3rd, AGENTS/skills process QA: BLOCK. Found that the current
+  local head lacked ledger evidence for `f7fbf67` and the latest validation.
+  Found no code/process P2 apart from stale ledger evidence.
+- Kierkegaard the 2nd, Noether/Poincare topology review: local graph clean.
+  Confirmed `22r19` through `22r41` form a contiguous merge cascade and
+  `22r41` contains local `22r40`, `f11d172`, and `f7fbf67`. Noted that origin
+  is stale until the local cascade is pushed, and that the local-only
+  `stack/22r42-sdk-reactor-timeline-plan` pointer should not be pushed as part
+  of this repair.
+
+Fixes added after that round:
+
+- `22r40`: `4996418 Strengthen FFI timeline dereference tests`
+  moves the FFI historical dereference assertion after a later append to the
+  same world, so a current-body fallback would fail, and expands raw coordinate
+  rejection coverage to memory worlds, uppercase generation, zero sequence, and
+  malformed body hash.
+- `22r41`: `c99ffbe Require opaque SSE cursor ids in SDK blackbox`
+  makes the SDK blackbox reject integer-only emitted SSE ids. Legacy decimal
+  `Last-Event-ID` input remains intentionally covered by bin/core tests as
+  compatibility, but emitted ids must be `epoch:seq`.
+
+Full local validation after those fixes on
+`stack/22r41-sdk-timeline-coordinate`:
+
+- `cargo test --manifest-path core/Cargo.toml --features unstable-engine`:
+  201 passed, 2 ignored; doc tests 17 passed.
+- `cargo test --manifest-path bin/Cargo.toml --features unstable-engine`:
+  150 passed.
+- `cargo test --manifest-path ffi/Cargo.toml`: 25 passed; doc tests 0
+  passed/0 failed.
+- `python sdk/tests/test_tools.py`: pass.
+- `python sdk/tests/e2e_blackbox.py`: 249 checks passed with a real release
+  build, including opaque cursor replay and historical timeline reads after
+  overwrite.
+
+This addendum still does not claim GitHub CI is green. The local cascade is
+ahead of origin until pushed, and GitHub CI remains the post-push source of
+truth.
