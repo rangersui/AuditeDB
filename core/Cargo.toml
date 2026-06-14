@@ -25,6 +25,7 @@ hex = "0.4"
 percent-encoding = "2"
 dashmap = "6"
 tracing = { version = "0.1", optional = true }
+getrandom = { version = "0.2", default-features = false }
 
 [features]
 default = ["bundled-sqlite", "unstable-engine"]
