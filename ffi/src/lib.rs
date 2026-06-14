@@ -146,6 +146,23 @@ impl FfiEngine {
         Ok(self.engine.read(&world, tier.try_into()?)?.map(Into::into))
     }
 
+    /// Dereferences an exact historical timeline coordinate.
+    ///
+    /// Foreign callers pass raw coordinate fields at the ABI boundary. The FFI
+    /// adapter immediately validates them into the core `TimelineCoordinate`
+    /// proof before the Engine touches storage.
+    pub fn dereference_timeline_coordinate(
+        &self,
+        coordinate: FfiTimelineCoordinate,
+        tier: FfiAccessTier,
+    ) -> Result<FfiTimelineDereference, FfiError> {
+        let coordinate = coordinate.try_into_core()?;
+        Ok(self
+            .engine
+            .dereference_timeline_coordinate(&coordinate, tier.try_into()?)?
+            .into())
+    }
+
     /// Replaces a world with the provided representation.
     pub fn replace(
         &self,
@@ -890,7 +907,32 @@ mod tests {
             .expect("first write succeeds");
         let first = initial_subscription.next(1_000);
         assert_eq!(first.kind, FfiSubscriptionNextKind::Event);
-        let first_cursor = first.event.expect("first live event").cursor;
+        let first_event = first.event.expect("first live event");
+        let first_coordinate = FfiTimelineCoordinate {
+            world: first_event.timeline_world.clone().expect("timeline world"),
+            generation: first_event
+                .timeline_generation
+                .clone()
+                .expect("timeline generation"),
+            seq: first_event.timeline_seq.expect("timeline seq"),
+            body_sha256: first_event
+                .timeline_body_sha256
+                .clone()
+                .expect("timeline body hash"),
+        };
+        let historical = engine
+            .dereference_timeline_coordinate(first_coordinate.clone(), FfiAccessTier::Read)
+            .expect("timeline coordinate dereferences");
+        assert_eq!(historical.kind, FfiTimelineDereferenceKind::Body);
+        assert_eq!(
+            historical
+                .representation
+                .expect("historical representation")
+                .body,
+            b"first"
+        );
+        assert_eq!(historical.coordinate, Some(first_coordinate));
+        let first_cursor = first_event.cursor;
         initial_subscription.close();
 
         engine
@@ -933,6 +975,24 @@ mod tests {
         let event = live.event.expect("live event");
         assert_eq!(event.verb, FfiChangeVerb::Append);
         assert_eq!(event.path, "home/events/a");
+    }
+
+    #[test]
+    fn timeline_coordinate_rejects_raw_invalid_ffi_fields() {
+        let engine = test_engine("timeline-invalid-coordinate");
+        let err = engine
+            .dereference_timeline_coordinate(
+                FfiTimelineCoordinate {
+                    world: "tmp/not-durable".to_owned(),
+                    generation: "0123456789abcdef0123456789abcdef".to_owned(),
+                    seq: 1,
+                    body_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                        .to_owned(),
+                },
+                FfiAccessTier::Read,
+            )
+            .expect_err("memory timeline coordinates must be rejected at FFI boundary");
+        assert!(matches!(err, FfiError::InvalidConfig { .. }));
     }
 
     #[test]
