@@ -383,3 +383,34 @@ Full local validation after those fixes on
 
 This ledger still does not claim GitHub CI is green. The live source of truth
 after push remains GitHub CI.
+
+## Post-Push CI Addendum
+
+After pushing the reopened QA fixes, live GitHub CI found two stack-local
+compile/smoke failures:
+
+- #342 / `22r26`: FFI artifact smoke still called
+  `engine.subscribe("home/*", e.FfiAccessTier.READ, None)` after the FFI
+  boundary changed to `FfiSubscriptionResume`.
+- #352 / `22r36`: the SSE mismatch test still passed raw `None` to
+  `Engine::subscribe` after the Core boundary changed to `SubscriptionResume`.
+
+Fixes landed at the lowest affected layers:
+
+- `22r19`: `.github/workflows/ffi-artifacts.yml` and
+  `.github/workflows/release.yml` now pass
+  `e.FfiSubscriptionResume(after_event_id=None)` in their smoke scripts.
+- `22r29`: `sse_change_event_drops_mismatched_timeline_address` now passes
+  `SubscriptionResume::none()`.
+
+Focused validation:
+
+- `22r29`: `cargo test --manifest-path bin/Cargo.toml --no-run` passed.
+- `22r36`: `cargo test --manifest-path bin/Cargo.toml --no-run` passed.
+- Stack-wide source scans found no raw subscribe-resume shapes in Core/bin/FFI
+  code and no old workflow smoke call.
+- Adjacent branch ancestry from `22r19` through `22r41`: pass.
+- Pre-push fast gates passed before the repair branches were pushed again.
+
+This addendum still does not claim GitHub CI is green. The live source of truth
+after push remains GitHub CI.
