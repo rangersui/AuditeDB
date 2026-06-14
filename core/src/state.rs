@@ -57,6 +57,17 @@ fn next_event_id(counter: &EventCounter) -> u64 {
     counter.fetch_add(1, Ordering::Relaxed) + 1
 }
 
+/// Newest event id this process has issued, or 0 before the first event.
+///
+/// Listen ids are process-local: the counter resets on every engine start.
+/// A resume cursor greater than this value must come from another process
+/// lifetime and cannot be used as a live-stream floor.
+#[cfg(target_has_atomic = "64")]
+#[inline]
+pub(crate) fn last_issued_event_id(counter: &EventCounter) -> u64 {
+    counter.load(Ordering::Relaxed)
+}
+
 #[cfg(not(target_has_atomic = "64"))]
 #[inline]
 fn next_event_id(counter: &EventCounter) -> u64 {
@@ -65,6 +76,35 @@ fn next_event_id(counter: &EventCounter) -> u64 {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *next = next.saturating_add(1);
     *next
+}
+
+/// Newest event id this process has issued, or 0 before the first event.
+///
+/// Listen ids are process-local: the counter resets on every engine start.
+/// A resume cursor greater than this value must come from another process
+/// lifetime and cannot be used as a live-stream floor.
+#[cfg(not(target_has_atomic = "64"))]
+#[inline]
+pub(crate) fn last_issued_event_id(counter: &EventCounter) -> u64 {
+    *counter
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Test-only counter minting bypass. Production ids advance only through
+/// `next_event_id`.
+#[cfg(test)]
+pub(crate) fn test_only_set_event_counter(counter: &EventCounter, value: u64) {
+    #[cfg(target_has_atomic = "64")]
+    {
+        counter.store(value, Ordering::Relaxed);
+    }
+    #[cfg(not(target_has_atomic = "64"))]
+    {
+        *counter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
+    }
 }
 
 pub(crate) struct StorageReservationError {
