@@ -78,6 +78,16 @@ pub struct InvalidWorldPath;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubscribePattern(String);
 
+/// Checked resume cursor for an Engine subscription.
+///
+/// Protocol adapters may parse raw wire values such as `Last-Event-ID`, but
+/// core replay code only accepts this named type so a naked event id cannot be
+/// confused with a timeline sequence, audit row id, or byte offset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SubscriptionResume {
+    after_event_id: Option<u64>,
+}
+
 /// Access tier granted to a caller after token verification.
 ///
 /// Tiers are linearly inclusive: `Approve` covers `Write`, `Write` covers
@@ -515,6 +525,30 @@ impl SubscribePattern {
     /// Returns the normalized pattern string.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl SubscriptionResume {
+    /// Starts a fresh live subscription with no replay cursor.
+    pub fn none() -> Self {
+        Self {
+            after_event_id: None,
+        }
+    }
+
+    /// Replays events after `id` before switching to live delivery.
+    pub fn after_event_id(id: u64) -> Self {
+        Self {
+            after_event_id: Some(id),
+        }
+    }
+
+    pub(crate) fn after_event_id_raw(self) -> Option<u64> {
+        self.after_event_id
+    }
+
+    pub(crate) fn is_replay(self) -> bool {
+        self.after_event_id.is_some()
     }
 }
 
