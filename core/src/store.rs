@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn worlds_store_content_type_not_private_extensions() {
         let (core, dir) = test_core("content-type");
-        core.write_world("home/pdf", b"%PDF-1.7", "application/pdf", &[])
+        core.test_only_write_world("home/pdf", b"%PDF-1.7", "application/pdf", &[])
             .unwrap();
 
         let stage = core.read_world(&world_path("home/pdf")).unwrap().unwrap();
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn memory_worlds_do_not_create_sqlite_files_or_audit_chain() {
         let (core, dir) = test_core("memory-world");
-        core.write_world(
+        core.test_only_write_world(
             "tmp/scratch",
             b"draft",
             "text/plain; charset=utf-8",
