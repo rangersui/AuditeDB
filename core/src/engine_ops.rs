@@ -167,11 +167,11 @@ impl<'a> EngineOps<'a> {
 
     fn open_subscription(&self, permit: SubscribePermit, since: Option<u64>) -> EngineSubscription {
         let rx = self.core.events.subscribe();
-        let (lag, replay, live_floor) = replay_after(self.core, since, &permit.pattern);
+        let (interruption, replay, live_floor) = replay_after(self.core, since, &permit.pattern);
         let replay_mode = since.is_some();
         let mut initial = VecDeque::new();
-        if let Some(skipped) = lag {
-            initial.push_back(Err(SubscriptionRecvError::Lagged { skipped }));
+        if let Some(err) = interruption {
+            initial.push_back(Err(err.into()));
         }
         initial.extend(replay.into_iter().map(Ok));
         EngineSubscription::new(
@@ -395,11 +395,35 @@ struct NoopDeleteTrace;
 
 impl DeleteTraceHooks for NoopDeleteTrace {}
 
+/// Non-terminal condition surfaced before replay switches to live delivery.
+///
+/// This is deliberately narrower than [`SubscriptionRecvError`]: replay setup
+/// can report loss or a stale cursor, but it cannot honestly report `Closed`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReplayInterruption {
+    /// The ring evicted `skipped` events between the cursor and the oldest
+    /// retained event.
+    Lagged { skipped: u64 },
+    /// The cursor is from an id space ahead of this process's current counter.
+    CursorAhead { since: u64, newest: u64 },
+}
+
+impl From<ReplayInterruption> for SubscriptionRecvError {
+    fn from(value: ReplayInterruption) -> Self {
+        match value {
+            ReplayInterruption::Lagged { skipped } => Self::Lagged { skipped },
+            ReplayInterruption::CursorAhead { since, newest } => {
+                Self::CursorAhead { since, newest }
+            }
+        }
+    }
+}
+
 pub(crate) fn replay_after(
     core: &Core,
     since: Option<u64>,
     pattern: &SubscribePattern,
-) -> (Option<u64>, Vec<ChangeEvent>, u64) {
+) -> (Option<ReplayInterruption>, Vec<ChangeEvent>, u64) {
     let Some(last_id) = since else {
         return (None, Vec::new(), 0);
     };
@@ -407,6 +431,17 @@ pub(crate) fn replay_after(
         .event_log
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    let newest = crate::state::last_issued_event_id(&core.next_event);
+    if last_id > newest {
+        return (
+            Some(ReplayInterruption::CursorAhead {
+                since: last_id,
+                newest,
+            }),
+            Vec::new(),
+            0,
+        );
+    }
     let gap = log.front().and_then(|oldest| {
         let expected_next = last_id.saturating_add(1);
         if expected_next < oldest.id {
@@ -422,7 +457,11 @@ pub(crate) fn replay_after(
         .map(Into::into)
         .collect();
     let live_floor = replay.last().map(|change| change.id).unwrap_or(last_id);
-    (gap, replay, live_floor)
+    (
+        gap.map(|skipped| ReplayInterruption::Lagged { skipped }),
+        replay,
+        live_floor,
+    )
 }
 
 impl From<Preconditions> for etag::Preconditions {
@@ -470,7 +509,7 @@ impl From<AccessTier> for auth::Tier {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use bytes::Bytes;
 
@@ -538,11 +577,15 @@ mod tests {
                 });
             }
         }
+        crate::state::test_only_set_event_counter(&engine.core().next_event, 12);
 
         let pattern = SubscribePattern::new("home/task/*");
-        let (gap, replay, floor) = replay_after(engine.core(), Some(5), &pattern);
+        let (interruption, replay, floor) = replay_after(engine.core(), Some(5), &pattern);
 
-        assert_eq!(gap, Some(4));
+        assert_eq!(
+            interruption,
+            Some(ReplayInterruption::Lagged { skipped: 4 })
+        );
         assert_eq!(replay.len(), 3);
         assert_eq!(replay[0].id, 10);
         assert_eq!(replay[0].path.as_str(), "home/task/10");
@@ -565,13 +608,45 @@ mod tests {
                 timeline_address: None,
             });
         }
+        crate::state::test_only_set_event_counter(&engine.core().next_event, u64::MAX);
 
         let pattern = SubscribePattern::new("home/task/*");
-        let (gap, replay, floor) = replay_after(engine.core(), Some(u64::MAX), &pattern);
+        let (interruption, replay, floor) = replay_after(engine.core(), Some(u64::MAX), &pattern);
 
-        assert_eq!(gap, None);
+        assert_eq!(interruption, None);
         assert!(replay.is_empty());
         assert_eq!(floor, u64::MAX);
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replay_after_flags_cursor_ahead_of_current_process() {
+        let (engine, root) = test_engine("replay-ahead");
+        {
+            let mut log = engine.core().event_log.lock().unwrap();
+            log.push_back(event::ChangeEvent {
+                id: 1,
+                verb: ChangeVerb::Replace,
+                path: "/home/task/a".to_string(),
+                etag: "hmac-1".to_string(),
+            });
+        }
+        crate::state::test_only_set_event_counter(&engine.core().next_event, 1);
+
+        let pattern = SubscribePattern::new("home/task/*");
+        let (interruption, replay, floor) = replay_after(engine.core(), Some(42), &pattern);
+
+        assert_eq!(
+            interruption,
+            Some(ReplayInterruption::CursorAhead {
+                since: 42,
+                newest: 1
+            })
+        );
+        assert!(replay.is_empty());
+        assert_eq!(floor, 0, "foreign cursor must not become live floor");
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
@@ -991,6 +1066,48 @@ mod tests {
             }
             _ => panic!("expected append event address body"),
         }
+
+        drop(subscription);
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_subscription_with_stale_cursor_signals_then_streams_live() {
+        let recv_budget = Duration::from_secs(10);
+        let (engine, root) = test_engine("subscribe-stale-cursor");
+        let pattern = SubscribePattern::new("home/stale/*");
+        let mut subscription = engine
+            .subscribe(&pattern, AccessTier::Anon, Some(42))
+            .expect("subscription opens with stale cursor");
+
+        let first = tokio::time::timeout(recv_budget, subscription.recv())
+            .await
+            .expect("first recv must not block");
+        assert!(matches!(
+            first,
+            Err(SubscriptionRecvError::CursorAhead {
+                since: 42,
+                newest: 0
+            })
+        ));
+
+        let world = ValidatedWorldPath::new("home/stale/a").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"alive"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let change = tokio::time::timeout(recv_budget, subscription.recv())
+            .await
+            .expect("live recv must not block after cursor warning")
+            .expect("live event must flow after cursor warning");
+        assert_eq!(change.path.as_str(), "home/stale/a");
 
         drop(subscription);
         drop(engine);
