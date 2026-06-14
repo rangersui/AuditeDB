@@ -16,7 +16,8 @@ use crate::{
     engine_error::{read_error_to_engine, write_error_to_engine},
     engine_types::{
         AccessTier, ChangeEvent, EngineSubscription, Preconditions, ReadResult, Representation,
-        SubscribePattern, SubscriptionRecvError, ValidatedWorldPath, WriteKind, WriteResult,
+        SubscribePattern, SubscriptionRecvError, SubscriptionResume, ValidatedWorldPath, WriteKind,
+        WriteResult,
     },
     etag, event,
     timeline::{TimelineAddress, TimelineRead},
@@ -133,10 +134,10 @@ impl<'a> EngineOps<'a> {
         &self,
         pattern: &SubscribePattern,
         tier: auth::Tier,
-        since: Option<u64>,
+        resume: SubscriptionResume,
     ) -> Result<EngineSubscription, EngineError> {
         let permit = self.authorize_subscribe(pattern, tier)?;
-        Ok(self.open_subscription(permit, since))
+        Ok(self.open_subscription(permit, resume))
     }
 
     fn authorize_subscribe(
@@ -162,10 +163,14 @@ impl<'a> EngineOps<'a> {
         })
     }
 
-    fn open_subscription(&self, permit: SubscribePermit, since: Option<u64>) -> EngineSubscription {
+    fn open_subscription(
+        &self,
+        permit: SubscribePermit,
+        resume: SubscriptionResume,
+    ) -> EngineSubscription {
         let rx = self.core.events.subscribe();
-        let (interruption, replay, live_floor) = replay_after(self.core, since, &permit.pattern);
-        let replay_mode = since.is_some();
+        let (interruption, replay, live_floor) = replay_after(self.core, resume, &permit.pattern);
+        let replay_mode = resume.is_replay();
         let mut initial = VecDeque::new();
         if let Some(err) = interruption {
             initial.push_back(Err(err.into()));
@@ -359,11 +364,12 @@ impl Engine {
     /// reserves a subscription slot, and prepares replay state. Receiving
     /// events is async through [`EngineSubscription::recv`].
     ///
-    /// If `since` is `Some(id)`, the subscription replays every event with
-    /// `id > since` from the in-memory ring before switching to the live
-    /// stream. Replay is bounded by the configured `listen_replay_max`; if
-    /// `since` is older than the ring's floor, the first `recv` call yields
-    /// a [`crate::SubscriptionRecvError::Lagged`] error.
+    /// If `resume` is [`SubscriptionResume::after_event_id`], the subscription
+    /// replays every event after that id from the in-memory ring before
+    /// switching to the live stream. Replay is bounded by the configured
+    /// `listen_replay_max`; if the cursor is older than the ring's floor, the
+    /// first `recv` call yields a [`crate::SubscriptionRecvError::Lagged`]
+    /// error.
     ///
     /// The returned [`EngineSubscription`] holds a subscription slot until
     /// dropped; drop it promptly when finished so other subscribers can
@@ -378,9 +384,9 @@ impl Engine {
         &self,
         pattern: &SubscribePattern,
         tier: AccessTier,
-        since: Option<u64>,
+        resume: SubscriptionResume,
     ) -> Result<EngineSubscription, EngineError> {
-        EngineOps::new(self.core()).subscribe(pattern, tier.into(), since)
+        EngineOps::new(self.core()).subscribe(pattern, tier.into(), resume)
     }
 }
 
@@ -418,10 +424,10 @@ impl From<ReplayInterruption> for SubscriptionRecvError {
 
 pub(crate) fn replay_after(
     core: &Core,
-    since: Option<u64>,
+    resume: SubscriptionResume,
     pattern: &SubscribePattern,
 ) -> (Option<ReplayInterruption>, Vec<ChangeEvent>, u64) {
-    let Some(last_id) = since else {
+    let Some(last_id) = resume.after_event_id_raw() else {
         return (None, Vec::new(), 0);
     };
     let log = core
@@ -576,7 +582,11 @@ mod tests {
         crate::state::test_only_set_event_counter(&engine.core().next_event, 12);
 
         let pattern = SubscribePattern::new("home/task/*");
-        let (interruption, replay, floor) = replay_after(engine.core(), Some(5), &pattern);
+        let (interruption, replay, floor) = replay_after(
+            engine.core(),
+            SubscriptionResume::after_event_id(5),
+            &pattern,
+        );
 
         assert_eq!(
             interruption,
@@ -606,7 +616,11 @@ mod tests {
         crate::state::test_only_set_event_counter(&engine.core().next_event, u64::MAX);
 
         let pattern = SubscribePattern::new("home/task/*");
-        let (interruption, replay, floor) = replay_after(engine.core(), Some(u64::MAX), &pattern);
+        let (interruption, replay, floor) = replay_after(
+            engine.core(),
+            SubscriptionResume::after_event_id(u64::MAX),
+            &pattern,
+        );
 
         assert_eq!(interruption, None);
         assert!(replay.is_empty());
@@ -631,7 +645,11 @@ mod tests {
         crate::state::test_only_set_event_counter(&engine.core().next_event, 1);
 
         let pattern = SubscribePattern::new("home/task/*");
-        let (interruption, replay, floor) = replay_after(engine.core(), Some(42), &pattern);
+        let (interruption, replay, floor) = replay_after(
+            engine.core(),
+            SubscriptionResume::after_event_id(42),
+            &pattern,
+        );
 
         assert_eq!(
             interruption,
@@ -799,7 +817,7 @@ mod tests {
         let pattern = SubscribePattern::new("home/events/*");
 
         assert!(matches!(
-            engine.subscribe(&pattern, AccessTier::Anon, None),
+            engine.subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none()),
             Err(EngineError::Auth(AuthGate::Read))
         ));
 
@@ -815,7 +833,11 @@ mod tests {
             .unwrap();
 
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Read, Some(0))
+            .subscribe(
+                &pattern,
+                AccessTier::Read,
+                SubscriptionResume::after_event_id(0),
+            )
             .expect("read tier subscribes");
         let event = subscription.recv().await.expect("replay event");
         assert_eq!(event.verb, ChangeVerb::Replace);
@@ -832,7 +854,11 @@ mod tests {
         let (engine, root) = test_engine("subscribe-stale-cursor");
         let pattern = SubscribePattern::new("home/stale/*");
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Anon, Some(42))
+            .subscribe(
+                &pattern,
+                AccessTier::Anon,
+                SubscriptionResume::after_event_id(42),
+            )
             .expect("subscription opens with stale cursor");
 
         let first = tokio::time::timeout(recv_budget, subscription.recv())
@@ -873,10 +899,10 @@ mod tests {
         let (engine, root) = test_engine("subscribe-cap");
         let pattern = SubscribePattern::new("*");
         let first = engine
-            .subscribe(&pattern, AccessTier::Anon, None)
+            .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
             .expect("first subscription consumes the sole slot");
         assert!(matches!(
-            engine.subscribe(&pattern, AccessTier::Anon, None),
+            engine.subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none()),
             Err(EngineError::SubscriptionLimit)
         ));
 
@@ -898,11 +924,11 @@ mod tests {
         let pattern = SubscribePattern::new("*");
 
         assert!(matches!(
-            engine.subscribe(&pattern, AccessTier::Anon, None),
+            engine.subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none()),
             Err(EngineError::Auth(AuthGate::Read))
         ));
         let subscription = engine
-            .subscribe(&pattern, AccessTier::Read, None)
+            .subscribe(&pattern, AccessTier::Read, SubscriptionResume::none())
             .expect("failed auth must not consume the only slot");
 
         drop(subscription);
@@ -915,7 +941,7 @@ mod tests {
         let (engine, root) = test_engine("subscribe-closed");
         let pattern = SubscribePattern::new("*");
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Anon, None)
+            .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
             .expect("subscription opens before shutdown");
 
         engine.shutdown();
@@ -951,7 +977,11 @@ mod tests {
         }
 
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Anon, Some(0))
+            .subscribe(
+                &pattern,
+                AccessTier::Anon,
+                SubscriptionResume::after_event_id(0),
+            )
             .expect("subscription opens before shutdown");
         engine.shutdown();
         assert_eq!(
