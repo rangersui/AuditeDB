@@ -106,17 +106,18 @@
 //!
 //! ## Subscribe to changes
 //!
-//! Opening a subscription is sync; receiving events is async. Pass `since` to
-//! replay recent events before switching to live delivery.
+//! Opening a subscription is sync; receiving events is async. Pass
+//! [`SubscriptionResume::after_event_id`] to replay recent events before
+//! switching to live delivery.
 //!
 //! ```no_run
 //! # #[cfg(feature = "unstable-engine")]
 //! # async fn run(engine: elastik_core::Engine) {
-//! use elastik_core::{AccessTier, SubscribePattern};
+//! use elastik_core::{AccessTier, SubscribePattern, SubscriptionResume};
 //!
 //! let pattern = SubscribePattern::new("/home/tasks/*");
 //! let mut sub = engine
-//!     .subscribe(&pattern, AccessTier::Read, None)
+//!     .subscribe(&pattern, AccessTier::Read, SubscriptionResume::none())
 //!     .expect("subscription opens");
 //!
 //! let event = sub.recv().await.expect("change event");
@@ -212,7 +213,7 @@ pub use engine_introspection::{
 };
 #[cfg(feature = "unstable-engine")]
 pub use engine_subscription::{
-    ChangeEvent, EngineSubscription, SubscribePattern, SubscriptionRecvError,
+    ChangeEvent, EngineSubscription, SubscribePattern, SubscriptionRecvError, SubscriptionResume,
 };
 #[cfg(feature = "unstable-engine")]
 pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};

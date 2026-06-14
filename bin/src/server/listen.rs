@@ -10,6 +10,7 @@ use crate::{
     engine::EngineError,
     engine_types::{
         ChangeEvent as EngineChangeEvent, ChangeVerb, SubscribePattern, SubscriptionRecvError,
+        SubscriptionResume,
     },
     server::{
         bad_request, method_not_allowed, options_response, server_error, unauthorized, ServerState,
@@ -38,11 +39,11 @@ pub(crate) async fn handler(
     }
     let tier = state.access_tier_from_headers(&headers);
     let pattern = SubscribePattern::new(&raw_pattern);
-    let last_event_id = match parse_last_event_id(&headers) {
-        Ok(last_event_id) => last_event_id,
+    let resume = match parse_last_event_id(&headers) {
+        Ok(resume) => resume,
         Err(reason) => return bad_request(reason),
     };
-    let subscription = match state.engine().subscribe(&pattern, tier, last_event_id) {
+    let subscription = match state.engine().subscribe(&pattern, tier, resume) {
         Ok(subscription) => subscription,
         Err(EngineError::Auth(_)) => return unauthorized("listen requires read token"),
         Err(EngineError::SubscriptionLimit) => {
@@ -102,10 +103,10 @@ pub(crate) async fn handler(
         .into_response()
 }
 
-fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
+fn parse_last_event_id(headers: &HeaderMap) -> Result<SubscriptionResume, &'static str> {
     let mut values = headers.get_all("last-event-id").iter();
     let Some(value) = values.next() else {
-        return Ok(None);
+        return Ok(SubscriptionResume::none());
     };
     if values.next().is_some() {
         return Err("invalid Last-Event-ID");
@@ -119,7 +120,7 @@ fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, &'static str>
     if raw != parsed.to_string() {
         return Err("invalid Last-Event-ID");
     }
-    Ok(Some(parsed))
+    Ok(SubscriptionResume::after_event_id(parsed))
 }
 
 /// Frame emitted when a resume cursor belongs to a previous engine process.
@@ -160,7 +161,9 @@ fn change_method(verb: ChangeVerb) -> &'static str {
 mod tests {
     use super::*;
     use crate::{
-        engine_types::{AccessTier, Preconditions, Representation, ValidatedWorldPath},
+        engine_types::{
+            AccessTier, Preconditions, Representation, SubscriptionResume, ValidatedWorldPath,
+        },
         server::test_support::{
             server_state_for_engine_for_tests, test_engine_for_server,
             test_engine_for_server_with_listen_slots,
@@ -175,7 +178,7 @@ mod tests {
             .subscribe(
                 &SubscribePattern::new("home/task/*"),
                 AccessTier::Read,
-                None,
+                SubscriptionResume::none(),
             )
             .expect("test subscription should be accepted");
         let world = ValidatedWorldPath::new("home/task/a").unwrap();
@@ -209,7 +212,11 @@ mod tests {
     async fn handler_returns_503_when_listen_slots_are_full() {
         let (engine, dir) = test_engine_for_server_with_listen_slots("listen-slots-full", 1);
         let _held_slot = engine
-            .subscribe(&SubscribePattern::new("home/held"), AccessTier::Read, None)
+            .subscribe(
+                &SubscribePattern::new("home/held"),
+                AccessTier::Read,
+                SubscriptionResume::none(),
+            )
             .expect("first subscription should consume the only listen slot");
 
         let resp = handler(
@@ -266,10 +273,19 @@ mod tests {
     fn parse_last_event_id_accepts_single_ascii_decimal() {
         let mut headers = HeaderMap::new();
         headers.insert("last-event-id", "42".parse().unwrap());
-        assert_eq!(parse_last_event_id(&headers), Ok(Some(42)));
+        assert_eq!(
+            parse_last_event_id(&headers),
+            Ok(SubscriptionResume::after_event_id(42))
+        );
         headers.insert("last-event-id", "0".parse().unwrap());
-        assert_eq!(parse_last_event_id(&headers), Ok(Some(0)));
-        assert_eq!(parse_last_event_id(&HeaderMap::new()), Ok(None));
+        assert_eq!(
+            parse_last_event_id(&headers),
+            Ok(SubscriptionResume::after_event_id(0))
+        );
+        assert_eq!(
+            parse_last_event_id(&HeaderMap::new()),
+            Ok(SubscriptionResume::none())
+        );
     }
 
     #[test]
