@@ -27,7 +27,7 @@ HTTP server, routes, status codes, or `/proc/*` paths.
      names.
 
 4. **Subscribe Receiver**
-   - Bind `subscribe(pattern, tier, since) -> FfiSubscription`.
+   - Bind `subscribe(pattern, tier, resume) -> FfiSubscription`.
    - Expose `next(timeout_ms) -> FfiSubscriptionNext` with typed `Event`,
      `Timeout`, `Lagged`, `Closed`, and `Unknown` states.
    - Translate core event method strings into Engine verbs
