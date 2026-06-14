@@ -9,8 +9,8 @@ use std::time::Duration;
 use crate::{
     engine::EngineError,
     engine_types::{
-        ChangeEvent as EngineChangeEvent, ChangeVerb, SubscribePattern, SubscriptionRecvError,
-        SubscriptionResume,
+        ChangeEvent as EngineChangeEvent, ChangeVerb, SubscribePattern, SubscriptionCursor,
+        SubscriptionRecvError, SubscriptionResume,
     },
     server::{
         bad_request, method_not_allowed, options_response, server_error, unauthorized, ServerState,
@@ -82,9 +82,11 @@ pub(crate) async fn handler(
                     .data(format!("missed: {skipped}"))),
                 subscription,
             )),
-            Err(SubscriptionRecvError::CursorAhead { since, newest }) => {
-                Some((Ok(sse_reset_event(since, newest)), subscription))
-            }
+            Err(SubscriptionRecvError::CursorAhead {
+                since,
+                newest,
+                reset,
+            }) => Some((Ok(sse_reset_event(since, newest, reset)), subscription)),
             Err(SubscriptionRecvError::Closed) => None,
             Err(_err) => {
                 #[cfg(feature = "unstable-engine")]
@@ -112,25 +114,31 @@ fn parse_last_event_id(headers: &HeaderMap) -> Result<SubscriptionResume, &'stat
         return Err("invalid Last-Event-ID");
     }
     let raw = value.to_str().map_err(|_| "invalid Last-Event-ID")?;
-    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+    if raw.is_empty() {
         return Err("invalid Last-Event-ID");
     }
 
-    let parsed = raw.parse::<u64>().map_err(|_| "invalid Last-Event-ID")?;
-    if raw != parsed.to_string() {
-        return Err("invalid Last-Event-ID");
+    if raw.bytes().all(|b| b.is_ascii_digit()) {
+        let parsed = raw.parse::<u64>().map_err(|_| "invalid Last-Event-ID")?;
+        if raw != parsed.to_string() {
+            return Err("invalid Last-Event-ID");
+        }
+        return Ok(SubscriptionResume::legacy_event_id(parsed));
     }
-    Ok(SubscriptionResume::after_event_id(parsed))
+
+    SubscriptionCursor::from_sse_id(raw)
+        .map(SubscriptionResume::after_cursor)
+        .map_err(|_| "invalid Last-Event-ID")
 }
 
 /// Frame emitted when a resume cursor belongs to a previous engine process.
 ///
 /// The `id` field deliberately rebases EventSource's automatic
 /// `Last-Event-ID` buffer to the newest id in this process.
-fn sse_reset_event(since: u64, newest: u64) -> Event {
+fn sse_reset_event(since: u64, newest: u64, reset: SubscriptionCursor) -> Event {
     Event::default()
         .event("reset")
-        .id(newest.to_string())
+        .id(reset.to_string())
         .data(format!("since: {since}\nnewest: {newest}"))
 }
 
@@ -143,7 +151,7 @@ fn sse_change_event(change: EngineChangeEvent) -> Event {
     }
     Event::default()
         .event(method.to_ascii_lowercase())
-        .id(change.id.to_string())
+        .id(change.cursor.to_string())
         .data(data)
 }
 
@@ -238,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handler_rejects_non_decimal_last_event_id() {
+    async fn handler_rejects_malformed_last_event_id() {
         let (engine, dir) = test_engine_for_server("listen-invalid-last-event-id");
         let mut headers = HeaderMap::new();
         headers.insert("last-event-id", "audit:42".parse().unwrap());
@@ -258,7 +266,17 @@ mod tests {
 
     #[test]
     fn parse_last_event_id_rejects_non_canonical_values() {
-        for value in ["", " 42", "42 ", "+42", "audit:42", "00", "00042"] {
+        for value in [
+            "",
+            " 42",
+            "42 ",
+            "+42",
+            "audit:42",
+            "00",
+            "00042",
+            "0123456789abcdef0123456789abcdef:0042",
+            "0123456789abcdef0123456789abcdeF:42",
+        ] {
             let mut headers = HeaderMap::new();
             headers.insert("last-event-id", value.parse().unwrap());
             assert_eq!(parse_last_event_id(&headers), Err("invalid Last-Event-ID"));
@@ -274,17 +292,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_last_event_id_accepts_single_ascii_decimal() {
+    fn parse_last_event_id_accepts_current_cursor_and_legacy_decimal() {
+        let cursor = "0123456789abcdef0123456789abcdef:42";
         let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", cursor.parse().unwrap());
+        assert_eq!(
+            parse_last_event_id(&headers),
+            Ok(SubscriptionResume::after_cursor(
+                SubscriptionCursor::from_sse_id(cursor).unwrap()
+            ))
+        );
         headers.insert("last-event-id", "42".parse().unwrap());
         assert_eq!(
             parse_last_event_id(&headers),
-            Ok(SubscriptionResume::after_event_id(42))
+            Ok(SubscriptionResume::legacy_event_id(42))
         );
         headers.insert("last-event-id", "0".parse().unwrap());
         assert_eq!(
             parse_last_event_id(&headers),
-            Ok(SubscriptionResume::after_event_id(0))
+            Ok(SubscriptionResume::legacy_event_id(0))
         );
         assert_eq!(
             parse_last_event_id(&HeaderMap::new()),
@@ -294,9 +320,13 @@ mod tests {
 
     #[test]
     fn sse_reset_event_rebases_last_event_id() {
-        let wire = format!("{:?}", sse_reset_event(42, 7));
+        let reset = SubscriptionCursor::from_sse_id("0123456789abcdef0123456789abcdef:7").unwrap();
+        let wire = format!("{:?}", sse_reset_event(42, 7, reset));
         assert!(wire.contains("event: reset"), "{wire}");
-        assert!(wire.contains("id: 7"), "{wire}");
+        assert!(
+            wire.contains("id: 0123456789abcdef0123456789abcdef:7"),
+            "{wire}"
+        );
         assert!(wire.contains("data: since: 42"), "{wire}");
         assert!(wire.contains("data: newest: 7"), "{wire}");
     }
