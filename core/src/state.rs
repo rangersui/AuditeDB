@@ -288,7 +288,7 @@ impl Core {
     /// 80+ unit tests that build small fixture worlds before exercising
     /// handler paths.
     #[cfg(test)]
-    pub(crate) fn write_world(
+    pub(crate) fn test_only_write_world(
         &self,
         world: &str,
         body: &[u8],
@@ -342,13 +342,13 @@ impl Core {
         }
     }
 
-    pub(crate) async fn delete_world_blocking(&self, world: &str) -> bool {
-        if store::is_memory_world(world) {
-            self.mem.delete(world)
+    pub(crate) async fn delete_world_blocking(&self, world: &ValidatedWorldPath) -> bool {
+        if store::is_memory_world(world.as_str()) {
+            self.mem.delete(world.as_str())
         } else {
             let data = self.data.clone();
-            let world = world.to_string();
-            tokio::task::spawn_blocking(move || world::delete(&data, &world))
+            let world = world.clone();
+            tokio::task::spawn_blocking(move || world::delete(&data, world.as_str()))
                 .await
                 .unwrap_or(false)
         }
