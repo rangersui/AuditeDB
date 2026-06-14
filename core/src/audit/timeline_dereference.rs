@@ -195,7 +195,10 @@ fn dereference_snapshot(
         TimelineRead::Expired { .. }
         | TimelineRead::Gone { .. }
         | TimelineRead::GenMismatch { .. }
-        | TimelineRead::MissingRow { .. } => {
+        | TimelineRead::MissingRow { .. }
+        | TimelineRead::NeverRetained { .. }
+        | TimelineRead::AddressMismatch { .. }
+        | TimelineRead::Unproven { .. } => {
             Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape))
         }
     }
