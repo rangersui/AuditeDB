@@ -105,14 +105,16 @@ def world_url(base: str, path: str) -> str:
 
 def sse_cursor_parts(raw: str) -> tuple[str, int]:
     if ":" not in raw:
-        raise AssertionError(f"invalid SSE cursor: {raw!r}")
+        raise AssertionError(f"SSE id must be an opaque epoch cursor: {raw!r}")
     epoch, seq = raw.split(":", 1)
-    if not epoch:
+    if len(epoch) != 32 or any(ch not in "0123456789abcdef" for ch in epoch):
         raise AssertionError(f"invalid SSE cursor epoch: {raw!r}")
-    try:
-        return epoch, int(seq)
-    except ValueError as exc:
-        raise AssertionError(f"invalid SSE cursor sequence: {raw!r}") from exc
+    if not seq or any(ch not in "0123456789" for ch in seq):
+        raise AssertionError(f"invalid SSE cursor sequence: {raw!r}")
+    seq_value = int(seq)
+    if seq != str(seq_value) or seq_value > 0xFFFFFFFFFFFFFFFF:
+        raise AssertionError(f"invalid SSE cursor sequence: {raw!r}")
+    return epoch, seq_value
 
 
 def expect_error(fn, status: int, check: Check, name: str) -> None:
@@ -1296,10 +1298,13 @@ def main() -> int:
             replay_done = threading.Event()
             writer.put("/home/sdk/listen/b", b"payload-2")
 
+            ev_id = ev.get("id")
+            ev_epoch, ev_seq = sse_cursor_parts(ev_id or "")
+
             def consume_replay() -> None:
                 for event in reader.listen(
                     "/home/sdk/listen/*",
-                    last_event_id=ev.get("id"),
+                    last_event_id=ev_id,
                 ):
                     replay_events.append(event)
                     replay_done.set()
@@ -1310,8 +1315,7 @@ def main() -> int:
             check(replay_done.wait(5), "Last-Event-ID replays missed SSE event")
             replay = replay_events[0]
             check(replay.get("path") == "/home/sdk/listen/b", "replayed SSE event path")
-            ev_epoch, ev_seq = sse_cursor_parts(ev.get("id", "0"))
-            replay_epoch, replay_seq = sse_cursor_parts(replay.get("id", "0"))
+            replay_epoch, replay_seq = sse_cursor_parts(replay.get("id", ""))
             check(replay_epoch == ev_epoch, "replayed SSE cursor keeps listen epoch")
             check(replay_seq > ev_seq, "replayed SSE cursor advances")
 
