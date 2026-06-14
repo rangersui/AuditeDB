@@ -76,7 +76,7 @@ pub(crate) fn read_timeline_body(
     }
     match core.read_timeline_body(address) {
         Ok(Some(read)) => Ok(read),
-        Ok(None) => Ok(TimelineRead::Gone {
+        Ok(None) => Ok(TimelineRead::Unproven {
             address: address.clone(),
         }),
         Err(err) => Err(classify_read_audit_error("timeline read", err)),
@@ -151,6 +151,22 @@ mod tests {
             read_timeline_body(&core, &permit, &address),
             Err(ReadError::PermitWorldMismatch)
         ));
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_timeline_world_is_unproven_not_gone() {
+        let (core, dir) = test_core("timeline-read-unproven");
+        let world = world_path("home/read-unproven");
+        let permit = authorize_read(&core, &world, auth::Tier::Read).unwrap();
+        let address = timeline_address(world);
+
+        match read_timeline_body(&core, &permit, &address).unwrap() {
+            TimelineRead::Unproven { address: got } => assert_eq!(got, address),
+            _ => panic!("expected unproven timeline read"),
+        }
 
         drop(core);
         let _ = std::fs::remove_dir_all(dir);
