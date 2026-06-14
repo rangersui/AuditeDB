@@ -372,7 +372,7 @@ impl Core {
         } else {
             let data = self.data.clone();
             let world = world.clone();
-            tokio::task::spawn_blocking(move || world::delete(&data, world.as_str()))
+            tokio::task::spawn_blocking(move || world::delete(&data, &world))
                 .await
                 .unwrap_or(false)
         }
