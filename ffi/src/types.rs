@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt};
 use elastik_core::{
     is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, ChangeVerb, DeleteMetadata,
     DfSnapshot, EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions,
-    ReadResult, Representation, WorldUsage, WriteKind, WriteResult,
+    ReadResult, Representation, SubscriptionResume, WorldUsage, WriteKind, WriteResult,
 };
 
 /// Engine construction options for the FFI adapter.
@@ -159,6 +159,16 @@ pub struct FfiChangeEvent {
     pub etag: String,
 }
 
+/// Resume cursor for a subscription opened through FFI.
+///
+/// Foreign callers pass raw integers at the ABI edge, but the adapter converts
+/// this record into the core [`SubscriptionResume`] proof before calling the
+/// Engine.
+#[derive(Clone, Copy, Debug, Default, uniffi::Record)]
+pub struct FfiSubscriptionResume {
+    pub after_event_id: Option<u64>,
+}
+
 /// Result kind returned by `FfiSubscription.next`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum FfiSubscriptionNextKind {
@@ -178,8 +188,8 @@ pub struct FfiSubscriptionNext {
     pub kind: FfiSubscriptionNextKind,
     pub event: Option<FfiChangeEvent>,
     pub skipped: Option<u64>,
-    pub since: Option<u64>,
-    pub newest: Option<u64>,
+    pub cursor_after_event_id: Option<u64>,
+    pub newest_event_id: Option<u64>,
 }
 
 /// Per-world body byte usage DTO.
@@ -500,6 +510,15 @@ impl From<ChangeEvent> for FfiChangeEvent {
             path: value.path.to_string(),
             etag: value.etag,
         }
+    }
+}
+
+impl From<FfiSubscriptionResume> for SubscriptionResume {
+    fn from(value: FfiSubscriptionResume) -> Self {
+        value
+            .after_event_id
+            .map(SubscriptionResume::after_event_id)
+            .unwrap_or_else(SubscriptionResume::none)
     }
 }
 
