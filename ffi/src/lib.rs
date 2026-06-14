@@ -267,10 +267,12 @@ impl FfiEngine {
         &self,
         pattern: String,
         tier: FfiAccessTier,
-        since: Option<u64>,
+        resume: FfiSubscriptionResume,
     ) -> Result<Arc<FfiSubscription>, FfiError> {
         let pattern = SubscribePattern::new(pattern);
-        let mut subscription = self.engine.subscribe(&pattern, tier.try_into()?, since)?;
+        let mut subscription = self
+            .engine
+            .subscribe(&pattern, tier.try_into()?, resume.into())?;
         let (events_tx, events_rx) = mpsc::channel(FFI_SUBSCRIPTION_BUFFER);
         let (cancel, mut cancel_rx) = watch::channel(false);
         let pump = self.runtime.spawn(async move {
@@ -324,15 +326,15 @@ impl FfiSubscription {
                 kind: FfiSubscriptionNextKind::Closed,
                 event: None,
                 skipped: None,
-                since: None,
-                newest: None,
+                cursor_after_event_id: None,
+                newest_event_id: None,
             },
             Err(_) => FfiSubscriptionNext {
                 kind: FfiSubscriptionNextKind::Timeout,
                 event: None,
                 skipped: None,
-                since: None,
-                newest: None,
+                cursor_after_event_id: None,
+                newest_event_id: None,
             },
         }
     }
@@ -413,8 +415,8 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::Event,
                 event: Some(event.into()),
                 skipped: None,
-                since: None,
-                newest: None,
+                cursor_after_event_id: None,
+                newest_event_id: None,
             },
             false,
         ),
@@ -423,8 +425,8 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::Lagged,
                 event: None,
                 skipped: Some(skipped),
-                since: None,
-                newest: None,
+                cursor_after_event_id: None,
+                newest_event_id: None,
             },
             false,
         ),
@@ -433,8 +435,8 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::Closed,
                 event: None,
                 skipped: None,
-                since: None,
-                newest: None,
+                cursor_after_event_id: None,
+                newest_event_id: None,
             },
             true,
         ),
@@ -443,8 +445,8 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::CursorAhead,
                 event: None,
                 skipped: None,
-                since: Some(since),
-                newest: Some(newest),
+                cursor_after_event_id: Some(since),
+                newest_event_id: Some(newest),
             },
             false,
         ),
@@ -453,8 +455,8 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::Unknown,
                 event: None,
                 skipped: None,
-                since: None,
-                newest: None,
+                cursor_after_event_id: None,
+                newest_event_id: None,
             },
             true,
         ),
@@ -865,7 +867,11 @@ mod tests {
             .expect("first write succeeds");
 
         let subscription = engine
-            .subscribe("home/events/*".to_owned(), FfiAccessTier::Read, Some(0))
+            .subscribe(
+                "home/events/*".to_owned(),
+                FfiAccessTier::Read,
+                resume_after(0),
+            )
             .expect("subscription opens");
         let replay = subscription.next(1_000);
         assert_eq!(replay.kind, FfiSubscriptionNextKind::Event);
@@ -896,13 +902,17 @@ mod tests {
     fn subscription_next_reports_cursor_ahead_then_keeps_live_stream_open() {
         let engine = test_engine("subscribe-cursor-ahead");
         let subscription = engine
-            .subscribe("home/stale/*".to_owned(), FfiAccessTier::Read, Some(42))
+            .subscribe(
+                "home/stale/*".to_owned(),
+                FfiAccessTier::Read,
+                resume_after(42),
+            )
             .expect("subscription opens");
 
         let reset = subscription.next(1_000);
         assert_eq!(reset.kind, FfiSubscriptionNextKind::CursorAhead);
-        assert_eq!(reset.since, Some(42));
-        assert_eq!(reset.newest, Some(0));
+        assert_eq!(reset.cursor_after_event_id, Some(42));
+        assert_eq!(reset.newest_event_id, Some(0));
         assert!(reset.event.is_none());
         assert!(reset.skipped.is_none());
 
@@ -929,7 +939,7 @@ mod tests {
     fn subscription_next_reports_closed_after_shutdown() {
         let engine = test_engine("subscribe-closed");
         let subscription = engine
-            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .subscribe("*".to_owned(), FfiAccessTier::Read, resume_none())
             .expect("subscription opens");
         engine.shutdown();
 
@@ -956,11 +966,11 @@ mod tests {
         .expect("engine opens");
 
         let subscription = engine
-            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .subscribe("*".to_owned(), FfiAccessTier::Read, resume_none())
             .expect("first subscription opens");
         assert!(
             engine
-                .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+                .subscribe("*".to_owned(), FfiAccessTier::Read, resume_none())
                 .is_err(),
             "listen slot cap should be held while subscription is open"
         );
@@ -970,7 +980,7 @@ mod tests {
         assert_eq!(closed.kind, FfiSubscriptionNextKind::Closed);
 
         let replacement = engine
-            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .subscribe("*".to_owned(), FfiAccessTier::Read, resume_none())
             .expect("explicit close releases listen slot");
         replacement.close();
     }
@@ -979,7 +989,7 @@ mod tests {
     fn subscription_close_wakes_blocking_next() {
         let engine = test_engine("subscribe-close-wakes-blocking-next");
         let subscription = engine
-            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .subscribe("*".to_owned(), FfiAccessTier::Read, resume_none())
             .expect("subscription opens");
         let (started_tx, started_rx) = std_mpsc::channel();
         let waiting = Arc::clone(&subscription);
@@ -1003,7 +1013,7 @@ mod tests {
     fn subscription_next_survives_engine_handle_drop() {
         let engine = test_engine("subscribe-drop-engine");
         let subscription = engine
-            .subscribe("*".to_owned(), FfiAccessTier::Read, None)
+            .subscribe("*".to_owned(), FfiAccessTier::Read, resume_none())
             .expect("subscription opens");
 
         drop(engine);
@@ -1195,6 +1205,18 @@ mod tests {
             body: body.to_vec(),
             content_type: "text/plain".to_owned(),
             headers: Vec::new(),
+        }
+    }
+
+    fn resume_none() -> FfiSubscriptionResume {
+        FfiSubscriptionResume {
+            after_event_id: None,
+        }
+    }
+
+    fn resume_after(id: u64) -> FfiSubscriptionResume {
+        FfiSubscriptionResume {
+            after_event_id: Some(id),
         }
     }
 }

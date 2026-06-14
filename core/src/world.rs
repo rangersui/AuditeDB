@@ -37,9 +37,10 @@ pub use cas::{
     append_body_len_if_missing as append_cas_body_len_if_missing,
     body_len_if_missing as cas_body_len_if_missing, storage_len,
 };
+pub(crate) use files::delete;
 #[cfg(test)]
 use files::open_checkpoint_conn;
-pub use files::{delete, list, list_with_prefix, list_with_prefix_bounded};
+pub use files::{list, list_with_prefix, list_with_prefix_bounded};
 
 // Encode chars that confuse Windows / POSIX filesystems. Decoded form
 // is the canonical world key; encoded form is the on-disk dir name.
