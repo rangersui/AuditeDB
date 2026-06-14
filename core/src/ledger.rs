@@ -33,7 +33,7 @@ use crate::world;
 /// One audit append's input. Owns its strings/buffers because the
 /// `spawn_blocking` closure that runs the SQL must be `'static`.
 pub(crate) struct AuditAppendJob {
-    pub(crate) ledger_world: &'static str,
+    pub(crate) ledger_world: ValidatedWorldPath,
     pub(crate) event_type: EventMetadataKind,
     pub(crate) target: String,
     pub(crate) body_sha256: BodySha256,
@@ -93,7 +93,8 @@ impl LedgerWriter {
         if guard.is_none() {
             // Lazy init. `world::open` creates the schema; safe to
             // call whether or not the ledger DB exists on disk.
-            let conn = world::open(data, job.ledger_world).map_err(BlockingSqliteError::Sqlite)?;
+            let conn = world::open(data, job.ledger_world.as_str())
+                .map_err(BlockingSqliteError::Sqlite)?;
             *guard = Some(conn);
             self.inits.fetch_add(1, Ordering::Relaxed);
         }
@@ -106,12 +107,10 @@ impl LedgerWriter {
         } else {
             audit::append_with_conn_existing
         };
-        let ledger_world = ValidatedWorldPath::new(job.ledger_world)
-            .map_err(|_| BlockingSqliteError::Sqlite(rusqlite::Error::InvalidQuery))?;
         append(
             conn,
             job.event_type,
-            &ledger_world,
+            &job.ledger_world,
             &job.target,
             &job.body_sha256,
             job.size,
@@ -148,7 +147,7 @@ mod tests {
             .append(
                 &dir,
                 AuditAppendJob {
-                    ledger_world: "var/log/deletes",
+                    ledger_world: ValidatedWorldPath::new("var/log/deletes").unwrap(),
                     event_type: EventMetadataKind::DELETE_INTENT,
                     target: "home/deleted".to_owned(),
                     body_sha256: BodySha256::for_body(b"body"),

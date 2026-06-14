@@ -26,6 +26,7 @@ use std::sync::atomic::AtomicU64;
 use dashmap::DashMap;
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
+use crate::engine_subscription::SubscriptionEpoch;
 use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
 use crate::ledger::LedgerWriter;
 pub(crate) use crate::ledger::{AuditAppendJob, BlockingSqliteError};
@@ -128,6 +129,7 @@ pub(crate) struct Core {
     pub(crate) events: broadcast::Sender<event::ChangeEvent>,
     pub(crate) listen_slots: Arc<Semaphore>,
     pub(crate) listen_replay_max: usize,
+    pub(crate) listen_epoch: SubscriptionEpoch,
     pub(crate) event_log: Arc<StdMutex<VecDeque<event::ChangeEvent>>>,
     pub(crate) shutdown: watch::Receiver<bool>,
     /// Listen ids stay u64-monotonic because replay uses `>` comparisons
@@ -344,10 +346,10 @@ impl Core {
             self.mem.write(world, body, content_type, headers);
             Ok(())
         } else {
-            let current_len = world::storage_len(&self.data, world)?;
             let world_path = ValidatedWorldPath::new(world).map_err(|_| {
                 world::WriteAuditError::StorageInvariant("invalid fixture world path")
             })?;
+            let current_len = world::storage_len(&self.data, &world_path)?;
             world::write_with_audit(
                 &self.data,
                 &world_path,
@@ -357,7 +359,7 @@ impl Core {
                 &self.hmac_key,
             )?;
             let prev = current_len.unwrap_or(0);
-            let new_len = world::storage_len(&self.data, world)?.unwrap_or(0);
+            let new_len = world::storage_len(&self.data, &world_path)?.unwrap_or(0);
             let _ = self.storage_body_bytes.fetch_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
@@ -409,6 +411,7 @@ impl Core {
         let id = next_event_id(&self.next_event);
         let change = event::ChangeEvent {
             id,
+            listen_epoch: self.listen_epoch.clone(),
             verb,
             path: format!("/{}", world.as_str()),
             etag: etag.to_owned(),
