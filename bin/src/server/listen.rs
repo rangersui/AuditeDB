@@ -237,7 +237,7 @@ mod tests {
             .subscribe(
                 &SubscribePattern::new("home/task/*"),
                 AccessTier::Read,
-                None,
+                SubscriptionResume::none(),
             )
             .expect("test subscription should be accepted");
         let world = ValidatedWorldPath::new("home/task/source").unwrap();
