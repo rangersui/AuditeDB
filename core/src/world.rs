@@ -74,8 +74,12 @@ pub fn world_db(data_root: &Path, world: &str) -> PathBuf {
     world_dir(data_root, world).join("universe.db")
 }
 
-pub(crate) fn validated_world_db(data_root: &Path, world: &ValidatedWorldPath) -> PathBuf {
-    world_db(data_root, world.as_str())
+pub fn validated_world_dir(data_root: &Path, world: &ValidatedWorldPath) -> PathBuf {
+    world_dir(data_root, world.as_str())
+}
+
+pub fn validated_world_db(data_root: &Path, world: &ValidatedWorldPath) -> PathBuf {
+    validated_world_dir(data_root, world).join("universe.db")
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -91,6 +95,12 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenedWorldKind {
+    Created,
+    Existing,
+}
+
 fn open_with_generation_minter<F>(
     data_root: &Path,
     world: &str,
@@ -99,9 +109,34 @@ fn open_with_generation_minter<F>(
 where
     F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
 {
+    open_with_generation_minter_and_kind(data_root, world, mint_generation).map(|(conn, _)| conn)
+}
+
+fn open_validated_for_audit(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> rusqlite::Result<(Connection, OpenedWorldKind)> {
+    open_with_generation_minter_and_kind(data_root, world.as_str(), || {
+        world_generation::WorldGeneration::mint().map_err(mint_generation_error)
+    })
+}
+
+fn open_with_generation_minter_and_kind<F>(
+    data_root: &Path,
+    world: &str,
+    mint_generation: F,
+) -> rusqlite::Result<(Connection, OpenedWorldKind)>
+where
+    F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
+{
     let dir = world_dir(data_root, world);
     let db = world_db(data_root, world);
     let db_existed = db.exists();
+    let opened = if db_existed {
+        OpenedWorldKind::Existing
+    } else {
+        OpenedWorldKind::Created
+    };
     let generation = if db_existed {
         None
     } else {
@@ -124,7 +159,7 @@ where
         let generation = generation.ok_or_else(missing_minted_generation_error)?;
         world_schema::create(schema, generation)?;
     }
-    Ok(c)
+    Ok((c, opened))
 }
 
 fn mint_generation_error(err: world_generation::MintWorldGenerationError) -> rusqlite::Error {
@@ -158,10 +193,22 @@ fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
 /// a missing world must not resurrect it.
 pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<Connection>> {
     let path = world_db(data_root, world);
+    open_existing_path(&path)
+}
+
+pub fn open_existing_validated(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> rusqlite::Result<Option<Connection>> {
+    let path = validated_world_db(data_root, world);
+    open_existing_path(&path)
+}
+
+fn open_existing_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
     if !path.exists() {
         return Ok(None);
     }
-    let c = match Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let c = match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(c) => c,
         Err(e) => {
             if !path.exists() {
@@ -171,6 +218,34 @@ pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<C
         }
     };
     c.busy_timeout(Duration::from_millis(5000))?;
+    world_schema::verify(&c)?;
+    Ok(Some(c))
+}
+
+fn open_existing_validated_for_write(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> rusqlite::Result<Option<Connection>> {
+    let path = validated_world_db(data_root, world);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let c = match Connection::open(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            if !path.exists() {
+                return Ok(None);
+            }
+            return Err(e);
+        }
+    };
+    c.busy_timeout(Duration::from_millis(5000))?;
+    c.execute_batch(
+        r#"
+        PRAGMA journal_mode=WAL;
+        PRAGMA synchronous=FULL;
+        "#,
+    )?;
     world_schema::verify(&c)?;
     Ok(Some(c))
 }
@@ -376,16 +451,14 @@ pub fn write_with_audit_checked(
     headers: &[(String, String)],
     key: &AuditHmacKey,
 ) -> Result<WriteAuditResult, WriteAuditError> {
-    let world_name = world.as_str();
-    let existed = world_db(data_root, world_name).exists();
-    let mut c = open(data_root, world_name)?;
+    let (mut c, opened) = open_validated_for_audit(data_root, world)?;
     let tx = c.transaction()?;
     let previous_len = tx.query_row(
         "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
         [],
         |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
     )?;
-    let audit_tx = verify_appendable_world_tx(&tx, world, key, existed)?;
+    let audit_tx = verify_appendable_world_tx(&tx, world, key, opened)?;
     let retained = cas::retain_body_tx(&tx, world, body)?;
     tx.execute(
         r#"UPDATE stage_meta
@@ -415,7 +488,7 @@ pub fn write_with_audit_checked(
         cas_body_inserted: retained.inserted(),
         timeline_address: row.timeline_address().clone(),
         previous_len,
-        existed,
+        existed: matches!(opened, OpenedWorldKind::Existing),
     })
 }
 
@@ -464,14 +537,15 @@ pub fn append_with_audit(
     headers: &[(String, String)],
     key: &AuditHmacKey,
 ) -> Result<Option<(AppendResult, String)>, WriteAuditError> {
-    let world_name = world.as_str();
-    let path = world_db(data_root, world_name);
+    let path = validated_world_db(data_root, world);
     if !path.exists() {
         return Ok(None);
     }
-    let mut c = open(data_root, world_name)?;
+    let Some(mut c) = open_existing_validated_for_write(data_root, world)? else {
+        return Ok(None);
+    };
     let tx = c.transaction()?;
-    let audit_tx = verify_appendable_world_tx(&tx, world, key, true)?;
+    let audit_tx = verify_appendable_world_tx(&tx, world, key, OpenedWorldKind::Existing)?;
     let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
         r.get::<_, Vec<u8>>(0)
     })?;
@@ -507,14 +581,41 @@ fn verify_appendable_world_tx<'tx, 'conn, 'key>(
     tx: &'tx Transaction<'conn>,
     world: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
-    existed_before_open: bool,
+    opened: OpenedWorldKind,
 ) -> Result<audit::VerifiedAuditTx<'tx, 'conn, 'key>, WriteAuditError> {
-    if !existed_before_open || is_empty_bootstrap_tx(tx)? {
-        Ok(audit::verify_appendable_tx_genesis_checked(tx, world, key)?)
-    } else {
-        Ok(audit::verify_appendable_tx_existing_checked(
+    match audit_chain_opening(tx, opened)? {
+        AuditChainOpening::Genesis(_proof) => {
+            Ok(audit::verify_appendable_tx_genesis_checked(tx, world, key)?)
+        }
+        AuditChainOpening::Existing => Ok(audit::verify_appendable_tx_existing_checked(
             tx, world, key,
-        )?)
+        )?),
+    }
+}
+
+struct GenesisAuditProof {
+    _private: (),
+}
+
+enum AuditChainOpening {
+    Genesis(GenesisAuditProof),
+    Existing,
+}
+
+fn audit_chain_opening(
+    tx: &Transaction<'_>,
+    opened: OpenedWorldKind,
+) -> Result<AuditChainOpening, WriteAuditError> {
+    match opened {
+        OpenedWorldKind::Created => Ok(AuditChainOpening::Genesis(GenesisAuditProof {
+            _private: (),
+        })),
+        OpenedWorldKind::Existing if is_empty_bootstrap_tx(tx)? => {
+            Ok(AuditChainOpening::Genesis(GenesisAuditProof {
+                _private: (),
+            }))
+        }
+        OpenedWorldKind::Existing => Ok(AuditChainOpening::Existing),
     }
 }
 
