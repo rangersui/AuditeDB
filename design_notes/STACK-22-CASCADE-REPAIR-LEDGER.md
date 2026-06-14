@@ -523,8 +523,9 @@ Fixes added after that round:
   `u64` range. The test now parses the emitted id before replay and passes the
   original opaque cursor string as `Last-Event-ID`.
 - `22r20` through `22r41`: the `d039199` repair was propagated upward by merge
-  cascade. No rebase or squash was used. The final pushed `22r41` head after
-  the second cascade is `314d089`.
+  cascade. No rebase or squash was used. The final `22r41` merge head after
+  the second cascade was `314d089`; the later ledger closeout commit was
+  `6e8536a`.
 
 Local validation after the canonical cursor fix:
 
@@ -539,7 +540,8 @@ Local validation after the canonical cursor fix:
 Post-push state at the time this addendum was written:
 
 - `22r19`: `d039199`.
-- `22r41`: `314d089`.
+- `22r41` merge cascade head: `314d089`.
+- `22r41` ledger closeout commit: `6e8536a`.
 - GitHub CI had restarted and was still pending; this addendum does not claim
   remote CI is green.
 - A fresh independent review round was started against `d039199`/`314d089`.
