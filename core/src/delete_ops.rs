@@ -632,7 +632,7 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, DeleteError::ReservedMetadataHeader));
-        assert!(core.read_world(subject.as_str()).unwrap().is_some());
+        assert!(core.read_world(&subject).unwrap().is_some());
         assert!(!crate::world::world_db(&dir, "var/log/deletes").exists());
         let _ = std::fs::remove_dir_all(dir);
     }

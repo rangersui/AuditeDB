@@ -510,7 +510,7 @@ impl ReadCache {
     ) -> rusqlite::Result<Option<crate::audit::AuditResult<Option<crate::audit::VerifiedBodyHead>>>>
     {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world.as_str(), move |conn| {
+        self.with_tracked_conn(data, world, move |conn| {
             Ok(crate::audit::verified_latest_body_head_via_conn(
                 conn, world, &key,
             ))
