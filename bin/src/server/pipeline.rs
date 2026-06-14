@@ -45,7 +45,9 @@ mod timeline_mode;
 #[cfg(test)]
 use context::trace_enabled_for_tests;
 pub(crate) use context::{init_trace_from_env, RawQuery, RequestId, TraceCtx};
-pub(crate) use timeline_mode::{TimelineVerb, TIMELINE_ALLOW};
+pub(crate) use timeline_mode::TimelineVerb;
+#[cfg(test)]
+use timeline_mode::TIMELINE_ALLOW;
 
 use axum::{
     body::Bytes,
@@ -428,17 +430,6 @@ pub(crate) async fn run(
         if !matches!(phase, Phase::Done(_) | Phase::Error { .. }) {
             trace.emit_phase(&phase);
         }
-    }
-}
-
-pub(crate) fn allow_for_options(path: &str, raw_query: RawQuery) -> &'static str {
-    let canonical = canonicalize_path(path);
-    let Ok(world) = ValidatedWorldPath::new(&canonical) else {
-        return WORLD_ALLOW;
-    };
-    match raw_query.classify_timeline_mode(&world) {
-        Ok(TimelineRequestMode::Timeline(_)) => TIMELINE_ALLOW,
-        Ok(TimelineRequestMode::Current) | Err(_) => WORLD_ALLOW,
     }
 }
 

@@ -72,10 +72,7 @@ pub(crate) async fn world_handler(
     // request extensions -- same id stamped on `x-request-id` so
     // trace output and response header agree.
     if method == Method::OPTIONS {
-        return options_response(pipeline::allow_for_options(
-            &path,
-            pipeline::RawQuery::from_uri(&uri),
-        ));
+        return options_response(crate::server::WORLD_ALLOW);
     }
     let raw_query = pipeline::RawQuery::from_uri(&uri);
     pipeline::run(method, path, raw_query, headers, body, &state, req_id).await
@@ -218,11 +215,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn world_handler_options_narrows_allow_for_valid_timeline_query() {
+    async fn world_handler_options_ignores_timeline_and_malformed_query() {
         let (engine, dir) = test_engine_for_server("world-handler-options-valid-timeline");
         let state = server_state_for_engine_for_tests(engine);
         let app = build_app(state);
-        let query = concat!(
+        let valid_timeline_query = concat!(
             "timeline=1&",
             "timeline-generation=0123456789abcdef0123456789abcdef&",
             "timeline-seq=1&",
@@ -230,20 +227,21 @@ mod tests {
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         )
         .replace("timel", "time%6c");
+        for query in [valid_timeline_query.as_str(), "timeline%ZZ=1"] {
+            let req = HttpRequest::builder()
+                .method("OPTIONS")
+                .uri(format!("/home/hello?{query}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
 
-        let req = HttpRequest::builder()
-            .method("OPTIONS")
-            .uri(format!("/home/hello?{query}"))
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            resp.headers().get(header::ALLOW).unwrap(),
-            crate::server::pipeline::TIMELINE_ALLOW
-        );
-        assert_eq!(response_text(resp).await, "");
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+            assert_eq!(
+                resp.headers().get(header::ALLOW).unwrap(),
+                crate::server::WORLD_ALLOW
+            );
+            assert_eq!(response_text(resp).await, "");
+        }
 
         let _ = std::fs::remove_dir_all(dir);
     }
