@@ -4,7 +4,7 @@
 //! the write.
 
 use hmac::{Hmac, KeyInit, Mac};
-use rusqlite::{Connection, OptionalExtension, Statement, Transaction};
+use rusqlite::{OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -37,10 +37,12 @@ pub(crate) use headers::{
 };
 #[cfg(test)]
 pub use test_support::latest_hmac;
-pub(crate) use timeline_address::read_timeline_body_via_conn;
 pub(crate) use timeline_address::{
-    verified_latest_body_head_via_conn, VerifiedBodyEvent, VerifiedBodyHead,
+    read_timeline_body_via_conn, verified_latest_body_head_via_conn, VerifiedBodyEvent,
+    VerifiedBodyHead,
 };
+#[cfg(test)]
+use rusqlite::Connection;
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
                   e.content_type, e.meta_sha256, e.hmac, e.prev_hmac,
@@ -53,6 +55,7 @@ pub(crate) const AUDIT_CHAIN_BROKEN_PREFIX: &str = "audit chain broken at event 
 pub struct VerifiedAuditTx<'tx, 'conn, 'key> {
     tx: &'tx Transaction<'conn>,
     key: &'key AuditHmacKey,
+    world: ValidatedWorldPath,
 }
 
 pub type AuditResult<T> = Result<T, AuditError>;
@@ -121,11 +124,12 @@ pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()
 pub fn verify_world(data_root: &Path, world_name: &str, key: &AuditHmacKey) -> AuditResult<()> {
     let world_path = ValidatedWorldPath::new(world_name.to_owned())
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let Some(c) = world::open_existing(data_root, world_name)? else {
+    let Some(mut c) = world::open_existing_validated(data_root, &world_path)? else {
         return Ok(());
     };
-    require_intact(verify_world_connection(&c, &world_path, key)?)?;
-    if let Some(break_report) = live_body::verify_conn(&c)? {
+    let tx = c.transaction()?;
+    require_intact(verify_world_tx(&tx, &world_path, key)?)?;
+    if let Some(break_report) = live_body::verify_tx(&tx)? {
         return Err(AuditError::ChainBroken(break_report));
     }
     Ok(())
@@ -168,7 +172,17 @@ fn verify_appendable_tx<'tx, 'conn, 'key>(
     if let Some(break_report) = live_body::verify_tx(tx)? {
         return Err(AuditError::ChainBroken(break_report));
     }
-    Ok(VerifiedAuditTx { tx, key })
+    Ok(VerifiedAuditTx {
+        tx,
+        key,
+        world: world_name.clone(),
+    })
+}
+
+impl VerifiedAuditTx<'_, '_, '_> {
+    pub(crate) fn world(&self) -> &ValidatedWorldPath {
+        &self.world
+    }
 }
 
 struct EventRow {
@@ -241,11 +255,12 @@ pub fn verify_chain_via_conn(
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
     let conn = tracked.as_mut_conn();
-    let report = verify_world_connection(conn, world_path, key)?;
+    let tx = conn.transaction()?;
+    let report = verify_world_tx(&tx, world_path, key)?;
     if matches!(report, VerifyReport::Broken(_)) {
         return Ok(report);
     }
-    if let Some(break_report) = live_body::verify_conn(conn)? {
+    if let Some(break_report) = live_body::verify_tx(&tx)? {
         return Ok(VerifyReport::Broken(break_report));
     }
     Ok(report)
@@ -259,14 +274,14 @@ fn verify_connection(c: &Connection, key: &AuditHmacKey) -> rusqlite::Result<Ver
     verify_statement(&mut stmt, key, false, &retention, None, &generation)
 }
 
-fn verify_world_connection(
-    c: &Connection,
+fn verify_world_tx(
+    tx: &Transaction<'_>,
     world_name: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
-    let generation = crate::world_schema::generation(c)?;
-    let retention = retention::load(c)?;
-    let mut stmt = c.prepare(AUDIT_SELECT)?;
+    let generation = crate::world_schema::generation(tx)?;
+    let retention = retention::load(tx)?;
+    let mut stmt = tx.prepare(AUDIT_SELECT)?;
     verify_statement(
         &mut stmt,
         key,
