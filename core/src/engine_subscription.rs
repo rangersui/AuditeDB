@@ -5,7 +5,7 @@
 
 #![cfg_attr(not(feature = "unstable-engine"), allow(dead_code))]
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fmt};
 
 use tokio::sync::{broadcast, watch, OwnedSemaphorePermit};
 
@@ -22,14 +22,54 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubscribePattern(String);
 
+/// Process-local id space for subscription cursors.
+///
+/// Event ids are monotonic only within one running [`crate::Engine`]. The
+/// epoch makes cursor strings opaque across restarts so adapters cannot
+/// accidentally treat a fresh process's `id=5` as the old process's `id=5`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SubscriptionEpoch(String);
+
+/// Returned when a subscription epoch string is malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidSubscriptionEpoch;
+
+/// Opaque resume cursor for protocol adapters.
+///
+/// Rendered as `<32 lowercase hex epoch>:<decimal event id>`. The decimal
+/// suffix is still useful for in-process ordering, but it is not a complete
+/// identity without the epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubscriptionCursor {
+    epoch: SubscriptionEpoch,
+    event_id: u64,
+}
+
+/// Returned when an SSE cursor string is malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidSubscriptionCursor;
+
 /// Checked resume cursor for an Engine subscription.
 ///
 /// Protocol adapters may parse raw wire values such as `Last-Event-ID`, but
 /// core replay code only accepts this named type so a naked event id cannot be
 /// confused with a timeline sequence, audit row id, or byte offset.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SubscriptionResume {
-    after_event_id: Option<u64>,
+    kind: SubscriptionResumeKind,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum SubscriptionResumeKind {
+    #[default]
+    None,
+    CurrentProcess {
+        event_id: u64,
+    },
+    Cursor(SubscriptionCursor),
+    LegacyDecimal {
+        event_id: u64,
+    },
 }
 
 /// Protocol-neutral change event delivered to subscribers.
@@ -43,8 +83,13 @@ pub struct SubscriptionResume {
 #[non_exhaustive]
 pub struct ChangeEvent {
     /// Monotonically increasing event id. Use this as `since` for resumed
-    /// subscriptions.
+    /// in-process subscriptions only; wire protocols should persist
+    /// [`ChangeEvent::cursor`] instead.
     pub id: u64,
+    /// Process-local id space that produced this event id.
+    pub listen_epoch: SubscriptionEpoch,
+    /// Opaque cursor safe to render as an SSE `id`.
+    pub cursor: SubscriptionCursor,
     /// Engine mutation that produced the change.
     pub verb: ChangeVerb,
     /// Canonical world path the change applies to.
@@ -98,7 +143,7 @@ enum SubscriptionState {
 }
 
 /// Error returned by [`EngineSubscription::recv`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SubscriptionRecvError {
     /// The engine is shutting down or the broadcast channel was closed.
@@ -122,6 +167,9 @@ pub enum SubscriptionRecvError {
         /// Newest event id issued by this engine process when the
         /// subscription was opened.
         newest: u64,
+        /// Cursor in this process's id space that adapters may use to rebase
+        /// automatic reconnect state.
+        reset: SubscriptionCursor,
     },
 }
 
@@ -157,6 +205,7 @@ impl From<crate::event::ChangeEvent> for ChangeEvent {
             .expect("listen events are emitted only for validated world paths");
         Self::new(
             value.id,
+            value.listen_epoch,
             value.verb,
             path,
             value.etag,
@@ -195,40 +244,186 @@ impl SubscribePattern {
     }
 }
 
+impl SubscriptionEpoch {
+    pub(crate) fn mint() -> Result<Self, getrandom::Error> {
+        let mut bytes = [0u8; 16];
+        getrandom::getrandom(&mut bytes)?;
+        Ok(Self(hex::encode(bytes)))
+    }
+
+    /// Parses a 128-bit lowercase-hex subscription epoch.
+    ///
+    /// # Errors
+    /// Returns [`InvalidSubscriptionEpoch`] unless `raw` is exactly 32
+    /// lowercase hexadecimal characters.
+    pub fn new(raw: impl Into<String>) -> Result<Self, InvalidSubscriptionEpoch> {
+        let raw = raw.into();
+        if raw.len() != 32
+            || !raw
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(InvalidSubscriptionEpoch);
+        }
+        Ok(Self(raw))
+    }
+
+    /// Returns the lowercase-hex epoch string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SubscriptionEpoch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Display for InvalidSubscriptionEpoch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid subscription epoch")
+    }
+}
+
+impl std::error::Error for InvalidSubscriptionEpoch {}
+
+impl SubscriptionCursor {
+    pub(crate) fn new(epoch: SubscriptionEpoch, event_id: u64) -> Self {
+        Self { epoch, event_id }
+    }
+
+    /// Parses an opaque SSE event id produced by the Engine.
+    ///
+    /// # Errors
+    /// Returns [`InvalidSubscriptionCursor`] unless `raw` is
+    /// `<32 lowercase hex epoch>:<canonical decimal event id>`.
+    pub fn from_sse_id(raw: impl AsRef<str>) -> Result<Self, InvalidSubscriptionCursor> {
+        let raw = raw.as_ref();
+        let Some((epoch, event_id)) = raw.split_once(':') else {
+            return Err(InvalidSubscriptionCursor);
+        };
+        let epoch = SubscriptionEpoch::new(epoch).map_err(|_| InvalidSubscriptionCursor)?;
+        if event_id.is_empty() || !event_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(InvalidSubscriptionCursor);
+        }
+        let parsed = event_id
+            .parse::<u64>()
+            .map_err(|_| InvalidSubscriptionCursor)?;
+        if event_id != parsed.to_string() {
+            return Err(InvalidSubscriptionCursor);
+        }
+        Ok(Self {
+            epoch,
+            event_id: parsed,
+        })
+    }
+
+    /// Returns the epoch component of this cursor.
+    pub fn epoch(&self) -> &SubscriptionEpoch {
+        &self.epoch
+    }
+
+    /// Returns the event id component of this cursor.
+    pub fn event_id(&self) -> u64 {
+        self.event_id
+    }
+}
+
+impl fmt::Display for SubscriptionCursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.epoch, self.event_id)
+    }
+}
+
+impl fmt::Display for InvalidSubscriptionCursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid subscription cursor")
+    }
+}
+
+impl std::error::Error for InvalidSubscriptionCursor {}
+
 impl SubscriptionResume {
     /// Starts a fresh live subscription with no replay cursor.
     pub fn none() -> Self {
         Self {
-            after_event_id: None,
+            kind: SubscriptionResumeKind::None,
         }
     }
 
     /// Replays events after `id` before switching to live delivery.
+    ///
+    /// This constructor is for in-process callers that obtained `id` from the
+    /// same running [`crate::Engine`]. Wire adapters should persist
+    /// [`ChangeEvent::cursor`] and resume with [`SubscriptionResume::after_cursor`].
     pub fn after_event_id(id: u64) -> Self {
         Self {
-            after_event_id: Some(id),
+            kind: SubscriptionResumeKind::CurrentProcess { event_id: id },
         }
     }
 
-    pub(crate) fn after_event_id_raw(self) -> Option<u64> {
-        self.after_event_id
+    /// Replays events after an opaque cursor before switching to live delivery.
+    pub fn after_cursor(cursor: SubscriptionCursor) -> Self {
+        Self {
+            kind: SubscriptionResumeKind::Cursor(cursor),
+        }
     }
 
-    pub(crate) fn is_replay(self) -> bool {
-        self.after_event_id.is_some()
+    #[doc(hidden)]
+    pub fn legacy_event_id(id: u64) -> Self {
+        Self {
+            kind: SubscriptionResumeKind::LegacyDecimal { event_id: id },
+        }
+    }
+
+    pub(crate) fn replay_plan(&self, current_epoch: &SubscriptionEpoch) -> ReplayPlan {
+        match &self.kind {
+            SubscriptionResumeKind::None => ReplayPlan::None,
+            SubscriptionResumeKind::CurrentProcess { event_id } => ReplayPlan::Current {
+                event_id: *event_id,
+            },
+            SubscriptionResumeKind::Cursor(cursor) if cursor.epoch() == current_epoch => {
+                ReplayPlan::Current {
+                    event_id: cursor.event_id(),
+                }
+            }
+            SubscriptionResumeKind::Cursor(cursor) => ReplayPlan::Foreign {
+                event_id: cursor.event_id(),
+            },
+            SubscriptionResumeKind::LegacyDecimal { event_id } => ReplayPlan::Foreign {
+                event_id: *event_id,
+            },
+        }
+    }
+}
+
+pub(crate) enum ReplayPlan {
+    None,
+    Current { event_id: u64 },
+    Foreign { event_id: u64 },
+}
+
+impl ReplayPlan {
+    pub(crate) fn is_current_replay(&self) -> bool {
+        matches!(self, Self::Current { .. })
     }
 }
 
 impl ChangeEvent {
     pub(crate) fn new(
         id: u64,
+        listen_epoch: SubscriptionEpoch,
         verb: ChangeVerb,
         path: ValidatedWorldPath,
         etag: String,
         timeline_address: Option<TimelineAddress>,
     ) -> Self {
+        let cursor = SubscriptionCursor::new(listen_epoch.clone(), id);
         Self {
             id,
+            listen_epoch,
+            cursor,
             verb,
             path,
             etag,
@@ -353,7 +548,7 @@ impl EngineSubscription {
 
 #[cfg(test)]
 mod tests {
-    use super::SubscribePattern;
+    use super::{SubscribePattern, SubscriptionCursor, SubscriptionEpoch};
 
     #[test]
     fn subscribe_pattern_normalizes_once_at_entry() {
@@ -368,5 +563,18 @@ mod tests {
             SubscribePattern::new("/home/jobs/*").as_str(),
             "/home/jobs/*"
         );
+    }
+
+    #[test]
+    fn subscription_cursor_requires_epoch_and_canonical_decimal() {
+        let cursor = SubscriptionCursor::from_sse_id("0123456789abcdef0123456789abcdef:42")
+            .expect("canonical cursor parses");
+        assert_eq!(cursor.epoch().as_str(), "0123456789abcdef0123456789abcdef");
+        assert_eq!(cursor.event_id(), 42);
+        assert_eq!(cursor.to_string(), "0123456789abcdef0123456789abcdef:42");
+
+        assert!(SubscriptionEpoch::new("0123456789abcdef0123456789abcdeF").is_err());
+        assert!(SubscriptionCursor::from_sse_id("42").is_err());
+        assert!(SubscriptionCursor::from_sse_id("0123456789abcdef0123456789abcdef:0042").is_err());
     }
 }
