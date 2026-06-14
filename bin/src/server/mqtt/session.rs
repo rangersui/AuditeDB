@@ -18,7 +18,7 @@ use crate::{
     engine::{Engine, EngineError},
     engine_types::{
         AccessTier, EngineSubscription, Preconditions, Representation, SubscriptionRecvError,
-        ValidatedWorldPath,
+        SubscriptionResume, ValidatedWorldPath,
     },
 };
 
@@ -367,7 +367,7 @@ impl MqttSession {
         for pattern in route.live_patterns() {
             let subscription = self
                 .engine
-                .subscribe(pattern, self.tier, None)
+                .subscribe(pattern, self.tier, SubscriptionResume::none())
                 .map_err(mqtt_reject_from_engine)?;
             subscriptions.push(subscription);
         }
