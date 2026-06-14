@@ -672,8 +672,9 @@ reviewer's prescribed wording or explicitly ledgered.
 Every gated PR or design freeze records its review evidence in the PR
 body, tracked design note, or another durable review artifact. The
 ledger names the scientist lenses used, the QA/enforcement reviewer,
-confirmed P0–P2 findings, verifier evidence for those findings, fixes
-applied, and the fresh round that cleared them.
+the active skills checked, confirmed P0–P2 findings, verifier evidence
+for those findings, fixes applied, and the fresh round that cleared
+them.
 
 Round hygiene, non-negotiable:
 
