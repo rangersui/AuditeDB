@@ -920,18 +920,6 @@ mod tests {
                 .clone()
                 .expect("timeline body hash"),
         };
-        let historical = engine
-            .dereference_timeline_coordinate(first_coordinate.clone(), FfiAccessTier::Read)
-            .expect("timeline coordinate dereferences");
-        assert_eq!(historical.kind, FfiTimelineDereferenceKind::Body);
-        assert_eq!(
-            historical
-                .representation
-                .expect("historical representation")
-                .body,
-            b"first"
-        );
-        assert_eq!(historical.coordinate, Some(first_coordinate));
         let first_cursor = first_event.cursor;
         initial_subscription.close();
 
@@ -943,6 +931,18 @@ mod tests {
                 FfiAccessTier::Write,
             )
             .expect("second write succeeds");
+        let historical = engine
+            .dereference_timeline_coordinate(first_coordinate.clone(), FfiAccessTier::Read)
+            .expect("timeline coordinate dereferences after overwrite");
+        assert_eq!(historical.kind, FfiTimelineDereferenceKind::Body);
+        assert_eq!(
+            historical
+                .representation
+                .expect("historical representation")
+                .body,
+            b"first"
+        );
+        assert_eq!(historical.coordinate, Some(first_coordinate));
 
         let subscription = engine
             .subscribe(
@@ -980,19 +980,50 @@ mod tests {
     #[test]
     fn timeline_coordinate_rejects_raw_invalid_ffi_fields() {
         let engine = test_engine("timeline-invalid-coordinate");
-        let err = engine
-            .dereference_timeline_coordinate(
+        let good = FfiTimelineCoordinate {
+            world: "home/timeline".to_owned(),
+            generation: "0123456789abcdef0123456789abcdef".to_owned(),
+            seq: 1,
+            body_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_owned(),
+        };
+        for (label, coordinate) in [
+            (
+                "memory world",
                 FfiTimelineCoordinate {
                     world: "tmp/not-durable".to_owned(),
-                    generation: "0123456789abcdef0123456789abcdef".to_owned(),
-                    seq: 1,
-                    body_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                        .to_owned(),
+                    ..good.clone()
                 },
-                FfiAccessTier::Read,
-            )
-            .expect_err("memory timeline coordinates must be rejected at FFI boundary");
-        assert!(matches!(err, FfiError::InvalidConfig { .. }));
+            ),
+            (
+                "uppercase generation",
+                FfiTimelineCoordinate {
+                    generation: "A123456789abcdef0123456789abcdef".to_owned(),
+                    ..good.clone()
+                },
+            ),
+            (
+                "zero sequence",
+                FfiTimelineCoordinate {
+                    seq: 0,
+                    ..good.clone()
+                },
+            ),
+            (
+                "bad body hash",
+                FfiTimelineCoordinate {
+                    body_sha256: "g123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                        .to_owned(),
+                    ..good.clone()
+                },
+            ),
+        ] {
+            match engine.dereference_timeline_coordinate(coordinate, FfiAccessTier::Read) {
+                Err(FfiError::InvalidConfig { .. }) => {}
+                Err(other) => panic!("{label} returned wrong error: {other:?}"),
+                Ok(_) => panic!("{label} should fail at FFI boundary"),
+            }
+        }
     }
 
     #[test]
