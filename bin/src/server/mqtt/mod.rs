@@ -28,7 +28,7 @@ use tokio::{
 
 use crate::{
     engine::{Engine, ShutdownToken},
-    engine_types::AccessTier,
+    engine_types::{AccessTier, SubscriptionResume},
 };
 
 use self::{
@@ -929,7 +929,7 @@ mod tests {
             .subscribe(
                 &SubscribePattern::new("tmp/sensor/*"),
                 AccessTier::Read,
-                Some(0),
+                SubscriptionResume::after_event_id(0),
             )
             .unwrap();
         let (outbound, mut rx) = mpsc::channel(OUTBOUND_QUEUE);
@@ -1364,7 +1364,7 @@ mod tests {
             .subscribe(
                 &SubscribePattern::new("home/sensor/*"),
                 AccessTier::Read,
-                None,
+                SubscriptionResume::none(),
             )
             .unwrap();
         let world = ValidatedWorldPath::new("home/sensor/temp").unwrap();
@@ -1433,7 +1433,7 @@ mod tests {
             .subscribe(
                 &SubscribePattern::new("home/sensor/*"),
                 AccessTier::Read,
-                None,
+                SubscriptionResume::none(),
             )
             .unwrap();
         let world = ValidatedWorldPath::new("home/sensor/temp").unwrap();
