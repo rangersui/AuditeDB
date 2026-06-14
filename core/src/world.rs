@@ -192,6 +192,7 @@ fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
 /// Open an existing world's universe.db without creating directories,
 /// files, or schema. Audit verification uses this path because probing
 /// a missing world must not resurrect it.
+#[cfg(test)]
 pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<Connection>> {
     let path = world_db(data_root, world);
     open_existing_path(&path)
@@ -301,8 +302,11 @@ impl From<audit::AuditError> for WriteAuditError {
     }
 }
 
-pub fn metadata(data_root: &Path, world: &str) -> rusqlite::Result<Option<WorldMetadata>> {
-    let Some(c) = open_existing(data_root, world)? else {
+pub fn metadata(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> rusqlite::Result<Option<WorldMetadata>> {
+    let Some(c) = open_existing_validated(data_root, world)? else {
         return Ok(None);
     };
     let (body_len, content_type) = c.query_row(
@@ -323,8 +327,8 @@ pub fn metadata(data_root: &Path, world: &str) -> rusqlite::Result<Option<WorldM
     Ok(Some((body_len, content_type, headers)))
 }
 
-pub fn body_len(data_root: &Path, world: &str) -> rusqlite::Result<Option<usize>> {
-    let Some(c) = open_existing(data_root, world)? else {
+pub fn body_len(data_root: &Path, world: &ValidatedWorldPath) -> rusqlite::Result<Option<usize>> {
+    let Some(c) = open_existing_validated(data_root, world)? else {
         return Ok(None);
     };
     c.query_row(
@@ -338,7 +342,13 @@ pub fn body_len(data_root: &Path, world: &str) -> rusqlite::Result<Option<usize>
 pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(String, usize)>> {
     let mut out = Vec::new();
     for world in list(data_root)? {
-        if let Some(size) = storage_len(data_root, &world)? {
+        let world_path = ValidatedWorldPath::new(world.clone()).map_err(|_| {
+            rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_CORRUPT),
+                Some("disk world name failed validation".to_owned()),
+            )
+        })?;
+        if let Some(size) = storage_len(data_root, &world_path)? {
             out.push((world, size));
         }
     }
@@ -1112,8 +1122,9 @@ mod tests {
         .unwrap();
         force_text_body(&root, "home/plain", "\u{00e9}");
 
-        assert!(body_len(&root, "home/plain").is_err());
-        assert!(metadata(&root, "home/plain").is_err());
+        let world = ValidatedWorldPath::new("home/plain").unwrap();
+        assert!(body_len(&root, &world).is_err());
+        assert!(metadata(&root, &world).is_err());
         assert!(sizes(&root).is_err());
         // Read path goes through ReadCache now. Wrap the bare
         // Connection via the test-only helper exported from
