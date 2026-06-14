@@ -148,7 +148,7 @@ impl Core {
         lock.lock_owned().await
     }
 
-    pub(crate) fn read_world(&self, world: &str) -> rusqlite::Result<Option<Stage>> {
+    pub(crate) fn read_world(&self, world: &ValidatedWorldPath) -> rusqlite::Result<Option<Stage>> {
         Ok(self.read_world_with_etag(world)?.map(|(stage, _)| stage))
     }
 
@@ -159,12 +159,13 @@ impl Core {
     /// `std::sync::RwLock`, matching the existing handler call shape.
     pub(crate) fn read_world_with_etag(
         &self,
-        world: &str,
+        world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<(Stage, String)>> {
-        if store::is_memory_world(world) {
+        let world_name = world.as_str();
+        if store::is_memory_world(world_name) {
             Ok(self
                 .mem
-                .read_with_hash(world)
+                .read_with_hash(world_name)
                 .map(|(stage, hash)| (stage, format!("sha256-{hash}"))))
         } else {
             Ok(self
@@ -205,17 +206,17 @@ impl Core {
         self.read_cache.clear_tombstone(world);
     }
 
-    /// O(1) chain-head read through the read-cache SlotState protocol.
+    /// Chain-head read through the read-cache SlotState protocol.
     /// Outer `None` = world DB missing (callers map to NotFound); inner
     /// `None` = empty bootstrap-shape chain (nothing to anchor). Memory
     /// worlds have no audit chain; callers filter those before reaching
     /// here, same as `cached_verify_chain`.
     pub(crate) fn cached_chain_head(
         &self,
-        world: &str,
+        world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<Option<(i64, String)>>> {
         debug_assert!(
-            !store::is_memory_world(world),
+            !store::is_memory_world(world.as_str()),
             "cached_chain_head only applies to durable worlds"
         );
         self.read_cache.cached_chain_head(&self.data, world)
@@ -230,10 +231,10 @@ impl Core {
     /// here.
     pub(crate) fn cached_verify_chain(
         &self,
-        world: &str,
+        world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<audit::VerifyReport>> {
         debug_assert!(
-            !store::is_memory_world(world),
+            !store::is_memory_world(world.as_str()),
             "cached_verify_chain only applies to durable worlds"
         );
         self.read_cache
