@@ -36,13 +36,13 @@ pub(crate) use headers::{
     DELETE_SUBJECT_WORLD,
 };
 #[cfg(test)]
+use rusqlite::Connection;
+#[cfg(test)]
 pub use test_support::latest_hmac;
 pub(crate) use timeline_address::{
     read_timeline_body_via_conn, verified_latest_body_head_via_conn, VerifiedBodyEvent,
     VerifiedBodyHead,
 };
-#[cfg(test)]
-use rusqlite::Connection;
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
                   e.content_type, e.meta_sha256, e.hmac, e.prev_hmac,
