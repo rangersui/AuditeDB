@@ -178,11 +178,11 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         core.durable_world_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    core.install_tombstone(world_name).await;
+    core.install_tombstone(&permit.world).await;
     hooks.read_cache_drained();
 
     let ok = core.delete_world_blocking(world_name).await;
-    core.clear_tombstone(world_name);
+    core.clear_tombstone(&permit.world);
     if !ok {
         return Err(DeleteError::DeleteFailedAfterIntent);
     }
