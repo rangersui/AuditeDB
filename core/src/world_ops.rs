@@ -204,7 +204,7 @@ pub(crate) fn read_timeline_body(
     }
     match core.read_timeline_body(address) {
         Ok(Some(read)) => Ok(read),
-        Ok(None) => Ok(TimelineRead::Gone {
+        Ok(None) => Ok(TimelineRead::Unproven {
             address: address.clone(),
         }),
         Err(err) => Err(classify_read_audit_error("timeline read", err)),

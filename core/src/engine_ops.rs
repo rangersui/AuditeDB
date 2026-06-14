@@ -217,10 +217,10 @@ impl Engine {
     /// executor worker should call it from their blocking-worker boundary.
     ///
     /// Unlike [`Engine::read`], this method does not return `Option`: a
-    /// timeline address names a historical fact. If the durable world no
-    /// longer exists, the result is [`TimelineRead::Gone`]. Other
-    /// [`TimelineRead`] variants describe exact historical-read outcomes; this
-    /// method never falls back to the current live body.
+    /// timeline address names a historical fact. Missing local storage becomes
+    /// [`TimelineRead::Unproven`] until delete-ledger proof can bind the absence
+    /// to the requested address. This method never falls back to the current
+    /// live body.
     ///
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below `Read`.
@@ -681,9 +681,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_read_timeline_body_maps_missing_world_to_gone() {
-        let (engine, root) = test_engine("timeline-public-gone");
-        let world = ValidatedWorldPath::new("home/timeline-gone").unwrap();
+    async fn engine_read_timeline_body_maps_missing_world_to_unproven() {
+        let (engine, root) = test_engine("timeline-public-unproven");
+        let world = ValidatedWorldPath::new("home/timeline-unproven").unwrap();
         engine
             .replace(
                 &world,
@@ -704,8 +704,8 @@ mod tests {
             .read_timeline_body(&address, AccessTier::Read)
             .expect("missing durable world is a typed read outcome")
         {
-            TimelineRead::Gone { address: got } => assert_eq!(got, address),
-            _ => panic!("expected gone"),
+            TimelineRead::Unproven { address: got } => assert_eq!(got, address),
+            _ => panic!("expected unproven"),
         }
 
         drop(engine);
