@@ -1052,12 +1052,12 @@ mod tests {
         assert_eq!(tampered_head.seq, tampered_valid.events as i64);
         assert_eq!(tampered_head.hmac, tampered_valid.latest);
 
-        engine.core().install_tombstone(disk.as_str()).await;
+        engine.core().install_tombstone(&disk).await;
         assert!(matches!(
             engine.chain_head(&disk, AccessTier::Read),
             Err(EngineError::NotFound)
         ));
-        engine.core().clear_tombstone(disk.as_str());
+        engine.core().clear_tombstone(&disk);
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
