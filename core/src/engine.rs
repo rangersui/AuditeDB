@@ -96,6 +96,11 @@ pub enum EngineBuildError {
     },
     /// [`EngineBuilder::key`] was never called.
     HmacKeyMissing,
+    /// Startup could not mint a process-local listen cursor epoch.
+    ListenEpochEntropy {
+        /// Human-readable failure detail (do not parse).
+        detail: String,
+    },
     /// Startup audit verification found a tampered HMAC chain.
     AuditChainCorrupted {
         /// Canonical name of the world whose chain failed verification.
@@ -125,6 +130,9 @@ impl fmt::Display for EngineBuildError {
                 None => write!(f, "data root writer lock is held: {}", path.display()),
             },
             Self::HmacKeyMissing => f.write_str("audit-chain HMAC key is missing"),
+            Self::ListenEpochEntropy { detail } => {
+                write!(f, "listen cursor epoch entropy failed: {detail}")
+            }
             Self::AuditChainCorrupted { world, detail } => {
                 write!(f, "audit chain verification failed for {world}: {detail}")
             }
@@ -358,6 +366,12 @@ impl EngineBuilder {
 
         let (events, _) = broadcast::channel(self.listen_replay_max);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let listen_epoch =
+            crate::engine_subscription::SubscriptionEpoch::mint().map_err(|err| {
+                EngineBuildError::ListenEpochEntropy {
+                    detail: format!("{err:?}"),
+                }
+            })?;
         let core = Arc::new(Core {
             data: self.data_root,
             tokens: self.tokens,
@@ -372,6 +386,7 @@ impl EngineBuilder {
             events,
             listen_slots: Arc::new(Semaphore::new(self.max_listen_connections)),
             listen_replay_max: self.listen_replay_max,
+            listen_epoch,
             event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(
                 self.listen_replay_max,
             ))),
