@@ -118,7 +118,7 @@ pub(crate) fn read_timeline_body_via_conn(
     let conn = tracked.as_mut_conn();
     let tx = conn.transaction()?;
     let actual_gen = world_schema::generation(&tx)?;
-    super::require_intact(super::verify_world_connection(&tx, address.world(), key)?)?;
+    super::require_intact(super::verify_world_tx(&tx, address.world(), key)?)?;
 
     let read = if &actual_gen != address.gen() {
         TimelineRead::GenMismatch {
