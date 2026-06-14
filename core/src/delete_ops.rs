@@ -157,7 +157,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     core.install_tombstone(&permit.world).await;
     hooks.read_cache_drained();
 
-    let ok = core.delete_world_blocking(world_name).await;
+    let ok = core.delete_world_blocking(&permit.world).await;
     core.clear_tombstone(&permit.world);
     if !ok {
         return Err(DeleteError::DeleteFailedAfterIntent);
@@ -375,10 +375,10 @@ mod tests {
 
         let (core, dir) = test_core("delete-ledger-no-cas");
         let subject = ValidatedWorldPath::new("home/delete-ledger-no-cas").unwrap();
-        core.write_world(subject.as_str(), b"body", "text/plain", &[])
+        core.test_only_write_world(subject.as_str(), b"body", "text/plain", &[])
             .unwrap();
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
-        core.write_world(subject.as_str(), b"body", "application/octet-stream", &[])
+        core.test_only_write_world(subject.as_str(), b"body", "application/octet-stream", &[])
             .unwrap();
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
 
