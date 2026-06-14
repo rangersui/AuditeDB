@@ -87,10 +87,10 @@ Required before marking upper stack layers ready:
 
 - GitHub CI green for #359 after the pushed repair.
 
-Completed after the current cascade:
+Still required after the current cascade:
 
 - top-of-stack local validation after the current `22r41` merge commit;
-- subagent QA rerun on the repaired artifact until no P0-P3 findings remained.
+- subagent QA rerun on the repaired artifact until no P0-P3 findings remain.
 
 Final local validation on `stack/22r41-sdk-timeline-coordinate`:
 
@@ -209,3 +209,63 @@ Validation after those fixes on `stack/22r41-sdk-timeline-coordinate`:
 
 This ledger does not claim GitHub CI is green. The live source of truth after
 push is GitHub CI, especially #359.
+
+Additional QA round after the cursor repair:
+
+- Huygens the 2nd, Popper/Bacon: BLOCK. Found P2 FFI cursor-ahead handling:
+  `SubscriptionRecvError::CursorAhead` was explicit but mapped to terminal
+  `Unknown`, so an FFI subscriber using a stale cursor would lose the live
+  stream after the first reset signal.
+- Hume the 2nd, Mencius/Noether: BLOCK. Confirmed the same P2 and found P3
+  tombstone lifecycle APIs still accepted raw `&str` world names.
+- Gauss the 2nd, process/CI QA: PENDING, no current-head bad checks after
+  deduping stale cancelled checks; live CI remained pending.
+
+Fixes added after that round:
+
+- FFI now exposes `FfiSubscriptionNextKind::CursorAhead` plus `since` and
+  `newest` fields on `FfiSubscriptionNext`.
+- FFI treats `CursorAhead` as non-terminal, so the subscription pump remains
+  live and later matching writes are still delivered.
+- Core tombstone lifecycle APIs now require `&ValidatedWorldPath` at the
+  `Core` and `ReadCache` boundaries.
+- The stack-local timeline read-cache tombstone test was repaired at its
+  first introducing layer (`22r22`) instead of only at the tip.
+
+Focused validation after those fixes:
+
+- `cargo fmt --manifest-path core/Cargo.toml --check`
+- `cargo fmt --manifest-path ffi/Cargo.toml --check`
+- `cargo test --manifest-path core/Cargo.toml read_cache -- --nocapture`:
+  24 passed.
+- `cargo test --manifest-path core/Cargo.toml tombstone -- --nocapture`:
+  4 passed.
+- `cargo test --manifest-path ffi/Cargo.toml
+  subscription_next_reports_cursor_ahead_then_keeps_live_stream_open --
+  --nocapture`: 1 passed.
+- `cargo test --manifest-path ffi/Cargo.toml subscription_next --
+  --nocapture`: 4 passed.
+
+Full local validation after those fixes on `stack/22r41-sdk-timeline-coordinate`:
+
+- `cargo fmt --manifest-path core/Cargo.toml --check`
+- `cargo fmt --manifest-path bin/Cargo.toml --check`
+- `cargo fmt --manifest-path ffi/Cargo.toml --check`
+- `cargo test --manifest-path core/Cargo.toml`: 199 passed, 2 ignored; doc
+  tests 17 passed.
+- `cargo test --manifest-path bin/Cargo.toml`: 150 passed.
+- `cargo test --manifest-path ffi/Cargo.toml`: 24 passed; doc tests 0
+  passed/0 failed.
+- `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
+  -D clippy::undocumented_unsafe_blocks`
+- `cargo clippy --manifest-path bin/Cargo.toml -- -D warnings`
+- `cargo clippy --manifest-path ffi/Cargo.toml -- -D warnings`
+- `python sdk/tests/e2e_blackbox.py`: 248 checks passed.
+- `python sdk/tests/test_tools.py`: pass.
+- `python -m compileall -q sdk/src sdk/tests`: pass.
+- `python tools/version_consistency_check.py`: 8.3.0 ok.
+- `python tools/audit_chain_verify.py --self-test`: ok.
+- `python tools/header_policy_scan.py --self-test`: ok.
+- `python tools/header_policy_scan.py --offline --report
+  header-policy-report.md`: no drift; temporary report removed.
+- `git diff --check`: pass.
