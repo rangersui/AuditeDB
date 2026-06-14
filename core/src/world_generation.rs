@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+use rusqlite::types::{ToSql, ToSqlOutput};
+
 /// Local Path 3 invariant: a world generation is a 128-bit identity rendered as
 /// 32 lowercase hexadecimal characters.
 const WORLD_GEN_HEX_LEN: usize = 32;
@@ -56,7 +58,7 @@ impl WorldGeneration {
 }
 
 impl MintedWorldGeneration {
-    pub(crate) fn as_str(&self) -> &str {
+    fn as_str(&self) -> &str {
         self.0.as_str()
     }
 
@@ -64,6 +66,12 @@ impl MintedWorldGeneration {
     // Deterministic minting bypass for stable assertions only.
     pub(crate) fn test_only_from_entropy_bytes(bytes: [u8; 16]) -> Self {
         Self(WorldGeneration(hex::encode(bytes)))
+    }
+}
+
+impl ToSql for MintedWorldGeneration {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::from(self.as_str()))
     }
 }
 

@@ -22,8 +22,16 @@ read(TimelineAddress) ->
 ```
 
 This addendum refines the earlier Path 3 result shape by adding
-`NeverRetained` as its own absence state. Pre-CAS history must not collapse
-into `Expired` or `MissingRow`.
+`NeverRetained` as its own absence state. In a world that already has the CAS
+schema, history outside the promised retained range must not collapse into
+`Expired` or `MissingRow`.
+
+Those result names are not prose-only states. Before any
+`read(TimelineAddress)` implementation ships, the Rust contract must be able
+to express them exhaustively: either `TimelineRead` grows typed
+`NeverRetained` and `AddressMismatch` variants, or the read path returns a
+sealed intermediate outcome that forces those distinctions before adapters see
+the result. A stringly "reason" field is not enough.
 
 The next storage-format layer should add only the place where retained body
 bytes can live:
@@ -99,6 +107,12 @@ identity, not representation identity and not compare-and-swap identity.
 | Missing CAS table on an existing world can be repaired automatically. | Policy. | Rejected. Storage format changes fail loud; no migration/backfill in this stack layer. |
 | Missing CAS bytes always mean expiry. | Policy and unsafe. | Rejected. Missing bytes are `Expired` only when a retention/pruning proof says so. Before CAS retention starts they are `NeverRetained`/unavailable-before-CAS; inside a promised retained range without pruning proof they are corruption. |
 
+`NeverRetained` is not a migration escape hatch. A pre-CAS-schema v5.1 world
+that lacks `cas_bodies` / `cas_state` fails storage-format verification. The
+`NeverRetained` state applies only after the CAS schema exists and
+`cas_state.first_retained_seq` proves either `NULL` or a floor above the
+requested `seq`.
+
 ## 4. Residual Physics
 
 - SQLite schema verification on read-only connections cannot mutate the DB.
@@ -124,7 +138,7 @@ The schema layer must make these invalid states fail loudly:
 
 - no `cas_bodies` table on a durable world;
 - no `cas_state` row on a durable world;
-- `body_sha256` missing from `cas_bodies`;
+- `body_sha256` column missing from `cas_bodies`;
 - `body_sha256` present but not TEXT;
 - `body` missing from `cas_bodies`;
 - `body` present but not BLOB;
@@ -148,6 +162,13 @@ to prove the generated schema actually rejects them.
 The schema layer does not need to prove body/hash equality yet. That belongs to
 future write/read CAS logic, which has the body bytes in hand and can recompute
 or compare before accepting a write or returning `TimelineRead::Body`.
+
+The schema layer also does not prove write-side atomicity. Before write-side
+CAS retention is wired, the append path needs a proof-bearing transaction shape
+such as a sealed `RetainedCasBody` / `VerifiedCasBody` / `CasRetainTx` value
+that binds the transaction, event kind, body bytes, and `body_sha256`. Passing
+a raw hash string across the audit boundary would leave "event row, CAS body,
+and retention floor commit together" as policy rather than physics.
 
 ## 6. Falsifying Counterexamples
 
@@ -228,11 +249,17 @@ coordinate; a path-only delete fact would confuse delete/recreate ABA with the
 old world still being gone. The subject-world read flow must not pretend a
 missing file alone is a timeline fact.
 
+Likewise, `Expired` must only be constructible from a pruning proof bound to
+the requested timeline address or retained range/epoch, and `Gone` must only be
+constructible from a delete proof bound to the requested `{world, gen, seq}`.
+Until those proof types or verifier functions exist, those states should remain
+unreachable from production code.
+
 ## 7. Implementation Boundary For The Next PR
 
 The CAS schema PR may:
 
-- update the durable schema comment/version;
+- update source comments to name the new storage shape;
 - create `cas_bodies` in `world_schema::create`;
 - create `cas_state` in `world_schema::create`;
 - require `cas_bodies` in `world_schema::verify`;
@@ -251,10 +278,19 @@ The CAS schema PR must not:
 - add a foreign key from `events.body_sha256` to `cas_bodies`;
 - backfill or migrate existing worlds.
 
+The persisted format marker for this layer is the table shape itself:
+`cas_bodies`, `cas_state`, and the singleton `cas_state(id=1)` row. Do not add
+or rely on a separate durable version field such as `PRAGMA user_version`
+unless a later plan explicitly introduces it.
+
 ## 8. Follow-Up Order
 
 1. Add inert `cas_bodies` / `cas_state` schema and verification.
-2. Add write-side CAS insertion for body-bearing audit events and set
+2. Sync the typed timeline read contract before dereference plumbing:
+   `TimelineRead` must grow explicit `NeverRetained` and `AddressMismatch`
+   states, or a sealed intermediate result must force those distinctions before
+   adapters can classify the outcome.
+3. Add write-side CAS insertion for body-bearing audit events and set
    `first_retained_seq` when the first retained event is committed. Same hash
    plus same bytes is idempotent. Same hash plus different bytes is corruption
    and must fail loud before the event or floor update commits. Do not use
@@ -265,8 +301,8 @@ The CAS schema PR must not:
    later body-bearing event must commit the event row and CAS body atomically or
    the scalar floor is not strong enough and must become explicit retained
    ranges/epochs instead.
-3. Add event-row address extraction: `{world, gen, seq, body_sha256}`.
-4. Add internal `read(TimelineAddress)` that resolves event row first, CAS body
+4. Add event-row address extraction: `{world, gen, seq, body_sha256}`.
+5. Add internal `read(TimelineAddress)` that resolves event row first, CAS body
    second, and returns typed absence/corruption, including the distinction
    between never-retained, expired-with-proof, and unexpected missing body.
-5. Only after the internal contract is proven, expose adapter/SDK surfaces.
+6. Only after the internal contract is proven, expose adapter/SDK surfaces.
