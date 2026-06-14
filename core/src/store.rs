@@ -285,8 +285,11 @@ pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine_types::ValidatedWorldPath;
-    use crate::{audit, test_support::test_core};
+    use crate::{audit, engine_types::ValidatedWorldPath, test_support::test_core};
+
+    fn world_path(world: &str) -> ValidatedWorldPath {
+        ValidatedWorldPath::new(world).unwrap()
+    }
 
     #[test]
     fn worlds_store_content_type_not_private_extensions() {
@@ -294,7 +297,7 @@ mod tests {
         core.write_world("home/pdf", b"%PDF-1.7", "application/pdf", &[])
             .unwrap();
 
-        let stage = core.read_world("home/pdf").unwrap().unwrap();
+        let stage = core.read_world(&world_path("home/pdf")).unwrap().unwrap();
         assert_eq!(stage.content_type, "application/pdf");
         assert_eq!(stage.body, b"%PDF-1.7");
 
@@ -323,7 +326,10 @@ mod tests {
         )
         .unwrap();
 
-        let stage = core.read_world("tmp/scratch").unwrap().unwrap();
+        let stage = core
+            .read_world(&world_path("tmp/scratch"))
+            .unwrap()
+            .unwrap();
         assert_eq!(stage.body, b"draft");
         assert_eq!(stage.content_type, "text/plain; charset=utf-8");
         assert_eq!(
@@ -342,10 +348,10 @@ mod tests {
     #[test]
     fn disk_worlds_create_sqlite_files_and_audit_chain_when_using_audit_path() {
         let (core, dir) = test_core("disk-world");
-        let world_path = ValidatedWorldPath::new("home/report").unwrap();
+        let world = ValidatedWorldPath::new("home/report").unwrap();
         let h = world::write_with_audit(
             &core.data,
-            &world_path,
+            &world,
             b"final",
             "text/plain; charset=utf-8",
             &[],
@@ -353,7 +359,7 @@ mod tests {
         )
         .unwrap();
 
-        let stage = core.read_world("home/report").unwrap().unwrap();
+        let stage = core.read_world(&world).unwrap().unwrap();
         assert_eq!(stage.body, b"final");
         assert!(world::world_db(&core.data, "home/report").exists());
         assert_eq!(audit::latest_hmac(&core.data, "home/report"), Some(h));
