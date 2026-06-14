@@ -86,7 +86,7 @@ impl ReadCache {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let key = key.clone_secret();
-        self.with_tracked_conn(data, coordinate.world().as_str(), move |conn| {
+        self.with_tracked_conn(data, coordinate.world(), move |conn| {
             Ok(
                 crate::audit::timeline_dereference::dereference_timeline_coordinate_via_conn(
                     conn, coordinate, &key,
