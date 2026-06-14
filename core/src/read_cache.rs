@@ -490,7 +490,7 @@ impl ReadCache {
         address: &crate::timeline::TimelineAddress,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<TimelineReadResult>> {
-        let world = address.world().as_str();
+        let world = address.world();
         let key = key.clone_secret();
         self.with_tracked_conn(data, world, move |conn| {
             Ok(crate::audit::read_timeline_body_via_conn(
