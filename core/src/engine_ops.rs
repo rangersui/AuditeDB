@@ -662,6 +662,7 @@ mod tests {
                 verb: ChangeVerb::Replace,
                 path: "/home/task/a".to_string(),
                 etag: "hmac-1".to_string(),
+                timeline_address: None,
             });
         }
         crate::state::test_only_set_event_counter(&engine.core().next_event, 1);
