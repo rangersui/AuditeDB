@@ -243,7 +243,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
 
     let _write_guard = core.acquire_world_lock(world).await;
     hooks.lock_acquired();
-    core.clear_tombstone(world);
+    core.clear_tombstone(world_path);
     check_write_preconditions(core, world_path, &req.preconditions)?;
 
     let (existed, etag) = if store::is_persistent(world) {
@@ -346,7 +346,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     let world = world_path.as_str();
     let _write_guard = core.acquire_world_lock(world).await;
     hooks.lock_acquired();
-    core.clear_tombstone(world);
+    core.clear_tombstone(world_path);
     check_write_preconditions(core, world_path, &req.preconditions)?;
 
     let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(world) {
