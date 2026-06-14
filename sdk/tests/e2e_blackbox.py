@@ -109,7 +109,10 @@ def sse_cursor_parts(raw: str) -> tuple[str, int]:
     epoch, seq = raw.split(":", 1)
     if len(epoch) != 32 or any(ch not in "0123456789abcdef" for ch in epoch):
         raise AssertionError(f"invalid SSE cursor epoch: {raw!r}")
-    return epoch, int(seq)
+    try:
+        return epoch, int(seq)
+    except ValueError as exc:
+        raise AssertionError(f"invalid SSE cursor sequence: {raw!r}") from exc
 
 
 def expect_error(fn, status: int, check: Check, name: str) -> None:
