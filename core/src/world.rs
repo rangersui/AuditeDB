@@ -1,9 +1,9 @@
 //! World storage: one SQLite file per world.
 //!
-//! v5.0 schema (breaking from pre-v5 cores):
+//! v5.1 schema (breaking from pre-v5.1 cores):
 //!
 //! ```text
-//!     stage_meta(id, body, content_type)
+//!     stage_meta(id, generation, body, content_type)
 //!     meta_headers(name, value)
 //!     events(id, timestamp, event_type, target, body_sha256, size,
 //!            content_type, meta_sha256, hmac, prev_hmac)
@@ -25,7 +25,9 @@
 //! is the historical per-write view. The event chain stores structured
 //! audit facts, never JSON blobs.
 
-use crate::{audit, engine_types::AuditHmacKey, event::AuditEventKind, world_schema};
+use crate::{
+    audit, engine_types::AuditHmacKey, event::AuditEventKind, world_generation, world_schema,
+};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use rusqlite::{ffi, params, Connection, OpenFlags, Transaction};
 use sha2::{Digest, Sha256};
@@ -72,12 +74,31 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-/// Open or create the world's universe.db with the v5.0 schema.
+/// Open or create the world's universe.db with the v5.1 schema.
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
+    open_with_generation_minter(data_root, world, || {
+        world_generation::WorldGeneration::mint().map_err(mint_generation_error)
+    })
+}
+
+fn open_with_generation_minter<F>(
+    data_root: &Path,
+    world: &str,
+    mint_generation: F,
+) -> rusqlite::Result<Connection>
+where
+    F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
+{
     let dir = world_dir(data_root, world);
-    std::fs::create_dir_all(&dir).map_err(create_dir_error)?;
     let db = world_db(data_root, world);
     let db_existed = db.exists();
+    let generation = if db_existed {
+        None
+    } else {
+        Some(mint_generation()?)
+    };
+
+    std::fs::create_dir_all(&dir).map_err(create_dir_error)?;
     let c = Connection::open(db)?;
     c.busy_timeout(Duration::from_millis(5000))?;
     c.execute_batch(
@@ -89,9 +110,25 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     if db_existed {
         world_schema::verify(&c)?;
     } else {
-        world_schema::create(&c)?;
+        let schema = world_schema::new_world(&c)?;
+        let generation = generation.ok_or_else(missing_minted_generation_error)?;
+        world_schema::create(schema, generation)?;
     }
     Ok(c)
+}
+
+fn mint_generation_error(err: world_generation::MintWorldGenerationError) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        ffi::Error::new(ffi::SQLITE_IOERR),
+        Some(format!("mint world generation failed: {err}")),
+    )
+}
+
+fn missing_minted_generation_error() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        ffi::Error::new(ffi::SQLITE_INTERNAL),
+        Some("new world schema creation reached without minted generation".to_owned()),
+    )
 }
 
 fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
@@ -124,6 +161,7 @@ pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<C
         }
     };
     c.busy_timeout(Duration::from_millis(5000))?;
+    world_schema::verify(&c)?;
     Ok(Some(c))
 }
 
@@ -531,11 +569,15 @@ pub fn delete(data_root: &Path, world: &str) -> bool {
 }
 
 fn release_wal_files(data_root: &Path, world: &str) {
-    let db = world_db(data_root, world);
-    if let Ok(c) = Connection::open(&db) {
-        let _ = c.busy_timeout(Duration::from_millis(5000));
-        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-        drop(c);
+    match open_checkpoint_conn(data_root, world) {
+        Ok(Some(c)) => {
+            if let Err(err) = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+                log_wal_release_error(world, "checkpoint", &err);
+            }
+            drop(c);
+        }
+        Ok(None) => {}
+        Err(err) => log_wal_release_error(world, "open", &err),
     }
     for suffix in ["-wal", "-shm"] {
         let _ = std::fs::remove_file(
@@ -545,6 +587,38 @@ fn release_wal_files(data_root: &Path, world: &str) {
         );
     }
     std::thread::sleep(Duration::from_millis(10));
+}
+
+fn open_checkpoint_conn(data_root: &Path, world: &str) -> rusqlite::Result<Option<Connection>> {
+    let path = world_db(data_root, world);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let c = match Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE) {
+        Ok(c) => c,
+        Err(e) => {
+            if !path.exists() {
+                return Ok(None);
+            }
+            return Err(e);
+        }
+    };
+    c.busy_timeout(Duration::from_millis(5000))?;
+    world_schema::verify(&c)?;
+    Ok(Some(c))
+}
+
+fn log_wal_release_error(world: &str, phase: &str, err: &rusqlite::Error) {
+    #[cfg(feature = "unstable-engine")]
+    tracing::warn!(
+        world,
+        phase,
+        error = %err,
+        "delete skipped wal checkpoint before physical remove"
+    );
+
+    #[cfg(not(feature = "unstable-engine"))]
+    eprintln!("elastik-core internal delete wal checkpoint {phase} failed for {world}: {err}");
 }
 
 /// List all sqlite-backed world keys by scanning the data dir.
@@ -643,6 +717,44 @@ mod tests {
         .unwrap();
     }
 
+    fn create_legacy_world_without_generation(data_root: &Path, world: &str) {
+        std::fs::create_dir_all(world_dir(data_root, world)).unwrap();
+        let c = Connection::open(world_db(data_root, world)).unwrap();
+        c.execute_batch(
+            r#"
+            CREATE TABLE stage_meta(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                body BLOB DEFAULT x'',
+                content_type TEXT DEFAULT 'application/octet-stream'
+            );
+            INSERT INTO stage_meta(id, body) VALUES(1, x'');
+            CREATE TABLE meta_headers(
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY(name)
+            );
+            CREATE TABLE events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                target TEXT DEFAULT '',
+                body_sha256 TEXT DEFAULT '',
+                size INTEGER DEFAULT 0,
+                content_type TEXT DEFAULT '',
+                meta_sha256 TEXT DEFAULT '',
+                hmac TEXT NOT NULL,
+                prev_hmac TEXT DEFAULT ''
+            );
+            CREATE TABLE event_headers(
+                event_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn disk_names_do_not_alias_literal_percent_with_encoded_slash() {
         assert_ne!(disk_name("home/a%2Fb"), disk_name("home/a/b"));
@@ -677,6 +789,93 @@ mod tests {
             err.sqlite_error_code(),
             Some(rusqlite::ffi::ErrorCode::DiskFull)
         );
+    }
+
+    #[test]
+    fn open_new_world_persists_generation() {
+        let root = test_root("world-generation");
+        let _ = std::fs::remove_dir_all(&root);
+        let stored = {
+            let c = open(&root, "home/generated").unwrap();
+            let generation = crate::world_schema::generation(&c).unwrap();
+            let raw: String = c
+                .query_row("SELECT generation FROM stage_meta WHERE id=1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(raw.len(), 32);
+            assert!(raw
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+            assert_eq!(
+                generation,
+                crate::world_generation::WorldGeneration::new(raw.clone()).unwrap()
+            );
+            raw
+        };
+
+        let c = open(&root, "home/generated").unwrap();
+        assert_eq!(
+            crate::world_schema::generation(&c).unwrap(),
+            crate::world_generation::WorldGeneration::new(stored).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_mint_failure_does_not_create_world_artifacts() {
+        let root = test_root("world-generation-mint-failure");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let err = open_with_generation_minter(&root, "home/generated", || {
+            Err(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_IOERR),
+                Some("forced mint failure".to_owned()),
+            ))
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("forced mint failure"));
+        assert!(!world_dir(&root, "home/generated").exists());
+        assert!(!world_db(&root, "home/generated").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_existing_rejects_legacy_stage_meta_without_generation() {
+        let root = test_root("legacy-world-generation");
+        let _ = std::fs::remove_dir_all(&root);
+        create_legacy_world_without_generation(&root, "home/legacy");
+
+        let err = open_existing(&root, "home/legacy").unwrap_err();
+
+        assert!(err.to_string().contains("stage_meta.generation"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn checkpoint_open_does_not_create_missing_universe_db() {
+        let root = test_root("checkpoint-missing-db");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(world_dir(&root, "home/missing")).unwrap();
+
+        let conn = open_checkpoint_conn(&root, "home/missing").unwrap();
+
+        assert!(conn.is_none());
+        assert!(!world_db(&root, "home/missing").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn checkpoint_open_rejects_legacy_stage_meta_without_generation() {
+        let root = test_root("checkpoint-legacy-generation");
+        let _ = std::fs::remove_dir_all(&root);
+        create_legacy_world_without_generation(&root, "home/legacy");
+
+        let err = open_checkpoint_conn(&root, "home/legacy").unwrap_err();
+
+        assert!(err.to_string().contains("stage_meta.generation"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
