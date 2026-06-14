@@ -106,17 +106,18 @@
 //!
 //! ## Subscribe to changes
 //!
-//! Opening a subscription is sync; receiving events is async. Pass `since` to
-//! replay recent events before switching to live delivery.
+//! Opening a subscription is sync; receiving events is async. Pass
+//! [`SubscriptionResume::after_event_id`] to replay recent events before
+//! switching to live delivery.
 //!
 //! ```no_run
 //! # #[cfg(feature = "unstable-engine")]
 //! # async fn run(engine: elastik_core::Engine) {
-//! use elastik_core::{AccessTier, SubscribePattern};
+//! use elastik_core::{AccessTier, SubscribePattern, SubscriptionResume};
 //!
 //! let pattern = SubscribePattern::new("/home/tasks/*");
 //! let mut sub = engine
-//!     .subscribe(&pattern, AccessTier::Read, None)
+//!     .subscribe(&pattern, AccessTier::Read, SubscriptionResume::none())
 //!     .expect("subscription opens");
 //!
 //! let event = sub.recv().await.expect("change event");
@@ -215,8 +216,8 @@ pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceH
 pub use engine_types::{
     parse_etag_matchers, AccessTier, AuditHmacKey, ChangeEvent, ChangeVerb, EmptyKeyError,
     EngineSubscription, EtagMatcher, InvalidHmacKey, InvalidWorldPath, Preconditions, ReadResult,
-    Representation, SecretBytes, SubscribePattern, SubscriptionRecvError, ValidatedWorldPath,
-    WriteKind, WriteResult, MIN_HMAC_KEY_BYTES,
+    Representation, SecretBytes, SubscribePattern, SubscriptionRecvError, SubscriptionResume,
+    ValidatedWorldPath, WriteKind, WriteResult, MIN_HMAC_KEY_BYTES,
 };
 #[cfg(feature = "unstable-engine")]
 pub use path::{validate_world_name, NAMESPACE_PREFIXES};
