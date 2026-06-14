@@ -326,10 +326,10 @@ fn timeline_read_from_snapshot(
         ));
     };
     if &body_sha256 != address.body_sha256() {
-        return Ok(timeline_corrupt(
-            address,
-            TimelineCorruption::InvalidEventShape,
-        ));
+        return Ok(TimelineRead::AddressMismatch {
+            requested: address.clone(),
+            actual: body_sha256,
+        });
     }
 
     let Some(body) = tx
@@ -340,9 +340,7 @@ fn timeline_read_from_snapshot(
         )
         .optional()?
     else {
-        return Ok(TimelineRead::Expired {
-            address: address.clone(),
-        });
+        return missing_timeline_body_read(tx, address);
     };
     if i64::try_from(body.len()).ok() != Some(row.size) {
         return Ok(timeline_corrupt(
@@ -362,6 +360,33 @@ fn timeline_corrupt(address: &TimelineAddress, reason: TimelineCorruption) -> Ti
         address: address.clone(),
         reason,
     }
+}
+
+fn missing_timeline_body_read(
+    tx: &rusqlite::Transaction<'_>,
+    address: &TimelineAddress,
+) -> rusqlite::Result<TimelineRead> {
+    let first_retained_seq = first_retained_seq(tx)?;
+    if first_retained_seq.is_some_and(|seq| address.seq() >= seq) {
+        return Ok(timeline_corrupt(
+            address,
+            TimelineCorruption::MissingBodyForPresentRow,
+        ));
+    }
+
+    Ok(TimelineRead::NeverRetained {
+        address: address.clone(),
+    })
+}
+
+fn first_retained_seq(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<Option<TimelineSeq>> {
+    tx.query_row(
+        "SELECT first_retained_seq FROM cas_state WHERE id=1",
+        [],
+        |r| r.get::<_, Option<i64>>(0),
+    )?
+    .map(|seq| TimelineSeq::new(seq).map_err(|_| corrupt("cas_state.first_retained_seq invalid")))
+    .transpose()
 }
 
 fn corrupt(message: &str) -> rusqlite::Error {
@@ -659,6 +684,94 @@ mod tests {
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn timeline_snapshot_reports_address_hash_mismatch_without_cas_lookup() {
+        let key = key();
+        let world = ValidatedWorldPath::new("home/address-mismatch").unwrap();
+        let mut conn = single_event_conn(
+            &world,
+            "put",
+            BodySha256::for_body(b"stored").as_str(),
+            &key,
+        );
+        conn.execute("UPDATE cas_state SET first_retained_seq=1 WHERE id=1", [])
+            .unwrap();
+        let gen = world_schema::generation(&conn).unwrap();
+        let address = TimelineAddress::test_only_new(
+            world,
+            gen,
+            TimelineSeq::new(1).unwrap(),
+            BodySha256::for_body(b"requested"),
+        );
+
+        let tx = conn.transaction().unwrap();
+        let row = load_event_snapshot(&tx, address.seq()).unwrap().unwrap();
+
+        match timeline_read_from_snapshot(&tx, &address, row).unwrap() {
+            TimelineRead::AddressMismatch { requested, actual } => {
+                assert_eq!(requested, address);
+                assert_eq!(actual, BodySha256::for_body(b"stored"));
+            }
+            _ => panic!("expected address mismatch"),
+        }
+    }
+
+    #[test]
+    fn timeline_snapshot_reports_never_retained_before_retention_floor() {
+        let key = key();
+        let world = ValidatedWorldPath::new("home/never-retained").unwrap();
+        let mut conn =
+            single_event_conn(&world, "put", BodySha256::for_body(b"value").as_str(), &key);
+        conn.execute("UPDATE cas_state SET first_retained_seq=2 WHERE id=1", [])
+            .unwrap();
+        let gen = world_schema::generation(&conn).unwrap();
+        let address = TimelineAddress::test_only_new(
+            world,
+            gen,
+            TimelineSeq::new(1).unwrap(),
+            BodySha256::for_body(b"value"),
+        );
+
+        let tx = conn.transaction().unwrap();
+        let row = load_event_snapshot(&tx, address.seq()).unwrap().unwrap();
+
+        match timeline_read_from_snapshot(&tx, &address, row).unwrap() {
+            TimelineRead::NeverRetained { address: got } => assert_eq!(got, address),
+            _ => panic!("expected never-retained timeline read"),
+        }
+    }
+
+    #[test]
+    fn timeline_snapshot_reports_corrupt_missing_retained_body() {
+        let key = key();
+        let world = ValidatedWorldPath::new("home/missing-retained").unwrap();
+        let mut conn =
+            single_event_conn(&world, "put", BodySha256::for_body(b"value").as_str(), &key);
+        conn.execute("UPDATE cas_state SET first_retained_seq=1 WHERE id=1", [])
+            .unwrap();
+        let gen = world_schema::generation(&conn).unwrap();
+        let address = TimelineAddress::test_only_new(
+            world,
+            gen,
+            TimelineSeq::new(1).unwrap(),
+            BodySha256::for_body(b"value"),
+        );
+
+        let tx = conn.transaction().unwrap();
+        let row = load_event_snapshot(&tx, address.seq()).unwrap().unwrap();
+
+        match timeline_read_from_snapshot(&tx, &address, row).unwrap() {
+            TimelineRead::Corrupt {
+                address: got,
+                reason,
+            } => {
+                assert_eq!(got, address);
+                assert_eq!(reason, TimelineCorruption::MissingBodyForPresentRow);
+            }
+            _ => panic!("expected corrupt missing retained body"),
+        }
     }
 
     #[tokio::test]
