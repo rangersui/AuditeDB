@@ -74,7 +74,7 @@ pub(crate) fn verified_timeline_address_via_conn(
     // Verification and row extraction must share one SQLite snapshot; otherwise
     // a concurrent writer could append a row after verification but before the
     // address lookup.
-    super::require_intact(super::verify_world_connection(&tx, world, key)?)?;
+    super::require_intact(super::verify_world_tx(&tx, world, key)?)?;
 
     let Some(row) = tx
         .query_row(
