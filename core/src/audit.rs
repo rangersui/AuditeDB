@@ -26,12 +26,12 @@ pub(crate) use append::{
     append_retained_body_tx_row, append_with_conn_existing, append_with_conn_genesis,
     AppendedBodyEvent,
 };
+#[cfg(test)]
+use rusqlite::Connection;
 pub(crate) use timeline_address::{
     read_timeline_body_via_conn, verified_latest_body_head_via_conn, VerifiedBodyEvent,
     VerifiedBodyHead,
 };
-#[cfg(test)]
-use rusqlite::Connection;
 
 const AUDIT_SELECT: &str = r#"SELECT e.id, e.event_type, e.target, e.body_sha256, e.size,
                   e.content_type, e.meta_sha256, e.hmac, e.prev_hmac,
