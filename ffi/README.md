@@ -125,7 +125,7 @@ engine.delete("home/plain-doc", none, FfiAccessTier.APPROVE)
 sub = engine.subscribe(
     "home/*",
     FfiAccessTier.READ,
-    FfiSubscriptionResume(after_event_id=None),
+    FfiSubscriptionResume(after_cursor=None, after_event_id=None),
 )
 
 engine.replace("home/sub-doc", FfiRepresentation(

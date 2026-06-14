@@ -161,7 +161,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     check_write_preconditions(core, world_path, &req.preconditions)?;
 
     let (existed, etag) = if store::is_persistent(world) {
-        let prev_len_opt = world::body_len(&core.data, world).map_err(|err| {
+        let prev_len_opt = world::body_len(&core.data, world_path).map_err(|err| {
             classify_write_storage_error("storage metadata", err, StorageOp::Read)
         })?;
         let existed = prev_len_opt.is_some();
@@ -169,8 +169,9 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
         if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
         }
-        let cas_candidate_len = world::cas_body_len_if_missing(&core.data, world, &req.body)
-            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?;
+        let cas_candidate_len =
+            world::cas_body_len_if_missing(&core.data, world_path, &req.body)
+                .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?;
         let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
         if let Err(quota) = core.reserve_storage(prev_len, reserve_new_len) {
             return Err(WriteError::QuotaExceeded {
@@ -266,7 +267,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(world) {
         core.mem.metadata(world)
     } else {
-        world::metadata(&core.data, world)
+        world::metadata(&core.data, world_path)
             .map_err(|err| classify_write_storage_error("storage metadata", err, StorageOp::Read))?
     }) else {
         return Err(WriteError::NotFound);
@@ -286,9 +287,10 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
         }
-        let cas_candidate_len = world::append_cas_body_len_if_missing(&core.data, world, &req.body)
-            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
-            .ok_or(WriteError::NotFound)?;
+        let cas_candidate_len =
+            world::append_cas_body_len_if_missing(&core.data, world_path, &req.body)
+                .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
+                .ok_or(WriteError::NotFound)?;
         let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
         if let Err(quota) = core.reserve_storage(0, reserve_new_len) {
             return Err(WriteError::QuotaExceeded {
