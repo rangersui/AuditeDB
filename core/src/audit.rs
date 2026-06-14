@@ -469,6 +469,8 @@ fn hmac_field(mac: &mut Hmac<Sha256>, label: &[u8], value: &str) {
     mac.update(b"\0");
 }
 
+// Invariant: HMAC accepts any key length; AuditHmacKey enforces Elastik's key policy.
+#[allow(clippy::expect_used)]
 fn event_hmac(key: &AuditHmacKey, input: EventHmacInput<'_>) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(key.as_slice()).expect("hmac key");
     hmac_field(&mut mac, b"prev", input.prev);
