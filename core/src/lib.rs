@@ -215,9 +215,10 @@ pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceH
 #[cfg(feature = "unstable-engine")]
 pub use engine_types::{
     parse_etag_matchers, AccessTier, AuditHmacKey, ChangeEvent, ChangeVerb, EmptyKeyError,
-    EngineSubscription, EtagMatcher, InvalidHmacKey, InvalidWorldPath, Preconditions, ReadResult,
-    Representation, SecretBytes, SubscribePattern, SubscriptionRecvError, SubscriptionResume,
-    ValidatedWorldPath, WriteKind, WriteResult, MIN_HMAC_KEY_BYTES,
+    EngineSubscription, EtagMatcher, InvalidHmacKey, InvalidSubscriptionCursor,
+    InvalidSubscriptionEpoch, InvalidWorldPath, Preconditions, ReadResult, Representation,
+    SecretBytes, SubscribePattern, SubscriptionCursor, SubscriptionEpoch, SubscriptionRecvError,
+    SubscriptionResume, ValidatedWorldPath, WriteKind, WriteResult, MIN_HMAC_KEY_BYTES,
 };
 #[cfg(feature = "unstable-engine")]
 pub use path::{validate_world_name, NAMESPACE_PREFIXES};

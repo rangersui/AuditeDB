@@ -12,7 +12,7 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES,
     },
-    engine_types::AuditHmacKey,
+    engine_types::{AuditHmacKey, SubscriptionEpoch},
     store, Core,
 };
 
@@ -57,6 +57,7 @@ pub(crate) fn test_core_with_read_cache_max(
                 events,
                 listen_slots: Arc::new(Semaphore::new(DEFAULT_MAX_LISTEN_CONNECTIONS)),
                 listen_replay_max: DEFAULT_LISTEN_REPLAY_MAX,
+                listen_epoch: SubscriptionEpoch::mint().unwrap(),
                 event_log: Arc::new(StdMutex::new(VecDeque::with_capacity(
                     DEFAULT_LISTEN_REPLAY_MAX,
                 ))),
