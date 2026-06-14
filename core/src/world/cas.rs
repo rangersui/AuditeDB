@@ -9,7 +9,7 @@ use crate::{
     timeline::{BodySha256, TimelineSeq},
 };
 
-use super::{open_existing, WriteAuditError};
+use super::{open_existing_validated, WriteAuditError};
 
 pub(crate) struct RetainedCasBody {
     target: ValidatedWorldPath,
@@ -113,8 +113,11 @@ pub(super) fn mark_retention_started_tx(
     Ok(())
 }
 
-pub fn storage_len(data_root: &Path, world: &str) -> rusqlite::Result<Option<usize>> {
-    let Some(c) = open_existing(data_root, world)? else {
+pub fn storage_len(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> rusqlite::Result<Option<usize>> {
+    let Some(c) = open_existing_validated(data_root, world)? else {
         return Ok(None);
     };
     let current_len: i64 = c.query_row(
@@ -135,8 +138,12 @@ pub fn storage_len(data_root: &Path, world: &str) -> rusqlite::Result<Option<usi
     ))
 }
 
-pub fn body_len_if_missing(data_root: &Path, world: &str, body: &[u8]) -> rusqlite::Result<usize> {
-    let Some(c) = open_existing(data_root, world)? else {
+pub fn body_len_if_missing(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+    body: &[u8],
+) -> rusqlite::Result<usize> {
+    let Some(c) = open_existing_validated(data_root, world)? else {
         return Ok(body.len());
     };
     missing_body_len(&c, body)
@@ -144,10 +151,10 @@ pub fn body_len_if_missing(data_root: &Path, world: &str, body: &[u8]) -> rusqli
 
 pub fn append_body_len_if_missing(
     data_root: &Path,
-    world: &str,
+    world: &ValidatedWorldPath,
     append_body: &[u8],
 ) -> rusqlite::Result<Option<usize>> {
-    let Some(c) = open_existing(data_root, world)? else {
+    let Some(c) = open_existing_validated(data_root, world)? else {
         return Ok(None);
     };
     let mut body: Vec<u8> =
