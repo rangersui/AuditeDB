@@ -269,3 +269,57 @@ Full local validation after those fixes on `stack/22r41-sdk-timeline-coordinate`
 - `python tools/header_policy_scan.py --offline --report
   header-policy-report.md`: no drift; temporary report removed.
 - `git diff --check`: pass.
+
+Additional QA round after pushing those fixes:
+
+- Lorentz the 2nd, Popper/Bacon: BLOCK. Confirmed FFI cursor repair was clean,
+  but found P3 `Core::delete_world_blocking(&str)` still left the physical
+  delete helper unsealed.
+- Poincare the 2nd, Mencius/Noether: BLOCK. Found the same P3 and also found
+  P3 `#[cfg(test)] pub(crate) fn write_world(...)` did not carry the
+  `test_only_` bypass name.
+- Godel the 2nd, process QA: PENDING. Current-head CI was pending with no
+  current failures; ledger and stack topology were honest but not converged.
+
+Fixes added after that round:
+
+- `Core::delete_world_blocking` now requires `&ValidatedWorldPath`, and
+  `delete_ops` passes the delete permit's sealed world into the physical delete
+  step.
+- The direct test fixture writer is now named `test_only_write_world`, and
+  upper stack delete tests were updated at their first introducing layer
+  (`22r28`).
+
+Focused validation after those fixes:
+
+- source scan for `delete_world_blocking(&self, world: &str)`,
+  `delete_world_blocking(world_name)`, `pub(crate) fn write_world`, and
+  `.write_world(`: no matches.
+- `cargo fmt --manifest-path core/Cargo.toml --check`
+- `cargo test --manifest-path core/Cargo.toml delete_ops -- --nocapture`:
+  6 passed.
+- `cargo test --manifest-path core/Cargo.toml store -- --nocapture`: 5 passed.
+
+Full local validation after those fixes on `stack/22r41-sdk-timeline-coordinate`:
+
+- `cargo fmt --manifest-path core/Cargo.toml --check`
+- `cargo fmt --manifest-path bin/Cargo.toml --check`
+- `cargo fmt --manifest-path ffi/Cargo.toml --check`
+- `cargo test --manifest-path core/Cargo.toml`: 199 passed, 2 ignored; doc
+  tests 17 passed.
+- `cargo test --manifest-path bin/Cargo.toml`: 150 passed.
+- `cargo test --manifest-path ffi/Cargo.toml`: 24 passed; doc tests 0
+  passed/0 failed.
+- `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
+  -D clippy::undocumented_unsafe_blocks`
+- `cargo clippy --manifest-path bin/Cargo.toml -- -D warnings`
+- `cargo clippy --manifest-path ffi/Cargo.toml -- -D warnings`
+- `python sdk/tests/e2e_blackbox.py`: 248 checks passed.
+- `python sdk/tests/test_tools.py`: pass.
+- `python -m compileall -q sdk/src sdk/tests`: pass.
+- `python tools/version_consistency_check.py`: 8.3.0 ok.
+- `python tools/audit_chain_verify.py --self-test`: ok.
+- `python tools/header_policy_scan.py --self-test`: ok.
+- `python tools/header_policy_scan.py --offline --report
+  header-policy-report.md`: no drift; temporary report removed.
+- `git diff --check`: pass.
