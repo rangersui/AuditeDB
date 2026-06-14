@@ -463,6 +463,11 @@ Fixes added after that round:
   makes the SDK blackbox reject integer-only emitted SSE ids. Legacy decimal
   `Last-Event-ID` input remains intentionally covered by bin/core tests as
   compatibility, but emitted ids must be `epoch:seq`.
+- Local topology: the stale checked-out
+  `stack/22r42-sdk-reactor-timeline-plan` pointer was renamed to
+  `wip/sdk-reactor-timeline-plan` after confirming its committed head is fully
+  contained in `stack/22r41-sdk-timeline-coordinate`. Its dirty worktree files
+  were preserved and are not part of this stack push.
 
 Full local validation after those fixes on
 `stack/22r41-sdk-timeline-coordinate`:
