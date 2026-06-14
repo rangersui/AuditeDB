@@ -216,7 +216,7 @@ pub fn chain_head_via_conn(
     tracked
         .as_mut_conn()
         .query_row(
-            "SELECT id, hmac FROM events ORDER BY id DESC LIMIT 1",
+            "SELECT (SELECT COUNT(*) FROM events), hmac FROM events ORDER BY id DESC LIMIT 1",
             [],
             // Same `hmac-` rendering as VerifyOk.
             |r| Ok((r.get::<_, i64>(0)?, hmac_label(&r.get::<_, String>(1)?))),
@@ -229,13 +229,11 @@ pub fn chain_head_via_conn(
 /// same guard as ordinary cached reads.
 pub fn verify_chain_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
-    world_name: &str,
+    world_path: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
-    let world_path = ValidatedWorldPath::new(world_name.to_owned())
-        .map_err(|_| rusqlite::Error::InvalidQuery)?;
     let conn = tracked.as_mut_conn();
-    let report = verify_world_connection(conn, &world_path, key)?;
+    let report = verify_world_connection(conn, world_path, key)?;
     if matches!(report, VerifyReport::Broken(_)) {
         return Ok(report);
     }

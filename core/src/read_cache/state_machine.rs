@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rusqlite::{ffi::ErrorCode, Connection, OpenFlags};
 
-use crate::{world, world_schema};
+use crate::{engine_types::ValidatedWorldPath, world, world_schema};
 
 use super::{
     log_read_cache_retry_budget_exhausted, read_cache_retry_budget_error, ReadCache, ReadSlot,
@@ -46,7 +46,7 @@ impl TrackedReadConnection {
     }
 }
 
-/// RAII guard for the Opening -> Ready/Tombstone transition. Without
+/// RAII guard for the Opening -> Ready/Evicted transition. Without
 /// it, a panic during `Connection::open`, `busy_timeout`, or
 /// `pragma_update` would leave the slot stuck in `Opening`.
 ///
@@ -71,8 +71,10 @@ impl<'a> OpeningTransition<'a> {
         self.finalized = true;
     }
 
+    /// Open or schema verification failed. This is a retry signal, not a
+    /// delete tombstone: a waiting reader must not turn it into `Ok(None)`.
     fn fail(mut self) {
-        *self.state = SlotState::Tombstone;
+        *self.state = SlotState::Evicted;
         self.finalized = true;
     }
 }
@@ -80,7 +82,7 @@ impl<'a> OpeningTransition<'a> {
 impl<'a> Drop for OpeningTransition<'a> {
     fn drop(&mut self) {
         if !self.finalized {
-            *self.state = SlotState::Tombstone;
+            *self.state = SlotState::Evicted;
         }
     }
 }
@@ -117,12 +119,13 @@ impl ReadCache {
     pub(super) fn with_tracked_conn<F, R>(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
         f: F,
     ) -> rusqlite::Result<Option<R>>
     where
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
+        let world = world.as_str();
         let path = world::world_db(data, world);
         let mut f = Some(f);
         let mut counted_miss = false;
@@ -393,7 +396,7 @@ mod tests {
     use std::sync::{Arc, RwLock as StdRwLock};
 
     #[test]
-    fn opening_transition_drop_sets_tombstone_on_panic_path() {
+    fn opening_transition_drop_sets_evicted_on_panic_path() {
         let slot = Arc::new(ReadSlot {
             inner: StdRwLock::new(SlotState::Opening),
             last_access: AtomicU64::new(0),
@@ -404,6 +407,31 @@ mod tests {
             // Drop _t without finalize.
         }
         let g = slot.inner.read().unwrap();
-        assert!(matches!(*g, SlotState::Tombstone));
+        assert!(matches!(*g, SlotState::Evicted));
+    }
+
+    #[test]
+    fn opening_failure_is_retry_signal_not_cached_absence() {
+        let cache = ReadCache::new(crate::read_cache::DEFAULT_READ_CACHE_MAX_ENTRIES);
+        let slot = cache.new_slot(SlotState::Opening);
+        {
+            let mut g = slot.inner.write().unwrap();
+            OpeningTransition::new(&mut g).fail();
+        }
+
+        let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
+            panic!("failed Opening must retry, not run the read closure")
+        });
+        let read = cache.invoke_via_slot(slot, &mut f).unwrap();
+        assert!(
+            matches!(read, SlotRead::Evicted),
+            "open/schema failure must not be represented as Tombstone/Ok(None)"
+        );
+        assert!(f.is_some(), "retry signal must leave FnOnce intact");
+        assert_eq!(
+            cache.metrics.read_cache_hits.load(Ordering::Relaxed),
+            0,
+            "opening failure retries must not count as cache hits"
+        );
     }
 }
