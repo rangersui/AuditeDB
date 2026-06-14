@@ -177,6 +177,9 @@ pub(crate) fn append_retained_body_tx_row(
     content_type: &str,
     headers: &[(String, String)],
 ) -> rusqlite::Result<AppendedBodyAuditRow> {
+    if retained.target() != audit_tx.world() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     let row = append_tx_inner(
         audit_tx,
         event_type.kind(),
