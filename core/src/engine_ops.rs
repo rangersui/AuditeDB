@@ -231,10 +231,10 @@ impl Engine {
     /// executor worker should call it from their blocking-worker boundary.
     ///
     /// Unlike [`Engine::read`], this method does not return `Option`: a
-    /// timeline address names a historical fact. If the durable world no
-    /// longer exists, the result is [`TimelineRead::Gone`]. Other
-    /// [`TimelineRead`] variants describe exact historical-read outcomes; this
-    /// method never falls back to the current live body.
+    /// timeline address names a historical fact. Missing local storage becomes
+    /// [`TimelineRead::Unproven`] until delete-ledger proof can bind the absence
+    /// to the requested address. This method never falls back to the current
+    /// live body.
     ///
     /// # Errors
     /// Returns [`EngineError::Auth`] for insufficient read tier, and the normal
