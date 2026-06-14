@@ -100,13 +100,18 @@ pub(crate) async fn handler(
 }
 
 fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
-    let Some(value) = headers.get("last-event-id") else {
+    let mut values = headers.get_all("last-event-id").iter();
+    let Some(value) = values.next() else {
         return Ok(None);
     };
-    let raw = value.to_str().map_err(|_| "invalid Last-Event-ID")?.trim();
-    if raw.is_empty() {
-        return Ok(None);
+    if values.next().is_some() {
+        return Err("invalid Last-Event-ID");
     }
+    let raw = value.to_str().map_err(|_| "invalid Last-Event-ID")?;
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("invalid Last-Event-ID");
+    }
+
     raw.parse::<u64>()
         .map(Some)
         .map_err(|_| "invalid Last-Event-ID")
@@ -280,5 +285,30 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_last_event_id_rejects_non_canonical_values() {
+        for value in ["", " 42", "42 ", "+42", "audit:42"] {
+            let mut headers = HeaderMap::new();
+            headers.insert("last-event-id", value.parse().unwrap());
+            assert_eq!(parse_last_event_id(&headers), Err("invalid Last-Event-ID"));
+        }
+    }
+
+    #[test]
+    fn parse_last_event_id_rejects_duplicate_values() {
+        let mut headers = HeaderMap::new();
+        headers.append("last-event-id", "1".parse().unwrap());
+        headers.append("last-event-id", "2".parse().unwrap());
+        assert_eq!(parse_last_event_id(&headers), Err("invalid Last-Event-ID"));
+    }
+
+    #[test]
+    fn parse_last_event_id_accepts_single_ascii_decimal() {
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", "42".parse().unwrap());
+        assert_eq!(parse_last_event_id(&headers), Ok(Some(42)));
+        assert_eq!(parse_last_event_id(&HeaderMap::new()), Ok(None));
     }
 }
