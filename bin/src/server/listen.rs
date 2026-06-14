@@ -11,7 +11,9 @@ use crate::{
     engine_types::{
         ChangeEvent as EngineChangeEvent, ChangeVerb, SubscribePattern, SubscriptionRecvError,
     },
-    server::{method_not_allowed, options_response, server_error, unauthorized, ServerState},
+    server::{
+        bad_request, method_not_allowed, options_response, server_error, unauthorized, ServerState,
+    },
 };
 
 pub(crate) const ALLOW: &str = "GET, OPTIONS";
@@ -36,10 +38,10 @@ pub(crate) async fn handler(
     }
     let tier = state.access_tier_from_headers(&headers);
     let pattern = SubscribePattern::new(&raw_pattern);
-    let last_event_id = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<u64>().ok());
+    let last_event_id = match parse_last_event_id(&headers) {
+        Ok(last_event_id) => last_event_id,
+        Err(reason) => return bad_request(reason),
+    };
     let subscription = match state.engine().subscribe(&pattern, tier, last_event_id) {
         Ok(subscription) => subscription,
         Err(EngineError::Auth(_)) => return unauthorized("listen requires read token"),
@@ -95,6 +97,19 @@ pub(crate) async fn handler(
                 .text("keepalive"),
         )
         .into_response()
+}
+
+fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
+    let Some(value) = headers.get("last-event-id") else {
+        return Ok(None);
+    };
+    let raw = value.to_str().map_err(|_| "invalid Last-Event-ID")?.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<u64>()
+        .map(Some)
+        .map_err(|_| "invalid Last-Event-ID")
 }
 
 fn sse_change_event(change: EngineChangeEvent) -> Event {
@@ -244,6 +259,25 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(resp.headers().get(header::RETRY_AFTER).unwrap(), "1");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn handler_rejects_non_decimal_last_event_id() {
+        let (engine, dir) = test_engine_for_server("listen-invalid-last-event-id");
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", "audit:42".parse().unwrap());
+
+        let resp = handler(
+            State(server_state_for_engine_for_tests(engine)),
+            Method::GET,
+            headers,
+            AxPath("home/task/*".to_string()),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_dir_all(dir);
     }

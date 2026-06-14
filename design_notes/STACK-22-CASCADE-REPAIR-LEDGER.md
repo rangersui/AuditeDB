@@ -1,275 +1,119 @@
 # Stack 22 Cascade Repair Ledger
 
-Status: current code QA clearing round passed; lower-stack drain remains a
-separate process gate before upper stack layers should be marked ready.
+This ledger records the repair of the forked Stack 22 cascade. The goal is
+topology repair, not new product scope: keep every reviewed branch alive, expose
+the hidden base as PR #359, and propagate lower-layer safety fixes upward by
+merge commits only.
 
-This ledger records the repair of the forked Stack 22 cascade:
-`stack/22r19-audit-verify-world-target` through
-`stack/22r41-sdk-timeline-coordinate`.
+## Current Boundary
 
-## Why The Depth Exception Applies
+- #330 through #335 have been merged into `master` with merge commits.
+- `master` has the same tree as the former `stack/21-cas-schema` base.
+- #359 is based on `master` and keeps
+  `stack/22r19-audit-verify-world-target` as the first visible Stack 22 layer.
+- #336 through #357 remain draft and depend on the #359 head branch chain.
 
-AGENTS.md normally caps open cascade depth at 3-4 layers. This repair is being
-tracked under the Stack repair exception. The durable-ledger condition is
-cleared by the final QA round recorded below.
+## Exception Scope
 
-- the user explicitly authorised an unlimited repair cascade for this stack;
-- the work repairs an already-existing fork caused by merging the lower stack
-  while `22r19..22r41` still pointed at the old `stack/21` head;
-- no new product feature scope was added during the repair;
-- each semantic fix was placed at the lowest affected layer and propagated
-  upward by merge cascade;
-- this file records branches, validation, reviewer lenses, QA findings, and the
-  fresh round that cleared P0-P2.
+AGENTS.md normally caps open cascade depth at 3-4 layers. This repair is under
+the Stack repair exception because the user explicitly authorised an unlimited
+repair cascade for an already-existing fork.
 
-The exception waives stack depth only. It does not waive type seals,
-validation, or Fleet Review Convergence.
+The exception waives stack depth only. It does not waive:
 
-## Branch Scope
+- type-seal requirements for internal APIs;
+- no-rebase/no-squash stack handling;
+- subagent QA before advancing;
+- local validation;
+- keeping dependent stack branches alive while PRs still use them as bases.
 
-The exact final `22r41` commit cannot be embedded in this file, because adding
-this file changes that commit. Validators must use `git rev-parse HEAD` on
-`stack/22r41-sdk-timeline-coordinate` for the exact artifact under review.
+## Repairs Applied
 
-Repair heads before adding this ledger:
-
-| Branch | Short head |
-|---|---|
-| `stack/22r19-audit-verify-world-target` | `c96f9cb22756` |
-| `stack/22r20-timeline-address-extraction` | `6e106660c64f` |
-| `stack/22r21-timeline-cas-deref` | `53b4bf4783dc` |
-| `stack/22r22-timeline-read-cache` | `82be0b6ccedb` |
-| `stack/22r23-public-timeline-contract` | `dff21472af26` |
-| `stack/22r24-public-timeline-resolver` | `03d3c440555b` |
-| `stack/22r25-subscription-types-module` | `119bfbd68d24` |
-| `stack/22r26-world-read-ops-module` | `fe9a31306123` |
-| `stack/22r27-change-event-timeline-address` | `58c1473d27b2` |
-| `stack/22r28-delete-subject-proof` | `6377e73f000d` |
-| `stack/22r29-sse-timeline-address` | `5a0eb7b08227` |
-| `stack/22r30-timeline-address-wire-parse` | `612936bdb804` |
-| `stack/22r31-http-timeline-deref-plan` | `e5823782f4e9` |
-| `stack/22r32-timeline-deref-result-type` | `a51f322a31bc` |
-| `stack/22r33-audit-header-split` | `dccc1a347255` |
-| `stack/22r34-timeline-deref-audit-home` | `193f8828b184` |
-| `stack/22r35-read-cache-ops-split` | `2c7d35fe6c07` |
-| `stack/22r36-timeline-coordinate-resolver` | `8d446eb2a953` |
-| `stack/22r37-pipeline-context-split` | `bf940636d558` |
-| `stack/22r38-http-raw-query-plumbing` | `0884d7337999` |
-| `stack/22r39-http-query-classifier` | `34c4268b1bfa` |
-| `stack/22r40-http-timeline-query-wall` | `b35e49dd1ca9` |
-| `stack/22r41-sdk-timeline-coordinate` | `050182ebce1f` |
-
-## Fixes Applied
-
-- `22r19`: merged current `stack/21-cas-schema` into the old `22r19` base and
-  kept audit verification bound to `ValidatedWorldPath`.
-- `22r19`: hardened `chain_head` against rowid-trusting rollback by keeping
-  `COUNT(*)` semantics and explicit tamper-test assertions.
-- `22r19`: added the AGENTS.md Stack repair exception so repo policy now has an
-  explicit repair-exception path; the user authorisation remains part of the
-  working conversation, not something this file alone can prove.
-- `22r20`: preserved generation-aware event HMAC verification while exposing
-  only read projections needed by HMAC sinks.
-- `22r23`: kept public timeline read projections public without exposing public
-  constructors for timeline addresses.
-- `22r26`: preserved the `world_read_ops` module split and kept read APIs on
-  `ValidatedWorldPath` / `ReadPermit`.
-- `22r35`: preserved the read-cache module split while carrying forward
-  `OpeningTransition` failure/drop as `Evicted`, not `Tombstone`.
-- `22r36`: moved the timeline-coordinate read-cache proof fix to the layer that
-  introduced coordinate dereference: `with_tracked_conn(data,
-  coordinate.world(), ...)`, not `coordinate.world().as_str()`.
-- `22r37..22r41`: propagated the repaired lower layers upward by merge cascade,
+- `22r19`: audit verification now opens existing worlds through
+  `ValidatedWorldPath`, verifies inside a transaction, checks the live body in
+  the same transaction, and returns `VerifiedAuditTx` bound to the verified
+  world.
+- `22r19`: retained body audit append now rejects a retained CAS body whose
+  target does not match the verified audit transaction world.
+- `22r19`: read-cache DB path construction uses
+  `world::validated_world_db(data, world)` before any raw string cache key is
+  used for metrics or DashMap lookup.
+- `22r19`: HTTP `Last-Event-ID` parsing now rejects invalid/non-decimal values
+  with 400 instead of silently treating them as no replay cursor.
+- `22r19`: added this repair ledger so PR #359 is self-contained enough to
+  explain the stack-topology exception.
+- `22r20..22r41`: propagated the repaired lower layers upward by merge cascade,
   without rebasing or squashing.
 
-## Current Repair Addendum
+Merge conflicts resolved during this repair:
 
-Additional repair work after the first ledger pass:
-
-- `22r19` hidden-base gap: opened PR #359 for
-  `stack/22r19-audit-verify-world-target` against `stack/21-cas-schema`, so #336
-  no longer rests on an untracked branch.
-- `22r19` hidden-base CI fix: #359 failed bin tests because CAS retained-body
-  accounting had changed the storage quota contract, but the matching bin test
-  assertions lived only in `22r20+`. Moved that test-contract fix down to
-  `22r19` (`bin: align quota tests with retained cas accounting`) and cascaded
-  it upward.
-- `22r21`: added `TimelineRead::NeverRetained`,
-  `TimelineRead::AddressMismatch`, and `TimelineRead::Unproven` so absence and
-  mismatch states keep their proof strength instead of collapsing into
-  `Expired`, `Gone`, or generic corruption.
-- `22r21`: changed missing CAS body handling: pre-retention rows become
-  `NeverRetained`; rows at or after the retention floor become
-  `Corrupt(MissingBodyForPresentRow)`. No missing CAS row is currently promoted
-  to `Expired` without pruning proof.
-- `22r21`: annotated the touched production `expect("hmac key")` with a local
-  HMAC/AuditHmacKey invariant and `#[allow(clippy::expect_used)]`.
-- `22r24` and `22r26`: changed missing local timeline storage/read-cache `None`
-  to `TimelineRead::Unproven`, not `Gone`. Physical absence is not delete-ledger
-  proof.
-- `22r35`: kept read-cache DB path construction on a sealed
-  `ValidatedWorldPath` by adding `world::validated_world_db(...)`; the raw
-  string now appears only after the path helper for legacy cache-map keys and
-  metrics.
-- `22r40`: moved ordinary `OPTIONS` ahead of raw-query extraction so
-  `OPTIONS /home/a?timeline%ZZ=1` remains ordinary world-route `OPTIONS`.
-- `22r19..22r41`: propagated the #359 bin-test contract fix upward by merge
-  cascade, without rebasing or squashing. The cascade had no merge conflicts.
-- `22r35..22r41`: propagated the read-cache path-seal repair upward by merge
-  cascade, without rebasing or squashing. The cascade had no merge conflicts.
-- `22r21..22r41`: propagated the new fixes upward by merge cascade, without
-  rebasing or squashing.
-- History note: the older `5e40d80` test-contract commit still appears in
-  upper branch history after the `94c40d1` downshift. They have the same patch
-  ID and no current tree diff in the adjacent stack layer. Keeping both is the
-  intentional cost of the no-rebase/no-squash repair policy, not a second
-  behavioral change.
+- `22r20`: preserved generation-aware HMAC verification while switching world
+  verification to transaction scope.
+- `22r27`: preserved `AppendedBodyAuditRow` timeline-address output while
+  adding the retained-target-vs-verified-world check.
+- `22r28`, `22r33`, `22r34`: merged audit module export sets after type-seal
+  and module-split changes.
+- `22r35`: preserved the read-cache module split and kept sealed DB path
+  construction in `read_cache/state_machine.rs`.
+- `22r41`: merged this ledger with the earlier QA ledger instead of picking one
+  side and losing process evidence.
 
 ## Validation Evidence
 
-Local validation on the repaired stack tip before this ledger file:
+Run on `stack/22r19-audit-verify-world-target` before the upward cascade:
 
-- `cargo fmt --manifest-path core/Cargo.toml -- --check`
-- `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings`
-- `cargo test --manifest-path core/Cargo.toml`
-- `git diff --check`
-- `rg -n "^(<<<<<<<|=======|>>>>>>>)" AGENTS.md core/src design_notes`
-- `rg -n "with_tracked_conn\([^\n]*as_str\(\)|read_world\([^&]|read_world\(.*as_str\(\)" core/src -g "*.rs"`; observed only the legitimate `read_world` call/definition matches, and no `with_tracked_conn(...as_str())` match.
-- adjacent ancestry check from `22r19` through `22r41`
-- `git merge-base --is-ancestor stack/21-cas-schema stack/22r19-audit-verify-world-target`
-- `git merge-base --is-ancestor stack/22r36-timeline-coordinate-resolver stack/22r41-sdk-timeline-coordinate`
-
-Observed core result: 193 passed, 2 ignored; doc tests 17 passed.
-
-Current-head validation on `stack/22r41-sdk-timeline-coordinate` after the
-addendum repairs:
-
-- `git diff --check`
 - `cargo fmt --manifest-path core/Cargo.toml -- --check`
 - `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings`
 - `cargo test --manifest-path core/Cargo.toml`
 - `cargo fmt --manifest-path bin/Cargo.toml -- --check`
 - `cargo clippy --manifest-path bin/Cargo.toml --all-targets -- -D warnings`
 - `cargo test --manifest-path bin/Cargo.toml`
-- `python sdk/tests/test_tools.py`
-- `python sdk/tests/e2e_blackbox.py`
-- `cargo fmt --manifest-path ffi/Cargo.toml -- --check`
-- `cargo clippy --manifest-path ffi/Cargo.toml --all-targets -- -D warnings`
-- `cargo test --manifest-path ffi/Cargo.toml`
+- version consistency
+- Rust supply-chain quick audit
+- Python SDK smoke
+- header policy scanner self-test
+- whitespace check
 
-Observed current-head results:
+Observed lower-layer results:
 
-- core: 197 passed, 2 ignored; doc tests 17 passed.
-- bin: 145 passed.
-- sdk tools: pass.
-- sdk e2e blackbox: 248 checks passed.
-- ffi: 23 passed; doc tests 0 passed/0 failed.
+- core: 157 passed, 2 ignored; doc tests 5 passed.
+- bin: 109 passed.
+- version consistency: 8.3.0 ok.
+- SDK tools: pass.
+- header policy scanner: no drift.
+- pre-push hook: all local gates passed before pushing #359.
 
-Layer-specific validation after the #359 CI repair:
+Required before marking upper stack layers ready:
 
-- `stack/22r19-audit-verify-world-target`: `cargo test --manifest-path
-  bin/Cargo.toml` passed, 108 tests.
-- `stack/22r19-audit-verify-world-target`: `cargo test --manifest-path
-  core/Cargo.toml` passed, 157 tests plus 5 doc tests; 2 ignored.
-- `stack/22r19-audit-verify-world-target`: core/bin fmt and clippy checks
-  passed.
-- `stack/22r41-sdk-timeline-coordinate`: core/bin/ffi fmt passed after the
-  repair cascade.
-- `stack/22r41-sdk-timeline-coordinate`: `cargo test --manifest-path
-  bin/Cargo.toml` passed, 145 tests.
-- `stack/22r41-sdk-timeline-coordinate`: `cargo test --manifest-path
-  core/Cargo.toml` passed, 197 tests plus 17 doc tests; 2 ignored.
-- `stack/22r35-read-cache-ops-split`: after the read-cache path-seal repair,
-  core fmt, core clippy, and `cargo test --manifest-path core/Cargo.toml
-  read_cache` passed; read-cache filter observed 24 passed.
-
-Reported additional subagent spot checks from the repair round, not re-run by
-this ledger commit:
-
-- core timeline tests: 40 passed;
-- core read-cache tests: 24 passed;
-- core engine-subscribe tests: 3 passed;
-- core replay-after tests: 2 passed;
-- bin timeline tests: 21 passed;
-- bin listen tests: 4 passed.
+- top-of-stack local validation after the current `22r41` merge commit;
+- GitHub CI green for #359 after the pushed repair;
+- subagent QA rerun on the repaired artifact until no P0-P3 findings remain.
 
 ## Review Ledger
 
-Active skills checked:
+Historical repair review rounds before this cascade included these independent
+approvals and findings:
 
-- `stacked-pr`
-- `delegation-doctrine`
-- `assign-scientist-reviewers`
-- `rust-type-seal-enforcement`
-- `precondition-problem`
-- `monte-carlo-review`
-- `http-type-seal-review`
-- `http-peer-protocol`
+- Hegel, QA enforcement/Locke/Sagan: AGENTS/process QA approve, no P0-P3
+  findings after the stack-depth and ledger fixes.
+- Dalton, Sagan/Dirac: ledger wording QA approve, no P0-P3 findings after the
+  overclaim and stale-evidence wording fixes.
+- Aquinas the 2nd, Popper/precondition: approve, no P0-P2 findings on missing
+  CAS body semantics and `OPTIONS` query handling.
+- Bacon the 2nd, Noether/Mencius: approve, no P0-P2 findings on type seals and
+  coordinate proof boundaries.
+- Ramanujan the 2nd, Euclid/HTTP topology: approve, no P0-P2 findings on HTTP
+  timeline query walls.
+- Faraday the 2nd, QA/enforcement: code approve, but process remained gated on
+  #359 review before #336+ could leave draft.
+- Banach the 2nd, Popper/Bacon: approve, no P0-P3 findings for the earlier
+  #359 CI repair.
+- Noether the 2nd, Mencius/Noether: approve with a P3 read-cache path-seal
+  hygiene finding. This repair preserves the fix by using
+  `world::validated_world_db(...)`.
+- Nietzsche the 2nd, Ramanujan/Poincare: approve, no P0-P2 findings; noted
+  duplicate patch-id history as the intentional cost of no-rebase/no-squash.
 
-Round 1 reviewers:
-
-- Herschel, lens Poincare/Bacon: stack topology QA. Result: no P0-P2 finding
-  for assigned Round 1 slice.
-- Kepler, lens Mencius/Noether: type-seal QA. Result: no P0-P2 finding for
-  assigned Round 1 slice.
-- Peirce, lens Popper/precondition/Bacon: timeline/precondition QA. Result:
-  no P0-P2 finding for assigned Round 1 slice.
-- Meitner, lens QA enforcement/Locke/Sagan: process QA. Result: not approved.
-
-Round 1 confirmed findings:
-
-- P1: Stack depth exception existed only in chat/PR wording, not in AGENTS.md.
-  Fix: add the AGENTS.md Stack repair exception at the lowest repaired layer
-  and cascade it upward.
-- P1: PR ledgers described stale remote heads, not the exact repaired local
-  artifact. Fix: add this durable stack repair ledger.
-- P2: one PR body had incomplete Fleet Review ledger shape. Fix: this
-  stack-wide ledger names lenses, skills, QA/enforcement, findings, fixes, and
-  validation evidence for the repaired artifact.
-- P3: platform-gated validation should be named when cited. Fix: do not claim
-  Windows unlink semantics are proven by Unix-only file-permission coverage.
-
-Final clearing round:
-
-- Hegel, lens QA enforcement/Locke/Sagan: process QA. Result: AGENTS/process
-  QA approve, no P0-P3 findings. Cleared the prior stack-depth, stale-ledger,
-  and incomplete-ledger findings against the updated AGENTS.md and this repair
-  ledger.
-- Dalton, lens Sagan/Dirac: ledger wording QA. Result: ledger wording QA
-  approve, no P0-P3 findings. Cleared the overclaim, user-authorisation,
-  raw-string-sweep, Round 1 wording, and reported-evidence wording risks.
-
-Current addendum review round:
-
-- Aquinas the 2nd, lens Popper/precondition: APPROVE, no P0-P2 findings.
-  Confirmed missing CAS bodies no longer become `Expired` without proof, missing
-  subject storage becomes `Unproven`, and `OPTIONS` short-circuits before query
-  decoding.
-- Bacon the 2nd, lens Noether/Mencius: APPROVE, no P0-P2 findings. Confirmed
-  type seals remain intact, `event_hmac` has the required invariant/allow, and
-  HTTP/SDK boundaries do not treat raw coordinates as proof.
-- Ramanujan the 2nd, lens Euclid/HTTP topology: APPROVE, no P0-P2 findings.
-  Confirmed `OPTIONS` ignores timeline query shape while GET/HEAD still fail
-  malformed timeline queries at the query boundary.
-- Faraday the 2nd, QA/enforcement: code APPROVE, process not fully cleared.
-  Confirmed no current code P0-P2 finding, but kept lower-stack process gates:
-  #330-#335 should drain bottom-up, and #359 must be reviewed before #336+
-  leaves draft/repair mode. Follow-up process repair converted #344 and #345
-  back to draft so the visible upper stack again matches that gate.
-- Banach the 2nd, lens Popper/Bacon: APPROVE, no P0-P3 findings for the #359
-  CI repair. Retested exact commit `94c40d1` and confirmed the quota/proc
-  assertions still check the retained-CAS accounting contract rather than
-  weakening it.
-- Noether the 2nd, lens Mencius/Noether: APPROVE, no P0-P2 findings; reported a
-  P3 read-cache path-seal hygiene issue. Fixed in `22r35` by routing DB path
-  construction through `world::validated_world_db(...)`.
-- Nietzsche the 2nd, lens Ramanujan/Poincare: APPROVE, no P0-P2 findings; noted
-  the duplicate patch-id history entry and stale "ready to push" wording. This
-  ledger now records the duplicate-history reason and removes the stale push
-  wording.
-
-The repaired cascade is intended to remain pushed to origin with local and
-remote refs matching. GitHub CI status is the live source of truth after each
-push; queued checks are not treated as pass or failure. The upper implementation
-stack is not ready to mark non-draft until #359 is reviewed with green CI and
-the lower process gates above are cleared.
+This ledger does not claim the current post-cascade artifact is clear. The live
+source of truth after this commit is: local top validation, GitHub CI, and the
+fresh subagent QA round.
