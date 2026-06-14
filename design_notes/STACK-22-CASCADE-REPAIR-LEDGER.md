@@ -85,9 +85,40 @@ Observed lower-layer results:
 
 Required before marking upper stack layers ready:
 
+- GitHub CI green for #359 after the pushed repair.
+
+Completed after the current cascade:
+
 - top-of-stack local validation after the current `22r41` merge commit;
-- GitHub CI green for #359 after the pushed repair;
-- subagent QA rerun on the repaired artifact until no P0-P3 findings remain.
+- subagent QA rerun on the repaired artifact until no P0-P3 findings remained.
+
+Final local validation on `stack/22r41-sdk-timeline-coordinate`:
+
+- `cargo fmt --manifest-path core/Cargo.toml -- --check`
+- `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings`
+- `cargo test --manifest-path core/Cargo.toml`
+- `cargo fmt --manifest-path bin/Cargo.toml -- --check`
+- `cargo clippy --manifest-path bin/Cargo.toml --all-targets -- -D warnings`
+- `cargo test --manifest-path bin/Cargo.toml`
+- `cargo fmt --manifest-path ffi/Cargo.toml -- --check`
+- `cargo clippy --manifest-path ffi/Cargo.toml --all-targets -- -D warnings`
+- `cargo test --manifest-path ffi/Cargo.toml`
+- `python sdk/tests/test_tools.py`
+- `python sdk/tests/e2e_blackbox.py`
+- `git diff --check`
+- adjacent branch ancestry check from `22r19` through `22r41`
+- stale verifier grep across stack refs:
+  `git grep -n 'verify_world_connection' <branch> -- core/src`
+
+Observed final local results:
+
+- core: 197 passed, 2 ignored; doc tests 17 passed.
+- bin: 149 passed.
+- ffi: 23 passed; doc tests 0 passed/0 failed.
+- SDK tools: pass.
+- SDK e2e blackbox: 248 checks passed.
+- ancestry check: ok.
+- stale `verify_world_connection`: no matches in stack refs.
 
 ## Review Ledger
 
@@ -114,6 +145,15 @@ approvals and findings:
 - Nietzsche the 2nd, Ramanujan/Poincare: approve, no P0-P2 findings; noted
   duplicate patch-id history as the intentional cost of no-rebase/no-squash.
 
-This ledger does not claim the current post-cascade artifact is clear. The live
-source of truth after this commit is: local top validation, GitHub CI, and the
-fresh subagent QA round.
+Final QA round after the current cascade:
+
+- Sagan the 2nd, type-seal/invariant conservation: APPROVE, no P0-P3 findings.
+- Anscombe the 2nd, AGENTS/stack process QA: APPROVE, no P0-P3 findings.
+- Zeno the 2nd, precondition/HTTP semantics: found one P3 in
+  `Last-Event-ID` parsing. Fixed at `22r19` by using `HeaderMap::get_all`,
+  rejecting duplicates, rejecting empty/non-ASCII-decimal values, and removing
+  trimming. Targeted listen tests passed. Zeno re-reviewed and APPROVED with no
+  P0-P3 findings.
+
+This ledger does not claim GitHub CI is green. The live source of truth after
+push is GitHub CI, especially #359.
