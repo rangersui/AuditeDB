@@ -514,9 +514,9 @@ mod tests {
 
         let (core, dir) = test_core("delete-ledger-subject-address");
         let subject = ValidatedWorldPath::new("home/delete-ledger-subject-address").unwrap();
-        core.write_world(subject.as_str(), b"old", "text/plain", &[])
+        core.test_only_write_world(subject.as_str(), b"old", "text/plain", &[])
             .unwrap();
-        core.write_world(subject.as_str(), b"final", "text/plain", &[])
+        core.test_only_write_world(subject.as_str(), b"final", "text/plain", &[])
             .unwrap();
 
         let subject_conn =
@@ -614,7 +614,7 @@ mod tests {
         let (core, dir) = test_core("delete-ledger-reserved-subject-header");
         let subject =
             ValidatedWorldPath::new("home/delete-ledger-reserved-subject-header").unwrap();
-        core.write_world(subject.as_str(), b"body", "text/plain", &[])
+        core.test_only_write_world(subject.as_str(), b"body", "text/plain", &[])
             .unwrap();
 
         let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
@@ -644,7 +644,7 @@ mod tests {
 
         let (core, dir) = test_core("delete-ledger-recreate-generation");
         let subject = ValidatedWorldPath::new("home/delete-ledger-recreate-generation").unwrap();
-        core.write_world(subject.as_str(), b"first", "text/plain", &[])
+        core.test_only_write_world(subject.as_str(), b"first", "text/plain", &[])
             .unwrap();
         let first_conn = Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
         let first_generation = world_schema::generation(&first_conn).unwrap();
@@ -664,7 +664,7 @@ mod tests {
         .await
         .unwrap();
 
-        core.write_world(subject.as_str(), b"second", "text/plain", &[])
+        core.test_only_write_world(subject.as_str(), b"second", "text/plain", &[])
             .unwrap();
         let second_conn = Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
         let second_generation = world_schema::generation(&second_conn).unwrap();
