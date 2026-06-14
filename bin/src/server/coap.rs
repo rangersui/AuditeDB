@@ -14,7 +14,10 @@ use tokio::sync::Semaphore;
 use crate::{
     engine::{Engine, ShutdownToken},
     engine_trace::EngineWriteTraceHooks,
-    engine_types::{AccessTier, Preconditions, Representation, ValidatedWorldPath, WriteKind},
+    engine_types::{
+        AccessTier, Preconditions, Representation, SubscriptionResume, ValidatedWorldPath,
+        WriteKind,
+    },
     server::{coap_errors, path::canonicalize_path},
 };
 
@@ -744,7 +747,7 @@ mod tests {
             .subscribe(
                 &crate::engine_types::SubscribePattern::new("home/*"),
                 AccessTier::Read,
-                None,
+                SubscriptionResume::none(),
             )
             .expect("test subscription should open");
         let http_state = server_state_for_engine_for_tests(engine.clone());
