@@ -12,7 +12,7 @@ use std::{sync::Arc, time::Duration};
 
 use elastik_core::{
     AuditHmacKey, ChangeEvent, Engine, EngineDeleteTraceHooks, SubscribePattern,
-    SubscriptionRecvError, ValidatedWorldPath,
+    SubscriptionRecvError, SubscriptionResume, ValidatedWorldPath,
 };
 use tokio::{
     runtime::{Builder as RuntimeBuilder, Runtime},
@@ -270,9 +270,8 @@ impl FfiEngine {
         resume: FfiSubscriptionResume,
     ) -> Result<Arc<FfiSubscription>, FfiError> {
         let pattern = SubscribePattern::new(pattern);
-        let mut subscription = self
-            .engine
-            .subscribe(&pattern, tier.try_into()?, resume.into())?;
+        let resume = SubscriptionResume::try_from(resume)?;
+        let mut subscription = self.engine.subscribe(&pattern, tier.try_into()?, resume)?;
         let (events_tx, events_rx) = mpsc::channel(FFI_SUBSCRIPTION_BUFFER);
         let (cancel, mut cancel_rx) = watch::channel(false);
         let pump = self.runtime.spawn(async move {
@@ -328,6 +327,7 @@ impl FfiSubscription {
                 skipped: None,
                 cursor_after_event_id: None,
                 newest_event_id: None,
+                reset_cursor: None,
             },
             Err(_) => FfiSubscriptionNext {
                 kind: FfiSubscriptionNextKind::Timeout,
@@ -335,6 +335,7 @@ impl FfiSubscription {
                 skipped: None,
                 cursor_after_event_id: None,
                 newest_event_id: None,
+                reset_cursor: None,
             },
         }
     }
@@ -417,6 +418,7 @@ fn subscription_next_from_recv(
                 skipped: None,
                 cursor_after_event_id: None,
                 newest_event_id: None,
+                reset_cursor: None,
             },
             false,
         ),
@@ -427,6 +429,7 @@ fn subscription_next_from_recv(
                 skipped: Some(skipped),
                 cursor_after_event_id: None,
                 newest_event_id: None,
+                reset_cursor: None,
             },
             false,
         ),
@@ -437,16 +440,22 @@ fn subscription_next_from_recv(
                 skipped: None,
                 cursor_after_event_id: None,
                 newest_event_id: None,
+                reset_cursor: None,
             },
             true,
         ),
-        Err(SubscriptionRecvError::CursorAhead { since, newest }) => (
+        Err(SubscriptionRecvError::CursorAhead {
+            since,
+            newest,
+            reset,
+        }) => (
             FfiSubscriptionNext {
                 kind: FfiSubscriptionNextKind::CursorAhead,
                 event: None,
                 skipped: None,
                 cursor_after_event_id: Some(since),
                 newest_event_id: Some(newest),
+                reset_cursor: Some(reset.to_string()),
             },
             false,
         ),
@@ -457,6 +466,7 @@ fn subscription_next_from_recv(
                 skipped: None,
                 cursor_after_event_id: None,
                 newest_event_id: None,
+                reset_cursor: None,
             },
             true,
         ),
@@ -568,9 +578,15 @@ mod tests {
     fn change_event_uses_engine_verb_enum() {
         let event = FfiChangeEvent {
             id: 1,
+            cursor: "0123456789abcdef0123456789abcdef:1".to_owned(),
+            listen_epoch: "0123456789abcdef0123456789abcdef".to_owned(),
             verb: FfiChangeVerb::Replace,
             path: "home/doc".to_owned(),
             etag: "abc".to_owned(),
+            timeline_world: None,
+            timeline_generation: None,
+            timeline_seq: None,
+            timeline_body_sha256: None,
         };
 
         assert_eq!(event.verb, FfiChangeVerb::Replace);
@@ -811,6 +827,13 @@ mod tests {
             if_match: Vec::new(),
             if_none_match: Vec::new(),
         };
+        let initial_subscription = engine
+            .subscribe(
+                "home/events/*".to_owned(),
+                FfiAccessTier::Read,
+                resume_none(),
+            )
+            .expect("initial subscription opens");
         engine
             .replace(
                 "home/events/a".to_owned(),
@@ -823,19 +846,33 @@ mod tests {
                 FfiAccessTier::Write,
             )
             .expect("first write succeeds");
+        let first = initial_subscription.next(1_000);
+        assert_eq!(first.kind, FfiSubscriptionNextKind::Event);
+        let first_cursor = first.event.expect("first live event").cursor;
+        initial_subscription.close();
+
+        engine
+            .append(
+                "home/events/a".to_owned(),
+                b" replay".to_vec(),
+                none.clone(),
+                FfiAccessTier::Write,
+            )
+            .expect("second write succeeds");
 
         let subscription = engine
             .subscribe(
                 "home/events/*".to_owned(),
                 FfiAccessTier::Read,
-                resume_after(0),
+                resume_after_cursor(first_cursor),
             )
             .expect("subscription opens");
         let replay = subscription.next(1_000);
         assert_eq!(replay.kind, FfiSubscriptionNextKind::Event);
         let event = replay.event.expect("replay event");
-        assert_eq!(event.verb, FfiChangeVerb::Replace);
+        assert_eq!(event.verb, FfiChangeVerb::Append);
         assert_eq!(event.path, "home/events/a");
+        assert_eq!(event.cursor, format!("{}:{}", event.listen_epoch, event.id));
 
         let timeout = subscription.next(1);
         assert_eq!(timeout.kind, FfiSubscriptionNextKind::Timeout);
@@ -871,6 +908,8 @@ mod tests {
         assert_eq!(reset.kind, FfiSubscriptionNextKind::CursorAhead);
         assert_eq!(reset.cursor_after_event_id, Some(42));
         assert_eq!(reset.newest_event_id, Some(0));
+        let reset_cursor = reset.reset_cursor.as_ref().expect("reset cursor");
+        assert!(reset_cursor.ends_with(":0"));
         assert!(reset.event.is_none());
         assert!(reset.skipped.is_none());
 
@@ -1158,13 +1197,22 @@ mod tests {
 
     fn resume_none() -> FfiSubscriptionResume {
         FfiSubscriptionResume {
+            after_cursor: None,
             after_event_id: None,
         }
     }
 
     fn resume_after(id: u64) -> FfiSubscriptionResume {
         FfiSubscriptionResume {
+            after_cursor: None,
             after_event_id: Some(id),
+        }
+    }
+
+    fn resume_after_cursor(cursor: String) -> FfiSubscriptionResume {
+        FfiSubscriptionResume {
+            after_cursor: Some(cursor),
+            after_event_id: None,
         }
     }
 }

@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, fmt};
 use elastik_core::{
     is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, ChangeVerb, DeleteMetadata,
     DfSnapshot, EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions,
-    ReadResult, Representation, SubscriptionResume, WorldUsage, WriteKind, WriteResult,
+    ReadResult, Representation, SubscriptionCursor, SubscriptionResume, WorldUsage, WriteKind,
+    WriteResult,
 };
 
 /// Engine construction options for the FFI adapter.
@@ -154,9 +155,15 @@ pub enum FfiChangeVerb {
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FfiChangeEvent {
     pub id: u64,
+    pub cursor: String,
+    pub listen_epoch: String,
     pub verb: FfiChangeVerb,
     pub path: String,
     pub etag: String,
+    pub timeline_world: Option<String>,
+    pub timeline_generation: Option<String>,
+    pub timeline_seq: Option<i64>,
+    pub timeline_body_sha256: Option<String>,
 }
 
 /// Resume cursor for a subscription opened through FFI.
@@ -164,8 +171,9 @@ pub struct FfiChangeEvent {
 /// Foreign callers pass raw integers at the ABI edge, but the adapter converts
 /// this record into the core [`SubscriptionResume`] proof before calling the
 /// Engine.
-#[derive(Clone, Copy, Debug, Default, uniffi::Record)]
+#[derive(Clone, Debug, Default, uniffi::Record)]
 pub struct FfiSubscriptionResume {
+    pub after_cursor: Option<String>,
     pub after_event_id: Option<u64>,
 }
 
@@ -190,6 +198,7 @@ pub struct FfiSubscriptionNext {
     pub skipped: Option<u64>,
     pub cursor_after_event_id: Option<u64>,
     pub newest_event_id: Option<u64>,
+    pub reset_cursor: Option<String>,
 }
 
 /// Per-world body byte usage DTO.
@@ -501,21 +510,45 @@ impl From<WorldUsage> for FfiWorldUsage {
 
 impl From<ChangeEvent> for FfiChangeEvent {
     fn from(value: ChangeEvent) -> Self {
+        let timeline_address = value.timeline_address;
         Self {
             id: value.id,
+            cursor: value.cursor.to_string(),
+            listen_epoch: value.listen_epoch.to_string(),
             verb: value.verb.into(),
             path: value.path.to_string(),
             etag: value.etag,
+            timeline_world: timeline_address
+                .as_ref()
+                .map(|address| address.world().to_string()),
+            timeline_generation: timeline_address
+                .as_ref()
+                .map(|address| address.generation().as_str().to_owned()),
+            timeline_seq: timeline_address.as_ref().map(|address| address.seq().get()),
+            timeline_body_sha256: timeline_address
+                .as_ref()
+                .map(|address| address.body_sha256().as_str().to_owned()),
         }
     }
 }
 
-impl From<FfiSubscriptionResume> for SubscriptionResume {
-    fn from(value: FfiSubscriptionResume) -> Self {
-        value
-            .after_event_id
-            .map(SubscriptionResume::after_event_id)
-            .unwrap_or_else(SubscriptionResume::none)
+impl TryFrom<FfiSubscriptionResume> for SubscriptionResume {
+    type Error = FfiError;
+
+    fn try_from(value: FfiSubscriptionResume) -> Result<Self, Self::Error> {
+        match (value.after_cursor, value.after_event_id) {
+            (None, None) => Ok(Self::none()),
+            (Some(raw), None) => SubscriptionCursor::from_sse_id(&raw)
+                .map(Self::after_cursor)
+                .map_err(|err| FfiError::InvalidConfig {
+                    message: format!("{err}: {raw}"),
+                }),
+            (None, Some(id)) => Ok(Self::legacy_event_id(id)),
+            (Some(_), Some(_)) => Err(FfiError::InvalidConfig {
+                message: "subscription resume must set after_cursor or after_event_id, not both"
+                    .to_owned(),
+            }),
+        }
     }
 }
 
