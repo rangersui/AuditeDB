@@ -112,7 +112,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         return Err(DeleteError::NotFound);
     };
     let storage_len_before = if store::is_persistent(world_name) {
-        match world::storage_len(&core.data, world_name)
+        match world::storage_len(&core.data, &permit.world)
             .map_err(|err| classify_storage_error("storage size", &permit.world, err))?
         {
             Some(len) => len,
@@ -131,7 +131,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
 
     if let Err(err) = core
         .append_to_ledger(AuditAppendJob {
-            ledger_world: "var/log/deletes",
+            ledger_world: delete_ledger_world(),
             event_type: EventMetadataKind::DELETE_INTENT,
             target: world_name.to_owned(),
             body_sha256: body_sha256_before.clone(),
@@ -182,7 +182,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
 
     if let Err(commit_err) = core
         .append_to_ledger(AuditAppendJob {
-            ledger_world: "var/log/deletes",
+            ledger_world: delete_ledger_world(),
             event_type: EventMetadataKind::DELETE_COMMIT,
             target: world_name.to_owned(),
             body_sha256: body_sha256_before.clone(),
@@ -202,7 +202,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         hooks.audit_commit_failed(&commit_err);
         match core
             .append_to_ledger(AuditAppendJob {
-                ledger_world: "var/log/deletes",
+                ledger_world: delete_ledger_world(),
                 event_type: EventMetadataKind::DELETE_COMMIT_FAILED,
                 target: world_name.to_owned(),
                 body_sha256: body_sha256_before,
@@ -232,6 +232,11 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
 
 fn ledger_hmac_key(core: &Core) -> crate::engine_types::AuditHmacKey {
     core.hmac_key.clone_secret()
+}
+
+fn delete_ledger_world() -> ValidatedWorldPath {
+    ValidatedWorldPath::new("var/log/deletes")
+        .expect("delete ledger world is a canonical validated path")
 }
 
 fn storage_len_missing_error() -> rusqlite::Error {
