@@ -146,29 +146,29 @@ pub enum AuditVerify {
     NotApplicable,
 }
 
-/// The audit chain's current head: the newest event's sequence number and
-/// chain HMAC. Returned by [`crate::Engine::chain_head`].
+/// The audit chain's current head: the number of events currently in the
+/// chain and the newest event's chain HMAC. Returned by
+/// [`crate::Engine::chain_head`].
 ///
 /// This is the unit of external anchoring. In-file verification proves
 /// "nobody tampered with what is here"; it structurally cannot prove
 /// "everything that happened is here" — every non-empty prefix of a valid
-/// chain is itself a valid chain, and a rolled-back file is self-
-/// consistent. A host that remembers a `HeadStamp` (on another machine, a
-/// subscriber, an RFC 3161 timestamp) can later **prove** truncation or
-/// rollback whenever the observed head is behind the anchored `seq`. A
-/// rolled-back or replaced (deleted-and-recreated) chain that has re-grown
-/// past the anchor is not caught by the seq comparison alone
-/// (`sqlite_sequence` rolls back with the file, so ids are reissued);
-/// catching that requires comparing the hmac at the anchored seq — the
-/// divergence check, a later PR in this stack.
+/// chain is itself a valid chain, and a rolled-back file is
+/// self-consistent. A host that remembers a `HeadStamp` (on another machine,
+/// a subscriber, an RFC 3161 timestamp) can later **prove** truncation or
+/// rollback whenever the observed event count is behind the anchored `seq`.
+/// A rolled-back or replaced (deleted-and-recreated) chain that has re-grown
+/// past the anchor is not caught by the seq comparison alone; catching that
+/// requires comparing the hmac at the anchored seq -- the divergence check,
+/// a later PR in this stack.
 ///
-/// When the chain verifies, `hmac` equals [`AuditValid::latest`] — the
-/// stamp is the O(1) subset of a full [`crate::Engine::verify_audit`]
-/// walk.
+/// When the chain verifies, `seq` equals [`AuditValid::events`] and `hmac`
+/// equals [`AuditValid::latest`]. `seq` is not a raw SQLite rowid; rowids are
+/// mutable storage detail, not an anchoring contract.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadStamp {
-    /// Sequence number (rowid) of the newest event on the chain.
+    /// Number of events currently on the chain.
     pub seq: i64,
     /// Chain HMAC of the newest event.
     pub hmac: String,
@@ -466,7 +466,7 @@ impl EngineOps<'_> {
             }
             return Ok(AuditVerify::NotApplicable);
         }
-        match self.core().cached_verify_chain(world.as_str()) {
+        match self.core().cached_verify_chain(world) {
             Ok(Some(crate::audit::VerifyReport::Valid(report))) => {
                 Ok(AuditVerify::Valid(report.into()))
             }
@@ -498,7 +498,7 @@ impl EngineOps<'_> {
             // Memory worlds have no audit chain: nothing to anchor.
             return Ok(None);
         }
-        match self.core().cached_chain_head(world.as_str()) {
+        match self.core().cached_chain_head(world) {
             Ok(Some(Some((seq, hmac)))) => Ok(Some(HeadStamp { seq, hmac })),
             // Existing DB with an empty chain (bootstrap shape): nothing to
             // anchor yet.
@@ -633,11 +633,12 @@ impl Engine {
 
     /// Returns the audit chain's current head for external anchoring.
     ///
-    /// This is a synchronous, O(1) API: it reads the newest event's
-    /// sequence number and chain HMAC through the cached read path without
-    /// walking the chain. It does **not** verify the chain — pair it with
+    /// This is a synchronous API: it reads the current event count and
+    /// newest event HMAC through the cached read path without re-computing
+    /// every HMAC. It does **not** verify the chain -- pair it with
     /// [`Engine::verify_audit`] when integrity matters; when the chain
-    /// verifies, [`HeadStamp::hmac`] equals [`AuditValid::latest`].
+    /// verifies, [`HeadStamp::seq`] equals [`AuditValid::events`] and
+    /// [`HeadStamp::hmac`] equals [`AuditValid::latest`].
     ///
     /// Push the returned stamp somewhere — ideally somewhere this machine
     /// cannot rewrite (another host, a subscriber, an RFC 3161 timestamp;
@@ -870,7 +871,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chain_head_is_the_o1_subset_of_verify() {
+    async fn chain_head_matches_verify_head_without_trusting_rowid() {
         let root = temp_root("chain-head");
         let engine = Engine::builder()
             .data_root(root.clone())
@@ -919,9 +920,15 @@ mod tests {
         else {
             panic!("chain must verify");
         };
-        // The stamp is the O(1) subset of a full verify walk.
+        // The stamp is the cheap subset of a full verify walk.
         assert_eq!(head.hmac, valid.latest);
         assert_eq!(head.seq, valid.events as i64);
+        let max_id: i64 =
+            rusqlite::Connection::open(crate::world::world_db(&engine.core().data, disk.as_str()))
+                .unwrap()
+                .query_row("SELECT MAX(id) FROM events", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(head.seq, max_id);
 
         // Memory world exists but has no chain to anchor. The auth gate
         // must also hold on the memory path (pins gate-before-branch).
@@ -967,6 +974,90 @@ mod tests {
             .expect("head persists after another write");
         assert_eq!(advanced.seq, head.seq + 1);
         assert_ne!(advanced.hmac, head.hmac);
+
+        // `seq` is the event count, not a mutable SQLite rowid. A truncated
+        // but otherwise self-consistent prefix cannot hide rollback by
+        // inflating the surviving tail event id.
+        let tampered = ValidatedWorldPath::new("home/anchored-rowid-tamper").unwrap();
+        for body in [
+            Bytes::from_static(b"one"),
+            Bytes::from_static(b"two"),
+            Bytes::from_static(b"three"),
+        ] {
+            engine
+                .replace(
+                    &tampered,
+                    Representation::new(body, "text/plain", Vec::new()),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await
+                .unwrap();
+        }
+        {
+            let c = rusqlite::Connection::open(crate::world::world_db(
+                &engine.core().data,
+                tampered.as_str(),
+            ))
+            .unwrap();
+            let prefix_body: Vec<u8> = c
+                .query_row(
+                    "SELECT body FROM cas_bodies
+                     WHERE body_sha256 = (SELECT body_sha256 FROM events WHERE id=2)",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let deleted_body_sha256: String = c
+                .query_row("SELECT body_sha256 FROM events WHERE id=3", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            c.execute(
+                "DELETE FROM events WHERE id = (SELECT MAX(id) FROM events)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "DELETE FROM cas_bodies WHERE body_sha256=?1",
+                [&deleted_body_sha256],
+            )
+            .unwrap();
+            c.execute("UPDATE stage_meta SET body=?1 WHERE id=1", [&prefix_body])
+                .unwrap();
+            c.execute(
+                "UPDATE events SET id = 100 WHERE id = (SELECT MAX(id) FROM events)",
+                [],
+            )
+            .unwrap();
+            let count: i64 = c
+                .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+                .unwrap();
+            let max_id: i64 = c
+                .query_row("SELECT MAX(id) FROM events", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 2);
+            assert_eq!(max_id, 100);
+        }
+        let tampered_head = engine
+            .chain_head(&tampered, AccessTier::Read)
+            .unwrap()
+            .expect("tampered prefix still has a head");
+        let AuditVerify::Valid(tampered_valid) =
+            engine.verify_audit(&tampered, AccessTier::Read).unwrap()
+        else {
+            panic!("prefix remains HMAC-valid");
+        };
+        assert_eq!(tampered_head.seq, 2);
+        assert_eq!(tampered_head.seq, tampered_valid.events as i64);
+        assert_eq!(tampered_head.hmac, tampered_valid.latest);
+
+        engine.core().install_tombstone(disk.as_str()).await;
+        assert!(matches!(
+            engine.chain_head(&disk, AccessTier::Read),
+            Err(EngineError::NotFound)
+        ));
+        engine.core().clear_tombstone(disk.as_str());
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);

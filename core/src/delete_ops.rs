@@ -122,7 +122,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         AuditHeaders::from_user(headers).map_err(|_| DeleteError::ReservedMetadataHeader)?;
 
     let Some(stage) = core
-        .read_world(world_name)
+        .read_world(&permit.world)
         .map_err(|err| classify_storage_error("storage read", &permit.world, err))?
     else {
         return Err(DeleteError::NotFound);
@@ -308,7 +308,7 @@ fn check_preconditions(
         return Ok(());
     }
     let current = core
-        .read_world_with_etag(world.as_str())
+        .read_world_with_etag(world)
         .map_err(|err| classify_storage_error("precondition read", world, err))?;
     let current_tag = current.as_ref().map(|(_, etag)| etag.as_str());
     etag::check_preconditions(preconditions, current_tag)
