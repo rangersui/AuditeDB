@@ -165,6 +165,7 @@ pub enum FfiSubscriptionNextKind {
     Event,
     Timeout,
     Lagged,
+    CursorAhead,
     Closed,
     /// The Engine returned a subscription state this FFI binding does not yet
     /// recognize. Treat as indeterminate and upgrade the binding.
@@ -177,6 +178,8 @@ pub struct FfiSubscriptionNext {
     pub kind: FfiSubscriptionNextKind,
     pub event: Option<FfiChangeEvent>,
     pub skipped: Option<u64>,
+    pub since: Option<u64>,
+    pub newest: Option<u64>,
 }
 
 /// Per-world body byte usage DTO.
