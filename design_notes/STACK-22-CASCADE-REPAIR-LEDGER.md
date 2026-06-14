@@ -41,3 +41,32 @@ Run on `stack/22r19-audit-verify-world-target` after retargeting #359 to
 
 GitHub CI must still be treated as authoritative for remote checks when it
 finishes; queued checks are not green checks.
+
+## Reopened QA Addendum
+
+Planck the 2nd re-reviewed the reopened stack and found two remaining P3
+type-seal holes:
+
+- raw physical delete helper exposure through `world::delete` /
+  `world/files.rs`;
+- raw subscription resume cursors flowing as `Option<u64>` across Core and FFI.
+
+Fixes landed at the lowest affected layers:
+
+- `world/files.rs::delete` now requires `&ValidatedWorldPath`, and `world.rs`
+  no longer exposes the physical delete helper as a raw world-name API.
+- `Core::delete_world_blocking` calls the sealed `world::delete(&data, &world)`
+  path.
+- `SubscriptionResume` is now the Core proof type for replay state, with
+  `none()` and `after_event_id(...)` constructors.
+- `Engine::subscribe`, `EngineOps::subscribe`, `open_subscription`, replay
+  internals, HTTP listen, and FFI no longer use raw `Option<u64>` cursors at the
+  Core boundary.
+- FFI exposes `FfiSubscriptionResume` instead of a raw `since` argument.
+
+Upper-stack test call sites were repaired where they first appeared (`22r27`
+and `22r40`). A follow-up clippy hygiene fix kept `SubscriptionResume` out of
+CoAP production imports and test-local only.
+
+This addendum still does not claim GitHub CI is green. The live source of truth
+after push remains GitHub CI.
