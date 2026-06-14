@@ -782,9 +782,14 @@ impl ReadCache {
 
     /// Sync version. delete callers wrap this in `spawn_blocking` so
     /// the drain wait doesn't stall a Tokio worker.
-    pub(crate) fn install_tombstone_blocking(&self, world: &str) {
+    pub(crate) fn install_tombstone_blocking(
+        &self,
+        world: &crate::engine_types::ValidatedWorldPath,
+    ) {
         let new_tombstone = self.new_slot(SlotState::Tombstone);
-        let prev = self.read_conns.insert(world.to_string(), new_tombstone);
+        let prev = self
+            .read_conns
+            .insert(world.as_str().to_owned(), new_tombstone);
         if let Some(prev_slot) = prev {
             let mut g = prev_slot.inner.write().unwrap_or_else(|p| p.into_inner());
             let old = std::mem::replace(&mut *g, SlotState::Tombstone);
@@ -797,8 +802,8 @@ impl ReadCache {
     /// Called on BOTH success and failure (Bug 20): on failure, the
     /// world is still on disk; the next read should lazy-init a
     /// fresh slot rather than seeing a phantom 404.
-    pub(crate) fn clear_tombstone(&self, world: &str) {
-        self.read_conns.remove(world);
+    pub(crate) fn clear_tombstone(&self, world: &crate::engine_types::ValidatedWorldPath) {
+        self.read_conns.remove(world.as_str());
     }
 
     /// Snapshot accessor for `/proc/pool`; exposes count only, never slots.
@@ -1030,11 +1035,11 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
-        cache.install_tombstone_blocking(world);
+        cache.install_tombstone_blocking(&v(world));
         let r = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(r.is_none());
 
-        cache.clear_tombstone(world);
+        cache.clear_tombstone(&v(world));
         let r2 = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(r2.is_some());
 
@@ -1375,7 +1380,7 @@ mod tests {
         world::test_only_write_without_audit(&dir, world, b"x", "text/plain", &[]).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        cache.install_tombstone_blocking(world);
+        cache.install_tombstone_blocking(&v(world));
         let tombstone = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         assert!(tombstone.is_none());
         assert_eq!(
@@ -1451,7 +1456,7 @@ mod tests {
 
         let cache = ReadCache::new(2);
         let _ = cache.cached_read_with_hmac(&dir, &v("home/ready")).unwrap();
-        cache.install_tombstone_blocking("home/tomb");
+        cache.install_tombstone_blocking(&v("home/tomb"));
 
         assert!(
             cache.try_evict_oldest_sample("home/new"),
@@ -1551,13 +1556,13 @@ mod tests {
         assert!(matches!(r2, Some(crate::audit::VerifyReport::Valid(_))));
 
         // Tombstone short-circuits verify (delete intent).
-        cache.install_tombstone_blocking(world);
+        cache.install_tombstone_blocking(&v(world));
         let r3 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
         assert!(r3.is_none());
 
         // After clear_tombstone the next verify re-opens through
         // Phase 3 lazy-init.
-        cache.clear_tombstone(world);
+        cache.clear_tombstone(&v(world));
         let r4 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
         assert!(matches!(r4, Some(crate::audit::VerifyReport::Valid(_))));
 

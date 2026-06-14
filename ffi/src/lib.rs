@@ -324,11 +324,15 @@ impl FfiSubscription {
                 kind: FfiSubscriptionNextKind::Closed,
                 event: None,
                 skipped: None,
+                since: None,
+                newest: None,
             },
             Err(_) => FfiSubscriptionNext {
                 kind: FfiSubscriptionNextKind::Timeout,
                 event: None,
                 skipped: None,
+                since: None,
+                newest: None,
             },
         }
     }
@@ -409,6 +413,8 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::Event,
                 event: Some(event.into()),
                 skipped: None,
+                since: None,
+                newest: None,
             },
             false,
         ),
@@ -417,6 +423,8 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::Lagged,
                 event: None,
                 skipped: Some(skipped),
+                since: None,
+                newest: None,
             },
             false,
         ),
@@ -425,22 +433,28 @@ fn subscription_next_from_recv(
                 kind: FfiSubscriptionNextKind::Closed,
                 event: None,
                 skipped: None,
+                since: None,
+                newest: None,
             },
             true,
         ),
-        Err(SubscriptionRecvError::CursorAhead { .. }) => (
+        Err(SubscriptionRecvError::CursorAhead { since, newest }) => (
             FfiSubscriptionNext {
-                kind: FfiSubscriptionNextKind::Unknown,
+                kind: FfiSubscriptionNextKind::CursorAhead,
                 event: None,
                 skipped: None,
+                since: Some(since),
+                newest: Some(newest),
             },
-            true,
+            false,
         ),
         Err(_) => (
             FfiSubscriptionNext {
                 kind: FfiSubscriptionNextKind::Unknown,
                 event: None,
                 skipped: None,
+                since: None,
+                newest: None,
             },
             true,
         ),
@@ -834,6 +848,39 @@ mod tests {
         let event = live.event.expect("live event");
         assert_eq!(event.verb, FfiChangeVerb::Append);
         assert_eq!(event.path, "home/events/a");
+    }
+
+    #[test]
+    fn subscription_next_reports_cursor_ahead_then_keeps_live_stream_open() {
+        let engine = test_engine("subscribe-cursor-ahead");
+        let subscription = engine
+            .subscribe("home/stale/*".to_owned(), FfiAccessTier::Read, Some(42))
+            .expect("subscription opens");
+
+        let reset = subscription.next(1_000);
+        assert_eq!(reset.kind, FfiSubscriptionNextKind::CursorAhead);
+        assert_eq!(reset.since, Some(42));
+        assert_eq!(reset.newest, Some(0));
+        assert!(reset.event.is_none());
+        assert!(reset.skipped.is_none());
+
+        engine
+            .replace(
+                "home/stale/a".to_owned(),
+                small_representation(b"live"),
+                FfiPreconditions {
+                    if_match: Vec::new(),
+                    if_none_match: Vec::new(),
+                },
+                FfiAccessTier::Write,
+            )
+            .expect("write after cursor reset succeeds");
+
+        let live = subscription.next(1_000);
+        assert_eq!(live.kind, FfiSubscriptionNextKind::Event);
+        let event = live.event.expect("live event");
+        assert_eq!(event.verb, FfiChangeVerb::Replace);
+        assert_eq!(event.path, "home/stale/a");
     }
 
     #[test]
