@@ -125,8 +125,8 @@ impl ReadCache {
     where
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
+        let path = world::validated_world_db(data, world);
         let world = world.as_str();
-        let path = world::world_db(data, world);
         let mut f = Some(f);
         let mut counted_miss = false;
         let mut counted_capped = false;
