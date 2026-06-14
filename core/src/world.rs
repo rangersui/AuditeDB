@@ -74,6 +74,10 @@ pub fn world_db(data_root: &Path, world: &str) -> PathBuf {
     world_dir(data_root, world).join("universe.db")
 }
 
+pub(crate) fn validated_world_db(data_root: &Path, world: &ValidatedWorldPath) -> PathBuf {
+    world_db(data_root, world.as_str())
+}
+
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
