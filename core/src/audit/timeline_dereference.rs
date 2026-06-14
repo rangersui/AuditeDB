@@ -37,11 +37,7 @@ pub(crate) fn dereference_timeline_coordinate_via_conn(
     let conn = tracked.as_mut_conn();
     let tx = conn.transaction()?;
     let actual_gen = world_schema::generation(&tx)?;
-    super::require_intact(super::verify_world_connection(
-        &tx,
-        coordinate.world(),
-        key,
-    )?)?;
+    super::require_intact(super::verify_world_tx(&tx, coordinate.world(), key)?)?;
 
     let result = if &actual_gen != coordinate.generation() {
         match VerifiedGenerationMismatch::new(coordinate.clone(), actual_gen) {
