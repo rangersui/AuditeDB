@@ -449,6 +449,13 @@ pub(super) async fn subscription_loop(
                 ));
                 continue;
             }
+            Err(SubscriptionRecvError::CursorAhead { since, newest }) => {
+                mqtt_warn(format_args!(
+                    "mqtt: subscription cursor {since} predates this engine id space \
+                     (newest issued id is {newest}); continuing live"
+                ));
+                continue;
+            }
             Err(SubscriptionRecvError::Closed) => break,
             #[allow(unreachable_patterns)]
             Err(_) => continue,
