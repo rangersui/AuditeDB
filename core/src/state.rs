@@ -227,12 +227,12 @@ impl Core {
     /// `world`'s DB -- `delete_world_blocking` is safe to call.
     /// Memory worlds: no-op. The blocking drain runs inside
     /// `spawn_blocking` so it doesn't stall a Tokio worker.
-    pub(crate) async fn install_tombstone(&self, world: &str) {
-        if store::is_memory_world(world) {
+    pub(crate) async fn install_tombstone(&self, world: &ValidatedWorldPath) {
+        if store::is_memory_world(world.as_str()) {
             return;
         }
         let cache = self.read_cache.clone();
-        let world = world.to_string();
+        let world = world.clone();
         let _ = tokio::task::spawn_blocking(move || cache.install_tombstone_blocking(&world)).await;
     }
 
@@ -240,8 +240,8 @@ impl Core {
     /// Called on BOTH success and failure (Bug 20): on failure the
     /// world is still on disk, and the next read must lazy-init a
     /// fresh slot rather than seeing a phantom 404.
-    pub(crate) fn clear_tombstone(&self, world: &str) {
-        if store::is_memory_world(world) {
+    pub(crate) fn clear_tombstone(&self, world: &ValidatedWorldPath) {
+        if store::is_memory_world(world.as_str()) {
             return;
         }
         self.read_cache.clear_tombstone(world);
