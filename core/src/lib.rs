@@ -213,7 +213,9 @@ pub use engine_introspection::{
 };
 #[cfg(feature = "unstable-engine")]
 pub use engine_subscription::{
-    ChangeEvent, EngineSubscription, SubscribePattern, SubscriptionRecvError, SubscriptionResume,
+    ChangeEvent, EngineSubscription, InvalidSubscriptionCursor, InvalidSubscriptionEpoch,
+    SubscribePattern, SubscriptionCursor, SubscriptionEpoch, SubscriptionRecvError,
+    SubscriptionResume,
 };
 #[cfg(feature = "unstable-engine")]
 pub use engine_trace::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};

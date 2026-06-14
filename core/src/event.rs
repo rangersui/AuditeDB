@@ -3,6 +3,7 @@
 //! The engine owns event ids, replay matching, and the live broadcast stream;
 //! adapters choose how to render those events.
 
+use crate::engine_subscription::SubscriptionEpoch;
 use crate::engine_types::ChangeVerb;
 
 /// Audit-chain event kinds the engine may append.
@@ -101,6 +102,7 @@ impl BodyEventKind {
 #[derive(Clone, Debug)]
 pub(crate) struct ChangeEvent {
     pub(crate) id: u64,
+    pub(crate) listen_epoch: SubscriptionEpoch,
     pub(crate) verb: ChangeVerb,
     pub(crate) path: String,
     pub(crate) etag: String,

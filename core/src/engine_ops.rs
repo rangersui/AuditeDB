@@ -15,8 +15,8 @@ use crate::{
     engine::{Engine, EngineError},
     engine_error::{read_error_to_engine, write_error_to_engine},
     engine_subscription::{
-        ChangeEvent, EngineSubscription, SubscribePattern, SubscriptionRecvError,
-        SubscriptionResume,
+        ChangeEvent, EngineSubscription, ReplayPlan, SubscribePattern, SubscriptionCursor,
+        SubscriptionRecvError, SubscriptionResume,
     },
     engine_types::{
         AccessTier, Preconditions, ReadResult, Representation, ValidatedWorldPath, WriteKind,
@@ -172,8 +172,10 @@ impl<'a> EngineOps<'a> {
         resume: SubscriptionResume,
     ) -> EngineSubscription {
         let rx = self.core.events.subscribe();
-        let (interruption, replay, live_floor) = replay_after(self.core, resume, &permit.pattern);
-        let replay_mode = resume.is_replay();
+        let replay_plan = resume.replay_plan(&self.core.listen_epoch);
+        let replay_mode = replay_plan.is_current_replay();
+        let (interruption, replay, live_floor) =
+            replay_after(self.core, replay_plan, &permit.pattern);
         let mut initial = VecDeque::new();
         if let Some(err) = interruption {
             initial.push_back(Err(err.into()));
@@ -411,27 +413,50 @@ pub(crate) enum ReplayInterruption {
     /// retained event.
     Lagged { skipped: u64 },
     /// The cursor is from an id space ahead of this process's current counter.
-    CursorAhead { since: u64, newest: u64 },
+    CursorAhead {
+        since: u64,
+        newest: u64,
+        reset: SubscriptionCursor,
+    },
 }
 
 impl From<ReplayInterruption> for SubscriptionRecvError {
     fn from(value: ReplayInterruption) -> Self {
         match value {
             ReplayInterruption::Lagged { skipped } => Self::Lagged { skipped },
-            ReplayInterruption::CursorAhead { since, newest } => {
-                Self::CursorAhead { since, newest }
-            }
+            ReplayInterruption::CursorAhead {
+                since,
+                newest,
+                reset,
+            } => Self::CursorAhead {
+                since,
+                newest,
+                reset,
+            },
         }
     }
 }
 
 pub(crate) fn replay_after(
     core: &Core,
-    resume: SubscriptionResume,
+    replay_plan: ReplayPlan,
     pattern: &SubscribePattern,
 ) -> (Option<ReplayInterruption>, Vec<ChangeEvent>, u64) {
-    let Some(last_id) = resume.after_event_id_raw() else {
-        return (None, Vec::new(), 0);
+    let last_id = match replay_plan {
+        ReplayPlan::None => return (None, Vec::new(), 0),
+        ReplayPlan::Foreign { event_id } => {
+            let newest = crate::state::last_issued_event_id(&core.next_event);
+            return (
+                Some(ReplayInterruption::CursorAhead {
+                    since: event_id,
+                    newest,
+                    reset: SubscriptionCursor::new(core.listen_epoch.clone(), newest),
+                }),
+                Vec::new(),
+                0,
+            );
+        }
+        ReplayPlan::Current { event_id } => event_id,
     };
     let log = core
         .event_log
@@ -443,6 +468,7 @@ pub(crate) fn replay_after(
             Some(ReplayInterruption::CursorAhead {
                 since: last_id,
                 newest,
+                reset: SubscriptionCursor::new(core.listen_epoch.clone(), newest),
             }),
             Vec::new(),
             0,
@@ -576,6 +602,7 @@ mod tests {
             for id in 10..=12 {
                 log.push_back(event::ChangeEvent {
                     id,
+                    listen_epoch: engine.core().listen_epoch.clone(),
                     verb: ChangeVerb::Replace,
                     path: format!("/home/task/{id}"),
                     etag: format!("hmac-{id}"),
@@ -587,7 +614,7 @@ mod tests {
         let pattern = SubscribePattern::new("home/task/*");
         let (interruption, replay, floor) = replay_after(
             engine.core(),
-            SubscriptionResume::after_event_id(5),
+            SubscriptionResume::after_event_id(5).replay_plan(&engine.core().listen_epoch),
             &pattern,
         );
 
@@ -611,6 +638,7 @@ mod tests {
             let mut log = engine.core().event_log.lock().unwrap();
             log.push_back(event::ChangeEvent {
                 id: u64::MAX,
+                listen_epoch: engine.core().listen_epoch.clone(),
                 verb: ChangeVerb::Replace,
                 path: "/home/task/max".to_string(),
                 etag: "hmac-max".to_string(),
@@ -621,7 +649,7 @@ mod tests {
         let pattern = SubscribePattern::new("home/task/*");
         let (interruption, replay, floor) = replay_after(
             engine.core(),
-            SubscriptionResume::after_event_id(u64::MAX),
+            SubscriptionResume::after_event_id(u64::MAX).replay_plan(&engine.core().listen_epoch),
             &pattern,
         );
 
@@ -640,6 +668,7 @@ mod tests {
             let mut log = engine.core().event_log.lock().unwrap();
             log.push_back(event::ChangeEvent {
                 id: 1,
+                listen_epoch: engine.core().listen_epoch.clone(),
                 verb: ChangeVerb::Replace,
                 path: "/home/task/a".to_string(),
                 etag: "hmac-1".to_string(),
@@ -650,7 +679,7 @@ mod tests {
         let pattern = SubscribePattern::new("home/task/*");
         let (interruption, replay, floor) = replay_after(
             engine.core(),
-            SubscriptionResume::after_event_id(42),
+            SubscriptionResume::after_event_id(42).replay_plan(&engine.core().listen_epoch),
             &pattern,
         );
 
@@ -658,11 +687,54 @@ mod tests {
             interruption,
             Some(ReplayInterruption::CursorAhead {
                 since: 42,
-                newest: 1
+                newest: 1,
+                reset: SubscriptionCursor::new(engine.core().listen_epoch.clone(), 1),
             })
         );
         assert!(replay.is_empty());
         assert_eq!(floor, 0, "foreign cursor must not become live floor");
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replay_after_treats_legacy_decimal_cursor_as_foreign_even_when_id_exists() {
+        let (engine, root) = test_engine("replay-legacy-foreign");
+        {
+            let mut log = engine.core().event_log.lock().unwrap();
+            for id in 1..=7 {
+                log.push_back(event::ChangeEvent {
+                    id,
+                    listen_epoch: engine.core().listen_epoch.clone(),
+                    verb: ChangeVerb::Replace,
+                    path: format!("/home/task/{id}"),
+                    etag: format!("hmac-{id}"),
+                });
+            }
+        }
+        crate::state::test_only_set_event_counter(&engine.core().next_event, 7);
+
+        let pattern = SubscribePattern::new("home/task/*");
+        let (interruption, replay, floor) = replay_after(
+            engine.core(),
+            SubscriptionResume::legacy_event_id(5).replay_plan(&engine.core().listen_epoch),
+            &pattern,
+        );
+
+        assert_eq!(
+            interruption,
+            Some(ReplayInterruption::CursorAhead {
+                since: 5,
+                newest: 7,
+                reset: SubscriptionCursor::new(engine.core().listen_epoch.clone(), 7),
+            })
+        );
+        assert!(
+            replay.is_empty(),
+            "legacy decimal cursor must not replay a coincidentally matching fresh id space"
+        );
+        assert_eq!(floor, 0);
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
@@ -871,7 +943,8 @@ mod tests {
             first,
             Err(SubscriptionRecvError::CursorAhead {
                 since: 42,
-                newest: 0
+                newest: 0,
+                ..
             })
         ));
 

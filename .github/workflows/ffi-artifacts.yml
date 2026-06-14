@@ -108,7 +108,7 @@ jobs:
           subscription = engine.subscribe(
               "home/*",
               e.FfiAccessTier.READ,
-              e.FfiSubscriptionResume(after_event_id=None),
+              e.FfiSubscriptionResume(after_cursor=None, after_event_id=None),
           )
           engine.append("home/ffi", b" world", none, e.FfiAccessTier.WRITE)
           event = subscription.next(5_000)
