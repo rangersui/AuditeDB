@@ -89,6 +89,11 @@ Additional repair work after the first ledger pass:
 - `22r19` hidden-base gap: opened PR #359 for
   `stack/22r19-audit-verify-world-target` against `stack/21-cas-schema`, so #336
   no longer rests on an untracked branch.
+- `22r19` hidden-base CI fix: #359 failed bin tests because CAS retained-body
+  accounting had changed the storage quota contract, but the matching bin test
+  assertions lived only in `22r20+`. Moved that test-contract fix down to
+  `22r19` (`bin: align quota tests with retained cas accounting`) and cascaded
+  it upward.
 - `22r21`: added `TimelineRead::NeverRetained`,
   `TimelineRead::AddressMismatch`, and `TimelineRead::Unproven` so absence and
   mismatch states keep their proof strength instead of collapsing into
@@ -104,6 +109,8 @@ Additional repair work after the first ledger pass:
   proof.
 - `22r40`: moved ordinary `OPTIONS` ahead of raw-query extraction so
   `OPTIONS /home/a?timeline%ZZ=1` remains ordinary world-route `OPTIONS`.
+- `22r19..22r41`: propagated the #359 bin-test contract fix upward by merge
+  cascade, without rebasing or squashing. The cascade had no merge conflicts.
 - `22r21..22r41`: propagated the new fixes upward by merge cascade, without
   rebasing or squashing.
 
@@ -146,6 +153,21 @@ Observed current-head results:
 - sdk tools: pass.
 - sdk e2e blackbox: 248 checks passed.
 - ffi: 23 passed; doc tests 0 passed/0 failed.
+
+Layer-specific validation after the #359 CI repair:
+
+- `stack/22r19-audit-verify-world-target`: `cargo test --manifest-path
+  bin/Cargo.toml` passed, 108 tests.
+- `stack/22r19-audit-verify-world-target`: `cargo test --manifest-path
+  core/Cargo.toml` passed, 157 tests plus 5 doc tests; 2 ignored.
+- `stack/22r19-audit-verify-world-target`: core/bin fmt and clippy checks
+  passed.
+- `stack/22r41-sdk-timeline-coordinate`: core/bin/ffi fmt passed after the
+  repair cascade.
+- `stack/22r41-sdk-timeline-coordinate`: `cargo test --manifest-path
+  bin/Cargo.toml` passed, 145 tests.
+- `stack/22r41-sdk-timeline-coordinate`: `cargo test --manifest-path
+  core/Cargo.toml` passed, 197 tests plus 17 doc tests; 2 ignored.
 
 Reported additional subagent spot checks from the repair round, not re-run by
 this ledger commit:
