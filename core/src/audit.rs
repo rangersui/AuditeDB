@@ -209,10 +209,21 @@ struct EventHmacInput<'a> {
     meta_sha256: &'a str,
 }
 
-/// O(1) chain-head read through the SlotState-tracked read path: newest
-/// `(id, hmac)` without re-walking the chain. `Ok(None)` means an empty
-/// bootstrap-shape DB. Same type gate as `verify_chain_via_conn`, so delete
-/// drains in-flight head reads through SlotState.
+/// O(1) chain-head read through the SlotState-tracked read path: the
+/// newest event's `(id, hmac)` without re-walking the chain.
+///
+/// This is the unit of external anchoring (the O(1) subset of what
+/// `verify_chain_via_conn` reports as `latest`): a host that remembers the
+/// returned stamp can later prove tail truncation or rollback whenever the
+/// observed head is behind the anchored seq -- which in-file verification
+/// structurally cannot. (A rolled-back or replaced chain re-grown past the
+/// anchor needs the at-seq divergence check, a later PR.) Returns
+/// `Ok(None)` for an empty chain (bootstrap-shape DB) -- nothing to anchor
+/// yet.
+///
+/// Same type gate as `verify_chain_via_conn`: no bare-connection path, so
+/// a delete on the same world drains in-flight head reads via the usual
+/// SlotState write guard.
 pub fn chain_head_via_conn(
     tracked: &mut crate::read_cache::TrackedReadConnection,
 ) -> rusqlite::Result<Option<(i64, String)>> {
