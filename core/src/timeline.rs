@@ -98,12 +98,22 @@ pub enum TimelineCorruption {
 pub enum TimelineRead {
     /// The addressed historical body was found.
     Body(TimelineBody),
-    /// The audit row exists, but the retained CAS body has aged out.
+    /// The audit row exists, but the body is before the CAS retention floor.
+    ///
+    /// This is not a pruning claim. It means the storage state does not claim
+    /// this body was ever retained as dereferenceable CAS bytes.
+    NeverRetained {
+        /// Address that could not be materialized.
+        address: TimelineAddress,
+    },
+    /// The audit row exists, and pruning metadata proves the retained CAS body
+    /// has aged out.
     Expired {
         /// Address that could not be materialized.
         address: TimelineAddress,
     },
-    /// The addressed durable world no longer exists.
+    /// Delete-ledger proof says the addressed durable world was physically
+    /// deleted.
     Gone {
         /// Address that could not be materialized.
         address: TimelineAddress,
@@ -118,6 +128,20 @@ pub enum TimelineRead {
     },
     /// No event row with the address's sequence exists in this generation.
     MissingRow {
+        /// Address that could not be materialized.
+        address: TimelineAddress,
+    },
+    /// The event row exists, but it names a different body hash than the
+    /// requested address.
+    AddressMismatch {
+        /// Address requested by the caller.
+        requested: TimelineAddress,
+        /// Body hash carried by the verified audit row.
+        actual: BodySha256,
+    },
+    /// Available storage could not prove whether the address is gone,
+    /// retained elsewhere, or permanently unavailable.
+    Unproven {
         /// Address that could not be materialized.
         address: TimelineAddress,
     },
@@ -461,6 +485,9 @@ mod tests {
         let actual = WorldGeneration::new("fedcba9876543210fedcba9876543210").unwrap();
 
         let reads = [
+            TimelineRead::NeverRetained {
+                address: address(1),
+            },
             TimelineRead::Expired {
                 address: address(2),
             },
@@ -474,10 +501,18 @@ mod tests {
                 requested: address(5),
                 actual: actual.clone(),
             },
+            TimelineRead::AddressMismatch {
+                requested: address(6),
+                actual: BodySha256::for_body(b"actual"),
+            },
+            TimelineRead::Unproven {
+                address: address(7),
+            },
         ];
 
         for read in reads {
             match read {
+                TimelineRead::NeverRetained { address } => assert_eq!(address.seq().get(), 1),
                 TimelineRead::Expired { address } => assert_eq!(address.seq().get(), 2),
                 TimelineRead::Gone { address } => assert_eq!(address.seq().get(), 3),
                 TimelineRead::MissingRow { address } => assert_eq!(address.seq().get(), 4),
@@ -488,6 +523,11 @@ mod tests {
                     assert_eq!(requested.seq().get(), 5);
                     assert_eq!(got, actual);
                 }
+                TimelineRead::AddressMismatch { requested, actual } => {
+                    assert_eq!(requested.seq().get(), 6);
+                    assert_eq!(actual, BodySha256::for_body(b"actual"));
+                }
+                TimelineRead::Unproven { address } => assert_eq!(address.seq().get(), 7),
                 TimelineRead::Body(_) | TimelineRead::Corrupt { .. } => {
                     panic!("unexpected read mode")
                 }
