@@ -417,6 +417,16 @@ after push remains GitHub CI.
 
 ## FFI Dereference + Opaque Cursor Addendum
 
+Active skills checked in this round:
+
+- `stacked-pr`
+- `rust-type-seal-enforcement`
+- `http-type-seal-review`
+- `precondition-problem`
+- `monte-carlo-review`
+- `assign-scientist-reviewers`
+- `delegation-doctrine`
+
 Fresh review round after the local cascade repair:
 
 - Wegener the 2nd, Mencius/Locke type-seal review: CLEAN. Verified that raw
