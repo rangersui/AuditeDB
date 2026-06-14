@@ -562,13 +562,13 @@ mod tests {
             _ => panic!("expected retained historical body"),
         }
 
-        core.install_tombstone(world.as_str()).await;
+        core.install_tombstone(&world).await;
         assert!(
             core.read_timeline_body(&address).unwrap().is_none(),
             "timeline reads must route through the read-cache tombstone gate"
         );
 
-        core.clear_tombstone(world.as_str());
+        core.clear_tombstone(&world);
         match core.read_timeline_body(&address).unwrap().unwrap() {
             TimelineRead::Body(body) => {
                 assert_eq!(body.representation().body, Bytes::from_static(b"old"));
