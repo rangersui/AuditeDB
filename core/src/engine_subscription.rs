@@ -100,6 +100,19 @@ pub enum SubscriptionRecvError {
         /// Number of events the receiver missed.
         skipped: u64,
     },
+    /// The subscriber's resume cursor is ahead of every id this engine process
+    /// has issued.
+    ///
+    /// Listen ids are process-local, so this usually means the cursor was
+    /// saved before an engine restart. The subscription continues live after
+    /// this error; callers must discard or rebase the stale cursor.
+    CursorAhead {
+        /// Cursor presented by the subscriber.
+        since: u64,
+        /// Newest event id issued by this engine process when the
+        /// subscription was opened.
+        newest: u64,
+    },
 }
 
 impl DeferredLiveSubscription {
@@ -227,7 +240,10 @@ impl EngineSubscription {
     ///
     /// Drains the replay queue first (in increasing event id order), then
     /// switches to the live broadcast stream. If the caller passed `since` to
-    /// [`crate::Engine::subscribe`], events with id `<= since` are filtered.
+    /// [`crate::Engine::subscribe`], events with id `<= since` are filtered,
+    /// unless `since` is ahead of this process's id space; in that case
+    /// [`SubscriptionRecvError::CursorAhead`] is yielded first and no stale
+    /// floor is applied to following live events.
     ///
     /// # Errors
     /// - [`SubscriptionRecvError::Closed`] when the engine shut down or the
@@ -236,6 +252,9 @@ impl EngineSubscription {
     /// - [`SubscriptionRecvError::Lagged`] when the broadcast ring buffer
     ///   overflowed and events were lost. Recoverable: the next call resumes
     ///   with fresh events.
+    /// - [`SubscriptionRecvError::CursorAhead`] when `since` points past the
+    ///   newest id this process has issued. Recoverable: the next call resumes
+    ///   with fresh live events.
     pub async fn recv(&mut self) -> Result<ChangeEvent, SubscriptionRecvError> {
         loop {
             let state = std::mem::replace(&mut self.state, SubscriptionState::Closed);
