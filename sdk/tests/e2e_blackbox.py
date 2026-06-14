@@ -103,6 +103,18 @@ def world_url(base: str, path: str) -> str:
     return base.rstrip("/") + "/" + urllib.parse.quote(path.lstrip("/"), safe="/")
 
 
+def sse_cursor_parts(raw: str) -> tuple[str, int]:
+    if ":" not in raw:
+        raise AssertionError(f"invalid SSE cursor: {raw!r}")
+    epoch, seq = raw.split(":", 1)
+    if not epoch:
+        raise AssertionError(f"invalid SSE cursor epoch: {raw!r}")
+    try:
+        return epoch, int(seq)
+    except ValueError as exc:
+        raise AssertionError(f"invalid SSE cursor sequence: {raw!r}") from exc
+
+
 def expect_error(fn, status: int, check: Check, name: str) -> None:
     import elastik
 
@@ -1308,7 +1320,10 @@ def main() -> int:
             check(replay_done.wait(5), "Last-Event-ID replays missed SSE event")
             replay = replay_events[0]
             check(replay.get("path") == "/home/sdk/listen/b", "replayed SSE event path")
-            check(int(replay.get("id", "0")) > int(ev.get("id", "0")), "replayed SSE id advances")
+            ev_epoch, ev_seq = sse_cursor_parts(ev.get("id", "0"))
+            replay_epoch, replay_seq = sse_cursor_parts(replay.get("id", "0"))
+            check(replay_epoch == ev_epoch, "replayed SSE cursor keeps listen epoch")
+            check(replay_seq > ev_seq, "replayed SSE cursor advances")
 
             append_events: list[dict[str, str]] = []
             append_done = threading.Event()
