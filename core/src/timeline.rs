@@ -60,6 +60,9 @@ pub(crate) enum TimelineCorruption {
 
 pub(crate) enum TimelineRead {
     Body(TimelineBody),
+    NeverRetained {
+        address: TimelineAddress,
+    },
     Expired {
         address: TimelineAddress,
     },
@@ -71,6 +74,13 @@ pub(crate) enum TimelineRead {
         actual: WorldGeneration,
     },
     MissingRow {
+        address: TimelineAddress,
+    },
+    AddressMismatch {
+        requested: TimelineAddress,
+        actual: BodySha256,
+    },
+    Unproven {
         address: TimelineAddress,
     },
     Corrupt {
@@ -391,6 +401,9 @@ mod tests {
         let actual = WorldGeneration::new("fedcba9876543210fedcba9876543210").unwrap();
 
         let reads = [
+            TimelineRead::NeverRetained {
+                address: address(1),
+            },
             TimelineRead::Expired {
                 address: address(2),
             },
@@ -404,10 +417,18 @@ mod tests {
                 requested: address(5),
                 actual: actual.clone(),
             },
+            TimelineRead::AddressMismatch {
+                requested: address(6),
+                actual: BodySha256::for_body(b"actual"),
+            },
+            TimelineRead::Unproven {
+                address: address(7),
+            },
         ];
 
         for read in reads {
             match read {
+                TimelineRead::NeverRetained { address } => assert_eq!(address.seq().get(), 1),
                 TimelineRead::Expired { address } => assert_eq!(address.seq().get(), 2),
                 TimelineRead::Gone { address } => assert_eq!(address.seq().get(), 3),
                 TimelineRead::MissingRow { address } => assert_eq!(address.seq().get(), 4),
@@ -418,6 +439,11 @@ mod tests {
                     assert_eq!(requested.seq().get(), 5);
                     assert_eq!(got, actual);
                 }
+                TimelineRead::AddressMismatch { requested, actual } => {
+                    assert_eq!(requested.seq().get(), 6);
+                    assert_eq!(actual, BodySha256::for_body(b"actual"));
+                }
+                TimelineRead::Unproven { address } => assert_eq!(address.seq().get(), 7),
                 TimelineRead::Body(_) | TimelineRead::Corrupt { .. } => {
                     panic!("unexpected read mode")
                 }
