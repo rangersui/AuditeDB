@@ -1,6 +1,7 @@
 # Stack 22 Cascade Repair Ledger
 
-Status: final QA clearing round passed.
+Status: current code QA clearing round passed; lower-stack drain remains a
+separate process gate before upper stack layers should be marked ready.
 
 This ledger records the repair of the forked Stack 22 cascade:
 `stack/22r19-audit-verify-world-target` through
@@ -81,6 +82,31 @@ Repair heads before adding this ledger:
 - `22r37..22r41`: propagated the repaired lower layers upward by merge cascade,
   without rebasing or squashing.
 
+## Current Repair Addendum
+
+Additional repair work after the first ledger pass:
+
+- `22r19` hidden-base gap: opened PR #359 for
+  `stack/22r19-audit-verify-world-target` against `stack/21-cas-schema`, so #336
+  no longer rests on an untracked branch.
+- `22r21`: added `TimelineRead::NeverRetained`,
+  `TimelineRead::AddressMismatch`, and `TimelineRead::Unproven` so absence and
+  mismatch states keep their proof strength instead of collapsing into
+  `Expired`, `Gone`, or generic corruption.
+- `22r21`: changed missing CAS body handling: pre-retention rows become
+  `NeverRetained`; rows at or after the retention floor become
+  `Corrupt(MissingBodyForPresentRow)`. No missing CAS row is currently promoted
+  to `Expired` without pruning proof.
+- `22r21`: annotated the touched production `expect("hmac key")` with a local
+  HMAC/AuditHmacKey invariant and `#[allow(clippy::expect_used)]`.
+- `22r24` and `22r26`: changed missing local timeline storage/read-cache `None`
+  to `TimelineRead::Unproven`, not `Gone`. Physical absence is not delete-ledger
+  proof.
+- `22r40`: moved ordinary `OPTIONS` ahead of raw-query extraction so
+  `OPTIONS /home/a?timeline%ZZ=1` remains ordinary world-route `OPTIONS`.
+- `22r21..22r41`: propagated the new fixes upward by merge cascade, without
+  rebasing or squashing.
+
 ## Validation Evidence
 
 Local validation on the repaired stack tip before this ledger file:
@@ -96,6 +122,30 @@ Local validation on the repaired stack tip before this ledger file:
 - `git merge-base --is-ancestor stack/22r36-timeline-coordinate-resolver stack/22r41-sdk-timeline-coordinate`
 
 Observed core result: 193 passed, 2 ignored; doc tests 17 passed.
+
+Current-head validation on `stack/22r41-sdk-timeline-coordinate` after the
+addendum repairs:
+
+- `git diff --check`
+- `cargo fmt --manifest-path core/Cargo.toml -- --check`
+- `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings`
+- `cargo test --manifest-path core/Cargo.toml`
+- `cargo fmt --manifest-path bin/Cargo.toml -- --check`
+- `cargo clippy --manifest-path bin/Cargo.toml --all-targets -- -D warnings`
+- `cargo test --manifest-path bin/Cargo.toml`
+- `python sdk/tests/test_tools.py`
+- `python sdk/tests/e2e_blackbox.py`
+- `cargo fmt --manifest-path ffi/Cargo.toml -- --check`
+- `cargo clippy --manifest-path ffi/Cargo.toml --all-targets -- -D warnings`
+- `cargo test --manifest-path ffi/Cargo.toml`
+
+Observed current-head results:
+
+- core: 197 passed, 2 ignored; doc tests 17 passed.
+- bin: 145 passed.
+- sdk tools: pass.
+- sdk e2e blackbox: 248 checks passed.
+- ffi: 23 passed; doc tests 0 passed/0 failed.
 
 Reported additional subagent spot checks from the repair round, not re-run by
 this ledger commit:
@@ -153,4 +203,23 @@ Final clearing round:
   approve, no P0-P3 findings. Cleared the overclaim, user-authorisation,
   raw-string-sweep, Round 1 wording, and reported-evidence wording risks.
 
-The stack is ready to push when the current `HEAD` static checks remain clean.
+Current addendum review round:
+
+- Aquinas the 2nd, lens Popper/precondition: APPROVE, no P0-P2 findings.
+  Confirmed missing CAS bodies no longer become `Expired` without proof, missing
+  subject storage becomes `Unproven`, and `OPTIONS` short-circuits before query
+  decoding.
+- Bacon the 2nd, lens Noether/Mencius: APPROVE, no P0-P2 findings. Confirmed
+  type seals remain intact, `event_hmac` has the required invariant/allow, and
+  HTTP/SDK boundaries do not treat raw coordinates as proof.
+- Ramanujan the 2nd, lens Euclid/HTTP topology: APPROVE, no P0-P2 findings.
+  Confirmed `OPTIONS` ignores timeline query shape while GET/HEAD still fail
+  malformed timeline queries at the query boundary.
+- Faraday the 2nd, QA/enforcement: code APPROVE, process not fully cleared.
+  Confirmed no current code P0-P2 finding, but kept lower-stack process gates:
+  #330-#335 should drain bottom-up, and #359 must be reviewed before #336+
+  leaves draft/repair mode.
+
+The current code repair is ready to push when the current `HEAD` static checks
+remain clean. The upper implementation stack is not ready to mark non-draft
+until the lower process gates above are cleared.
