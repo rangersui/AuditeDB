@@ -428,6 +428,14 @@ fn subscription_next_from_recv(
             },
             true,
         ),
+        Err(SubscriptionRecvError::CursorAhead { .. }) => (
+            FfiSubscriptionNext {
+                kind: FfiSubscriptionNextKind::Unknown,
+                event: None,
+                skipped: None,
+            },
+            true,
+        ),
         Err(_) => (
             FfiSubscriptionNext {
                 kind: FfiSubscriptionNextKind::Unknown,
