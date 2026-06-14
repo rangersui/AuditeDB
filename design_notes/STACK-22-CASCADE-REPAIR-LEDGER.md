@@ -107,12 +107,23 @@ Additional repair work after the first ledger pass:
 - `22r24` and `22r26`: changed missing local timeline storage/read-cache `None`
   to `TimelineRead::Unproven`, not `Gone`. Physical absence is not delete-ledger
   proof.
+- `22r35`: kept read-cache DB path construction on a sealed
+  `ValidatedWorldPath` by adding `world::validated_world_db(...)`; the raw
+  string now appears only after the path helper for legacy cache-map keys and
+  metrics.
 - `22r40`: moved ordinary `OPTIONS` ahead of raw-query extraction so
   `OPTIONS /home/a?timeline%ZZ=1` remains ordinary world-route `OPTIONS`.
 - `22r19..22r41`: propagated the #359 bin-test contract fix upward by merge
   cascade, without rebasing or squashing. The cascade had no merge conflicts.
+- `22r35..22r41`: propagated the read-cache path-seal repair upward by merge
+  cascade, without rebasing or squashing. The cascade had no merge conflicts.
 - `22r21..22r41`: propagated the new fixes upward by merge cascade, without
   rebasing or squashing.
+- History note: the older `5e40d80` test-contract commit still appears in
+  upper branch history after the `94c40d1` downshift. They have the same patch
+  ID and no current tree diff in the adjacent stack layer. Keeping both is the
+  intentional cost of the no-rebase/no-squash repair policy, not a second
+  behavioral change.
 
 ## Validation Evidence
 
@@ -168,6 +179,9 @@ Layer-specific validation after the #359 CI repair:
   bin/Cargo.toml` passed, 145 tests.
 - `stack/22r41-sdk-timeline-coordinate`: `cargo test --manifest-path
   core/Cargo.toml` passed, 197 tests plus 17 doc tests; 2 ignored.
+- `stack/22r35-read-cache-ops-split`: after the read-cache path-seal repair,
+  core fmt, core clippy, and `cargo test --manifest-path core/Cargo.toml
+  read_cache` passed; read-cache filter observed 24 passed.
 
 Reported additional subagent spot checks from the repair round, not re-run by
 this ledger commit:
@@ -240,8 +254,22 @@ Current addendum review round:
 - Faraday the 2nd, QA/enforcement: code APPROVE, process not fully cleared.
   Confirmed no current code P0-P2 finding, but kept lower-stack process gates:
   #330-#335 should drain bottom-up, and #359 must be reviewed before #336+
-  leaves draft/repair mode.
+  leaves draft/repair mode. Follow-up process repair converted #344 and #345
+  back to draft so the visible upper stack again matches that gate.
+- Banach the 2nd, lens Popper/Bacon: APPROVE, no P0-P3 findings for the #359
+  CI repair. Retested exact commit `94c40d1` and confirmed the quota/proc
+  assertions still check the retained-CAS accounting contract rather than
+  weakening it.
+- Noether the 2nd, lens Mencius/Noether: APPROVE, no P0-P2 findings; reported a
+  P3 read-cache path-seal hygiene issue. Fixed in `22r35` by routing DB path
+  construction through `world::validated_world_db(...)`.
+- Nietzsche the 2nd, lens Ramanujan/Poincare: APPROVE, no P0-P2 findings; noted
+  the duplicate patch-id history entry and stale "ready to push" wording. This
+  ledger now records the duplicate-history reason and removes the stale push
+  wording.
 
-The current code repair is ready to push when the current `HEAD` static checks
-remain clean. The upper implementation stack is not ready to mark non-draft
-until the lower process gates above are cleared.
+The repaired cascade is intended to remain pushed to origin with local and
+remote refs matching. GitHub CI status is the live source of truth after each
+push; queued checks are not treated as pass or failure. The upper implementation
+stack is not ready to mark non-draft until #359 is reviewed with green CI and
+the lower process gates above are cleared.
