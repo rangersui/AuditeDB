@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, fmt};
 use elastik_core::{
     is_valid_token, AccessTier, AuditVerify, AuthGate, ChangeEvent, ChangeVerb, DeleteMetadata,
     DfSnapshot, EngineBuildError, EngineError, EtagMatcher, PoolSnapshot, Preconditions,
-    ReadResult, Representation, SubscriptionCursor, SubscriptionResume, WorldUsage, WriteKind,
+    ReadResult, Representation, SubscriptionCursor, SubscriptionResume, TimelineAddress,
+    TimelineCoordinate, TimelineCorruption, TimelineDereference, WorldUsage, WriteKind,
     WriteResult,
 };
 
@@ -121,6 +122,55 @@ pub struct FfiDeleteMetadata {
 pub struct FfiReadResult {
     pub representation: FfiRepresentation,
     pub etag: String,
+}
+
+/// Timeline coordinate DTO accepted at the FFI boundary.
+///
+/// This is raw wire data until the adapter converts it into the core
+/// `TimelineCoordinate` proof type.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FfiTimelineCoordinate {
+    pub world: String,
+    pub generation: String,
+    pub seq: i64,
+    pub body_sha256: String,
+}
+
+/// Historical dereference outcome returned by `FfiEngine`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiTimelineDereferenceKind {
+    Body,
+    GenMismatch,
+    BodyHashMismatch,
+    NonBodyEvent,
+    MissingRow,
+    Unproven,
+    Corrupt,
+    /// The Engine returned a timeline state this FFI binding does not yet
+    /// recognize. Treat as indeterminate and upgrade the binding.
+    Unknown,
+}
+
+/// Timeline corruption category exposed through FFI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiTimelineCorruption {
+    MissingBodyForPresentRow,
+    BodyHashMismatch,
+    InvalidEventShape,
+    /// The Engine returned a corruption category this FFI binding does not yet
+    /// recognize. Treat as storage corruption and upgrade the binding.
+    Unknown,
+}
+
+/// Result of dereferencing a historical timeline coordinate through FFI.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FfiTimelineDereference {
+    pub kind: FfiTimelineDereferenceKind,
+    pub representation: Option<FfiRepresentation>,
+    pub coordinate: Option<FfiTimelineCoordinate>,
+    pub actual_generation: Option<String>,
+    pub actual_body_sha256: Option<String>,
+    pub corruption: Option<FfiTimelineCorruption>,
 }
 
 /// Write result kind returned by Engine write verbs.
@@ -489,6 +539,126 @@ impl From<ReadResult> for FfiReadResult {
         Self {
             representation: value.representation.into(),
             etag: value.etag,
+        }
+    }
+}
+
+impl FfiTimelineCoordinate {
+    pub(crate) fn try_into_core(self) -> Result<TimelineCoordinate, FfiError> {
+        TimelineCoordinate::from_wire_parts(self.world, self.generation, self.seq, self.body_sha256)
+            .map_err(|err| FfiError::InvalidConfig {
+                message: format!("invalid timeline coordinate: {err}"),
+            })
+    }
+
+    fn from_timeline_coordinate(value: &TimelineCoordinate) -> Self {
+        Self {
+            world: value.world().to_string(),
+            generation: value.generation().as_str().to_owned(),
+            seq: value.seq().get(),
+            body_sha256: value.body_sha256().as_str().to_owned(),
+        }
+    }
+
+    fn from_timeline_address(value: &TimelineAddress) -> Self {
+        Self {
+            world: value.world().to_string(),
+            generation: value.generation().as_str().to_owned(),
+            seq: value.seq().get(),
+            body_sha256: value.body_sha256().as_str().to_owned(),
+        }
+    }
+}
+
+impl From<TimelineCorruption> for FfiTimelineCorruption {
+    fn from(value: TimelineCorruption) -> Self {
+        match value {
+            TimelineCorruption::MissingBodyForPresentRow => Self::MissingBodyForPresentRow,
+            TimelineCorruption::BodyHashMismatch => Self::BodyHashMismatch,
+            TimelineCorruption::InvalidEventShape => Self::InvalidEventShape,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<TimelineDereference> for FfiTimelineDereference {
+    fn from(value: TimelineDereference) -> Self {
+        match value {
+            TimelineDereference::Body(body) => {
+                let coordinate = FfiTimelineCoordinate::from_timeline_address(body.address());
+                Self {
+                    kind: FfiTimelineDereferenceKind::Body,
+                    representation: Some(body.into_representation().into()),
+                    coordinate: Some(coordinate),
+                    actual_generation: None,
+                    actual_body_sha256: None,
+                    corruption: None,
+                }
+            }
+            TimelineDereference::GenMismatch(proof) => Self {
+                kind: FfiTimelineDereferenceKind::GenMismatch,
+                representation: None,
+                coordinate: Some(FfiTimelineCoordinate::from_timeline_coordinate(
+                    proof.requested(),
+                )),
+                actual_generation: Some(proof.actual().as_str().to_owned()),
+                actual_body_sha256: None,
+                corruption: None,
+            },
+            TimelineDereference::BodyHashMismatch(proof) => Self {
+                kind: FfiTimelineDereferenceKind::BodyHashMismatch,
+                representation: None,
+                coordinate: Some(FfiTimelineCoordinate::from_timeline_coordinate(
+                    proof.requested(),
+                )),
+                actual_generation: None,
+                actual_body_sha256: Some(proof.actual_body_sha256().as_str().to_owned()),
+                corruption: None,
+            },
+            TimelineDereference::NonBodyEvent(proof) => Self {
+                kind: FfiTimelineDereferenceKind::NonBodyEvent,
+                representation: None,
+                coordinate: Some(FfiTimelineCoordinate::from_timeline_coordinate(
+                    proof.requested(),
+                )),
+                actual_generation: None,
+                actual_body_sha256: None,
+                corruption: None,
+            },
+            TimelineDereference::MissingRow(proof) => Self {
+                kind: FfiTimelineDereferenceKind::MissingRow,
+                representation: None,
+                coordinate: Some(FfiTimelineCoordinate::from_timeline_coordinate(
+                    proof.requested(),
+                )),
+                actual_generation: None,
+                actual_body_sha256: None,
+                corruption: None,
+            },
+            TimelineDereference::UnprovenCoordinate(coordinate) => Self {
+                kind: FfiTimelineDereferenceKind::Unproven,
+                representation: None,
+                coordinate: Some(FfiTimelineCoordinate::from_timeline_coordinate(&coordinate)),
+                actual_generation: None,
+                actual_body_sha256: None,
+                corruption: None,
+            },
+            TimelineDereference::Corrupt { coordinate, reason } => Self {
+                kind: FfiTimelineDereferenceKind::Corrupt,
+                representation: None,
+                coordinate: Some(FfiTimelineCoordinate::from_timeline_coordinate(&coordinate)),
+                actual_generation: None,
+                actual_body_sha256: None,
+                corruption: Some(reason.into()),
+            },
+            _ => Self {
+                kind: FfiTimelineDereferenceKind::Unknown,
+                representation: None,
+                coordinate: None,
+                actual_generation: None,
+                actual_body_sha256: None,
+                corruption: None,
+            },
         }
     }
 }

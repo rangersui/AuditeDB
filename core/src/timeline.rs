@@ -238,6 +238,11 @@ impl TimelineBody {
     pub fn representation(&self) -> &Representation {
         &self.representation
     }
+
+    /// Consumes the timeline body and returns its stored representation.
+    pub fn into_representation(self) -> Representation {
+        self.representation
+    }
 }
 
 impl TimelineRead {
