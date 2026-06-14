@@ -110,7 +110,7 @@ Final local validation on `stack/22r41-sdk-timeline-coordinate`:
 - stale verifier grep across stack refs:
   `git grep -n 'verify_world_connection' <branch> -- core/src`
 
-Observed final local results:
+Observed local results before the follow-up cursor audit:
 
 - core: 197 passed, 2 ignored; doc tests 17 passed.
 - bin: 149 passed.
@@ -154,6 +154,58 @@ Final QA round after the current cascade:
   rejecting duplicates, rejecting empty/non-ASCII-decimal values, and removing
   trimming. Targeted listen tests passed. Zeno re-reviewed and APPROVED with no
   P0-P3 findings.
+
+Follow-up QA round after reopening the repaired stack:
+
+- Popper the 2nd, process/CI QA: BLOCK for upper-stack advancement. #359 was
+  green, but #344-#350 still had failing checks from stack layers that were not
+  independently compilable.
+- Fermat the 2nd, protocol/precondition QA: BLOCK. Found P1 stale/ahead
+  `Last-Event-ID` handling: a pre-restart cursor could become the live floor
+  and silently suppress new live events after the engine counter reset. Also
+  found P3 non-canonical decimal aliases such as `00042`.
+- Mencius the 2nd, type-seal/invariant QA: BLOCK on the same P3 canonical
+  cursor issue; no P0-P2 type-seal findings after the earlier repair.
+
+Fixes added after that round:
+
+- `SubscriptionRecvError::CursorAhead { since, newest }` now distinguishes a
+  cursor from another process id space from ordinary ring-buffer lag.
+- `replay_after` checks `last_issued_event_id` under the event-log lock and
+  queues `CursorAhead` with live floor `0` instead of trusting the client
+  cursor.
+- SSE renders `CursorAhead` as a `reset` event with `id: newest`, rebasing
+  browser `Last-Event-ID` state into the current process id space.
+- `Last-Event-ID` parsing now requires canonical decimal round-trip; `0` is
+  accepted, while `00` and `00042` are rejected.
+- Stack-local compile break in #344 was fixed by preserving
+  `ValidatedWorldPath` at the read-cache call site and by making the matching
+  test call `Core::read_world(&subject)`.
+
+Validation after those fixes on `stack/22r41-sdk-timeline-coordinate`:
+
+- focused core cursor tests: `replay_after*` plus
+  `engine_subscription_with_stale_cursor_signals_then_streams_live` passed.
+- focused bin cursor tests: `last_event_id` plus `sse_reset_event` passed.
+- `cargo fmt --manifest-path core/Cargo.toml --check`
+- `cargo fmt --manifest-path bin/Cargo.toml --check`
+- `cargo fmt --manifest-path ffi/Cargo.toml --check`
+- `cargo test --manifest-path core/Cargo.toml`: 199 passed, 2 ignored; doc
+  tests 17 passed.
+- `cargo test --manifest-path bin/Cargo.toml`: 150 passed.
+- `cargo test --manifest-path ffi/Cargo.toml`: 23 passed; doc tests 0
+  passed/0 failed.
+- `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
+  -D clippy::undocumented_unsafe_blocks`
+- `cargo clippy --manifest-path bin/Cargo.toml -- -D warnings`
+- `cargo clippy --manifest-path ffi/Cargo.toml -- -D warnings`
+- `python sdk/tests/e2e_blackbox.py`: 248 checks passed.
+- `python sdk/tests/test_tools.py`: pass.
+- `python -m compileall -q sdk/src sdk/tests`: pass.
+- `python tools/version_consistency_check.py`: 8.3.0 ok.
+- `python tools/audit_chain_verify.py --self-test`: ok.
+- `python tools/header_policy_scan.py --self-test` and
+  `python tools/header_policy_scan.py --offline`: no drift.
 
 This ledger does not claim GitHub CI is green. The live source of truth after
 push is GitHub CI, especially #359.
