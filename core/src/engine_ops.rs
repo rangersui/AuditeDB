@@ -872,7 +872,7 @@ mod tests {
         let (engine, root) = test_engine("subscribe-address-overwrite");
         let pattern = SubscribePattern::new("home/events/*");
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Anon, None)
+            .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
             .expect("subscription opens");
         let world = ValidatedWorldPath::new("home/events/race").unwrap();
 
@@ -926,7 +926,11 @@ mod tests {
         let (engine, root) = test_engine("subscribe-memory-no-address");
         let pattern = SubscribePattern::new("tmp/events/*");
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Anon, Some(0))
+            .subscribe(
+                &pattern,
+                AccessTier::Anon,
+                SubscriptionResume::after_event_id(0),
+            )
             .expect("subscription opens");
         let world = ValidatedWorldPath::new("tmp/events/a").unwrap();
 
@@ -966,7 +970,7 @@ mod tests {
 
         let pattern = SubscribePattern::new("home/events/*");
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Anon, None)
+            .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
             .expect("subscription opens");
         engine
             .delete(&world, Preconditions::none(), AccessTier::Approve)
@@ -999,7 +1003,7 @@ mod tests {
 
         let pattern = SubscribePattern::new("home/events/*");
         let mut subscription = engine
-            .subscribe(&pattern, AccessTier::Anon, None)
+            .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
             .expect("subscription opens");
         engine
             .append(
