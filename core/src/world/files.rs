@@ -5,11 +5,12 @@ use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::world_schema;
+use crate::{engine_types::ValidatedWorldPath, world_schema};
 
 use super::{create_dir_error, disk_name, world_db, world_dir};
 
-pub fn delete(data_root: &Path, world: &str) -> bool {
+pub(crate) fn delete(data_root: &Path, world: &ValidatedWorldPath) -> bool {
+    let world = world.as_str();
     let dir = world_dir(data_root, world);
     if !dir.exists() {
         return false;

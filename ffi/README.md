@@ -20,7 +20,7 @@ crate are sibling adapters.
   headers in the Engine delete audit ledger; plain `delete()` remains the
   empty-metadata convenience wrapper
 - `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection
-- `engine.subscribe(pattern, tier, since)` — blocking `FfiSubscription.next(timeout_ms)`
+- `engine.subscribe(pattern, tier, resume)` — blocking `FfiSubscription.next(timeout_ms)`
   receiver with explicit `close()` for deterministic slot release in
   garbage-collected languages; `close()` wakes a currently blocked `next()`
   instead of waiting for the timeout window
@@ -49,7 +49,7 @@ open Engine:
 from elastik_ffi import (
     FfiAccessTier, FfiEngine, FfiEngineConfig, FfiError,
     FfiDeleteMetadata, FfiHeader, FfiPreconditions, FfiRepresentation,
-    FfiSubscriptionNextKind,
+    FfiSubscriptionNextKind, FfiSubscriptionResume,
 )
 
 engine = FfiEngine.open(FfiEngineConfig(
@@ -122,7 +122,11 @@ engine.delete("home/plain-doc", none, FfiAccessTier.APPROVE)
 ### Subscription
 
 ```python
-sub = engine.subscribe("home/*", FfiAccessTier.READ, None)
+sub = engine.subscribe(
+    "home/*",
+    FfiAccessTier.READ,
+    FfiSubscriptionResume(after_event_id=None),
+)
 
 engine.replace("home/sub-doc", FfiRepresentation(
     body=b"update",
