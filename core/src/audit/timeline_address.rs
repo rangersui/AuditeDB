@@ -175,7 +175,7 @@ pub(crate) fn verified_latest_body_head_via_conn(
     // The chain verification and "latest body row" lookup share one SQLite
     // snapshot. Otherwise delete could anchor the ledger to a row that was not
     // part of the verified chain it just observed.
-    super::require_intact(super::verify_world_connection(&tx, world, key)?)?;
+    super::require_intact(super::verify_world_tx(&tx, world, key)?)?;
     if let Some(break_report) = super::live_body::verify_tx(&tx)? {
         return Err(super::AuditError::ChainBroken(break_report));
     }
@@ -231,7 +231,7 @@ pub(crate) fn read_timeline_body_via_conn(
     let conn = tracked.as_mut_conn();
     let tx = conn.transaction()?;
     let actual_gen = world_schema::generation(&tx)?;
-    super::require_intact(super::verify_world_connection(&tx, address.world(), key)?)?;
+    super::require_intact(super::verify_world_tx(&tx, address.world(), key)?)?;
 
     let read = if &actual_gen != address.gen() {
         TimelineRead::GenMismatch {
