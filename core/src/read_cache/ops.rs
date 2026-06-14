@@ -1,4 +1,4 @@
-use crate::world;
+use crate::{engine_types::ValidatedWorldPath, world};
 
 use super::ReadCache;
 
@@ -11,7 +11,7 @@ impl ReadCache {
     pub(crate) fn cached_read_with_hmac(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<(world::Stage, Option<String>)>> {
         self.with_tracked_conn(data, world, world::read_with_hmac_via_conn)
     }
@@ -24,7 +24,7 @@ impl ReadCache {
     pub(crate) fn cached_chain_head(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<Option<(i64, String)>>> {
         self.with_tracked_conn(data, world, crate::audit::chain_head_via_conn)
     }
@@ -37,7 +37,7 @@ impl ReadCache {
     pub(crate) fn cached_verify_chain(
         &self,
         data: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<crate::audit::VerifyReport>> {
         let key = key.clone_secret();
@@ -57,7 +57,7 @@ impl ReadCache {
         address: &crate::timeline::TimelineAddress,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<TimelineReadResult>> {
-        let world = address.world().as_str();
+        let world = address.world();
         let key = key.clone_secret();
         self.with_tracked_conn(data, world, move |conn| {
             Ok(crate::audit::read_timeline_body_via_conn(
@@ -77,7 +77,7 @@ impl ReadCache {
     ) -> rusqlite::Result<Option<crate::audit::AuditResult<Option<crate::audit::VerifiedBodyHead>>>>
     {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world.as_str(), move |conn| {
+        self.with_tracked_conn(data, world, move |conn| {
             Ok(crate::audit::verified_latest_body_head_via_conn(
                 conn, world, &key,
             ))
