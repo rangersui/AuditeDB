@@ -453,7 +453,9 @@ pub(crate) async fn run(
 mod tests {
     use super::*;
     use crate::{
-        engine_types::{Preconditions, Representation, SubscribePattern, ValidatedWorldPath},
+        engine_types::{
+            Preconditions, Representation, SubscribePattern, SubscriptionResume, ValidatedWorldPath,
+        },
         server::test_support::{
             server_state_for_engine_for_tests, test_engine_for_server,
             test_engine_for_server_with_read_token, write_text_world_for_tests,
@@ -516,7 +518,11 @@ mod tests {
         tier: AccessTier,
     ) -> crate::timeline::TimelineAddress {
         let mut subscription = engine
-            .subscribe(&SubscribePattern::new(world), tier, None)
+            .subscribe(
+                &SubscribePattern::new(world),
+                tier,
+                SubscriptionResume::none(),
+            )
             .expect("test subscription should open");
         engine
             .replace(
