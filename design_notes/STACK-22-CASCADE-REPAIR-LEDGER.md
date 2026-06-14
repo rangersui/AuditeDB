@@ -323,3 +323,63 @@ Full local validation after those fixes on `stack/22r41-sdk-timeline-coordinate`
 - `python tools/header_policy_scan.py --offline --report
   header-policy-report.md`: no drift; temporary report removed.
 - `git diff --check`: pass.
+
+Additional QA round after reopening the repaired physical-delete layer:
+
+- Planck the 2nd, type-seal QA: BLOCK. Confirmed the prior
+  `Core::delete_world_blocking` fix, but found P3 raw physical delete helper
+  exposure in `world::delete` / `world/files.rs` and P3 raw subscription resume
+  cursors across Core/FFI.
+- Nash the 2nd, AGENTS/stack process QA: BLOCK/PENDING. Confirmed the fork
+  repair direction, but required the stack to keep low-layer fixes in the
+  branch chain and to rerun QA after the cascade. Live GitHub CI remained a
+  post-push source of truth, not a local claim.
+
+Fixes added after that round:
+
+- `world/files.rs::delete` now requires `&ValidatedWorldPath`.
+- `world.rs` no longer publicly re-exports the physical delete helper as a raw
+  world-name API.
+- `Core::delete_world_blocking` calls the sealed `world::delete(&data, &world)`
+  path.
+- `SubscriptionResume` is now the Core proof type for subscription replay
+  state, with `none()` and `after_event_id(...)` constructors.
+- `Engine::subscribe`, `EngineOps::subscribe`, `open_subscription`, replay
+  internals, HTTP listen, and FFI subscription entrypoints no longer pass raw
+  `Option<u64>` cursors across the Core boundary.
+- FFI exposes `FfiSubscriptionResume` instead of a raw `since` argument.
+- Stack-local raw subscribe test call sites were repaired at their first
+  affected layers (`22r27` and `22r40`).
+- A follow-up clippy hygiene fix moved `SubscriptionResume` out of CoAP's
+  production imports and kept its use test-local.
+
+Full local validation after those fixes on
+`stack/22r41-sdk-timeline-coordinate`:
+
+- adjacent branch ancestry check from `22r19` through `22r41`: pass.
+- source contract scan for raw physical-delete and raw subscribe-resume shapes:
+  no matches.
+- `cargo fmt --manifest-path core/Cargo.toml --check`
+- `cargo fmt --manifest-path bin/Cargo.toml --check`
+- `cargo fmt --manifest-path ffi/Cargo.toml --check`
+- `cargo test --manifest-path core/Cargo.toml`: 199 passed, 2 ignored; doc
+  tests 17 passed.
+- `cargo test --manifest-path bin/Cargo.toml`: 150 passed.
+- `cargo test --manifest-path ffi/Cargo.toml`: 24 passed; doc tests 0
+  passed/0 failed.
+- `cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
+  -D clippy::undocumented_unsafe_blocks`
+- `cargo clippy --manifest-path bin/Cargo.toml -- -D warnings`
+- `cargo clippy --manifest-path ffi/Cargo.toml -- -D warnings`
+- `python sdk/tests/e2e_blackbox.py`: 248 checks passed.
+- `python sdk/tests/test_tools.py`: pass.
+- `python -m compileall -q sdk/src sdk/tests`: pass.
+- `python tools/version_consistency_check.py`: 8.3.0 ok.
+- `python tools/audit_chain_verify.py --self-test`: ok.
+- `python tools/header_policy_scan.py --self-test`: ok.
+- `python tools/header_policy_scan.py --offline --report
+  header-policy-report.md`: no drift; temporary report removed.
+- `git diff --check`: pass.
+
+This ledger still does not claim GitHub CI is green. The live source of truth
+after push remains GitHub CI.
