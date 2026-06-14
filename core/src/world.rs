@@ -25,9 +25,9 @@
 //! is the historical per-write view. The event chain stores structured
 //! audit facts, never JSON blobs.
 
-use crate::{audit, engine_types::AuditHmacKey, event::AuditEventKind};
+use crate::{audit, engine_types::AuditHmacKey, event::AuditEventKind, world_schema};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use rusqlite::{ffi, params, Connection, OpenFlags, OptionalExtension, Transaction};
+use rusqlite::{ffi, params, Connection, OpenFlags, Transaction};
 use sha2::{Digest, Sha256};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -87,63 +87,11 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
         "#,
     )?;
     if db_existed {
-        verify_schema(&c)?;
+        world_schema::verify(&c)?;
     } else {
-        c.execute_batch(
-            r#"
-        CREATE TABLE IF NOT EXISTS stage_meta(
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            body BLOB DEFAULT x'',
-            content_type TEXT DEFAULT 'application/octet-stream'
-        );
-        INSERT OR IGNORE INTO stage_meta(id, body) VALUES(1, x'');
-        CREATE TABLE IF NOT EXISTS meta_headers(
-            name TEXT NOT NULL,
-            value TEXT NOT NULL,
-            PRIMARY KEY(name)
-        );
-        CREATE TABLE IF NOT EXISTS events(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            target TEXT DEFAULT '',
-            body_sha256 TEXT DEFAULT '',
-            size INTEGER DEFAULT 0,
-            content_type TEXT DEFAULT '',
-            meta_sha256 TEXT DEFAULT '',
-            hmac TEXT NOT NULL,
-            prev_hmac TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS event_headers(
-            event_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            value TEXT NOT NULL
-        );
-        "#,
-        )?;
+        world_schema::create(&c)?;
     }
     Ok(c)
-}
-
-fn verify_schema(c: &Connection) -> rusqlite::Result<()> {
-    for table in ["stage_meta", "meta_headers", "events", "event_headers"] {
-        let exists = c
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-                [table],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?
-            .is_some();
-        if !exists {
-            return Err(schema_error(format!("missing required table: {table}")));
-        }
-    }
-    Ok(())
-}
-
-fn schema_error(msg: String) -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CORRUPT), Some(msg))
 }
 
 fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
