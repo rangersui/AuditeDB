@@ -486,3 +486,94 @@ Full local validation after those fixes on
 This addendum still does not claim GitHub CI is green. The local cascade is
 ahead of origin until pushed, and GitHub CI remains the post-push source of
 truth.
+
+## Canonical SSE Cursor Addendum
+
+Timestamp: 2026-06-15 00:43 +10:00.
+
+Active skills checked in this round:
+
+- `stacked-pr`
+- `rust-type-seal-enforcement`
+- `http-type-seal-review`
+- `precondition-problem`
+- `monte-carlo-review`
+- `assign-scientist-reviewers`
+- `delegation-doctrine`
+
+Fresh review after the first post-push cascade found one real P2:
+
+- Poincare the 3rd, Mencius/Popper precondition review: BLOCK. The SDK
+  blackbox helper no longer treated the entire SSE id as an integer, but it
+  still used Python `int(seq)` as the sequence parser. That accepted strings
+  such as `+42`, `0042`, whitespace-padded values, and negative-looking values
+  that the Rust contract rejects. The source-of-truth contract is
+  `<32 lowercase hex epoch>:<canonical decimal event id>`.
+- Hooke the 3rd, Hypatia/Locke QA: BLOCK. The ledger did not yet record a
+  fresh zero-P0-P2 round after the latest fixes, which violates the stack
+  repair evidence rule in `AGENTS.md`.
+- Faraday the 3rd, Poincare topology review: CLEAN P0-P2 for the first
+  cascade graph.
+
+Fixes added after that round:
+
+- `22r19`: `d039199 sdk: enforce canonical SSE cursor in blackbox`
+  tightens the SDK blackbox helper to require a 32-character lowercase hex
+  epoch, a non-empty ASCII-digit sequence, canonical decimal rendering, and
+  `u64` range. The test now parses the emitted id before replay and passes the
+  original opaque cursor string as `Last-Event-ID`.
+- `22r20` through `22r41`: the `d039199` repair was propagated upward by merge
+  cascade. No rebase or squash was used. The final pushed `22r41` head after
+  the second cascade is `314d089`.
+
+Local validation after the canonical cursor fix:
+
+- On `22r19`, `python sdk/tests/e2e_blackbox.py --no-build`: 234 checks passed.
+- On `22r41`, `python -m py_compile sdk/tests/e2e_blackbox.py`: passed.
+- On `22r41`, `git diff --check`: passed.
+- On `22r41`, `python sdk/tests/e2e_blackbox.py --no-build`: 249 checks
+  passed.
+- Pre-push fast gates passed while pushing `22r19` and again while pushing the
+  second `22r20` through `22r41` cascade.
+
+Post-push state at the time this addendum was written:
+
+- `22r19`: `d039199`.
+- `22r41`: `314d089`.
+- GitHub CI had restarted and was still pending; this addendum does not claim
+  remote CI is green.
+- A fresh independent review round was started against `d039199`/`314d089`.
+
+Fresh review outcome:
+
+- Hume the 3rd, Mencius/Popper precondition review: the previous SDK blackbox
+  P2 is fixed. Hume raised a new disputed P2 because HTTP still accepts bare
+  decimal `Last-Event-ID`.
+- Mendel the 3rd, Heisenberg/Locke verifier: FALSE POSITIVE. Newly emitted
+  SSE ids are canonical opaque `epoch:seq` cursors, while bare decimal
+  `Last-Event-ID` is an intentional legacy input syntax. Core maps it to
+  `SubscriptionResume::legacy_event_id`, whose replay plan is foreign/stale,
+  not current-process replay.
+- Franklin the 3rd, Popper/Bacon verifier: FALSE POSITIVE. Targeted tests
+  passed for canonical cursor parsing, legacy decimal foreign replay, stale
+  cursor reset, HTTP parse acceptance of current cursor plus legacy decimal,
+  non-canonical rejection, and SSE reset rebasing.
+- Confucius the 3rd, Poincare topology review: CLEAN P0-P2. Confirmed
+  `d039199` is an ancestor of every `22r20` through `22r41`, adjacent branches
+  remain merge-cascade contiguous, local refs match origin, and top head is
+  `314d089`.
+- Leibniz the 3rd, Bacon/Sagan evidence review: no P0-P2 findings. P3 only:
+  remote CI was still pending, and the ledger addendum was local evidence until
+  committed.
+- Schrodinger the 3rd, Hypatia/Locke QA: BLOCK at the time of review because
+  this fresh zero-P0-P2 outcome was not yet recorded and the ledger file was
+  still dirty.
+
+P3 fixed after that round:
+
+- `sdk-js/README.md` no longer shows an emitted SSE event id as `"42"`. The
+  event-shape example now uses `"0123456789abcdef0123456789abcdef:42"` for the
+  `id` field and keeps `"42"` only as the timeline sequence.
+
+The final substantive review state after adjudication is zero confirmed P0-P2.
+Remote GitHub CI remains the live post-push source of truth.
