@@ -123,7 +123,7 @@ pub(crate) fn read_world_for(
     if &permit.world != world {
         return Err(ReadError::PermitWorldMismatch);
     }
-    match core.read_world_with_etag(world.as_str()) {
+    match core.read_world_with_etag(world) {
         Ok(Some((stage, etag))) => Ok(ReadOutcome::Found { stage, etag }),
         Ok(None) => Ok(ReadOutcome::Missing),
         Err(err) => Err(classify_read_error("storage read", err)),
