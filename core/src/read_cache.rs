@@ -517,25 +517,25 @@ impl ReadCache {
     where
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
-        let world = world.as_str();
-        let path = world::world_db(data, world);
+        let world_key = world.as_str();
+        let path = world::validated_world_db(data, world);
         let mut f = Some(f);
         let mut counted_miss = false;
         let mut counted_capped = false;
 
         for _ in 0..READ_CACHE_RETRY_BUDGET {
             // PHASE 1 -- Cache hit (any state).
-            if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
+            if let Some(arc) = self.read_conns.get(world_key).map(|e| e.value().clone()) {
                 self.touch_slot(&arc);
                 match self.invoke_via_slot(arc.clone(), &mut f)? {
                     SlotRead::Done(value) => {
-                        self.best_effort_trim_over_cap(world);
+                        self.best_effort_trim_over_cap(world_key);
                         self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
                         return Ok(value);
                     }
                     SlotRead::Opening => continue,
                     SlotRead::Evicted => {
-                        self.remove_evicted_entry(world, &arc);
+                        self.remove_evicted_entry(world_key, &arc);
                         continue;
                     }
                 }
@@ -557,10 +557,10 @@ impl ReadCache {
                         .fetch_add(1, Ordering::Relaxed);
                     counted_capped = true;
                 }
-                if self.try_evict_oldest_sample(world) {
+                if self.try_evict_oldest_sample(world_key) {
                     continue;
                 }
-                return self.invoke_transient(&path, world, f.take().expect("read closure"));
+                return self.invoke_transient(&path, world_key, f.take().expect("read closure"));
             }
 
             // PHASE 3 -- Cache miss + room: slot-before-open lazy-init.
@@ -585,7 +585,7 @@ impl ReadCache {
             let new_guard = new_slot.inner.write().unwrap_or_else(|p| p.into_inner());
             let arc = self
                 .read_conns
-                .entry(world.to_string())
+                .entry(world_key.to_string())
                 .or_insert_with(move || insert_slot)
                 .value()
                 .clone();
@@ -602,7 +602,7 @@ impl ReadCache {
                             transition.fail();
                             drop(g);
                             self.read_conns
-                                .remove_if(world, |_k, v| Arc::ptr_eq(v, &arc));
+                                .remove_if(world_key, |_k, v| Arc::ptr_eq(v, &arc));
                             self.metrics
                                 .read_cache_open_fails
                                 .fetch_add(1, Ordering::Relaxed);
@@ -622,20 +622,20 @@ impl ReadCache {
             self.touch_slot(&arc);
             match self.invoke_via_slot(arc.clone(), &mut f)? {
                 SlotRead::Done(value) => {
-                    self.best_effort_trim_over_cap(world);
+                    self.best_effort_trim_over_cap(world_key);
                     return Ok(value);
                 }
                 SlotRead::Opening => {}
                 SlotRead::Evicted => {
-                    self.remove_evicted_entry(world, &arc);
+                    self.remove_evicted_entry(world_key, &arc);
                 }
             }
         }
 
-        log_read_cache_retry_budget_exhausted(world, "tracked");
+        log_read_cache_retry_budget_exhausted(world_key, "tracked");
         self.invoke_transient(
             &path,
-            world,
+            world_key,
             f.take().expect(
                 "read cache retry budget exhausted with no closure; \
                  SlotRead::Done should have returned before budget fallback",
