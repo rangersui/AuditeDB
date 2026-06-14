@@ -261,7 +261,11 @@ jobs:
           read = engine.read("home/ffi", e.FfiAccessTier.READ)
           assert read is not None
           assert read.representation.body == b"release"
-          subscription = engine.subscribe("home/*", e.FfiAccessTier.READ, None)
+          subscription = engine.subscribe(
+              "home/*",
+              e.FfiAccessTier.READ,
+              e.FfiSubscriptionResume(after_event_id=None),
+          )
           engine.append("home/ffi", b" asset", none, e.FfiAccessTier.WRITE)
           event = subscription.next(5_000)
           assert event.kind == e.FfiSubscriptionNextKind.EVENT, event.kind
