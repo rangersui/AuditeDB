@@ -124,6 +124,27 @@ deepest-base first. Trying to merge a higher-up PR while a lower-down
 PR is still open creates a divergent base that GitHub will not
 auto-redirect cleanly.
 
+### Stack repair exception
+
+The 3-4 level cap is a default law for new feature work, not a reason
+to drop safety fixes during stack recovery. A deeper merge cascade is
+allowed only when all of these are true:
+
+- the user explicitly authorizes the exception in the current work;
+- the work is repairing, draining, or reconciling an already-existing
+  stack, or landing a base process/AGENTS change required before the
+  rest of the stack can be evaluated;
+- no new feature scope is added while the exception is open;
+- the repair lands each fix at the lowest affected layer and propagates
+  upward by merge cascade, never by squash;
+- a durable repair ledger records the exact branches, validation
+  commands, scientist-lens reviewers, QA/enforcement reviewer, and the
+  fresh round that cleared P0-P2.
+
+The exception waives stack depth only. It does not waive type seals,
+per-layer reviewability, validation evidence, or Fleet Review
+Convergence.
+
 ### Pure-mv PRs
 
 A PR that mechanically moves N lines from one file to another counts
