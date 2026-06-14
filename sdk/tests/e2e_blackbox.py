@@ -105,7 +105,7 @@ def world_url(base: str, path: str) -> str:
 
 def sse_cursor_parts(raw: str) -> tuple[str, int]:
     if ":" not in raw:
-        return "", int(raw)
+        raise AssertionError(f"SSE id must be an opaque epoch cursor: {raw!r}")
     epoch, seq = raw.split(":", 1)
     if len(epoch) != 32 or any(ch not in "0123456789abcdef" for ch in epoch):
         raise AssertionError(f"invalid SSE cursor epoch: {raw!r}")
