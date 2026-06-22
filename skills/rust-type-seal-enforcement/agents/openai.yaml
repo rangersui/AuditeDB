@@ -1,4 +1,0 @@
-interface:
-  display_name: "Rust Type-Seal Enforcement"
-  short_description: "Make Rust safety invariants compile-time gates."
-  default_prompt: "Use $rust-type-seal-enforcement to design or review a Rust API where skipping a safety invariant should fail to compile."
