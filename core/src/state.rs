@@ -413,7 +413,7 @@ impl Core {
             id,
             listen_epoch: self.listen_epoch.clone(),
             verb,
-            path: format!("/{}", world.as_str()),
+            path: world.clone(),
             etag: etag.to_owned(),
             timeline_address,
         };

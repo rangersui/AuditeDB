@@ -4,7 +4,7 @@
 //! adapters choose how to render those events.
 
 use crate::engine_subscription::SubscriptionEpoch;
-use crate::engine_types::ChangeVerb;
+use crate::engine_types::{ChangeVerb, ValidatedWorldPath};
 use crate::timeline::TimelineAddress;
 
 /// Audit-chain event kinds the engine may append.
@@ -105,7 +105,7 @@ pub(crate) struct ChangeEvent {
     pub(crate) id: u64,
     pub(crate) listen_epoch: SubscriptionEpoch,
     pub(crate) verb: ChangeVerb,
-    pub(crate) path: String,
+    pub(crate) path: ValidatedWorldPath,
     pub(crate) etag: String,
     pub(crate) timeline_address: Option<TimelineAddress>,
 }
@@ -121,6 +121,7 @@ pub(crate) fn pattern(raw: &str) -> String {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn matches(pattern: &str, path: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -129,6 +130,18 @@ pub(crate) fn matches(pattern: &str, path: &str) -> bool {
         path.starts_with(prefix)
     } else {
         path == pattern
+    }
+}
+
+pub(crate) fn matches_world(pattern: &str, path: &ValidatedWorldPath) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let path = path.as_str();
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        path.starts_with(prefix.strip_prefix('/').unwrap_or(prefix))
+    } else {
+        path == pattern.strip_prefix('/').unwrap_or(pattern)
     }
 }
 
@@ -148,6 +161,17 @@ mod tests {
         assert!(matches("/home/销售/*", "/home/销售/报告"));
         assert!(matches("/home/task/a", "/home/task/a"));
         assert!(!matches("/home/task/a", "/home/task/ab"));
+    }
+
+    #[test]
+    fn patterns_match_validated_world_paths() {
+        let path = ValidatedWorldPath::new("home/task/a").unwrap();
+
+        assert!(matches_world("*", &path));
+        assert!(matches_world("/home/task/*", &path));
+        assert!(matches_world("/home/task/a", &path));
+        assert!(!matches_world("/home/task/ab", &path));
+        assert!(!matches_world("/home/other/*", &path));
     }
 
     #[test]

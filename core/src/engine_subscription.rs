@@ -200,14 +200,11 @@ impl SubscriptionSlot {
 
 impl From<crate::event::ChangeEvent> for ChangeEvent {
     fn from(value: crate::event::ChangeEvent) -> Self {
-        let canonical = value.path.trim_start_matches('/').to_owned();
-        let path = ValidatedWorldPath::from_canonical(canonical)
-            .expect("listen events are emitted only for validated world paths");
         Self::new(
             value.id,
             value.listen_epoch,
             value.verb,
-            path,
+            value.path,
             value.etag,
             value.timeline_address,
         )
@@ -521,7 +518,7 @@ impl EngineSubscription {
                             match item {
                                 Ok(change)
                                     if (!live.replay_mode || change.id > live.live_floor)
-                                        && crate::event::matches(live.pattern.as_str(), &change.path) =>
+                                        && crate::event::matches_world(live.pattern.as_str(), &change.path) =>
                                 {
                                     self.state = SubscriptionState::Live(live);
                                     return Ok(change.into());

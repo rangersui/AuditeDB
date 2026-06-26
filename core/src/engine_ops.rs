@@ -515,7 +515,9 @@ pub(crate) fn replay_after(
     });
     let replay: Vec<ChangeEvent> = log
         .iter()
-        .filter(|change| change.id > last_id && event::matches(pattern.as_str(), &change.path))
+        .filter(|change| {
+            change.id > last_id && event::matches_world(pattern.as_str(), &change.path)
+        })
         .cloned()
         .map(Into::into)
         .collect();
@@ -635,7 +637,7 @@ mod tests {
                     id,
                     listen_epoch: engine.core().listen_epoch.clone(),
                     verb: ChangeVerb::Replace,
-                    path: format!("/home/task/{id}"),
+                    path: ValidatedWorldPath::new(format!("home/task/{id}")).unwrap(),
                     etag: format!("hmac-{id}"),
                     timeline_address: None,
                 });
@@ -672,7 +674,7 @@ mod tests {
                 id: u64::MAX,
                 listen_epoch: engine.core().listen_epoch.clone(),
                 verb: ChangeVerb::Replace,
-                path: "/home/task/max".to_string(),
+                path: ValidatedWorldPath::new("home/task/max").unwrap(),
                 etag: "hmac-max".to_string(),
                 timeline_address: None,
             });
@@ -703,7 +705,7 @@ mod tests {
                 id: 1,
                 listen_epoch: engine.core().listen_epoch.clone(),
                 verb: ChangeVerb::Replace,
-                path: "/home/task/a".to_string(),
+                path: ValidatedWorldPath::new("home/task/a").unwrap(),
                 etag: "hmac-1".to_string(),
                 timeline_address: None,
             });
@@ -742,7 +744,7 @@ mod tests {
                     id,
                     listen_epoch: engine.core().listen_epoch.clone(),
                     verb: ChangeVerb::Replace,
-                    path: format!("/home/task/{id}"),
+                    path: ValidatedWorldPath::new(format!("home/task/{id}")).unwrap(),
                     etag: format!("hmac-{id}"),
                     timeline_address: None,
                 });
