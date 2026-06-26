@@ -243,31 +243,6 @@ pub use world_generation::WorldGeneration;
 
 // ─── helpers ────────────────────────────────────────────────────────
 
-pub(crate) fn can_write(world_name: &str, tier: auth::Tier) -> bool {
-    // Harvard gate: /lib/, /etc/, /boot/, /usr/, and audit logs
-    // require approve. /home/, /tmp/, /dev/, /sys/, and non-log
-    // /var/ worlds accept the normal token. Anon refused.
-    let needs_approve = needs_write_approve(world_name);
-    match tier {
-        auth::Tier::Anon => false,
-        auth::Tier::Read => false,
-        auth::Tier::Write => !needs_approve,
-        auth::Tier::Approve => true,
-    }
-}
-
-/// Mirrors the harvard-gate decision in `can_write`. Lifted out so
-/// `handler::execute_put` / `execute_post` can classify a rejected
-/// write as `Auth(Write)` vs `Auth(WriteApprove)` for the FSM trace
-/// without re-deriving the predicate.
-pub(crate) fn needs_write_approve(world_name: &str) -> bool {
-    exact_or_child(world_name, "lib")
-        || exact_or_child(world_name, "etc")
-        || exact_or_child(world_name, "boot")
-        || exact_or_child(world_name, "usr")
-        || exact_or_child(world_name, "var/log")
-}
-
 pub(crate) fn can_delete(tier: auth::Tier) -> bool {
     matches!(tier, auth::Tier::Approve)
 }
@@ -281,13 +256,6 @@ pub(crate) fn can_delete(tier: auth::Tier) -> bool {
 
 // `require_read` (auth gate for proc handlers) lives in proc.rs now,
 // next to its only callers.
-
-pub(crate) fn exact_or_child(world_name: &str, prefix: &str) -> bool {
-    world_name == prefix
-        || world_name
-            .strip_prefix(prefix)
-            .is_some_and(|rest| rest.starts_with('/'))
-}
 
 pub(crate) fn can_read(core: &Core, tier: auth::Tier) -> bool {
     !core.tokens.read_required()

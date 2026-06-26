@@ -179,7 +179,7 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{can_delete, can_read, can_write, test_support::test_core};
+    use crate::{can_delete, can_read, test_support::test_core};
 
     fn token(bytes: &[u8]) -> NonEmptyBytes {
         NonEmptyBytes::new(bytes.to_vec()).unwrap()
@@ -199,41 +199,11 @@ mod tests {
     }
 
     #[test]
-    fn var_log_requires_approve_token() {
-        assert!(!can_write("var/log", Tier::Anon));
-        assert!(!can_write("var/log", Tier::Read));
-        assert!(!can_write("var/log", Tier::Write));
-        assert!(can_write("var/log", Tier::Approve));
-        assert!(!can_write("var/log/deletes", Tier::Anon));
-        assert!(!can_write("var/log/deletes", Tier::Read));
-        assert!(!can_write("var/log/deletes", Tier::Write));
-        assert!(can_write("var/log/deletes", Tier::Approve));
-    }
-
-    #[test]
     fn delete_requires_approve_token() {
         assert!(!can_delete(Tier::Anon));
         assert!(!can_delete(Tier::Read));
         assert!(!can_delete(Tier::Write));
         assert!(can_delete(Tier::Approve));
-    }
-
-    #[test]
-    fn system_namespace_roots_require_approve_even_if_called_directly() {
-        for name in ["lib", "etc", "boot", "usr"] {
-            assert!(!can_write(name, Tier::Anon), "{name}");
-            assert!(!can_write(name, Tier::Read), "{name}");
-            assert!(!can_write(name, Tier::Write), "{name}");
-            assert!(can_write(name, Tier::Approve), "{name}");
-        }
-    }
-
-    #[test]
-    fn non_log_var_still_accepts_auth_token() {
-        assert!(!can_write("var/cache/rag", Tier::Anon));
-        assert!(!can_write("var/cache/rag", Tier::Read));
-        assert!(can_write("var/cache/rag", Tier::Write));
-        assert!(can_write("var/cache/rag", Tier::Approve));
     }
 
     #[test]

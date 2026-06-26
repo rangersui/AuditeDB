@@ -14,9 +14,9 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 
 use crate::{
-    audit, auth, can_write,
+    audit, auth,
     engine_types::{ChangeVerb, ValidatedWorldPath},
-    etag, needs_write_approve, store,
+    etag, store,
     timeline::BodySha256,
     world, AuthGate, Core, StorageFailureClass,
 };
@@ -125,12 +125,12 @@ pub(crate) fn authorize_write(
     world: &ValidatedWorldPath,
     tier: auth::Tier,
 ) -> Result<WritePermit, WriteError> {
-    let gate = if needs_write_approve(world.as_str()) {
+    let gate = if needs_write_approve(world) {
         AuthGate::WriteApprove
     } else {
         AuthGate::Write
     };
-    if can_write(world.as_str(), tier) {
+    if can_write(world, tier) {
         Ok(WritePermit {
             world: world.clone(),
             gate,
@@ -138,6 +138,35 @@ pub(crate) fn authorize_write(
     } else {
         Err(WriteError::Auth(gate))
     }
+}
+
+fn can_write(world: &ValidatedWorldPath, tier: auth::Tier) -> bool {
+    // Harvard gate: children under lib/etc/boot/usr and var/log
+    // descendants require approve. home/tmp/dev/sys and non-log var
+    // worlds accept the normal token. Anon refused.
+    let needs_approve = needs_write_approve(world);
+    match tier {
+        auth::Tier::Anon => false,
+        auth::Tier::Read => false,
+        auth::Tier::Write => !needs_approve,
+        auth::Tier::Approve => true,
+    }
+}
+
+fn needs_write_approve(world: &ValidatedWorldPath) -> bool {
+    exact_or_child(world, "lib")
+        || exact_or_child(world, "etc")
+        || exact_or_child(world, "boot")
+        || exact_or_child(world, "usr")
+        || exact_or_child(world, "var/log")
+}
+
+fn exact_or_child(world: &ValidatedWorldPath, prefix: &str) -> bool {
+    let world_name = world.as_str();
+    world_name == prefix
+        || world_name
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
@@ -366,7 +395,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
 }
 
 fn ensure_write_permit(permit: &WritePermit) -> Result<(), WriteError> {
-    let expected_gate = if needs_write_approve(permit.world.as_str()) {
+    let expected_gate = if needs_write_approve(&permit.world) {
         AuthGate::WriteApprove
     } else {
         AuthGate::Write
@@ -725,11 +754,21 @@ mod tests {
 
     #[test]
     fn write_permit_preserves_path_based_approve_gate() {
-        assert!(matches!(
-            authorize_write(&world_path("etc/config"), auth::Tier::Write),
-            Err(WriteError::Auth(AuthGate::WriteApprove))
-        ));
-        assert!(authorize_write(&world_path("etc/config"), auth::Tier::Approve).is_ok());
+        for name in [
+            "lib/config",
+            "etc/config",
+            "boot/config",
+            "usr/config",
+            "var/log/deletes",
+        ] {
+            assert!(matches!(
+                authorize_write(&world_path(name), auth::Tier::Write),
+                Err(WriteError::Auth(AuthGate::WriteApprove))
+            ));
+            assert!(authorize_write(&world_path(name), auth::Tier::Approve).is_ok());
+        }
         assert!(authorize_write(&world_path("home/config"), auth::Tier::Write).is_ok());
+        assert!(authorize_write(&world_path("var/cache/rag"), auth::Tier::Write).is_ok());
+        assert!(authorize_write(&world_path("var/logs/deletes"), auth::Tier::Write).is_ok());
     }
 }
