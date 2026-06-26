@@ -144,7 +144,7 @@ pub(crate) struct Core {
     /// runs. See `acquire_world_lock` for the rationale (eviction is
     /// unsafe when waiters hold a clone of the Arc). DashMap shards
     /// reads, so lookup is mostly lock-free.
-    pub(crate) world_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    pub(crate) world_locks: Arc<DashMap<ValidatedWorldPath, Arc<Mutex<()>>>>,
     /// Cached writer + init counter for the `var/log/deletes` audit
     /// ledger. See `crate::ledger::LedgerWriter` for the semantics
     /// (lazy init, `inits` counter, no `acquire_world_lock` needed
@@ -181,10 +181,13 @@ impl Core {
     ///
     /// The DashMap entry guard is dropped before `.await`, so we never
     /// hold a sync shard lock across an await.
-    pub(crate) async fn acquire_world_lock(&self, world: &str) -> OwnedMutexGuard<()> {
+    pub(crate) async fn acquire_world_lock(
+        &self,
+        world: &ValidatedWorldPath,
+    ) -> OwnedMutexGuard<()> {
         let lock = {
             self.world_locks
-                .entry(world.to_string())
+                .entry(world.clone())
                 .or_insert_with(|| Arc::new(Mutex::new(())))
                 .clone()
         };

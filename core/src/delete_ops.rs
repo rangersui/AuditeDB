@@ -115,7 +115,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         headers,
     } = req;
     let world_name = permit.world.as_str();
-    let _write_guard = core.acquire_world_lock(world_name).await;
+    let _write_guard = core.acquire_world_lock(&permit.world).await;
     hooks.lock_acquired(world_name);
     check_preconditions(core, &permit.world, &preconditions.into())?;
     let user_headers =

@@ -155,7 +155,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
         });
     }
 
-    let _write_guard = core.acquire_world_lock(world).await;
+    let _write_guard = core.acquire_world_lock(world_path).await;
     hooks.lock_acquired();
     core.clear_tombstone(world_path);
     check_write_preconditions(core, world_path, &req.preconditions)?;
@@ -260,7 +260,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     ensure_write_permit(permit)?;
     let world_path = &permit.world;
     let world = world_path.as_str();
-    let _write_guard = core.acquire_world_lock(world).await;
+    let _write_guard = core.acquire_world_lock(world_path).await;
     hooks.lock_acquired();
     core.clear_tombstone(world_path);
     check_write_preconditions(core, world_path, &req.preconditions)?;
