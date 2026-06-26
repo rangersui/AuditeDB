@@ -157,7 +157,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         .append_to_ledger(AuditAppendJob {
             ledger_world: delete_ledger_world(),
             event_type: EventMetadataKind::DELETE_INTENT,
-            target: world_name.to_owned(),
+            target: permit.world.clone(),
             body_sha256: body_sha256_before.clone(),
             size: 0,
             content_type: content_type.clone(),
@@ -208,7 +208,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         .append_to_ledger(AuditAppendJob {
             ledger_world: delete_ledger_world(),
             event_type: EventMetadataKind::DELETE_COMMIT,
-            target: world_name.to_owned(),
+            target: permit.world.clone(),
             body_sha256: body_sha256_before.clone(),
             size: 0,
             content_type: content_type.clone(),
@@ -228,7 +228,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             .append_to_ledger(AuditAppendJob {
                 ledger_world: delete_ledger_world(),
                 event_type: EventMetadataKind::DELETE_COMMIT_FAILED,
-                target: world_name.to_owned(),
+                target: permit.world.clone(),
                 body_sha256: body_sha256_before,
                 size: 0,
                 content_type,

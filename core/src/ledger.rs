@@ -35,7 +35,7 @@ use crate::world;
 pub(crate) struct AuditAppendJob {
     pub(crate) ledger_world: ValidatedWorldPath,
     pub(crate) event_type: EventMetadataKind,
-    pub(crate) target: String,
+    pub(crate) target: ValidatedWorldPath,
     pub(crate) body_sha256: BodySha256,
     pub(crate) size: i64,
     pub(crate) content_type: String,
@@ -149,7 +149,7 @@ mod tests {
                 AuditAppendJob {
                     ledger_world: ValidatedWorldPath::new("var/log/deletes").unwrap(),
                     event_type: EventMetadataKind::DELETE_INTENT,
-                    target: "home/deleted".to_owned(),
+                    target: ValidatedWorldPath::new("home/deleted").unwrap(),
                     body_sha256: BodySha256::for_body(b"body"),
                     size: 0,
                     content_type: "application/octet-stream".to_owned(),
