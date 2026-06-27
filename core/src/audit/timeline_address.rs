@@ -683,7 +683,7 @@ mod tests {
             super::super::append_tx_inner(
                 &audit_tx,
                 AuditEventKind::DeleteIntent,
-                world.as_str(),
+                &world,
                 &BodySha256::for_body(b""),
                 0,
                 "",

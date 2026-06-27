@@ -159,7 +159,7 @@ fn append_with_conn_verified(
     let row = append_tx_inner(
         &audit_tx,
         event_type.kind(),
-        target.as_str(),
+        target,
         body_sha256,
         size,
         content_type,
@@ -186,7 +186,7 @@ pub(crate) fn append_retained_body_tx_row<'tx, 'conn, 'key>(
     let row = append_tx_inner(
         audit_tx,
         event_type.kind(),
-        retained.target().as_str(),
+        retained.target(),
         retained.body_sha256(),
         retained.size(),
         content_type,
@@ -208,7 +208,7 @@ pub(crate) fn append_retained_body_tx_row<'tx, 'conn, 'key>(
 fn append_tx_inner(
     audit_tx: &VerifiedAuditTx<'_, '_, '_>,
     event_type: AuditEventKind,
-    target: &str,
+    target: &ValidatedWorldPath,
     body_sha256: &BodySha256,
     size: i64,
     content_type: &str,
@@ -238,7 +238,7 @@ fn append_tx_inner(
         EventHmacInput {
             prev: &prev,
             event_type: event_type.as_str(),
-            target,
+            target: target.as_str(),
             generation: &generation,
             body_sha256: body_sha256.as_str(),
             size,
@@ -252,7 +252,7 @@ fn append_tx_inner(
            VALUES(datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?)"#,
         rusqlite::params![
             event_type.as_str(),
-            target,
+            target.as_str(),
             body_sha256.as_str(),
             size,
             content_type,
@@ -280,7 +280,7 @@ fn append_tx_inner(
 pub(super) fn test_only_append_tx_inner(
     audit_tx: &VerifiedAuditTx<'_, '_, '_>,
     event_type: AuditEventKind,
-    target: &str,
+    target: &ValidatedWorldPath,
     body_sha256: &BodySha256,
     size: i64,
     content_type: &str,

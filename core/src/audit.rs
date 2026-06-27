@@ -793,7 +793,7 @@ mod tests {
         append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
-            "home/a",
+            &validated("home/a"),
             &BodySha256::for_body(b"abc"),
             4,
             "text/plain",
@@ -857,7 +857,7 @@ mod tests {
         append_tx_inner(
             &audit_tx,
             AuditEventKind::DeleteIntent,
-            "home/a",
+            &validated("home/a"),
             &BodySha256::for_body(b""),
             0,
             "",
@@ -959,7 +959,7 @@ mod tests {
         let row1 = append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
-            "home/a",
+            &validated("home/a"),
             &BodySha256::for_body(b"abc"),
             3,
             "text/plain",
@@ -969,7 +969,7 @@ mod tests {
         let row2 = append_tx_inner(
             &audit_tx,
             AuditEventKind::Append,
-            "home/a",
+            &validated("home/a"),
             &BodySha256::for_body(b"abcdef"),
             6,
             "text/plain",
@@ -1077,7 +1077,7 @@ mod tests {
             append_tx_inner(
                 &audit_tx,
                 AuditEventKind::Put,
-                "home/a",
+                &validated("home/a"),
                 &BodySha256::for_body(b"abc"),
                 3,
                 "text/plain",
@@ -1118,7 +1118,7 @@ mod tests {
         append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
-            "home/a",
+            &validated("home/a"),
             &BodySha256::for_body(b"abc"),
             3,
             "text/plain",
@@ -1170,7 +1170,7 @@ mod tests {
         append_tx_inner(
             &audit_tx,
             AuditEventKind::Put,
-            "home/a",
+            &validated("home/a"),
             &BodySha256::for_body(b"abc"),
             3,
             "text/plain",
