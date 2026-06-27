@@ -1500,6 +1500,22 @@ mod tests {
             address.seq().get(),
             "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
         );
+        let hash_get = run(
+            Method::GET,
+            "/home/timeline/head-errors".to_string(),
+            raw_query(&wrong_hash),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            322,
+        )
+        .await;
+        assert_eq!(hash_get.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_text(hash_get).await,
+            "timeline body sha256 mismatch\n"
+        );
+
         let hash_mismatch = run(
             Method::HEAD,
             "/home/timeline/head-errors".to_string(),
