@@ -1435,6 +1435,19 @@ mod tests {
             99,
             address.body_sha256().as_str(),
         );
+        let missing_get = run(
+            Method::GET,
+            "/home/timeline/head-errors".to_string(),
+            raw_query(&missing_row),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            320,
+        )
+        .await;
+        assert_eq!(missing_get.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_text(missing_get).await, "timeline row not found\n");
+
         let missing = run(
             Method::HEAD,
             "/home/timeline/head-errors".to_string(),
