@@ -208,7 +208,7 @@ impl Core {
         world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<(Stage, String)>> {
         let world_name = world.as_str();
-        if store::is_memory_world(world_name) {
+        if store::is_memory_world(world) {
             Ok(self
                 .mem
                 .read_with_hash(world_name)
@@ -233,7 +233,7 @@ impl Core {
     /// Memory worlds: no-op. The blocking drain runs inside
     /// `spawn_blocking` so it doesn't stall a Tokio worker.
     pub(crate) async fn install_tombstone(&self, world: &ValidatedWorldPath) {
-        if store::is_memory_world(world.as_str()) {
+        if store::is_memory_world(world) {
             return;
         }
         let cache = self.read_cache.clone();
@@ -246,7 +246,7 @@ impl Core {
     /// world is still on disk, and the next read must lazy-init a
     /// fresh slot rather than seeing a phantom 404.
     pub(crate) fn clear_tombstone(&self, world: &ValidatedWorldPath) {
-        if store::is_memory_world(world.as_str()) {
+        if store::is_memory_world(world) {
             return;
         }
         self.read_cache.clear_tombstone(world);
@@ -262,7 +262,7 @@ impl Core {
         world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<Option<(i64, String)>>> {
         debug_assert!(
-            !store::is_memory_world(world.as_str()),
+            !store::is_memory_world(world),
             "cached_chain_head only applies to durable worlds"
         );
         self.read_cache.cached_chain_head(&self.data, world)
@@ -280,7 +280,7 @@ impl Core {
         world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<audit::VerifyReport>> {
         debug_assert!(
-            !store::is_memory_world(world.as_str()),
+            !store::is_memory_world(world),
             "cached_verify_chain only applies to durable worlds"
         );
         self.read_cache
@@ -297,7 +297,7 @@ impl Core {
         address: &TimelineAddress,
     ) -> audit::AuditResult<Option<TimelineRead>> {
         debug_assert!(
-            !store::is_memory_world(address.world().as_str()),
+            !store::is_memory_world(address.world()),
             "read_timeline_body only applies to durable worlds"
         );
         let read = self
@@ -318,7 +318,7 @@ impl Core {
         world: &ValidatedWorldPath,
     ) -> audit::AuditResult<Option<audit::VerifiedBodyHead>> {
         debug_assert!(
-            !store::is_memory_world(world.as_str()),
+            !store::is_memory_world(world),
             "latest_body_head only applies to durable worlds"
         );
         let head = self
@@ -345,13 +345,12 @@ impl Core {
         content_type: &str,
         headers: &[(String, String)],
     ) -> Result<(), world::WriteAuditError> {
-        if store::is_memory_world(world) {
+        let world_path = ValidatedWorldPath::new(world)
+            .map_err(|_| world::WriteAuditError::StorageInvariant("invalid fixture world path"))?;
+        if store::is_memory_world(&world_path) {
             self.mem.write(world, body, content_type, headers);
             Ok(())
         } else {
-            let world_path = ValidatedWorldPath::new(world).map_err(|_| {
-                world::WriteAuditError::StorageInvariant("invalid fixture world path")
-            })?;
             let current_len = world::storage_len(&self.data, &world_path)?;
             world::write_with_audit(
                 &self.data,
@@ -393,7 +392,7 @@ impl Core {
     }
 
     pub(crate) async fn delete_world_blocking(&self, world: &ValidatedWorldPath) -> bool {
-        if store::is_memory_world(world.as_str()) {
+        if store::is_memory_world(world) {
             self.mem.delete(world.as_str())
         } else {
             let data = self.data.clone();

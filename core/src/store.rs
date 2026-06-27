@@ -16,19 +16,26 @@
 //! Audit/HMAC chain only fires on durable writes — memory worlds are
 //! by definition not tamper-evident across restarts.
 
-use crate::world::{self, AppendResult, Stage, WorldMetadata};
+use crate::{
+    engine_types::ValidatedWorldPath,
+    world::{self, AppendResult, Stage, WorldMetadata},
+};
 use std::collections::HashMap;
 #[cfg(test)]
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-pub fn is_memory_world(world: &str) -> bool {
+fn has_memory_prefix(world: &str) -> bool {
     world.starts_with("tmp/") || world.starts_with("dev/") || world.starts_with("sys/")
+}
+
+pub fn is_memory_world(world: &ValidatedWorldPath) -> bool {
+    has_memory_prefix(world.as_str())
 }
 
 /// True if writes to this world should append a row to the HMAC
 /// audit chain. Memory worlds opt out (they don't survive restart).
-pub fn is_persistent(world: &str) -> bool {
+pub fn is_persistent(world: &ValidatedWorldPath) -> bool {
     !is_memory_world(world)
 }
 
@@ -309,13 +316,13 @@ mod tests {
 
     #[test]
     fn storage_prefix_routes_memory_and_disk_modes() {
-        assert!(!is_memory_world("home/report"));
-        assert!(!is_memory_world("etc/config"));
-        assert!(is_memory_world("tmp/scratch"));
-        assert!(is_memory_world("dev/fb0"));
-        assert!(is_memory_world("sys/status"));
-        assert!(is_persistent("home/report"));
-        assert!(!is_persistent("tmp/scratch"));
+        assert!(!is_memory_world(&world_path("home/report")));
+        assert!(!is_memory_world(&world_path("etc/config")));
+        assert!(is_memory_world(&world_path("tmp/scratch")));
+        assert!(is_memory_world(&world_path("dev/fb0")));
+        assert!(is_memory_world(&world_path("sys/status")));
+        assert!(is_persistent(&world_path("home/report")));
+        assert!(!is_persistent(&world_path("tmp/scratch")));
     }
 
     #[test]

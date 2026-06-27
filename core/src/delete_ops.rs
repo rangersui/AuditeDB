@@ -127,7 +127,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     else {
         return Err(DeleteError::NotFound);
     };
-    let storage_len_before = if store::is_persistent(world_name) {
+    let storage_len_before = if store::is_persistent(&permit.world) {
         match world::storage_len(&core.data, &permit.world)
             .map_err(|err| classify_storage_error("storage size", &permit.world, err))?
         {
@@ -188,7 +188,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     }
     hooks.physical_deleted();
 
-    if store::is_persistent(world_name) {
+    if store::is_persistent(&permit.world) {
         core.storage_body_bytes
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 Some(used.saturating_sub(storage_len_before))
@@ -262,7 +262,7 @@ fn capture_delete_subject_proof(
     core: &Core,
     world: &ValidatedWorldPath,
 ) -> Result<Option<VerifiedDeleteSubject>, DeleteError> {
-    if store::is_memory_world(world.as_str()) {
+    if store::is_memory_world(world) {
         return Ok(None);
     }
     let Some(head) = core

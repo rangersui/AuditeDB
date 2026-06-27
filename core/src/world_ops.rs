@@ -189,7 +189,7 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     core.clear_tombstone(world_path);
     check_write_preconditions(core, world_path, &req.preconditions)?;
 
-    let (existed, etag, timeline_address) = if store::is_persistent(world) {
+    let (existed, etag, timeline_address) = if store::is_persistent(world_path) {
         let prev_len_opt = world::body_len(&core.data, world_path).map_err(|err| {
             classify_write_storage_error("storage metadata", err, StorageOp::Read)
         })?;
@@ -294,7 +294,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     core.clear_tombstone(world_path);
     check_write_preconditions(core, world_path, &req.preconditions)?;
 
-    let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(world) {
+    let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(world_path) {
         core.mem.metadata(world)
     } else {
         world::metadata(&core.data, world_path)
@@ -313,7 +313,7 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         });
     }
 
-    let (etag, timeline_address) = if store::is_persistent(world) {
+    let (etag, timeline_address) = if store::is_persistent(world_path) {
         if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
         }

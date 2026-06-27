@@ -460,7 +460,7 @@ impl EngineOps<'_> {
             .path
             .audit_world()
             .ok_or(EngineError::InternalInvariant("audit verify missing world"))?;
-        if store::is_memory_world(world.as_str()) {
+        if store::is_memory_world(world) {
             if !self.core().mem.contains(world.as_str()) {
                 return Err(EngineError::NotFound);
             }
@@ -491,7 +491,7 @@ impl EngineOps<'_> {
         if !crate::can_read(self.core(), tier) {
             return Err(EngineError::Auth(AuthGate::Read));
         }
-        if store::is_memory_world(world.as_str()) {
+        if store::is_memory_world(world) {
             if !self.core().mem.contains(world.as_str()) {
                 return Err(EngineError::NotFound);
             }

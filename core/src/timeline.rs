@@ -261,7 +261,7 @@ impl TimelineCoordinate {
     ) -> Result<Self, InvalidTimelineCoordinate> {
         let world = ValidatedWorldPath::from_canonical(world.into())
             .map_err(InvalidTimelineCoordinate::WorldPath)?;
-        if crate::store::is_memory_world(world.as_str()) {
+        if crate::store::is_memory_world(&world) {
             return Err(InvalidTimelineCoordinate::MemoryWorld);
         }
         let gen = WorldGeneration::new(generation).map_err(|err| match err {
