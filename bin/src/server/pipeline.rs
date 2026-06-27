@@ -1466,6 +1466,22 @@ mod tests {
             address.seq().get(),
             address.body_sha256().as_str(),
         );
+        let gen_get = run(
+            Method::GET,
+            "/home/timeline/head-errors".to_string(),
+            raw_query(&wrong_generation),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            321,
+        )
+        .await;
+        assert_eq!(gen_get.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_text(gen_get).await,
+            "timeline generation mismatch\n"
+        );
+
         let gen_mismatch = run(
             Method::HEAD,
             "/home/timeline/head-errors".to_string(),
