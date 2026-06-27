@@ -1251,3 +1251,46 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r78: Reserved route topology
+
+- Branch: `stack/22r78-route-topology-owned-prefixes`
+- Commit: `d90d872 bin: cover reserved route topology`
+- Base: `stack/22r77-timeline-world-query-wall`
+- Scope: test-only full-app coverage for the route-topology checklist in
+  `design_notes/PLAN-http-timeline-dereference.md`.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/route.rs` under the existing `#[cfg(test)]` module.
+
+The layer adds `reserved_routes_keep_ownership_ahead_of_world_catchall`. It
+uses `build_app(state)` so the real axum route table is exercised. The test
+proves:
+
+- `/` is still owned by `root_hint`;
+- `/listen/*` is still owned by the listen handler, checked via finite
+  `OPTIONS` and `listen::ALLOW`;
+- `/proc/version` is still owned by the concrete proc handler;
+- `/proc/{*reserved}` is still owned by the reserved proc handler, checked via
+  finite `OPTIONS` and `PROC_ALLOW`.
+
+Together with existing full-app tests for `/timeline/foo` as an ordinary
+`home/timeline/foo` world and `/proc/audit/*` as proc audit verification, this
+closes the route-topology checklist without adding any `/timeline/*` route.
+
+Fresh review:
+
+- Nash the 2nd / Popper: clean P0-P3. Confirmed the test genuinely closes the
+  stated route-topology gap and, together with existing `/timeline/foo` and
+  `/proc/audit/*` tests, satisfies the checklist.
+- McClintock the 2nd / QA-Enforcement: clean P0-P3. Confirmed the layer is
+  test-only, introduces no production unwrap/expect/unsafe, preserves stacked
+  minimality, and has sufficient local validation.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml reserved_routes_keep_ownership_ahead_of_world_catchall -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
