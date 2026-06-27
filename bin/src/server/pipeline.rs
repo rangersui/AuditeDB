@@ -1259,16 +1259,26 @@ mod tests {
     #[tokio::test]
     async fn pipeline_timeline_get_returns_historical_body_and_proof_headers() {
         let (engine, dir) = test_engine_for_server("pipeline-timeline-get");
-        let query = write_body_and_capture_timeline_query(
+        let address = write_body_and_capture_timeline_address(
             &engine,
             "home/timeline/http",
             b"old",
             vec![
                 ("content-language".to_string(), "en-GB".to_string()),
+                ("x-timeline-world".to_string(), "home/spoof".to_string()),
+                (
+                    "x-timeline-generation".to_string(),
+                    "fedcba9876543210fedcba9876543210".to_string(),
+                ),
                 ("x-timeline-seq".to_string(), "999".to_string()),
+                (
+                    "x-timeline-body-sha256".to_string(),
+                    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_string(),
+                ),
             ],
         )
         .await;
+        let query = timeline_query(&address);
         write_text_world_for_tests(&engine, "home/timeline/http", "new").await;
         let state = server_state_for_engine_for_tests(engine.clone());
         let mut headers = HeaderMap::new();
@@ -1304,8 +1314,31 @@ mod tests {
             resp.headers().get("x-timeline-world").unwrap(),
             "home/timeline/http"
         );
+        assert_eq!(resp.headers().get_all("x-timeline-world").iter().count(), 1);
+        assert_eq!(
+            resp.headers().get("x-timeline-generation").unwrap(),
+            address.generation().as_str()
+        );
+        assert_eq!(
+            resp.headers()
+                .get_all("x-timeline-generation")
+                .iter()
+                .count(),
+            1
+        );
         assert_eq!(resp.headers().get("x-timeline-seq").unwrap(), "1");
         assert_eq!(resp.headers().get_all("x-timeline-seq").iter().count(), 1);
+        assert_eq!(
+            resp.headers().get("x-timeline-body-sha256").unwrap(),
+            address.body_sha256().as_str()
+        );
+        assert_eq!(
+            resp.headers()
+                .get_all("x-timeline-body-sha256")
+                .iter()
+                .count(),
+            1
+        );
         assert!(resp.headers().get(header::ETAG).is_none());
         assert!(resp.headers().get(header::ACCEPT_RANGES).is_none());
         assert!(resp.headers().get(header::CONTENT_RANGE).is_none());
