@@ -1354,6 +1354,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pipeline_timeline_query_rejects_query_world_identity() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-world-query");
+        let address = write_body_and_capture_timeline_address(
+            &engine,
+            "home/timeline/world-query",
+            b"old",
+            Vec::new(),
+        )
+        .await;
+        write_text_world_for_tests(&engine, "home/timeline/world-query", "new").await;
+        let state = server_state_for_engine_for_tests(engine);
+        let query = format!(
+            "{}&timeline-world=home/timeline/other",
+            timeline_query(&address)
+        );
+
+        let resp = run(
+            Method::GET,
+            "/home/timeline/world-query".to_string(),
+            raw_query(&query),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            309,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_text(resp).await,
+            "bad request: invalid timeline query: TimelineWorldComesFromPath\n"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn pipeline_timeline_head_errors_have_no_body() {
         let (engine, dir) = test_engine_for_server("pipeline-timeline-head-errors");
         let address = write_body_and_capture_timeline_address(
