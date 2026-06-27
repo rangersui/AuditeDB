@@ -1564,6 +1564,30 @@ mod tests {
             );
         }
 
+        let memory_engine = state.engine().clone();
+        for (idx, prefix) in ["tmp", "dev", "sys"].into_iter().enumerate() {
+            let world = format!("{prefix}/timeline/errors");
+            write_text_world_for_tests(&memory_engine, &world, "memory-current").await;
+            let memory = run(
+                Method::GET,
+                format!("/{world}"),
+                raw_query(
+                    "timeline=1&timeline-generation=0123456789abcdef0123456789abcdef&\
+                     timeline-seq=1&timeline-body-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                ),
+                HeaderMap::new(),
+                Bytes::new(),
+                &state,
+                316 + idx as u64,
+            )
+            .await;
+            assert_eq!(memory.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response_text(memory).await,
+                "bad request: invalid timeline query: InvalidTimelineCoordinate(MemoryWorld)\n"
+            );
+        }
+
         let huge = format!("{}x", "a=".repeat(4097));
         let resp = run(
             Method::GET,
