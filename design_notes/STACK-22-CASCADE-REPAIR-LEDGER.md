@@ -1608,3 +1608,40 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `python tools\panic_discipline_scan.py core bin ffi`
+
+## 22r87: Timeline HEAD error header parity
+
+- Branch: `stack/22r87-timeline-head-header-parity`
+- Commit: `485209d bin: assert timeline HEAD error headers`
+- Base: `stack/22r86-timeline-pair-cap-test`
+- Scope: closes Hooke the 3rd's PLAN section 8 P2 that HEAD error parity had
+  body/status evidence but incomplete header equality proof for `400`, `404`,
+  and `409` timeline failures.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer strengthens `pipeline_timeline_head_errors_have_no_body` and
+`pipeline_timeline_query_errors_are_closed_and_head_empty` by cloning GET
+headers before consuming the response body, then asserting that HEAD on the
+same failing coordinate/query returns identical headers and an empty body. The
+covered cases are `400` malformed timeline query, `404` MissingRow, both `409`
+branches, and the existing `500` corrupt branch.
+
+Fresh review:
+
+- Russell the 3rd / Popper + Noether: clean P0-P3. Confirmed the layer covers
+  `400`, `404`, both `409` variants, and the existing `500` corrupt branch,
+  and that GET headers are cloned before response-body consumption.
+- Lagrange the 3rd / Bacon + Mencius + QA-Enforcement: clean P0-P3. Confirmed
+  the layer is test-only, adds no production unwrap/expect/unsafe or type-seal
+  bypass, and requires a ledger entry.
+
+Validation:
+
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_head_errors_have_no_body -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_query_errors_are_closed_and_head_empty -- --nocapture`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `git diff --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
