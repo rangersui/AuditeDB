@@ -591,11 +591,11 @@ documented, and treated as a boundary crossing. Adapter crates that do
 not own an audited unsafe boundary, including `bin` and `ffi`, also carry
 CI `-D unsafe_code` gates.
 
-Target state: production crates carry
+Production crates carry
 `#![deny(clippy::unwrap_used, clippy::expect_used)]` at the crate root
-(tests get a module-level `allow`). Until the lint gate is landed in a
-dedicated PR, reviewers enforce the same rule on new and touched
-production code.
+(tests get a module-level `allow`). Reviewers enforce that the crate-root
+lint wall stays present and that new or touched production code does not
+add a naked `unwrap` / `expect`.
 
 A new production `unwrap`/`expect` requires a local lint suppressor with
 a nearby `Invariant:` or `Poison means` comment; CI enforces that with
