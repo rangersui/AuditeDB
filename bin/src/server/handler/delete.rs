@@ -326,10 +326,11 @@ fn invariant_delete_error_phase(message: &'static str, last_step: DeleteStep) ->
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    #[cfg(feature = "multi-thread")]
+    use crate::server::handler::execute_put;
     use crate::{
         engine_types::{Preconditions, Representation},
         server::{
-            handler::execute_put,
             http::semantics::HeaderAllowlist,
             test_support::{
                 server_state_for_engine_for_tests, server_state_with_headers_for_engine_for_tests,
