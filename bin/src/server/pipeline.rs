@@ -459,7 +459,8 @@ mod tests {
         },
         server::test_support::{
             server_state_for_engine_for_tests, test_engine_for_server,
-            test_engine_for_server_with_read_token, write_text_world_for_tests,
+            test_engine_for_server_with_read_token, world_db_path_for_server_tests,
+            write_text_world_for_tests,
         },
     };
     use axum::{
@@ -1362,7 +1363,7 @@ mod tests {
             Vec::new(),
         )
         .await;
-        let state = server_state_for_engine_for_tests(engine);
+        let state = server_state_for_engine_for_tests(engine.clone());
 
         let missing_row = timeline_query_parts(
             address.generation().as_str(),
@@ -1417,6 +1418,56 @@ mod tests {
         .await;
         assert_eq!(hash_mismatch.status(), StatusCode::CONFLICT);
         assert_eq!(response_text(hash_mismatch).await, "");
+
+        write_text_world_for_tests(&engine, "home/timeline/deleted", "gone").await;
+        engine
+            .delete(
+                &world_path("home/timeline/deleted"),
+                Preconditions::none(),
+                AccessTier::Approve,
+            )
+            .await
+            .unwrap();
+        let ledger_db = world_db_path_for_server_tests(&dir, "var/log/deletes");
+        let conn = rusqlite::Connection::open(ledger_db).unwrap();
+        let (ledger_generation, ledger_body_sha256): (String, String) = conn
+            .query_row(
+                "SELECT (SELECT generation FROM stage_meta WHERE id=1), body_sha256 \
+                 FROM events WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        drop(conn);
+        let corrupt_query = timeline_query_parts(&ledger_generation, 1, &ledger_body_sha256);
+
+        let get_corrupt = run(
+            Method::GET,
+            "/var/log/deletes".to_string(),
+            raw_query(&corrupt_query),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            312,
+        )
+        .await;
+        assert_eq!(get_corrupt.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let corrupt_headers = get_corrupt.headers().clone();
+        assert_eq!(response_text(get_corrupt).await, "timeline corruption\n");
+
+        let head_corrupt = run(
+            Method::HEAD,
+            "/var/log/deletes".to_string(),
+            raw_query(&corrupt_query),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            313,
+        )
+        .await;
+        assert_eq!(head_corrupt.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(head_corrupt.headers(), &corrupt_headers);
+        assert_eq!(response_text(head_corrupt).await, "");
 
         let _ = std::fs::remove_dir_all(dir);
     }
