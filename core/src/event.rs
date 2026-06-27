@@ -3,7 +3,7 @@
 //! The engine owns event ids, replay matching, and the live broadcast stream;
 //! adapters choose how to render those events.
 
-use crate::engine_subscription::SubscriptionEpoch;
+use crate::engine_subscription::{SubscribePattern, SubscriptionEpoch};
 use crate::engine_types::{ChangeVerb, ValidatedWorldPath};
 use crate::timeline::TimelineAddress;
 
@@ -133,7 +133,8 @@ pub(crate) fn matches(pattern: &str, path: &str) -> bool {
     }
 }
 
-pub(crate) fn matches_world(pattern: &str, path: &ValidatedWorldPath) -> bool {
+pub(crate) fn matches_world(pattern: &SubscribePattern, path: &ValidatedWorldPath) -> bool {
+    let pattern = pattern.as_str();
     if pattern == "*" {
         return true;
     }
@@ -167,12 +168,17 @@ mod tests {
     #[test]
     fn patterns_match_validated_world_paths() {
         let path = ValidatedWorldPath::new("home/task/a").unwrap();
+        let catch_all = SubscribePattern::new("*");
+        let home_tasks = SubscribePattern::new("/home/task/*");
+        let exact = SubscribePattern::new("/home/task/a");
+        let near_miss = SubscribePattern::new("/home/task/ab");
+        let other = SubscribePattern::new("/home/other/*");
 
-        assert!(matches_world("*", &path));
-        assert!(matches_world("/home/task/*", &path));
-        assert!(matches_world("/home/task/a", &path));
-        assert!(!matches_world("/home/task/ab", &path));
-        assert!(!matches_world("/home/other/*", &path));
+        assert!(matches_world(&catch_all, &path));
+        assert!(matches_world(&home_tasks, &path));
+        assert!(matches_world(&exact, &path));
+        assert!(!matches_world(&near_miss, &path));
+        assert!(!matches_world(&other, &path));
     }
 
     #[test]

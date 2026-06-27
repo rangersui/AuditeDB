@@ -515,9 +515,7 @@ pub(crate) fn replay_after(
     });
     let replay: Vec<ChangeEvent> = log
         .iter()
-        .filter(|change| {
-            change.id > last_id && event::matches_world(pattern.as_str(), &change.path)
-        })
+        .filter(|change| change.id > last_id && event::matches_world(pattern, &change.path))
         .cloned()
         .map(Into::into)
         .collect();

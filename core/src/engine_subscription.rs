@@ -521,7 +521,7 @@ impl EngineSubscription {
                             match item {
                                 Ok(change)
                                     if (!live.replay_mode || change.id > live.live_floor)
-                                        && crate::event::matches_world(live.pattern.as_str(), &change.path) =>
+                                        && crate::event::matches_world(&live.pattern, &change.path) =>
                                 {
                                     self.state = SubscriptionState::Live(live);
                                     return Ok(change.into());
