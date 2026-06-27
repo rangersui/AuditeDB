@@ -1117,3 +1117,51 @@ Fresh final validation:
 - `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
 - `git diff --check`
 - `git diff --cached --check`
+
+## 22r75: Timeline HEAD corrupt parity
+
+- Branch: `stack/22r75-timeline-head-corrupt-test`
+- Commit: `c602f69 bin: cover timeline HEAD corrupt parity`
+- Base: `stack/22r74-bin-no-default-test-hygiene`
+- Scope: test-only coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` HEAD error parity.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer extends `pipeline_timeline_head_errors_have_no_body` to cover the
+`TimelineDereference::Corrupt` 500 branch, not only 400/404/409 outcomes. The
+test creates a delete-ledger row, builds a timeline coordinate against
+`/var/log/deletes`, proves GET returns `500` with `timeline corruption\n`, then
+proves HEAD returns the same status and headers with an empty body.
+
+Confirmed and fixed review findings:
+
+- Archimedes the 2nd / Popper found P1: the first attempt deleted
+  `cas_bodies`, which triggered generic audit/storage failure rather than
+  `TimelineDereference::Corrupt`. Fixed by targeting a verified
+  `var/log/deletes` metadata row whose event target differs from the request
+  world.
+- Archimedes the 2nd / Popper found P2: the first attempt asserted only status
+  and empty body, not GET/HEAD header parity. Fixed by comparing the full HEAD
+  header map with the GET header map for the same corrupt coordinate.
+
+Fresh post-fix review:
+
+- Noether the 2nd / Popper: clean P0-P3. Confirmed the test reaches
+  `match_body_row_target_first` -> `TargetMismatch` ->
+  `TimelineDereference::Corrupt`, and the asserted GET body distinguishes it
+  from the generic storage-error branch.
+- Lagrange the 2nd / QA-Enforcement: clean P0-P3. Confirmed the layer is a
+  small test-only stacked change and the new unwraps stay inside the test
+  module's panic-lint allow.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_head_errors_have_no_body -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --no-default-features --all-targets -- -D warnings`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
+- `git diff --cached --check`
