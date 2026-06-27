@@ -65,6 +65,16 @@ pub enum InvalidHmacKey {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ValidatedWorldPath(String);
 
+/// Canonical world-key prefix accepted by internal list scans.
+///
+/// Prefixes are not full world names: `home`, `home/`, and `home/sensor/`
+/// are valid scan prefixes even though namespace roots are not worlds. The
+/// constructor still rejects wire paths, unknown namespaces, traversal-looking
+/// segments, empty middle segments, control bytes, and backslashes before the
+/// raw prefix reaches storage filters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedWorldPrefix(String);
+
 /// Returned when a world key cannot be represented as an Engine world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidWorldPath;
@@ -338,6 +348,62 @@ impl ValidatedWorldPath {
     }
 }
 
+impl ValidatedWorldPrefix {
+    pub(crate) fn new(prefix: impl Into<String>) -> Result<Self, InvalidWorldPath> {
+        let prefix = prefix.into();
+        validate_world_prefix(&prefix)?;
+        let candidate = if prefix.is_empty() {
+            "home/_".to_owned()
+        } else if crate::path::NAMESPACE_PREFIXES.contains(&prefix.as_str()) {
+            format!("{prefix}/_")
+        } else {
+            format!("{prefix}_")
+        };
+        ValidatedWorldPath::new(candidate)?;
+        Ok(Self(prefix))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn validate_world_prefix(prefix: &str) -> Result<(), InvalidWorldPath> {
+    if prefix.is_empty() {
+        return Ok(());
+    }
+    if prefix.contains('\\') || prefix.chars().any(char::is_control) {
+        return Err(InvalidWorldPath);
+    }
+    let namespace = prefix.split('/').next().unwrap_or("");
+    if !crate::path::NAMESPACE_PREFIXES.contains(&namespace) {
+        return Err(InvalidWorldPath);
+    }
+
+    let mut segments = prefix.split('/').peekable();
+    while let Some(segment) = segments.next() {
+        let is_final = segments.peek().is_none();
+        if segment.is_empty() {
+            if is_final && prefix.ends_with('/') {
+                continue;
+            }
+            return Err(InvalidWorldPath);
+        }
+        if is_prefix_dot_like(segment) {
+            return Err(InvalidWorldPath);
+        }
+    }
+    Ok(())
+}
+
+fn is_prefix_dot_like(segment: &str) -> bool {
+    segment.starts_with('.')
+        || segment
+            .as_bytes()
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"%2e"))
+}
+
 fn has_canonical_namespace(world: &str) -> bool {
     crate::path::NAMESPACE_PREFIXES.contains(&world.split('/').next().unwrap_or(""))
 }
@@ -442,7 +508,7 @@ impl std::error::Error for InvalidHmacKey {}
 mod tests {
     use super::{
         AuditHmacKey, EtagMatcher, InvalidHmacKey, Preconditions, Representation, SecretBytes,
-        ValidatedWorldPath, MIN_HMAC_KEY_BYTES,
+        ValidatedWorldPath, ValidatedWorldPrefix, MIN_HMAC_KEY_BYTES,
     };
     use bytes::Bytes;
 
@@ -506,6 +572,33 @@ mod tests {
         assert!(ValidatedWorldPath::new("var/log").is_err());
         assert!(ValidatedWorldPath::new("proc/version").is_err());
         assert!(ValidatedWorldPath::new("home/../etc/key").is_err());
+    }
+
+    #[test]
+    fn validated_world_prefix_accepts_prefixes_of_canonical_worlds() {
+        for prefix in ["", "home", "home/", "home/sensor/", "var/log"] {
+            assert_eq!(ValidatedWorldPrefix::new(prefix).unwrap().as_str(), prefix);
+        }
+    }
+
+    #[test]
+    fn validated_world_prefix_rejects_wire_proc_and_malformed_prefixes() {
+        for prefix in [
+            "/home/",
+            "foo/",
+            "proc/",
+            "home//sensor",
+            "home\\sensor",
+            "home/..",
+            "home/.",
+            "home/%2e",
+            "home/%2e%2e",
+            "home/.ssh",
+            "../home",
+            "home/../etc",
+        ] {
+            assert!(ValidatedWorldPrefix::new(prefix).is_err());
+        }
     }
 
     #[test]

@@ -5,7 +5,10 @@ use rusqlite::{ffi, Connection, OpenFlags};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::{engine_types::ValidatedWorldPath, world_schema};
+use crate::{
+    engine_types::{ValidatedWorldPath, ValidatedWorldPrefix},
+    world_schema,
+};
 
 use super::{create_dir_error, disk_name, validated_world_db, validated_world_dir};
 
@@ -48,18 +51,21 @@ pub fn list(data_root: &Path) -> rusqlite::Result<Vec<String>> {
 }
 
 /// List sqlite-backed world keys with a canonical prefix.
-pub fn list_with_prefix(data_root: &Path, prefix: &str) -> rusqlite::Result<Vec<String>> {
-    list_matching(data_root, |world| world.starts_with(prefix))
+pub fn list_with_prefix(
+    data_root: &Path,
+    prefix: &ValidatedWorldPrefix,
+) -> rusqlite::Result<Vec<String>> {
+    list_matching(data_root, |world| world.starts_with(prefix.as_str()))
 }
 
 /// List sqlite-backed world keys with a canonical prefix, returning `None`
 /// before materializing more than `max` matches.
 pub fn list_with_prefix_bounded(
     data_root: &Path,
-    prefix: &str,
+    prefix: &ValidatedWorldPrefix,
     max: usize,
 ) -> rusqlite::Result<Option<Vec<String>>> {
-    list_matching_bounded(data_root, |world| world.starts_with(prefix), max)
+    list_matching_bounded(data_root, |world| world.starts_with(prefix.as_str()), max)
 }
 
 fn release_wal_files(data_root: &Path, world: &ValidatedWorldPath) {

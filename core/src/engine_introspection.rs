@@ -11,7 +11,7 @@ use crate::{
     auth,
     engine::{Engine, EngineError},
     engine_ops::{log_storage_error, EngineOps},
-    engine_types::{AccessTier, ValidatedWorldPath},
+    engine_types::{AccessTier, ValidatedWorldPath, ValidatedWorldPrefix},
     store, world, AuthGate, StorageFailureClass,
 };
 
@@ -304,7 +304,7 @@ impl EngineOps<'_> {
 
     pub(crate) fn list_worlds_with_prefix(
         &self,
-        prefix: &str,
+        prefix: &ValidatedWorldPrefix,
         tier: auth::Tier,
     ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
         if !crate::can_read(self.core(), tier) {
@@ -324,7 +324,7 @@ impl EngineOps<'_> {
 
     pub(crate) fn list_worlds_with_prefix_bounded(
         &self,
-        prefix: &str,
+        prefix: &ValidatedWorldPrefix,
         tier: auth::Tier,
         max: usize,
     ) -> Result<Option<Vec<ValidatedWorldPath>>, EngineError> {
@@ -555,7 +555,9 @@ impl Engine {
         prefix: &str,
         tier: AccessTier,
     ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
-        EngineOps::new(self.core()).list_worlds_with_prefix(prefix, tier.into())
+        let prefix =
+            ValidatedWorldPrefix::new(prefix).map_err(|_| EngineError::InvalidWorldName)?;
+        EngineOps::new(self.core()).list_worlds_with_prefix(&prefix, tier.into())
     }
 
     /// Lists canonical worlds with the supplied canonical prefix, returning
@@ -571,7 +573,9 @@ impl Engine {
         tier: AccessTier,
         max: usize,
     ) -> Result<Option<Vec<ValidatedWorldPath>>, EngineError> {
-        EngineOps::new(self.core()).list_worlds_with_prefix_bounded(prefix, tier.into(), max)
+        let prefix =
+            ValidatedWorldPrefix::new(prefix).map_err(|_| EngineError::InvalidWorldName)?;
+        EngineOps::new(self.core()).list_worlds_with_prefix_bounded(&prefix, tier.into(), max)
     }
 
     /// Returns per-world body byte size, `du`-style.
@@ -866,6 +870,84 @@ mod tests {
                 "proc permit endpoint mismatch"
             ))
         ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_prefix_listing_validates_prefixes_and_preserves_scan_semantics() {
+        let root = temp_root("prefixes");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
+            .build()
+            .unwrap();
+        let disk_sensor = ValidatedWorldPath::new("home/sensor/temp").unwrap();
+        let disk_other = ValidatedWorldPath::new("home/other").unwrap();
+        let memory_sensor = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
+
+        for world in [&disk_sensor, &disk_other, &memory_sensor] {
+            engine
+                .replace(
+                    world,
+                    Representation::new(Bytes::from_static(b"v"), "text/plain", Vec::new()),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await
+                .unwrap();
+        }
+
+        let to_names = |worlds: Vec<ValidatedWorldPath>| {
+            worlds
+                .into_iter()
+                .map(|world| world.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let all = engine.list_worlds(AccessTier::Read).unwrap();
+        assert_eq!(
+            to_names(
+                engine
+                    .list_worlds_with_prefix("", AccessTier::Read)
+                    .unwrap()
+            ),
+            to_names(all)
+        );
+
+        let home_sensor = engine
+            .list_worlds_with_prefix("home/sensor/", AccessTier::Read)
+            .unwrap();
+        assert_eq!(to_names(home_sensor.clone()), vec!["home/sensor/temp"]);
+        assert_eq!(
+            engine
+                .list_worlds_with_prefix_bounded("home/sensor/", AccessTier::Read, 10)
+                .unwrap(),
+            Some(home_sensor)
+        );
+
+        let tmp_sensor = engine
+            .list_worlds_with_prefix("tmp/sensor/", AccessTier::Read)
+            .unwrap();
+        assert_eq!(to_names(tmp_sensor.clone()), vec!["tmp/sensor/temp"]);
+        assert_eq!(
+            engine
+                .list_worlds_with_prefix_bounded("tmp/sensor/", AccessTier::Read, 10)
+                .unwrap(),
+            Some(tmp_sensor)
+        );
+
+        for prefix in ["home/..", "home/.", "home/.ssh", "/home/", "proc/"] {
+            assert!(matches!(
+                engine.list_worlds_with_prefix(prefix, AccessTier::Read),
+                Err(EngineError::InvalidWorldName)
+            ));
+            assert!(matches!(
+                engine.list_worlds_with_prefix_bounded(prefix, AccessTier::Read, 10),
+                Err(EngineError::InvalidWorldName)
+            ));
+        }
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);

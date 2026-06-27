@@ -17,7 +17,7 @@
 //! by definition not tamper-evident across restarts.
 
 use crate::{
-    engine_types::ValidatedWorldPath,
+    engine_types::{ValidatedWorldPath, ValidatedWorldPrefix},
     world::{self, AppendResult, Stage, WorldMetadata},
 };
 use std::collections::HashMap;
@@ -248,23 +248,27 @@ impl MemoryStore {
         out
     }
 
-    pub fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+    pub fn list_with_prefix(&self, prefix: &ValidatedWorldPrefix) -> Vec<String> {
         let mut out: Vec<String> = self
             .map_guard()
             .keys()
-            .filter(|world| world.starts_with(prefix))
+            .filter(|world| world.starts_with(prefix.as_str()))
             .cloned()
             .collect();
         out.sort();
         out
     }
 
-    pub fn list_with_prefix_bounded(&self, prefix: &str, max: usize) -> Option<Vec<String>> {
+    pub fn list_with_prefix_bounded(
+        &self,
+        prefix: &ValidatedWorldPrefix,
+        max: usize,
+    ) -> Option<Vec<String>> {
         let mut out = Vec::new();
         for world in self
             .map_guard()
             .keys()
-            .filter(|world| world.starts_with(prefix))
+            .filter(|world| world.starts_with(prefix.as_str()))
         {
             if out.len() >= max {
                 return None;
