@@ -293,7 +293,7 @@ impl EngineOps<'_> {
         ensure_proc_endpoint(&permit, ProcEndpoint::Worlds)?;
         let mut names = world::list(&self.core().data)
             .map_err(|err| storage_error_to_engine("proc worlds", err, "list_worlds", None))?;
-        names.extend(validated_worlds_from_storage(self.core().mem.list())?);
+        names.extend(self.core().mem.list());
         sort_dedup_worlds(&mut names);
         Ok(names)
     }
@@ -309,9 +309,7 @@ impl EngineOps<'_> {
         let mut names = world::list_with_prefix(&self.core().data, prefix).map_err(|err| {
             storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
         })?;
-        names.extend(validated_worlds_from_storage(
-            self.core().mem.list_with_prefix(prefix),
-        )?);
+        names.extend(self.core().mem.list_with_prefix(prefix));
         sort_dedup_worlds(&mut names);
         Ok(names)
     }
@@ -336,7 +334,7 @@ impl EngineOps<'_> {
         let Some(mem_names) = self.core().mem.list_with_prefix_bounded(prefix, limit) else {
             return Ok(None);
         };
-        names.extend(validated_worlds_from_storage(mem_names)?);
+        names.extend(mem_names);
         sort_dedup_worlds(&mut names);
         if names.len() > max {
             return Ok(None);
@@ -696,15 +694,6 @@ fn storage_error_to_engine(
 fn validated_world_from_storage(world: String) -> Result<ValidatedWorldPath, EngineError> {
     ValidatedWorldPath::from_canonical(world)
         .map_err(|_| EngineError::InternalInvariant("storage returned invalid world path"))
-}
-
-fn validated_worlds_from_storage(
-    worlds: Vec<String>,
-) -> Result<Vec<ValidatedWorldPath>, EngineError> {
-    worlds
-        .into_iter()
-        .map(validated_world_from_storage)
-        .collect()
 }
 
 fn sort_dedup_worlds(worlds: &mut Vec<ValidatedWorldPath>) {

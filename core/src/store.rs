@@ -242,20 +242,24 @@ impl MemoryStore {
         map.remove(world.as_str()).is_some()
     }
 
-    pub fn list(&self) -> Vec<String> {
-        let mut out: Vec<String> = self.map_guard().keys().cloned().collect();
-        out.sort();
+    pub fn list(&self) -> Vec<ValidatedWorldPath> {
+        let mut out: Vec<ValidatedWorldPath> = self
+            .map_guard()
+            .keys()
+            .map(|world| memory_world_from_storage(world))
+            .collect();
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         out
     }
 
-    pub fn list_with_prefix(&self, prefix: &ValidatedWorldPrefix) -> Vec<String> {
-        let mut out: Vec<String> = self
+    pub fn list_with_prefix(&self, prefix: &ValidatedWorldPrefix) -> Vec<ValidatedWorldPath> {
+        let mut out: Vec<ValidatedWorldPath> = self
             .map_guard()
             .keys()
             .filter(|world| world.starts_with(prefix.as_str()))
-            .cloned()
+            .map(|world| memory_world_from_storage(world))
             .collect();
-        out.sort();
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         out
     }
 
@@ -263,7 +267,7 @@ impl MemoryStore {
         &self,
         prefix: &ValidatedWorldPrefix,
         max: usize,
-    ) -> Option<Vec<String>> {
+    ) -> Option<Vec<ValidatedWorldPath>> {
         let mut out = Vec::new();
         for world in self
             .map_guard()
@@ -273,9 +277,9 @@ impl MemoryStore {
             if out.len() >= max {
                 return None;
             }
-            out.push(world.clone());
+            out.push(memory_world_from_storage(world));
         }
-        out.sort();
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         Some(out)
     }
 
@@ -301,6 +305,15 @@ impl MemoryStore {
     }
 }
 
+fn memory_world_from_storage(world: &str) -> ValidatedWorldPath {
+    // The only write/delete paths into MemoryStore accept MemoryWorldPath,
+    // which is minted from ValidatedWorldPath and memory-prefix routing. A
+    // malformed key here means this module corrupted its own private map.
+    #[allow(clippy::expect_used)]
+    ValidatedWorldPath::from_canonical(world.to_owned())
+        .expect("memory store contains only validated memory world paths")
+}
+
 /// Combined view: sqlite + memory. Used by tests that assert both stores agree.
 #[cfg(test)]
 pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<String>> {
@@ -308,7 +321,11 @@ pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<Str
         .into_iter()
         .map(|world| world.as_str().to_owned())
         .collect();
-    out.extend(mem.list());
+    out.extend(
+        mem.list()
+            .into_iter()
+            .map(|world| world.as_str().to_owned()),
+    );
     out.sort();
     out.dedup();
     Ok(out)
