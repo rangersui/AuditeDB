@@ -1738,3 +1738,44 @@ Validation:
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `python tools\header_policy_scan.py --offline`
 - `git diff --check`
+
+## 22r90: Deleted timeline worlds stay unproven
+
+- Branch: `stack/22r90-timeline-deleted-unproven`
+- Commit: `1e36457 bin: prove deleted timeline worlds stay unproven`
+- Base: `stack/22r89-timeline-proof-header-spoof`
+- Scope: closes the PLAN section 8 / Counterexamples F, K, and L proof gap
+  that v1 must not scan `var/log/deletes` or emit `Gone` for a deleted subject
+  world without a bounded delete-proof lookup.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer strengthens `pipeline_timeline_missing_world_is_unproven_not_gone`.
+It now covers both an ordinary never-created missing durable world and a
+durable world that was created, produced a real timeline address, then was
+deleted with a real `var/log/deletes` ledger present. The deleted-world request
+uses the old captured coordinate and still receives `404` with
+`timeline coordinate not proven\n`, proving the HTTP timeline path does not
+fall back to current reads, does not infer `Gone` from physical absence, and
+does not scan the delete ledger in v1.
+
+Fresh review:
+
+- Volta the 3rd / Popper + Poincare: clean P0-P3. Confirmed the case is not
+  merely never-created, uses a real deleted world and real delete ledger,
+  enters the timeline route, avoids current-read fallback, does not reference
+  `var/log/deletes` in the dereference path, and maps the missing/deleted
+  subject to `UnprovenCoordinate` / `404`.
+- Franklin the 3rd / Bacon + Mencius + QA-Enforcement: clean P0-P3. Confirmed
+  the layer is test-only, adds no public API or unsafe, adds no raw proof
+  bypass, and the new unwrap is inside the existing test-module allowance.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_missing_world_is_unproven_not_gone -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
