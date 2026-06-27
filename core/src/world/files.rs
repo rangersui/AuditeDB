@@ -45,8 +45,8 @@ pub(crate) fn delete(data_root: &Path, world: &ValidatedWorldPath) -> bool {
 }
 
 /// List all sqlite-backed world keys by scanning the data dir.
-/// Returns canonical (decoded) names.
-pub fn list(data_root: &Path) -> rusqlite::Result<Vec<String>> {
+/// Returns decoded names as validated world-path proofs.
+pub fn list(data_root: &Path) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
     list_matching(data_root, |_| true)
 }
 
@@ -54,8 +54,10 @@ pub fn list(data_root: &Path) -> rusqlite::Result<Vec<String>> {
 pub fn list_with_prefix(
     data_root: &Path,
     prefix: &ValidatedWorldPrefix,
-) -> rusqlite::Result<Vec<String>> {
-    list_matching(data_root, |world| world.starts_with(prefix.as_str()))
+) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
+    list_matching(data_root, |world| {
+        world.as_str().starts_with(prefix.as_str())
+    })
 }
 
 /// List sqlite-backed world keys with a canonical prefix, returning `None`
@@ -64,8 +66,12 @@ pub fn list_with_prefix_bounded(
     data_root: &Path,
     prefix: &ValidatedWorldPrefix,
     max: usize,
-) -> rusqlite::Result<Option<Vec<String>>> {
-    list_matching_bounded(data_root, |world| world.starts_with(prefix.as_str()), max)
+) -> rusqlite::Result<Option<Vec<ValidatedWorldPath>>> {
+    list_matching_bounded(
+        data_root,
+        |world| world.as_str().starts_with(prefix.as_str()),
+        max,
+    )
 }
 
 fn release_wal_files(data_root: &Path, world: &ValidatedWorldPath) {
@@ -136,8 +142,8 @@ fn log_wal_release_error(world: &str, phase: &str, err: &rusqlite::Error) {
 
 fn list_matching(
     data_root: &Path,
-    mut keep: impl FnMut(&str) -> bool,
-) -> rusqlite::Result<Vec<String>> {
+    mut keep: impl FnMut(&ValidatedWorldPath) -> bool,
+) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
     let mut out = Vec::new();
     let rd = std::fs::read_dir(data_root).map_err(create_dir_error)?;
     for entry in rd {
@@ -149,20 +155,20 @@ fn list_matching(
             .file_name()
             .into_string()
             .map_err(|_| corrupt_disk_world_name("<non-unicode>", "disk name is not Unicode"))?;
-        let decoded = decode_disk_world_name(&name)?;
-        if keep(&decoded) {
-            out.push(decoded);
+        let world = decode_disk_world_name(&name)?;
+        if keep(&world) {
+            out.push(world);
         }
     }
-    out.sort();
+    out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     Ok(out)
 }
 
 fn list_matching_bounded(
     data_root: &Path,
-    mut keep: impl FnMut(&str) -> bool,
+    mut keep: impl FnMut(&ValidatedWorldPath) -> bool,
     max: usize,
-) -> rusqlite::Result<Option<Vec<String>>> {
+) -> rusqlite::Result<Option<Vec<ValidatedWorldPath>>> {
     let mut out = Vec::new();
     let rd = std::fs::read_dir(data_root).map_err(create_dir_error)?;
     for entry in rd {
@@ -174,24 +180,24 @@ fn list_matching_bounded(
             .file_name()
             .into_string()
             .map_err(|_| corrupt_disk_world_name("<non-unicode>", "disk name is not Unicode"))?;
-        let decoded = decode_disk_world_name(&name)?;
-        if keep(&decoded) {
+        let world = decode_disk_world_name(&name)?;
+        if keep(&world) {
             if out.len() >= max {
                 return Ok(None);
             }
-            out.push(decoded);
+            out.push(world);
         }
     }
-    out.sort();
+    out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     Ok(Some(out))
 }
 
-fn decode_disk_world_name(name: &str) -> rusqlite::Result<String> {
+fn decode_disk_world_name(name: &str) -> rusqlite::Result<ValidatedWorldPath> {
     let decoded = percent_decode_str(name)
         .decode_utf8()
         .map_err(|err| corrupt_disk_world_name(name, format!("invalid percent UTF-8: {err}")))?
         .into_owned();
-    let world = ValidatedWorldPath::new(decoded.clone())
+    let world = ValidatedWorldPath::new(decoded)
         .map_err(|_| corrupt_disk_world_name(name, "decoded world path failed validation"))?;
     let canonical = disk_name(world.as_str());
     if canonical != name {
@@ -200,7 +206,7 @@ fn decode_disk_world_name(name: &str) -> rusqlite::Result<String> {
             format!("non-canonical disk name for {}", world.as_str()),
         ));
     }
-    Ok(decoded)
+    Ok(world)
 }
 
 fn corrupt_disk_world_name(name: &str, detail: impl Into<String>) -> rusqlite::Error {

@@ -119,10 +119,8 @@ pub enum VerifyReport {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()> {
-    for world_name in world::list(data_root)? {
-        let world_path =
-            ValidatedWorldPath::new(world_name).map_err(|_| rusqlite::Error::InvalidQuery)?;
-        verify_world(data_root, &world_path, key)?;
+    for world in world::list(data_root)? {
+        verify_world(data_root, &world, key)?;
     }
     Ok(())
 }

@@ -304,7 +304,10 @@ impl MemoryStore {
 /// Combined view: sqlite + memory. Used by tests that assert both stores agree.
 #[cfg(test)]
 pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<String>> {
-    let mut out = world::list(data_root)?;
+    let mut out: Vec<String> = world::list(data_root)?
+        .into_iter()
+        .map(|world| world.as_str().to_owned())
+        .collect();
     out.extend(mem.list());
     out.sort();
     out.dedup();
@@ -398,6 +401,46 @@ mod tests {
 
         let names = list_all(&core.data, &core.mem);
         assert_eq!(names.unwrap(), vec!["home/report".to_string()]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn list_all_merges_disk_and_memory_worlds_sorted_and_deduped() {
+        let (core, dir) = test_core("list-all");
+        let disk_b = ValidatedWorldPath::new("home/b").unwrap();
+        let disk_tmp = ValidatedWorldPath::new("tmp/dup").unwrap();
+        world::write_with_audit(
+            &core.data,
+            &disk_b,
+            b"disk",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        world::write_with_audit(
+            &core.data,
+            &disk_tmp,
+            b"legacy-disk-tmp",
+            "text/plain",
+            &[],
+            &core.hmac_key,
+        )
+        .unwrap();
+        core.test_only_write_world("tmp/a", b"mem", "text/plain", &[])
+            .unwrap();
+        core.test_only_write_world("tmp/dup", b"mem", "text/plain", &[])
+            .unwrap();
+
+        assert_eq!(
+            list_all(&core.data, &core.mem).unwrap(),
+            vec![
+                "home/b".to_string(),
+                "tmp/a".to_string(),
+                "tmp/dup".to_string()
+            ]
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

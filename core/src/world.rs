@@ -394,15 +394,9 @@ pub fn body_len(data_root: &Path, world: &ValidatedWorldPath) -> rusqlite::Resul
 
 pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(String, usize)>> {
     let mut out = Vec::new();
-    for world in list(data_root)? {
-        let world_path = ValidatedWorldPath::new(world.clone()).map_err(|_| {
-            rusqlite::Error::SqliteFailure(
-                ffi::Error::new(ffi::SQLITE_CORRUPT),
-                Some("disk world name failed validation".to_owned()),
-            )
-        })?;
+    for world_path in list(data_root)? {
         if let Some(size) = storage_len(data_root, &world_path)? {
-            out.push((world, size));
+            out.push((world_path.as_str().to_owned(), size));
         }
     }
     Ok(out)

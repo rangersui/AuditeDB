@@ -293,13 +293,9 @@ impl EngineOps<'_> {
         ensure_proc_endpoint(&permit, ProcEndpoint::Worlds)?;
         let mut names = world::list(&self.core().data)
             .map_err(|err| storage_error_to_engine("proc worlds", err, "list_worlds", None))?;
-        names.extend(self.core().mem.list());
-        names.sort();
-        names.dedup();
-        names
-            .into_iter()
-            .map(validated_world_from_storage)
-            .collect()
+        names.extend(validated_worlds_from_storage(self.core().mem.list())?);
+        sort_dedup_worlds(&mut names);
+        Ok(names)
     }
 
     pub(crate) fn list_worlds_with_prefix(
@@ -313,13 +309,11 @@ impl EngineOps<'_> {
         let mut names = world::list_with_prefix(&self.core().data, prefix).map_err(|err| {
             storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
         })?;
-        names.extend(self.core().mem.list_with_prefix(prefix));
-        names.sort();
-        names.dedup();
-        names
-            .into_iter()
-            .map(validated_world_from_storage)
-            .collect()
+        names.extend(validated_worlds_from_storage(
+            self.core().mem.list_with_prefix(prefix),
+        )?);
+        sort_dedup_worlds(&mut names);
+        Ok(names)
     }
 
     pub(crate) fn list_worlds_with_prefix_bounded(
@@ -342,17 +336,12 @@ impl EngineOps<'_> {
         let Some(mem_names) = self.core().mem.list_with_prefix_bounded(prefix, limit) else {
             return Ok(None);
         };
-        names.extend(mem_names);
-        names.sort();
-        names.dedup();
+        names.extend(validated_worlds_from_storage(mem_names)?);
+        sort_dedup_worlds(&mut names);
         if names.len() > max {
             return Ok(None);
         }
-        names
-            .into_iter()
-            .map(validated_world_from_storage)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Some)
+        Ok(Some(names))
     }
 
     pub(crate) fn du(
@@ -709,6 +698,20 @@ fn validated_world_from_storage(world: String) -> Result<ValidatedWorldPath, Eng
         .map_err(|_| EngineError::InternalInvariant("storage returned invalid world path"))
 }
 
+fn validated_worlds_from_storage(
+    worlds: Vec<String>,
+) -> Result<Vec<ValidatedWorldPath>, EngineError> {
+    worlds
+        .into_iter()
+        .map(validated_world_from_storage)
+        .collect()
+}
+
+fn sort_dedup_worlds(worlds: &mut Vec<ValidatedWorldPath>) {
+    worlds.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    worlds.dedup();
+}
+
 fn ensure_proc_endpoint(
     permit: &IntrospectionPermit,
     expected: ProcEndpoint,
@@ -886,14 +889,20 @@ mod tests {
         let disk_sensor = ValidatedWorldPath::new("home/sensor/temp").unwrap();
         let disk_other = ValidatedWorldPath::new("home/other").unwrap();
         let memory_sensor = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
+        let protected_log = ValidatedWorldPath::new("var/log/deletes").unwrap();
 
-        for world in [&disk_sensor, &disk_other, &memory_sensor] {
+        for (world, tier) in [
+            (&disk_sensor, AccessTier::Write),
+            (&disk_other, AccessTier::Write),
+            (&memory_sensor, AccessTier::Write),
+            (&protected_log, AccessTier::Approve),
+        ] {
             engine
                 .replace(
                     world,
                     Representation::new(Bytes::from_static(b"v"), "text/plain", Vec::new()),
                     Preconditions::none(),
-                    AccessTier::Write,
+                    tier,
                 )
                 .await
                 .unwrap();
@@ -938,6 +947,33 @@ mod tests {
             Some(tmp_sensor)
         );
 
+        let prefix_cases = [
+            (
+                "home",
+                vec!["home/other".to_string(), "home/sensor/temp".to_string()],
+            ),
+            (
+                "home/",
+                vec!["home/other".to_string(), "home/sensor/temp".to_string()],
+            ),
+            ("tmp", vec!["tmp/sensor/temp".to_string()]),
+            ("tmp/", vec!["tmp/sensor/temp".to_string()]),
+            ("var/log", vec!["var/log/deletes".to_string()]),
+        ];
+        for (prefix, expected) in prefix_cases {
+            let listed = engine
+                .list_worlds_with_prefix(prefix, AccessTier::Read)
+                .unwrap();
+            assert_eq!(to_names(listed.clone()), expected, "{prefix}");
+            assert_eq!(
+                engine
+                    .list_worlds_with_prefix_bounded(prefix, AccessTier::Read, 10)
+                    .unwrap(),
+                Some(listed),
+                "{prefix}"
+            );
+        }
+
         for prefix in ["home/..", "home/.", "home/.ssh", "/home/", "proc/"] {
             assert!(matches!(
                 engine.list_worlds_with_prefix(prefix, AccessTier::Read),
@@ -948,6 +984,73 @@ mod tests {
                 Err(EngineError::InvalidWorldName)
             ));
         }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_world_listing_returns_sorted_unique_durable_and_memory_names() {
+        let root = temp_root("world-listing");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
+            .build()
+            .unwrap();
+        let disk_b = ValidatedWorldPath::new("home/b").unwrap();
+        let disk_tmp = ValidatedWorldPath::new("tmp/dup").unwrap();
+
+        crate::world::write_with_audit(
+            &engine.core().data,
+            &disk_b,
+            b"disk",
+            "text/plain",
+            &[],
+            &engine.core().hmac_key,
+        )
+        .unwrap();
+        crate::world::write_with_audit(
+            &engine.core().data,
+            &disk_tmp,
+            b"legacy-disk-tmp",
+            "text/plain",
+            &[],
+            &engine.core().hmac_key,
+        )
+        .unwrap();
+        engine
+            .replace(
+                &ValidatedWorldPath::new("tmp/a").unwrap(),
+                Representation::new(Bytes::from_static(b"mem"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        engine
+            .replace(
+                &ValidatedWorldPath::new("tmp/dup").unwrap(),
+                Representation::new(Bytes::from_static(b"mem"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let names = engine
+            .list_worlds(AccessTier::Read)
+            .unwrap()
+            .into_iter()
+            .map(|world| world.as_str().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "home/b".to_string(),
+                "tmp/a".to_string(),
+                "tmp/dup".to_string()
+            ]
+        );
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);

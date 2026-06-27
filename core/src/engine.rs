@@ -524,14 +524,8 @@ fn verify_all_worlds_with_names(
         sqlite_code: sqlite_code(&err),
         detail: format!("list worlds for audit verification failed: {err}"),
     })?;
-    for world_name in worlds {
-        let world_path =
-            crate::engine_types::ValidatedWorldPath::new(world_name.clone()).map_err(|_| {
-                EngineBuildError::Storage {
-                    sqlite_code: None,
-                    detail: format!("disk world name failed validation: {world_name}"),
-                }
-            })?;
+    for world_path in worlds {
+        let world_name = world_path.as_str().to_owned();
         audit::verify_world(data_root, &world_path, key).map_err(|err| match err {
             audit::AuditError::ChainBroken(break_report) => {
                 EngineBuildError::AuditChainCorrupted {
@@ -739,10 +733,12 @@ mod tests {
 
         let result = Engine::builder().data_root(root.clone()).key(key).build();
 
-        assert!(matches!(
-            result,
-            Err(EngineBuildError::AuditChainCorrupted { .. })
-        ));
+        match result {
+            Err(EngineBuildError::AuditChainCorrupted { world, .. }) => {
+                assert_eq!(world, "home/audit");
+            }
+            other => panic!("expected audit-chain corruption, got {other:?}"),
+        }
 
         let _ = std::fs::remove_dir_all(root);
     }
