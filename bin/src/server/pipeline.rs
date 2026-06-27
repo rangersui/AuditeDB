@@ -1446,6 +1446,7 @@ mod tests {
         )
         .await;
         assert_eq!(missing_get.status(), StatusCode::NOT_FOUND);
+        let missing_headers = missing_get.headers().clone();
         assert_eq!(response_text(missing_get).await, "timeline row not found\n");
 
         let missing = run(
@@ -1459,6 +1460,7 @@ mod tests {
         )
         .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(missing.headers(), &missing_headers);
         assert_eq!(response_text(missing).await, "");
 
         let wrong_generation = timeline_query_parts(
@@ -1477,6 +1479,7 @@ mod tests {
         )
         .await;
         assert_eq!(gen_get.status(), StatusCode::CONFLICT);
+        let gen_headers = gen_get.headers().clone();
         assert_eq!(
             response_text(gen_get).await,
             "timeline generation mismatch\n"
@@ -1493,6 +1496,7 @@ mod tests {
         )
         .await;
         assert_eq!(gen_mismatch.status(), StatusCode::CONFLICT);
+        assert_eq!(gen_mismatch.headers(), &gen_headers);
         assert_eq!(response_text(gen_mismatch).await, "");
 
         let wrong_hash = timeline_query_parts(
@@ -1511,6 +1515,7 @@ mod tests {
         )
         .await;
         assert_eq!(hash_get.status(), StatusCode::CONFLICT);
+        let hash_headers = hash_get.headers().clone();
         assert_eq!(
             response_text(hash_get).await,
             "timeline body sha256 mismatch\n"
@@ -1527,6 +1532,7 @@ mod tests {
         )
         .await;
         assert_eq!(hash_mismatch.status(), StatusCode::CONFLICT);
+        assert_eq!(hash_mismatch.headers(), &hash_headers);
         assert_eq!(response_text(hash_mismatch).await, "");
 
         write_text_world_for_tests(&engine, "home/timeline/deleted", "gone").await;
@@ -1599,6 +1605,7 @@ mod tests {
         )
         .await;
         assert_eq!(get.status(), StatusCode::BAD_REQUEST);
+        let get_headers = get.headers().clone();
 
         let head = run(
             Method::HEAD,
@@ -1611,6 +1618,7 @@ mod tests {
         )
         .await;
         assert_eq!(head.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(head.headers(), &get_headers);
         assert_eq!(response_text(head).await, "");
 
         let ordinary_field_cases = [
