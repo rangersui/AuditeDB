@@ -1294,3 +1294,44 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r79: Timeline memory-world wall
+
+- Branch: `stack/22r79-timeline-memory-world-wall`
+- Commit: `0b8ac69 bin: reject timeline on memory worlds`
+- Base: `stack/22r78-route-topology-owned-prefixes`
+- Scope: test-only route-level coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample U:
+  timeline coordinates are durable-world coordinates only.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer extends `pipeline_timeline_query_errors_are_closed_and_head_empty`.
+For each memory prefix (`tmp`, `dev`, `sys`), the test writes a current
+memory-world body, then sends a full timeline query through `pipeline::run`.
+Each case must return `400` with
+`InvalidTimelineCoordinate(MemoryWorld)`. This proves timeline-looking memory
+world requests do not fall through to current memory read semantics.
+
+Confirmed and fixed review findings:
+
+- Laplace the 2nd / Popper found P3 in the first version: only `tmp/` was
+  covered at route level. Fixed by looping over all memory prefixes
+  implemented by `store::is_memory_world`: `tmp`, `dev`, and `sys`.
+
+Fresh post-fix review:
+
+- Laplace the 2nd / Popper: clean P0-P3. Confirmed the prior P3 is closed and
+  durable-only timeline mode is route-level proven for every memory namespace.
+- Gibbs the 2nd / QA-Enforcement: clean P0-P3. Confirmed the layer remains
+  test-only, introduces no production unwrap/expect/unsafe, preserves stacked
+  minimality, and has sufficient local validation.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_query_errors_are_closed_and_head_empty -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
