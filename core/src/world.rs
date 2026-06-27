@@ -1113,6 +1113,34 @@ mod tests {
     }
 
     #[test]
+    fn list_rejects_invalid_percent_utf8_world_dirs() {
+        let root = test_root("invalid-percent-world-dir");
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("home%2F%FF");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::File::create(dir.join("universe.db")).unwrap();
+
+        let err = list(&root).unwrap_err();
+
+        assert!(err.to_string().contains("invalid percent UTF-8"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_rejects_noncanonical_percent_world_dirs() {
+        let root = test_root("noncanonical-percent-world-dir");
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("home%2flower");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::File::create(dir.join("universe.db")).unwrap();
+
+        let err = list(&root).unwrap_err();
+
+        assert!(err.to_string().contains("non-canonical disk name"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn create_dir_storage_full_maps_to_sqlite_disk_full() {
         let err = create_dir_error(std::io::Error::from(ErrorKind::StorageFull));
         assert_eq!(

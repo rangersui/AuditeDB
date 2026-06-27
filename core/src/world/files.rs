@@ -1,13 +1,13 @@
 //! Filesystem operations for world directories.
 
 use percent_encoding::percent_decode_str;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{ffi, Connection, OpenFlags};
 use std::path::Path;
 use std::time::Duration;
 
 use crate::{engine_types::ValidatedWorldPath, world_schema};
 
-use super::{create_dir_error, validated_world_db, validated_world_dir};
+use super::{create_dir_error, disk_name, validated_world_db, validated_world_dir};
 
 pub(crate) fn delete(data_root: &Path, world: &ValidatedWorldPath) -> bool {
     let dir = validated_world_dir(data_root, world);
@@ -136,13 +136,14 @@ fn list_matching(
     let rd = std::fs::read_dir(data_root).map_err(create_dir_error)?;
     for entry in rd {
         let entry = entry.map_err(create_dir_error)?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
         if !entry.path().join("universe.db").exists() {
             continue;
         }
-        let decoded = percent_decode_str(&name).decode_utf8_lossy().into_owned();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| corrupt_disk_world_name("<non-unicode>", "disk name is not Unicode"))?;
+        let decoded = decode_disk_world_name(&name)?;
         if keep(&decoded) {
             out.push(decoded);
         }
@@ -160,13 +161,14 @@ fn list_matching_bounded(
     let rd = std::fs::read_dir(data_root).map_err(create_dir_error)?;
     for entry in rd {
         let entry = entry.map_err(create_dir_error)?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
         if !entry.path().join("universe.db").exists() {
             continue;
         }
-        let decoded = percent_decode_str(&name).decode_utf8_lossy().into_owned();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| corrupt_disk_world_name("<non-unicode>", "disk name is not Unicode"))?;
+        let decoded = decode_disk_world_name(&name)?;
         if keep(&decoded) {
             if out.len() >= max {
                 return Ok(None);
@@ -176,4 +178,31 @@ fn list_matching_bounded(
     }
     out.sort();
     Ok(Some(out))
+}
+
+fn decode_disk_world_name(name: &str) -> rusqlite::Result<String> {
+    let decoded = percent_decode_str(name)
+        .decode_utf8()
+        .map_err(|err| corrupt_disk_world_name(name, format!("invalid percent UTF-8: {err}")))?
+        .into_owned();
+    let world = ValidatedWorldPath::new(decoded.clone())
+        .map_err(|_| corrupt_disk_world_name(name, "decoded world path failed validation"))?;
+    let canonical = disk_name(world.as_str());
+    if canonical != name {
+        return Err(corrupt_disk_world_name(
+            name,
+            format!("non-canonical disk name for {}", world.as_str()),
+        ));
+    }
+    Ok(decoded)
+}
+
+fn corrupt_disk_world_name(name: &str, detail: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        ffi::Error::new(ffi::SQLITE_CORRUPT),
+        Some(format!(
+            "invalid world directory {name:?}: {}",
+            detail.into()
+        )),
+    )
 }

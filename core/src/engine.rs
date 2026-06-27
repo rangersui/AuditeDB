@@ -525,7 +525,14 @@ fn verify_all_worlds_with_names(
         detail: format!("list worlds for audit verification failed: {err}"),
     })?;
     for world_name in worlds {
-        audit::verify_world(data_root, &world_name, key).map_err(|err| match err {
+        let world_path =
+            crate::engine_types::ValidatedWorldPath::new(world_name.clone()).map_err(|_| {
+                EngineBuildError::Storage {
+                    sqlite_code: None,
+                    detail: format!("disk world name failed validation: {world_name}"),
+                }
+            })?;
+        audit::verify_world(data_root, &world_path, key).map_err(|err| match err {
             audit::AuditError::ChainBroken(break_report) => {
                 EngineBuildError::AuditChainCorrupted {
                     world: world_name.clone(),

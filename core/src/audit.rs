@@ -120,19 +120,23 @@ pub enum VerifyReport {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()> {
     for world_name in world::list(data_root)? {
-        verify_world(data_root, &world_name, key)?;
+        let world_path =
+            ValidatedWorldPath::new(world_name).map_err(|_| rusqlite::Error::InvalidQuery)?;
+        verify_world(data_root, &world_path, key)?;
     }
     Ok(())
 }
 
-pub fn verify_world(data_root: &Path, world_name: &str, key: &AuditHmacKey) -> AuditResult<()> {
-    let world_path = ValidatedWorldPath::new(world_name.to_owned())
-        .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let Some(mut c) = world::open_existing_validated(data_root, &world_path)? else {
+pub fn verify_world(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+    key: &AuditHmacKey,
+) -> AuditResult<()> {
+    let Some(mut c) = world::open_existing_validated(data_root, world)? else {
         return Ok(());
     };
     let tx = c.transaction()?;
-    require_intact(verify_world_tx(&tx, &world_path, key)?)?;
+    require_intact(verify_world_tx(&tx, world, key)?)?;
     if let Some(break_report) = live_body::verify_tx(&tx)? {
         return Err(AuditError::ChainBroken(break_report));
     }
@@ -695,7 +699,8 @@ mod tests {
         .unwrap();
         drop(c);
 
-        let err = verify_world(&core.data, "home/live-body", &core.hmac_key).unwrap_err();
+        let err =
+            verify_world(&core.data, &validated("home/live-body"), &core.hmac_key).unwrap_err();
 
         assert!(matches!(
             err,
