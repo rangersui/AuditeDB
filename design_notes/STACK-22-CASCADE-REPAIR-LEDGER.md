@@ -1335,3 +1335,40 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r80: Missing timeline world stays unproven
+
+- Branch: `stack/22r80-timeline-unproven-not-gone`
+- Commit: `110c637 bin: keep missing timeline worlds unproven`
+- Base: `stack/22r79-timeline-memory-world-wall`
+- Scope: test-only route-level coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample F:
+  physical absence is not delete proof.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer adds `pipeline_timeline_missing_world_is_unproven_not_gone`. It sends
+a valid timeline-shaped GET to a durable world whose SQLite file has never
+existed. The expected response is `404` with
+`timeline coordinate not proven\n`, not the ordinary current-read
+`world not found\n` body and not `410 Gone`. This proves the request enters
+timeline mode and that missing files do not mint delete facts.
+
+Fresh review:
+
+- Halley the 2nd / Popper: clean P0-P3. Confirmed this closes Counterexample F
+  at route level and the exact body proves timeline mode rather than ordinary
+  current-read absence.
+- Sartre the 2nd / QA-Enforcement: clean P0-P3. Confirmed the layer is
+  test-only, introduces no production unwrap/expect/unsafe or reason-erasing
+  constructor, preserves stacked minimality, and has sufficient local
+  validation.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_missing_world_is_unproven_not_gone -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
