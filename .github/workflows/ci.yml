@@ -70,7 +70,7 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
       - name: rustdoc warnings
         working-directory: core
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --lib
       - name: unit tests
         working-directory: core
         run: cargo test --locked
