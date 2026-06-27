@@ -3,7 +3,7 @@ use std::num::IntErrorKind;
 use elastik_core::{InvalidTimelineCoordinate, TimelineCoordinate, ValidatedWorldPath};
 
 pub(crate) const MAX_RAW_QUERY_BYTES: usize = 8192;
-const TIMELINE_PAIR_LIMIT: usize = 4;
+const TIMELINE_NAMESPACE_PAIR_LIMIT: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TimelineRequestMode {
@@ -41,7 +41,7 @@ struct TimelineFields {
     saw_timeline_world: bool,
     saw_unsupported_field: bool,
     saw_pre_timeline_ordinary_field: bool,
-    timeline_pairs: usize,
+    timeline_namespace_pairs: usize,
 }
 
 pub(super) fn classify_raw_query(
@@ -61,13 +61,19 @@ pub(super) fn classify_raw_query(
         let key = decode_query_component(raw_key)?;
         let value = decode_query_component(raw_value)?;
         let timeline_key = key == "timeline" || key.starts_with("timeline-");
+        let in_timeline_namespace = fields.saw_timeline_field || timeline_key;
 
         if !fields.saw_timeline_field && !timeline_key {
             fields.saw_pre_timeline_ordinary_field = true;
         }
+        if in_timeline_namespace {
+            fields.timeline_namespace_pairs += 1;
+            if fields.timeline_namespace_pairs > TIMELINE_NAMESPACE_PAIR_LIMIT {
+                return Err(TimelineQueryError::TooManyTimelineFields);
+            }
+        }
         if timeline_key {
             fields.saw_timeline_field = true;
-            fields.timeline_pairs += 1;
         } else if fields.saw_timeline_field {
             fields.saw_unsupported_field = true;
         }
@@ -149,10 +155,6 @@ fn finish_classification(
     if fields.saw_unsupported_field || fields.saw_pre_timeline_ordinary_field {
         return Err(TimelineQueryError::UnsupportedTimelineQueryField);
     }
-    if fields.timeline_pairs > TIMELINE_PAIR_LIMIT {
-        return Err(TimelineQueryError::TooManyTimelineFields);
-    }
-
     let generation = fields
         .generation
         .ok_or(TimelineQueryError::MissingTimelineCoordinateField)?;
@@ -347,6 +349,27 @@ mod tests {
         assert_eq!(
             classify(&format!("/home/config?{query}")).unwrap_err(),
             TimelineQueryError::UnsupportedTimelineQueryField
+        );
+    }
+
+    #[test]
+    fn timeline_namespace_pair_cap_is_enforced_after_control_key() {
+        let mut query = good_query();
+        for idx in 0..=TIMELINE_NAMESPACE_PAIR_LIMIT {
+            query.push_str(&format!("&x{idx}=1"));
+        }
+        assert_eq!(
+            classify(&format!("/home/config?{query}")).unwrap_err(),
+            TimelineQueryError::TooManyTimelineFields
+        );
+
+        let unrelated = (0..=TIMELINE_NAMESPACE_PAIR_LIMIT)
+            .map(|idx| format!("x{idx}=1"))
+            .collect::<Vec<_>>()
+            .join("&");
+        assert_eq!(
+            classify(&format!("/home/config?{unrelated}")).unwrap(),
+            TimelineRequestMode::Current
         );
     }
 

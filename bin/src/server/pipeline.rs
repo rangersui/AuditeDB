@@ -1637,6 +1637,30 @@ mod tests {
             );
         }
 
+        let mut too_many_pairs = timeline_query_parts(
+            "0123456789abcdef0123456789abcdef",
+            1,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        for idx in 0..5 {
+            too_many_pairs.push_str(&format!("&x{idx}=1"));
+        }
+        let saturated = run(
+            Method::GET,
+            "/home/timeline/errors".to_string(),
+            raw_query(&too_many_pairs),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            316,
+        )
+        .await;
+        assert_eq!(saturated.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_text(saturated).await,
+            "bad request: invalid timeline query: TooManyTimelineFields\n"
+        );
+
         let duplicate_mode = run(
             Method::GET,
             "/home/timeline/errors".to_string(),
@@ -1647,7 +1671,7 @@ mod tests {
             HeaderMap::new(),
             Bytes::new(),
             &state,
-            316,
+            317,
         )
         .await;
         assert_eq!(duplicate_mode.status(), StatusCode::BAD_REQUEST);

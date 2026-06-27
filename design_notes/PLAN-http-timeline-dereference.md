@@ -103,8 +103,13 @@ the query is ignored unless a decoded control key is `timeline` or starts with
   `Current` and unrelated query pairs are ignored as they are today;
 - once any decoded `timeline` / `timeline-*` key appears, the query is in the
   timeline-control namespace. Only `timeline` plus exactly three coordinate
-  fields are accepted. In that namespace, the fifth decoded pair of any key is
-  a `400 Bad Request` before unbounded allocation can grow.
+  fields are accepted. Small malformed requests keep specific `400` reasons
+  such as duplicate coordinate, unknown timeline field, or unsupported
+  ordinary field. A saturated timeline-control namespace uses a separate
+  decoded-pair cap and returns `TooManyTimelineFields` before a malformed
+  timeline-looking request can grow without bound. The 8192-byte raw-query cap
+  remains the outer allocation bound for ordinary query compatibility before a
+  control key appears.
 
 `OPTIONS` is the exception to query parsing. It stays at the existing route
 boundary, before query decoding and before timeline-mode classification.
@@ -522,9 +527,12 @@ the route failed. Correct result: `400 Bad Request`.
 GET /home/config?timeline=1&timeline-generation=G&timeline-seq=42&timeline-body-sha256=H&x=1
 ```
 
-If a fifth decoded pair is stored in an unbounded map or ignored, the route
-failed. Correct result: `400 Bad Request`. If the raw query exceeds the chosen
-request-target / local cap, the route must return `414 URI Too Long`.
+If the extra pair is ignored, the route failed. Correct result:
+`400 Bad Request`, preferably the specific unsupported-field reason while the
+request is still small. A larger flood inside the timeline-control namespace
+must trip the decoded-pair cap instead of being stored in an unbounded map. If
+the raw query exceeds the chosen request-target / local cap, the route must
+return `414 URI Too Long`.
 
 ```http
 GET /home/config?a=1&b=2&c=3&d=4&e=5
