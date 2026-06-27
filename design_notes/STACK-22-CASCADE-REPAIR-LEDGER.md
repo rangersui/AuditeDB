@@ -1215,3 +1215,39 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r77: Timeline query world identity wall
+
+- Branch: `stack/22r77-timeline-world-query-wall`
+- Commit: `a88ea45 bin: reject timeline query world identity`
+- Base: `stack/22r76-timeline-ordinary-query-wall`
+- Scope: test-only route-level coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample C:
+  `timeline-world` must never be accepted as a second world identity.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer adds `pipeline_timeline_query_rejects_query_world_identity`. The
+test writes an old historical body for `home/timeline/world-query`, writes a
+new current body, then sends a timeline query for the path world that also
+includes `timeline-world=home/timeline/other`. The expected result is `400`
+with `TimelineWorldComesFromPath`. This proves the HTTP route rejects the
+query identity before current-read fallback or timeline dispatch.
+
+Fresh review:
+
+- Lovelace the 2nd / Popper: clean P0-P3. Confirmed this closes
+  Counterexample C at route level and exercises the full `run()` pipeline, not
+  only the parser unit.
+- Herschel the 2nd / QA-Enforcement: clean P0-P3. Confirmed the layer is
+  test-only, introduces no production unwrap/expect/unsafe, preserves stacked
+  minimality, and has sufficient local validation.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_query_rejects_query_world_identity -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
