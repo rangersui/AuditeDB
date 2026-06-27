@@ -29,6 +29,18 @@ fn has_memory_prefix(world: &str) -> bool {
     world.starts_with("tmp/") || world.starts_with("dev/") || world.starts_with("sys/")
 }
 
+pub(crate) struct MemoryWorldPath<'a>(&'a ValidatedWorldPath);
+
+impl<'a> MemoryWorldPath<'a> {
+    pub(crate) fn new(world: &'a ValidatedWorldPath) -> Option<Self> {
+        is_memory_world(world).then_some(Self(world))
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 pub fn is_memory_world(world: &ValidatedWorldPath) -> bool {
     has_memory_prefix(world.as_str())
 }
@@ -83,11 +95,11 @@ impl MemoryStore {
     /// since `read_with_hash` covers all internal callers, but kept as a
     /// convenience wrapper for future internal tooling.
     #[allow(dead_code)]
-    pub fn read(&self, world: &ValidatedWorldPath) -> Option<Stage> {
+    pub fn read(&self, world: MemoryWorldPath<'_>) -> Option<Stage> {
         self.read_with_hash(world).map(|(stage, _)| stage)
     }
 
-    pub fn read_with_hash(&self, world: &ValidatedWorldPath) -> Option<(Stage, String)> {
+    pub fn read_with_hash(&self, world: MemoryWorldPath<'_>) -> Option<(Stage, String)> {
         let map = self.map_guard();
         let e = map.get(world.as_str())?;
         Some((
@@ -100,13 +112,13 @@ impl MemoryStore {
         ))
     }
 
-    pub fn metadata(&self, world: &ValidatedWorldPath) -> Option<WorldMetadata> {
+    pub fn metadata(&self, world: MemoryWorldPath<'_>) -> Option<WorldMetadata> {
         let map = self.map_guard();
         let e = map.get(world.as_str())?;
         Some((e.body.len(), e.content_type.clone(), e.headers.clone()))
     }
 
-    pub fn contains(&self, world: &ValidatedWorldPath) -> bool {
+    pub fn contains(&self, world: MemoryWorldPath<'_>) -> bool {
         self.map_guard().contains_key(world.as_str())
     }
 
@@ -117,7 +129,7 @@ impl MemoryStore {
     #[allow(dead_code)]
     pub fn write(
         &self,
-        world: &ValidatedWorldPath,
+        world: MemoryWorldPath<'_>,
         body: &[u8],
         content_type: &str,
         headers: &[(String, String)],
@@ -135,7 +147,7 @@ impl MemoryStore {
     /// for future tooling that wants the raw primitive (e.g. tests
     /// asserting growth behavior).
     #[allow(dead_code)]
-    pub fn append(&self, world: &ValidatedWorldPath, body: &[u8]) -> Option<AppendResult> {
+    pub fn append(&self, world: MemoryWorldPath<'_>, body: &[u8]) -> Option<AppendResult> {
         let mut map = self.map_guard();
         let e = map.get_mut(world.as_str())?;
         e.body.extend_from_slice(body);
@@ -161,7 +173,7 @@ impl MemoryStore {
     /// `max_total_bytes`.
     pub fn write_with_quota(
         &self,
-        world: &ValidatedWorldPath,
+        world: MemoryWorldPath<'_>,
         body: &[u8],
         content_type: &str,
         headers: &[(String, String)],
@@ -198,7 +210,7 @@ impl MemoryStore {
     /// `Ok(Some(result))` with the post-append SHA-256 of the body.
     pub fn append_with_quota(
         &self,
-        world: &ValidatedWorldPath,
+        world: MemoryWorldPath<'_>,
         body: &[u8],
         max_total_bytes: usize,
     ) -> Result<Option<AppendResult>, MemoryQuotaError> {
@@ -225,7 +237,7 @@ impl MemoryStore {
         }))
     }
 
-    pub fn delete(&self, world: &ValidatedWorldPath) -> bool {
+    pub fn delete(&self, world: MemoryWorldPath<'_>) -> bool {
         let mut map = self.map_guard();
         map.remove(world.as_str()).is_some()
     }
@@ -327,6 +339,8 @@ mod tests {
         assert!(is_memory_world(&world_path("sys/status")));
         assert!(is_persistent(&world_path("home/report")));
         assert!(!is_persistent(&world_path("tmp/scratch")));
+        assert!(MemoryWorldPath::new(&world_path("tmp/scratch")).is_some());
+        assert!(MemoryWorldPath::new(&world_path("home/report")).is_none());
     }
 
     #[test]

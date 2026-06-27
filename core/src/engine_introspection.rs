@@ -460,8 +460,8 @@ impl EngineOps<'_> {
             .path
             .audit_world()
             .ok_or(EngineError::InternalInvariant("audit verify missing world"))?;
-        if store::is_memory_world(world) {
-            if !self.core().mem.contains(world) {
+        if let Some(memory_world) = store::MemoryWorldPath::new(world) {
+            if !self.core().mem.contains(memory_world) {
                 return Err(EngineError::NotFound);
             }
             return Ok(AuditVerify::NotApplicable);
@@ -491,8 +491,8 @@ impl EngineOps<'_> {
         if !crate::can_read(self.core(), tier) {
             return Err(EngineError::Auth(AuthGate::Read));
         }
-        if store::is_memory_world(world) {
-            if !self.core().mem.contains(world) {
+        if let Some(memory_world) = store::MemoryWorldPath::new(world) {
+            if !self.core().mem.contains(memory_world) {
                 return Err(EngineError::NotFound);
             }
             // Memory worlds have no audit chain: nothing to anchor.

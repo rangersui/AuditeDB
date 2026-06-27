@@ -252,8 +252,10 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
             }
         }
     } else {
+        let memory_world = store::MemoryWorldPath::new(world_path)
+            .ok_or(WriteError::Internal("memory world proof mismatch"))?;
         match core.mem.write_with_quota(
-            world_path,
+            memory_world,
             &req.body,
             &req.content_type,
             &req.headers,
@@ -292,8 +294,9 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     core.clear_tombstone(world_path);
     check_write_preconditions(core, world_path, &req.preconditions)?;
 
-    let Some((body_len, content_type, stored_headers)) = (if store::is_memory_world(world_path) {
-        core.mem.metadata(world_path)
+    let memory_world = store::MemoryWorldPath::new(world_path);
+    let Some((body_len, content_type, stored_headers)) = (if let Some(memory_world) = memory_world {
+        core.mem.metadata(memory_world)
     } else {
         world::metadata(&core.data, world_path)
             .map_err(|err| classify_write_storage_error("storage metadata", err, StorageOp::Read))?
@@ -371,9 +374,11 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
             }
         }
     } else {
+        let memory_world = store::MemoryWorldPath::new(world_path)
+            .ok_or(WriteError::Internal("memory world proof mismatch"))?;
         match core
             .mem
-            .append_with_quota(world_path, &req.body, core.max_memory_bytes)
+            .append_with_quota(memory_world, &req.body, core.max_memory_bytes)
         {
             Ok(Some(result)) => (format!("sha256-{}", result.body_sha256_after), None),
             Ok(None) => return Err(WriteError::NotFound),
