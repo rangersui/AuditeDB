@@ -60,6 +60,10 @@ impl TimelineEventIdentity {
         self.target == world.as_str()
     }
 
+    pub(super) fn target(&self) -> &str {
+        &self.target
+    }
+
     pub(super) fn body_sha256(&self) -> Option<BodySha256> {
         BodySha256::new(self.body_sha256.clone()).ok()
     }

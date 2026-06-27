@@ -209,13 +209,6 @@ pub enum TimelineRead {
     },
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum TimelineAddressLookup {
-    Body(TimelineAddress),
-    MissingRow,
-    NoBody,
-}
-
 impl TimelineBody {
     /// Returns the address that produced this historical body.
     pub fn address(&self) -> &TimelineAddress {
@@ -780,25 +773,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn timeline_address_lookup_distinguishes_missing_and_non_body_events() {
-        match TimelineAddressLookup::Body(address(8)) {
-            TimelineAddressLookup::Body(address) => assert_eq!(address.seq().get(), 8),
-            TimelineAddressLookup::MissingRow | TimelineAddressLookup::NoBody => {
-                panic!("expected body address")
-            }
-        }
-
-        assert!(matches!(
-            TimelineAddressLookup::MissingRow,
-            TimelineAddressLookup::MissingRow
-        ));
-        assert!(matches!(
-            TimelineAddressLookup::NoBody,
-            TimelineAddressLookup::NoBody
-        ));
     }
 
     #[test]

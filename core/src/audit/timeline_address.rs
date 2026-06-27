@@ -5,10 +5,7 @@ use rusqlite::{params, OptionalExtension};
 use crate::{
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     read_cache::TrackedReadConnection,
-    timeline::{
-        BodySha256, TimelineAddress, TimelineAddressLookup, TimelineCorruption, TimelineRead,
-        TimelineSeq,
-    },
+    timeline::{BodySha256, TimelineAddress, TimelineCorruption, TimelineRead, TimelineSeq},
     world_generation::WorldGeneration,
     world_schema,
 };
@@ -69,6 +66,28 @@ pub(crate) struct VerifiedBodyHead {
     hmac: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TimelineAddressLookup {
+    Body(TimelineAddress),
+    MissingRow(VerifiedMissingTimelineRow),
+    NoBody(VerifiedNonBodyTimelineEvent),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedMissingTimelineRow {
+    world: ValidatedWorldPath,
+    gen: WorldGeneration,
+    seq: TimelineSeq,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedNonBodyTimelineEvent {
+    world: ValidatedWorldPath,
+    gen: WorldGeneration,
+    seq: TimelineSeq,
+    event_target: String,
+}
+
 impl VerifiedBodyHead {
     fn new(address: TimelineAddress, hmac: String) -> Self {
         Self { address, hmac }
@@ -80,6 +99,63 @@ impl VerifiedBodyHead {
 
     pub(crate) fn hmac(&self) -> &str {
         &self.hmac
+    }
+}
+
+impl VerifiedMissingTimelineRow {
+    fn new(world: ValidatedWorldPath, gen: WorldGeneration, seq: TimelineSeq) -> Self {
+        Self { world, gen, seq }
+    }
+
+    #[cfg(test)]
+    fn world(&self) -> &ValidatedWorldPath {
+        &self.world
+    }
+
+    #[cfg(test)]
+    fn gen(&self) -> &WorldGeneration {
+        &self.gen
+    }
+
+    #[cfg(test)]
+    fn seq(&self) -> TimelineSeq {
+        self.seq
+    }
+}
+
+impl VerifiedNonBodyTimelineEvent {
+    fn new(
+        world: ValidatedWorldPath,
+        gen: WorldGeneration,
+        seq: TimelineSeq,
+        event_target: String,
+    ) -> Self {
+        Self {
+            world,
+            gen,
+            seq,
+            event_target,
+        }
+    }
+
+    #[cfg(test)]
+    fn world(&self) -> &ValidatedWorldPath {
+        &self.world
+    }
+
+    #[cfg(test)]
+    fn gen(&self) -> &WorldGeneration {
+        &self.gen
+    }
+
+    #[cfg(test)]
+    fn seq(&self) -> TimelineSeq {
+        self.seq
+    }
+
+    #[cfg(test)]
+    fn event_target(&self) -> &str {
+        &self.event_target
     }
 }
 
@@ -96,19 +172,22 @@ pub(crate) fn verified_timeline_address_via_conn(
     // address lookup.
     super::require_intact(super::verify_world_tx(&tx, world, key)?)?;
 
+    let gen = world_schema::generation(&tx)?;
     let Some(row) = load_event_identity(&tx, seq)? else {
-        return Ok(TimelineAddressLookup::MissingRow);
+        let proof = VerifiedMissingTimelineRow::new(world.clone(), gen, seq);
+        return Ok(TimelineAddressLookup::MissingRow(proof));
     };
 
     let kind = row.kind_or_corrupt()?;
     if !kind.class().body_bearing {
-        return Ok(TimelineAddressLookup::NoBody);
+        let proof =
+            VerifiedNonBodyTimelineEvent::new(world.clone(), gen, seq, row.target().to_owned());
+        return Ok(TimelineAddressLookup::NoBody(proof));
     }
     if !row.target_matches(world) {
         return Err(corrupt("events.target does not match requested world").into());
     }
     let body_sha256 = row.body_sha256_or_corrupt()?;
-    let gen = world_schema::generation(&tx)?;
     let event = VerifiedBodyEvent::new(world.clone(), gen, seq, body_sha256);
     let lookup = TimelineAddressLookup::Body(TimelineAddress::from_verified_body_event(event));
     tx.commit()?;
@@ -464,7 +543,7 @@ mod tests {
                 assert_eq!(address.seq().get(), 1);
                 assert_eq!(address.body_sha256(), &BodySha256::for_body(b"old"));
             }
-            TimelineAddressLookup::MissingRow | TimelineAddressLookup::NoBody => {
+            TimelineAddressLookup::MissingRow(_) | TimelineAddressLookup::NoBody(_) => {
                 panic!("expected body timeline address")
             }
         }
@@ -959,16 +1038,22 @@ mod tests {
                 .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
-        assert!(matches!(
-            verified_timeline_address_via_conn(
-                &mut tracked,
-                &world,
-                TimelineSeq::new(99).unwrap(),
-                &engine.core().hmac_key,
-            )
-            .unwrap(),
-            TimelineAddressLookup::MissingRow
-        ));
+        let gen = world_schema::generation(tracked.as_mut_conn()).unwrap();
+        match verified_timeline_address_via_conn(
+            &mut tracked,
+            &world,
+            TimelineSeq::new(99).unwrap(),
+            &engine.core().hmac_key,
+        )
+        .unwrap()
+        {
+            TimelineAddressLookup::MissingRow(proof) => {
+                assert_eq!(proof.world(), &world);
+                assert_eq!(proof.gen(), &gen);
+                assert_eq!(proof.seq().get(), 99);
+            }
+            _ => panic!("expected missing row proof"),
+        }
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
@@ -1005,16 +1090,23 @@ mod tests {
         .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
-        assert!(matches!(
-            verified_timeline_address_via_conn(
-                &mut tracked,
-                &ledger,
-                TimelineSeq::new(1).unwrap(),
-                &engine.core().hmac_key,
-            )
-            .unwrap(),
-            TimelineAddressLookup::NoBody
-        ));
+        let gen = world_schema::generation(tracked.as_mut_conn()).unwrap();
+        match verified_timeline_address_via_conn(
+            &mut tracked,
+            &ledger,
+            TimelineSeq::new(1).unwrap(),
+            &engine.core().hmac_key,
+        )
+        .unwrap()
+        {
+            TimelineAddressLookup::NoBody(proof) => {
+                assert_eq!(proof.world(), &ledger);
+                assert_eq!(proof.gen(), &gen);
+                assert_eq!(proof.seq().get(), 1);
+                assert_eq!(proof.event_target(), subject.as_str());
+            }
+            _ => panic!("expected non-body proof"),
+        }
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
