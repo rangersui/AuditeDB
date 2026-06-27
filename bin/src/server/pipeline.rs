@@ -1475,6 +1475,7 @@ mod tests {
     #[tokio::test]
     async fn pipeline_timeline_query_errors_are_closed_and_head_empty() {
         let (engine, dir) = test_engine_for_server("pipeline-timeline-query-errors");
+        write_text_world_for_tests(&engine, "home/timeline/errors", "current").await;
         let state = server_state_for_engine_for_tests(engine);
 
         let get = run(
@@ -1501,6 +1502,30 @@ mod tests {
         .await;
         assert_eq!(head.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response_text(head).await, "");
+
+        let ordinary_field_cases = [
+            "timeline=1&timeline-generation=0123456789abcdef0123456789abcdef&\
+             timeline-seq=1&timeline-body-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&x=1",
+            "x=1&timeline=1&timeline-generation=0123456789abcdef0123456789abcdef&\
+             timeline-seq=1&timeline-body-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ];
+        for (idx, query) in ordinary_field_cases.into_iter().enumerate() {
+            let fallthrough = run(
+                Method::GET,
+                "/home/timeline/errors".to_string(),
+                raw_query(query),
+                HeaderMap::new(),
+                Bytes::new(),
+                &state,
+                314 + idx as u64,
+            )
+            .await;
+            assert_eq!(fallthrough.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response_text(fallthrough).await,
+                "bad request: invalid timeline query: UnsupportedTimelineQueryField\n"
+            );
+        }
 
         let huge = format!("{}x", "a=".repeat(4097));
         let resp = run(
