@@ -63,24 +63,34 @@ const DISK_ENCODE: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b' ');
 
-pub fn disk_name(world: &str) -> String {
+fn disk_name(world: &str) -> String {
     utf8_percent_encode(world, DISK_ENCODE).to_string()
 }
 
-pub fn world_dir(data_root: &Path, world: &str) -> PathBuf {
+fn world_dir_raw(data_root: &Path, world: &str) -> PathBuf {
     data_root.join(disk_name(world))
 }
 
+fn world_db_raw(data_root: &Path, world: &str) -> PathBuf {
+    world_dir_raw(data_root, world).join("universe.db")
+}
+
+#[cfg(test)]
+pub fn world_dir(data_root: &Path, world: &str) -> PathBuf {
+    world_dir_raw(data_root, world)
+}
+
+#[cfg(test)]
 pub fn world_db(data_root: &Path, world: &str) -> PathBuf {
-    world_dir(data_root, world).join("universe.db")
+    world_db_raw(data_root, world)
 }
 
 pub fn validated_world_dir(data_root: &Path, world: &ValidatedWorldPath) -> PathBuf {
-    world_dir(data_root, world.as_str())
+    world_dir_raw(data_root, world.as_str())
 }
 
 pub fn validated_world_db(data_root: &Path, world: &ValidatedWorldPath) -> PathBuf {
-    validated_world_dir(data_root, world).join("universe.db")
+    world_db_raw(data_root, world.as_str())
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -101,7 +111,7 @@ pub fn open_validated(
     data_root: &Path,
     world: &ValidatedWorldPath,
 ) -> rusqlite::Result<Connection> {
-    open_with_generation_minter(data_root, world.as_str(), || {
+    open_validated_with_generation_minter(data_root, world, || {
         world_generation::WorldGeneration::mint().map_err(mint_generation_error)
     })
 }
@@ -112,6 +122,7 @@ enum OpenedWorldKind {
     Existing,
 }
 
+#[cfg(test)]
 fn open_with_generation_minter<F>(
     data_root: &Path,
     world: &str,
@@ -120,28 +131,58 @@ fn open_with_generation_minter<F>(
 where
     F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
 {
-    open_with_generation_minter_and_kind(data_root, world, mint_generation).map(|(conn, _)| conn)
+    open_world_paths_with_generation_minter_and_kind(
+        world_dir_raw(data_root, world),
+        world_db_raw(data_root, world),
+        mint_generation,
+    )
+    .map(|(conn, _)| conn)
+}
+
+fn open_validated_with_generation_minter<F>(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+    mint_generation: F,
+) -> rusqlite::Result<Connection>
+where
+    F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
+{
+    open_validated_with_generation_minter_and_kind(data_root, world, mint_generation)
+        .map(|(conn, _)| conn)
 }
 
 fn open_validated_for_audit(
     data_root: &Path,
     world: &ValidatedWorldPath,
 ) -> rusqlite::Result<(Connection, OpenedWorldKind)> {
-    open_with_generation_minter_and_kind(data_root, world.as_str(), || {
+    open_validated_with_generation_minter_and_kind(data_root, world, || {
         world_generation::WorldGeneration::mint().map_err(mint_generation_error)
     })
 }
 
-fn open_with_generation_minter_and_kind<F>(
+fn open_validated_with_generation_minter_and_kind<F>(
     data_root: &Path,
-    world: &str,
+    world: &ValidatedWorldPath,
     mint_generation: F,
 ) -> rusqlite::Result<(Connection, OpenedWorldKind)>
 where
     F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
 {
-    let dir = world_dir(data_root, world);
-    let db = world_db(data_root, world);
+    open_world_paths_with_generation_minter_and_kind(
+        validated_world_dir(data_root, world),
+        validated_world_db(data_root, world),
+        mint_generation,
+    )
+}
+
+fn open_world_paths_with_generation_minter_and_kind<F>(
+    dir: PathBuf,
+    db: PathBuf,
+    mint_generation: F,
+) -> rusqlite::Result<(Connection, OpenedWorldKind)>
+where
+    F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
+{
     let db_existed = db.exists();
     let opened = if db_existed {
         OpenedWorldKind::Existing
@@ -204,7 +245,7 @@ fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
 /// a missing world must not resurrect it.
 #[cfg(test)]
 pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<Connection>> {
-    let path = world_db(data_root, world);
+    let path = world_db_raw(data_root, world);
     open_existing_path(&path)
 }
 
@@ -531,7 +572,7 @@ fn test_only_append_without_audit(
     world: &str,
     body: &[u8],
 ) -> rusqlite::Result<Option<AppendResult>> {
-    let path = world_db(data_root, world);
+    let path = world_db_raw(data_root, world);
     if !path.exists() {
         return Ok(None);
     }

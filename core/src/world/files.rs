@@ -7,11 +7,10 @@ use std::time::Duration;
 
 use crate::{engine_types::ValidatedWorldPath, world_schema};
 
-use super::{create_dir_error, disk_name, world_db, world_dir};
+use super::{create_dir_error, validated_world_db, validated_world_dir};
 
 pub(crate) fn delete(data_root: &Path, world: &ValidatedWorldPath) -> bool {
-    let world = world.as_str();
-    let dir = world_dir(data_root, world);
+    let dir = validated_world_dir(data_root, world);
     if !dir.exists() {
         return false;
     }
@@ -63,36 +62,46 @@ pub fn list_with_prefix_bounded(
     list_matching_bounded(data_root, |world| world.starts_with(prefix), max)
 }
 
-fn release_wal_files(data_root: &Path, world: &str) {
-    match open_checkpoint_conn(data_root, world) {
+fn release_wal_files(data_root: &Path, world: &ValidatedWorldPath) {
+    match open_checkpoint_conn_validated(data_root, world) {
         Ok(Some(c)) => {
             if let Err(err) = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
-                log_wal_release_error(world, "checkpoint", &err);
+                log_wal_release_error(world.as_str(), "checkpoint", &err);
             }
             drop(c);
         }
         Ok(None) => {}
-        Err(err) => log_wal_release_error(world, "open", &err),
+        Err(err) => log_wal_release_error(world.as_str(), "open", &err),
     }
+    let dir = validated_world_dir(data_root, world);
     for suffix in ["-wal", "-shm"] {
-        let _ = std::fs::remove_file(
-            data_root
-                .join(disk_name(world))
-                .join(format!("universe.db{suffix}")),
-        );
+        let _ = std::fs::remove_file(dir.join(format!("universe.db{suffix}")));
     }
     std::thread::sleep(Duration::from_millis(10));
 }
 
+#[cfg(test)]
 pub(super) fn open_checkpoint_conn(
     data_root: &Path,
     world: &str,
 ) -> rusqlite::Result<Option<Connection>> {
-    let path = world_db(data_root, world);
+    let path = super::world_db(data_root, world);
+    open_checkpoint_conn_path(&path)
+}
+
+fn open_checkpoint_conn_validated(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> rusqlite::Result<Option<Connection>> {
+    let path = validated_world_db(data_root, world);
+    open_checkpoint_conn_path(&path)
+}
+
+fn open_checkpoint_conn_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
     if !path.exists() {
         return Ok(None);
     }
-    let c = match Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE) {
+    let c = match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE) {
         Ok(c) => c,
         Err(e) => {
             if !path.exists() {
