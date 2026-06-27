@@ -126,7 +126,6 @@ impl ReadCache {
         F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
         let path = world::validated_world_db(data, world);
-        let world = world.as_str();
         let mut f = Some(f);
         let mut counted_miss = false;
         let mut counted_capped = false;
@@ -196,7 +195,7 @@ impl ReadCache {
             let new_guard = new_slot.inner.write().unwrap_or_else(|p| p.into_inner());
             let arc = self
                 .read_conns
-                .entry(world.to_string())
+                .entry(world.clone())
                 .or_insert_with(move || insert_slot)
                 .value()
                 .clone();
@@ -260,7 +259,7 @@ impl ReadCache {
     fn invoke_transient<F, R>(
         &self,
         path: &std::path::Path,
-        world: &str,
+        world: &ValidatedWorldPath,
         f: F,
     ) -> rusqlite::Result<Option<R>>
     where
@@ -301,7 +300,7 @@ impl ReadCache {
                 .unwrap_or_else(|p| p.into_inner());
             let arc = self
                 .read_conns
-                .entry(world.to_string())
+                .entry(world.clone())
                 .or_insert_with(move || insert_slot)
                 .value()
                 .clone();

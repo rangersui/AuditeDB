@@ -2,7 +2,7 @@
 //!
 //! Caches one open SQLite connection per recently-read world so repeated
 //! reads don't re-pay the ~456-700us `Connection::open_with_flags`
-//! cost on every operation. The naive approach -- `DashMap<String,
+//! cost on every operation. The naive approach -- `DashMap<ValidatedWorldPath,
 //! Mutex<Connection>>` -- has a race: delete removes the map entry,
 //! but in-flight readers holding cloned Arcs continue using their
 //! cached fd. Linux gets an orphan inode (harmless); Windows fails
@@ -52,6 +52,8 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 
 use dashmap::DashMap;
 
+use crate::engine_types::ValidatedWorldPath;
+
 #[cfg(test)]
 pub(crate) use state_machine::test_only_wrap_raw_connection;
 pub(crate) use state_machine::TrackedReadConnection;
@@ -94,23 +96,27 @@ const READ_CACHE_EVICTION_SAMPLE_SIZE: usize = 8;
 /// budget is exhausted.
 const READ_CACHE_RETRY_BUDGET: usize = 16;
 
-fn log_read_cache_retry_budget_exhausted(world: &str, mode: &str) {
+fn log_read_cache_retry_budget_exhausted(world: &ValidatedWorldPath, mode: &str) {
     #[cfg(feature = "unstable-engine")]
     tracing::warn!(
-        world,
+        world = world.as_str(),
         mode,
         "read cache retry budget exhausted; falling back"
     );
 
     #[cfg(not(feature = "unstable-engine"))]
-    eprintln!("elastik-core internal read cache {mode} retry budget exhausted for {world}");
+    eprintln!(
+        "elastik-core internal read cache {mode} retry budget exhausted for {}",
+        world.as_str()
+    );
 }
 
-fn read_cache_retry_budget_error(world: &str, mode: &str) -> rusqlite::Error {
+fn read_cache_retry_budget_error(world: &ValidatedWorldPath, mode: &str) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(
         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
         Some(format!(
-            "read cache {mode} retry budget exhausted for {world}"
+            "read cache {mode} retry budget exhausted for {}",
+            world.as_str()
         )),
     )
 }
@@ -183,7 +189,7 @@ pub(crate) struct ReadCacheMetrics {
 /// `metrics` for /proc/pool's atomic reads) expose just the
 /// observability surface -- never the slots themselves.
 pub(crate) struct ReadCache {
-    read_conns: DashMap<String, Arc<ReadSlot>>,
+    read_conns: DashMap<ValidatedWorldPath, Arc<ReadSlot>>,
     /// Cache-global monotonic recency clock.
     ///
     /// This stays `AtomicU64` even though it is an internal hint. A 32-bit
@@ -228,7 +234,7 @@ impl ReadCache {
             .store(self.next_access_tick(), Ordering::Relaxed);
     }
 
-    fn remove_evicted_entry(&self, world: &str, arc: &Arc<ReadSlot>) -> bool {
+    fn remove_evicted_entry(&self, world: &ValidatedWorldPath, arc: &Arc<ReadSlot>) -> bool {
         self.read_conns
             .remove_if(world, |_k, v| Arc::ptr_eq(v, arc))
             .is_some()
@@ -241,7 +247,7 @@ impl ReadCache {
     /// guard, replaces Ready with Evicted, and removes the same Arc from the
     /// map. If `remove_if` loses a race to a replacement entry, the stale Arc is
     /// drained but the eviction is not reported as successful.
-    fn try_evict_ready_slot(&self, world: &str, arc: &Arc<ReadSlot>) -> bool {
+    fn try_evict_ready_slot(&self, world: &ValidatedWorldPath, arc: &Arc<ReadSlot>) -> bool {
         let Ok(mut guard) = arc.inner.try_write() else {
             return false;
         };
@@ -261,7 +267,7 @@ impl ReadCache {
     /// cache between our Phase 1 miss and this sample. Candidate order is only
     /// a quality hint; actual safety is delegated to
     /// `try_evict_ready_slot`.
-    fn try_evict_oldest_sample(&self, target_world: &str) -> bool {
+    fn try_evict_oldest_sample(&self, target_world: &ValidatedWorldPath) -> bool {
         let len = self.read_conns.len();
         if len == 0 {
             return false;
@@ -275,7 +281,7 @@ impl ReadCache {
             if candidates.len() >= READ_CACHE_EVICTION_SAMPLE_SIZE {
                 break;
             }
-            if entry.key().as_str() == target_world {
+            if entry.key() == target_world {
                 continue;
             }
             let slot = entry.value().clone();
@@ -290,7 +296,7 @@ impl ReadCache {
                 if candidates.len() >= READ_CACHE_EVICTION_SAMPLE_SIZE {
                     break;
                 }
-                if entry.key().as_str() == target_world {
+                if entry.key() == target_world {
                     continue;
                 }
                 let slot = entry.value().clone();
@@ -320,7 +326,7 @@ impl ReadCache {
     /// can all observe room and publish slots concurrently. Trimming after a
     /// successful read keeps the cache close to its cap without blocking the
     /// read on a global reservation lock.
-    fn best_effort_trim_over_cap(&self, target_world: &str) {
+    fn best_effort_trim_over_cap(&self, target_world: &ValidatedWorldPath) {
         for _ in 0..READ_CACHE_RETRY_BUDGET {
             if self.read_conns.len() <= self.max_entries {
                 return;
@@ -338,9 +344,7 @@ impl ReadCache {
         world: &crate::engine_types::ValidatedWorldPath,
     ) {
         let new_tombstone = self.new_slot(SlotState::Tombstone);
-        let prev = self
-            .read_conns
-            .insert(world.as_str().to_owned(), new_tombstone);
+        let prev = self.read_conns.insert(world.clone(), new_tombstone);
         if let Some(prev_slot) = prev {
             let mut g = prev_slot.inner.write().unwrap_or_else(|p| p.into_inner());
             let old = std::mem::replace(&mut *g, SlotState::Tombstone);
@@ -354,7 +358,7 @@ impl ReadCache {
     /// world is still on disk; the next read should lazy-init a
     /// fresh slot rather than seeing a phantom 404.
     pub(crate) fn clear_tombstone(&self, world: &crate::engine_types::ValidatedWorldPath) {
-        self.read_conns.remove(world.as_str());
+        self.read_conns.remove(world);
     }
 
     /// Snapshot accessor for `/proc/pool`; exposes count only, never slots.
@@ -499,7 +503,7 @@ mod tests {
         };
 
         assert!(err.to_string().contains("stage_meta.generation"));
-        assert!(cache.read_conns.get("home/legacy").is_none());
+        assert!(cache.read_conns.get(&v("home/legacy")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -538,7 +542,7 @@ mod tests {
         let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
         let a_first = cache
             .read_conns
-            .get("home/a")
+            .get(&v("home/a"))
             .unwrap()
             .last_access
             .load(Ordering::Relaxed);
@@ -546,7 +550,7 @@ mod tests {
         let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
         let b_first = cache
             .read_conns
-            .get("home/b")
+            .get(&v("home/b"))
             .unwrap()
             .last_access
             .load(Ordering::Relaxed);
@@ -558,7 +562,7 @@ mod tests {
         let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
         let a_second = cache
             .read_conns
-            .get("home/a")
+            .get(&v("home/a"))
             .unwrap()
             .last_access
             .load(Ordering::Relaxed);
@@ -576,7 +580,7 @@ mod tests {
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let r = cache.cached_read_with_hmac(&dir, &v("home/none")).unwrap();
         assert!(r.is_none());
-        assert!(cache.read_conns.get("home/none").is_none());
+        assert!(cache.read_conns.get(&v("home/none")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -617,11 +621,11 @@ mod tests {
         let r = cache.cached_read_with_hmac(&dir, &v("home/c")).unwrap();
         assert!(r.is_some());
         assert!(
-            cache.read_conns.get("home/a").is_none(),
+            cache.read_conns.get(&v("home/a")).is_none(),
             "oldest sampled slot should be evicted"
         );
-        assert!(cache.read_conns.get("home/b").is_some());
-        assert!(cache.read_conns.get("home/c").is_some());
+        assert!(cache.read_conns.get(&v("home/b")).is_some());
+        assert!(cache.read_conns.get(&v("home/c")).is_some());
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 1);
         assert_eq!(
             cache.metrics.read_cache_misses.load(Ordering::Relaxed),
@@ -648,16 +652,16 @@ mod tests {
         let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
         let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
 
-        let a_arc = cache.read_conns.get("home/a").unwrap().value().clone();
-        let b_arc = cache.read_conns.get("home/b").unwrap().value().clone();
+        let a_arc = cache.read_conns.get(&v("home/a")).unwrap().value().clone();
+        let b_arc = cache.read_conns.get(&v("home/b")).unwrap().value().clone();
         let a_guard = a_arc.inner.read().unwrap();
         let b_guard = b_arc.inner.read().unwrap();
 
         let r = cache.cached_read_with_hmac(&dir, &v("home/c")).unwrap();
         assert!(r.is_some());
-        assert!(cache.read_conns.get("home/c").is_none());
-        assert!(cache.read_conns.get("home/a").is_some());
-        assert!(cache.read_conns.get("home/b").is_some());
+        assert!(cache.read_conns.get(&v("home/c")).is_none());
+        assert!(cache.read_conns.get(&v("home/a")).is_some());
+        assert!(cache.read_conns.get(&v("home/b")).is_some());
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 1);
         assert_eq!(
             cache.metrics.read_cache_misses.load(Ordering::Relaxed),
@@ -690,7 +694,7 @@ mod tests {
             let (stage, _hmac) = read.expect("existing world must not look missing at cap=1");
             assert_eq!(stage.body, vec![b'a' + idx as u8]);
             assert!(
-                cache.read_conns.get(*w).is_some(),
+                cache.read_conns.get(&v(w)).is_some(),
                 "the latest world should occupy the single cache slot"
             );
             assert!(
@@ -783,7 +787,7 @@ mod tests {
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         cache
             .read_conns
-            .insert(world.to_string(), cache.new_slot(SlotState::Evicted));
+            .insert(v(world), cache.new_slot(SlotState::Evicted));
 
         let read = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
         let (stage, _hmac) = read.expect("evicted cache slot must reopen existing world");
@@ -799,7 +803,7 @@ mod tests {
             "evicted slot retry should count as one external miss"
         );
         assert!(
-            cache.read_conns.get(world).is_some(),
+            cache.read_conns.get(&v(world)).is_some(),
             "retry path should install a fresh tracked slot"
         );
 
@@ -815,16 +819,16 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
-        let arc = cache.read_conns.get(world).unwrap().value().clone();
+        let arc = cache.read_conns.get(&v(world)).unwrap().value().clone();
         let read_guard = arc.inner.read().unwrap();
 
         assert!(
-            !cache.try_evict_ready_slot(world, &arc),
+            !cache.try_evict_ready_slot(&v(world), &arc),
             "eviction must not drain a slot while a reader holds the read guard"
         );
         drop(read_guard);
         assert!(
-            cache.read_conns.get(world).is_some(),
+            cache.read_conns.get(&v(world)).is_some(),
             "busy eviction refusal must leave the cached slot installed"
         );
 
@@ -840,14 +844,14 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
-        let arc = cache.read_conns.get(world).unwrap().value().clone();
+        let arc = cache.read_conns.get(&v(world)).unwrap().value().clone();
 
         assert!(
-            cache.try_evict_ready_slot(world, &arc),
+            cache.try_evict_ready_slot(&v(world), &arc),
             "idle Ready slot should be evictable"
         );
         assert!(
-            cache.read_conns.get(world).is_none(),
+            cache.read_conns.get(&v(world)).is_none(),
             "successful eviction must remove the map entry"
         );
         let guard = arc.inner.read().unwrap();
@@ -865,17 +869,17 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache.cached_read_with_hmac(&dir, &v(world)).unwrap();
-        let stale_arc = cache.read_conns.get(world).unwrap().value().clone();
+        let stale_arc = cache.read_conns.get(&v(world)).unwrap().value().clone();
         cache
             .read_conns
-            .insert(world.to_string(), cache.new_slot(SlotState::Tombstone));
+            .insert(v(world), cache.new_slot(SlotState::Tombstone));
 
         assert!(
-            !cache.try_evict_ready_slot(world, &stale_arc),
+            !cache.try_evict_ready_slot(&v(world), &stale_arc),
             "evicting a stale Arc must not count as a successful map eviction"
         );
         assert!(
-            cache.read_conns.get(world).is_some(),
+            cache.read_conns.get(&v(world)).is_some(),
             "replacement entry must not be removed by stale Arc eviction"
         );
         assert_eq!(
@@ -908,7 +912,7 @@ mod tests {
         let opening_slot = cache.new_slot(SlotState::Opening);
         cache
             .read_conns
-            .insert(opening_world.to_string(), opening_slot.clone());
+            .insert(v(opening_world), opening_slot.clone());
         let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
             panic!("Opening must be a retry signal, not a readable slot")
         });
@@ -939,7 +943,7 @@ mod tests {
         let cache = ReadCache::new(1);
         cache
             .read_conns
-            .insert(world.to_string(), cache.new_slot(SlotState::Opening));
+            .insert(v(world), cache.new_slot(SlotState::Opening));
 
         let err = match cache.cached_read_with_hmac(&dir, &v(world)) {
             Ok(Some(_)) => panic!("stuck Opening must not resolve as a body"),
@@ -973,12 +977,12 @@ mod tests {
         cache.install_tombstone_blocking(&v("home/tomb"));
 
         assert!(
-            cache.try_evict_oldest_sample("home/new"),
+            cache.try_evict_oldest_sample(&v("home/new")),
             "sample should skip Tombstone and evict the idle Ready candidate"
         );
-        assert!(cache.read_conns.get("home/ready").is_none());
+        assert!(cache.read_conns.get(&v("home/ready")).is_none());
         assert!(
-            cache.read_conns.get("home/tomb").is_some(),
+            cache.read_conns.get(&v("home/tomb")).is_some(),
             "Tombstone is delete state, not an LRU eviction candidate"
         );
         let tombstone_read = cache.cached_read_with_hmac(&dir, &v("home/tomb")).unwrap();
@@ -1000,16 +1004,16 @@ mod tests {
         let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
         let _ = cache.cached_read_with_hmac(&dir, &v("home/c")).unwrap();
 
-        let a_arc = cache.read_conns.get("home/a").unwrap().value().clone();
-        let b_arc = cache.read_conns.get("home/b").unwrap().value().clone();
+        let a_arc = cache.read_conns.get(&v("home/a")).unwrap().value().clone();
+        let b_arc = cache.read_conns.get(&v("home/b")).unwrap().value().clone();
         let a_guard = a_arc.inner.read().unwrap();
         let b_guard = b_arc.inner.read().unwrap();
 
         assert!(
-            !cache.try_evict_oldest_sample("home/c"),
+            !cache.try_evict_oldest_sample(&v("home/c")),
             "the target world must not be evicted just because older candidates are busy"
         );
-        assert!(cache.read_conns.get("home/c").is_some());
+        assert!(cache.read_conns.get(&v("home/c")).is_some());
         assert_eq!(
             cache.metrics.read_cache_evictions.load(Ordering::Relaxed),
             0
@@ -1059,7 +1063,7 @@ mod tests {
         let r1 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
         assert!(matches!(r1, Some(crate::audit::VerifyReport::Valid(_))));
         assert!(
-            cache.read_conns.get(world).is_some(),
+            cache.read_conns.get(&v(world)).is_some(),
             "expected the verify to populate the SlotState cache; \
              a regression to the bare audit::verify_chain path would \
              leave the map empty"
@@ -1111,8 +1115,8 @@ mod tests {
         let cache = StdArc::new(ReadCache::new(2));
         let _ = cache.cached_read_with_hmac(&dir, &v("home/a")).unwrap();
         let _ = cache.cached_read_with_hmac(&dir, &v("home/b")).unwrap();
-        let a_arc = cache.read_conns.get("home/a").unwrap().value().clone();
-        let b_arc = cache.read_conns.get("home/b").unwrap().value().clone();
+        let a_arc = cache.read_conns.get(&v("home/a")).unwrap().value().clone();
+        let b_arc = cache.read_conns.get(&v("home/b")).unwrap().value().clone();
         let a_guard = a_arc.inner.read().unwrap();
         let b_guard = b_arc.inner.read().unwrap();
 
@@ -1156,9 +1160,9 @@ mod tests {
 
         // After all readers complete, the transient slot should be
         // gone (cleanup ran). A and B remain (persistent slots).
-        assert!(cache.read_conns.get("home/c").is_none());
-        assert!(cache.read_conns.get("home/a").is_some());
-        assert!(cache.read_conns.get("home/b").is_some());
+        assert!(cache.read_conns.get(&v("home/c")).is_none());
+        assert!(cache.read_conns.get(&v("home/a")).is_some());
+        assert!(cache.read_conns.get(&v("home/b")).is_some());
         drop(a_guard);
         drop(b_guard);
 
