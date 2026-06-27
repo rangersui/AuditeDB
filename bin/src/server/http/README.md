@@ -126,6 +126,9 @@ Timeline-looking requests have a closed status vocabulary:
 return no response body. Timeline mode never falls back to the current world
 body when the historical coordinate cannot be proven.
 
+Timeline mode adds no environment variables. It uses the existing read-token,
+header persistence, read-cache, and storage settings listed above.
+
 ## `/proc/*`
 
 The binary exposes text-shaped `/proc/*` endpoints over HTTP. These are adapter
