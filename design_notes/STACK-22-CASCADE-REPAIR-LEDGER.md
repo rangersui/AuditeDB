@@ -1693,3 +1693,48 @@ Validation:
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r89: Timeline proof-header ownership
+
+- Branch: `stack/22r89-timeline-proof-header-spoof`
+- Commit: `06967f1 bin: prove timeline proof header ownership`
+- Base: `stack/22r88-timeline-nonbody-event-wire`
+- Scope: closes the remaining PLAN section 8 / Counterexample Q proof gap that
+  persisted metadata must not spoof or duplicate any trusted `X-Timeline-*`
+  proof header.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer strengthens `pipeline_timeline_get_returns_historical_body_and_proof_headers`.
+The historical event metadata now tries to persist all four trusted proof
+headers: `x-timeline-world`, `x-timeline-generation`, `x-timeline-seq`, and
+`x-timeline-body-sha256`. The test asserts the historical response contains
+exactly one value for each proof header, and that the values match the verified
+timeline address rather than the persisted spoofed metadata. The same test
+continues to prove ordinary allowed metadata (`content-language`) survives and
+that historical success responses suppress current-read headers: `ETag`,
+`Accept-Ranges`, `Content-Range`, and `Link`.
+
+Fresh review:
+
+- Aquinas the 3rd / Sagan + Noether: clean P0-P3. Confirmed all four spoofed
+  persisted proof headers are seeded, every response proof header is asserted
+  single-valued and core-minted, ordinary metadata still survives, current-read
+  headers remain suppressed, metadata replay filters hard-denied names before
+  proof headers are appended, and duplicate leakage would be observable because
+  response construction appends duplicate values rather than overwriting.
+- Mill the 3rd / Bacon + Mencius + QA-Enforcement: clean P0-P3. Confirmed the
+  layer is test-only, no new public API or unsafe is introduced, no raw proof
+  bypass is added, and the new unwraps remain inside the existing test-module
+  allowance.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_get_returns_historical_body_and_proof_headers -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `python tools\header_policy_scan.py --offline`
+- `git diff --check`
