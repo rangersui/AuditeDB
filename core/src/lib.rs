@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 //! # AuditeDB — powered by the Elastik L5 Engine
 //!
@@ -181,6 +182,7 @@ mod state;
 mod storage_class;
 mod store;
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod test_support;
 mod timeline;
 mod world;

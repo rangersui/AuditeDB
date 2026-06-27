@@ -497,6 +497,9 @@ impl EngineSubscription {
                         self.state = SubscriptionState::Replaying { remaining, live };
                         return item;
                     }
+                    // Invariant: Replaying state owns exactly one pending
+                    // shutdown receiver until it transitions to Live.
+                    #[allow(clippy::expect_used)]
                     let shutdown = self
                         .slot
                         .take_pending_shutdown()
@@ -544,6 +547,7 @@ impl EngineSubscription {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{SubscribePattern, SubscriptionCursor, SubscriptionEpoch};
 

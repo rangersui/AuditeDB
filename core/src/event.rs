@@ -146,6 +146,7 @@ pub(crate) fn matches_world(pattern: &str, path: &ValidatedWorldPath) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

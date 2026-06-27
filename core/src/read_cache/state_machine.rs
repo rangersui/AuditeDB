@@ -168,6 +168,9 @@ impl ReadCache {
                 if self.try_evict_oldest_sample(world) {
                     continue;
                 }
+                // Invariant: SlotRead::Done returns immediately after taking
+                // the FnOnce; retry states leave it present for fallback.
+                #[allow(clippy::expect_used)]
                 return self.invoke_transient(&path, world, f.take().expect("read closure"));
             }
 
@@ -241,6 +244,9 @@ impl ReadCache {
         }
 
         log_read_cache_retry_budget_exhausted(world, "tracked");
+        // Invariant: SlotRead::Done returns immediately after taking the
+        // FnOnce; retry-budget fallback still owns it.
+        #[allow(clippy::expect_used)]
         self.invoke_transient(
             &path,
             world,
@@ -375,6 +381,9 @@ impl ReadCache {
             SlotState::Ready(tracked_mutex) => {
                 let mut tracked = tracked_mutex.lock().unwrap_or_else(|p| p.into_inner());
                 tracked.verify_schema()?;
+                // Invariant: Ready is the only branch allowed to consume the
+                // FnOnce; Opening/Evicted/Tombstone return without taking it.
+                #[allow(clippy::expect_used)]
                 let f = f.take().expect(
                     "invoke_via_slot closure slot is empty; SlotRead::Opening \
                      and SlotRead::Evicted may re-enter with the closure intact, \
@@ -390,6 +399,7 @@ impl ReadCache {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;

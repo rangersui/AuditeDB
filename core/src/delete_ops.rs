@@ -280,8 +280,11 @@ fn capture_delete_subject_proof(
 }
 
 fn delete_ledger_world() -> ValidatedWorldPath {
-    ValidatedWorldPath::new("var/log/deletes")
-        .expect("delete ledger world is a canonical validated path")
+    match ValidatedWorldPath::new("var/log/deletes") {
+        Ok(world) => world,
+        // Invariant: var/log/deletes is a constant canonical world path.
+        Err(reason) => unreachable!("delete ledger world is a constant canonical path: {reason}"),
+    }
 }
 
 fn storage_len_missing_error() -> rusqlite::Error {
@@ -435,6 +438,7 @@ fn subject_audit_error_to_engine(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::engine_types::ValidatedWorldPath;

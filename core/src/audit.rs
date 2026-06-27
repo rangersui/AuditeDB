@@ -328,6 +328,8 @@ fn verify_statement(
             prev_hmac: r.get(8)?,
         };
         if current.as_ref().is_some_and(|event| event.id != row.id) {
+            // Invariant: the guard above already proved `current` is Some.
+            #[allow(clippy::expect_used)]
             let event = current.take().expect("current event");
             if let Some(break_report) = verify_event(
                 &event,
@@ -487,10 +489,13 @@ fn hmac_field(mac: &mut Hmac<Sha256>, label: &[u8], value: &str) {
     mac.update(b"\0");
 }
 
-// Invariant: HMAC accepts any key length; AuditHmacKey enforces Elastik's key policy.
-#[allow(clippy::expect_used)]
 fn event_hmac(key: &AuditHmacKey, input: EventHmacInput<'_>) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key.as_slice()).expect("hmac key");
+    // Invariant: HMAC accepts any key length; AuditHmacKey enforces AuditeDB's
+    // key policy before this sink.
+    let mut mac = match Hmac::<Sha256>::new_from_slice(key.as_slice()) {
+        Ok(mac) => mac,
+        Err(_) => unreachable!("HMAC accepts any key length"),
+    };
     hmac_field(&mut mac, b"prev", input.prev);
     hmac_field(&mut mac, b"type", input.event_type);
     hmac_field(&mut mac, b"target", input.target);
@@ -522,6 +527,7 @@ fn canonical_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::engine_types::ValidatedWorldPath;

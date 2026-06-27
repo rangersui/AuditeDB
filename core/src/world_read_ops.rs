@@ -149,6 +149,7 @@ fn classify_read_audit_error(scope: &'static str, err: audit::AuditError) -> Rea
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::{

@@ -560,6 +560,7 @@ fn verify_all_worlds_with_names(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::engine_types::SecretBytes;

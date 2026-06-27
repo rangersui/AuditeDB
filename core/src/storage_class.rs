@@ -47,6 +47,7 @@ fn is_insufficient_storage_error_impl(err: &rusqlite::Error) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

@@ -438,6 +438,7 @@ impl fmt::Display for InvalidHmacKey {
 impl std::error::Error for InvalidHmacKey {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
         AuditHmacKey, EtagMatcher, InvalidHmacKey, Preconditions, Representation, SecretBytes,

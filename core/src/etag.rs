@@ -152,6 +152,7 @@ pub(crate) fn etag_list_weak_matches(header_value: &str, current: &str) -> bool 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
