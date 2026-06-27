@@ -170,13 +170,16 @@ fn append_with_conn_verified(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn append_retained_body_tx_row(
-    audit_tx: &VerifiedAuditTx<'_, '_, '_>,
+pub(crate) fn append_retained_body_tx_row<'tx, 'conn, 'key>(
+    audit_tx: &VerifiedAuditTx<'tx, 'conn, 'key>,
     event_type: BodyEventKind,
-    retained: &world::RetainedCasBody,
+    retained: &world::RetainedCasBody<'tx, 'conn>,
     content_type: &str,
     headers: &[(String, String)],
 ) -> rusqlite::Result<AppendedBodyAuditRow> {
+    if !retained.was_retained_in(audit_tx.tx) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     if retained.target() != audit_tx.world() {
         return Err(rusqlite::Error::InvalidQuery);
     }

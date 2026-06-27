@@ -469,35 +469,42 @@ pub fn write_with_audit_checked(
         [],
         |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
     )?;
-    let audit_tx = verify_appendable_world_tx(&tx, world, key, opened)?;
-    let retained = cas::retain_body_tx(&tx, world, body)?;
-    tx.execute(
-        r#"UPDATE stage_meta
-           SET body=?,
-               content_type=?
-           WHERE id=1"#,
-        params![body, content_type],
-    )?;
-    tx.execute("DELETE FROM meta_headers", [])?;
-    {
-        let mut stmt = tx.prepare("INSERT INTO meta_headers(name, value) VALUES(?, ?)")?;
-        for (name, value) in headers {
-            stmt.execute(params![name, value])?;
+    let (hmac, cas_body_inserted, timeline_address) = {
+        let audit_tx = verify_appendable_world_tx(&tx, world, key, opened)?;
+        let retained = cas::retain_body_tx(&tx, world, body)?;
+        tx.execute(
+            r#"UPDATE stage_meta
+               SET body=?,
+                   content_type=?
+               WHERE id=1"#,
+            params![body, content_type],
+        )?;
+        tx.execute("DELETE FROM meta_headers", [])?;
+        {
+            let mut stmt = tx.prepare("INSERT INTO meta_headers(name, value) VALUES(?, ?)")?;
+            for (name, value) in headers {
+                stmt.execute(params![name, value])?;
+            }
         }
-    }
-    let row = audit::append_retained_body_tx_row(
-        &audit_tx,
-        BodyEventKind::PUT,
-        &retained,
-        content_type,
-        headers,
-    )?;
-    cas::mark_retention_started_tx(&tx, row.id())?;
+        let row = audit::append_retained_body_tx_row(
+            &audit_tx,
+            BodyEventKind::PUT,
+            &retained,
+            content_type,
+            headers,
+        )?;
+        cas::mark_retention_started_tx(&tx, row.id())?;
+        (
+            row.hmac().to_owned(),
+            retained.inserted(),
+            row.timeline_address().clone(),
+        )
+    };
     tx.commit()?;
     Ok(WriteAuditResult {
-        hmac: row.hmac().to_owned(),
-        cas_body_inserted: retained.inserted(),
-        timeline_address: row.timeline_address().clone(),
+        hmac,
+        cas_body_inserted,
+        timeline_address,
         previous_len,
         existed: matches!(opened, OpenedWorldKind::Existing),
     })
@@ -556,35 +563,43 @@ pub fn append_with_audit(
         return Ok(None);
     };
     let tx = c.transaction()?;
-    let audit_tx = verify_appendable_world_tx(&tx, world, key, OpenedWorldKind::Existing)?;
-    let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
-        r.get::<_, Vec<u8>>(0)
-    })?;
-    let mut new_body = current;
-    new_body.extend_from_slice(body);
-    let retained = cas::retain_body_tx(&tx, world, &new_body)?;
-    tx.execute(
-        r#"UPDATE stage_meta
-           SET body=?
-           WHERE id=1"#,
-        params![new_body],
-    )?;
-    let row = audit::append_retained_body_tx_row(
-        &audit_tx,
-        BodyEventKind::APPEND,
-        &retained,
-        content_type,
-        headers,
-    )?;
-    cas::mark_retention_started_tx(&tx, row.id())?;
+    let (body_sha256_after, cas_body_inserted, timeline_address, hmac) = {
+        let audit_tx = verify_appendable_world_tx(&tx, world, key, OpenedWorldKind::Existing)?;
+        let current = tx.query_row("SELECT body FROM stage_meta WHERE id=1", [], |r| {
+            r.get::<_, Vec<u8>>(0)
+        })?;
+        let mut new_body = current;
+        new_body.extend_from_slice(body);
+        let retained = cas::retain_body_tx(&tx, world, &new_body)?;
+        tx.execute(
+            r#"UPDATE stage_meta
+               SET body=?
+               WHERE id=1"#,
+            params![new_body],
+        )?;
+        let row = audit::append_retained_body_tx_row(
+            &audit_tx,
+            BodyEventKind::APPEND,
+            &retained,
+            content_type,
+            headers,
+        )?;
+        cas::mark_retention_started_tx(&tx, row.id())?;
+        (
+            retained.body_sha256().as_str().to_owned(),
+            retained.inserted(),
+            Some(row.timeline_address().clone()),
+            row.hmac().to_owned(),
+        )
+    };
     tx.commit()?;
     Ok(Some((
         AppendResult {
-            body_sha256_after: retained.body_sha256().as_str().to_owned(),
-            cas_body_inserted: retained.inserted(),
-            timeline_address: Some(row.timeline_address().clone()),
+            body_sha256_after,
+            cas_body_inserted,
+            timeline_address,
         },
-        row.hmac().to_owned(),
+        hmac,
     )))
 }
 
@@ -705,6 +720,35 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn retained_cas_body_rejects_different_transaction() {
+        let root_a = test_root("retained-cas-tx-identity-a");
+        let root_b = test_root("retained-cas-tx-identity-b");
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
+        let key = test_key();
+        let world = validated("home/cas-tx-identity");
+
+        let mut c1 = open(&root_a, world.as_str()).unwrap();
+        let mut c2 = open(&root_b, world.as_str()).unwrap();
+        let tx1 = c1.transaction().unwrap();
+        let tx2 = c2.transaction().unwrap();
+        let retained = cas::retain_body_tx(&tx1, &world, b"retained elsewhere").unwrap();
+        let audit_tx = audit::verify_appendable_tx_genesis_checked(&tx2, &world, &key).unwrap();
+
+        let err = match audit::append_retained_body_tx_row(
+            &audit_tx,
+            BodyEventKind::PUT,
+            &retained,
+            "text/plain",
+            &[],
+        ) {
+            Ok(_) => panic!("retained body proof from a different transaction must reject"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, rusqlite::Error::InvalidQuery));
     }
 
     #[test]

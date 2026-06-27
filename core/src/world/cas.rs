@@ -1,6 +1,7 @@
 //! CAS body retention for one world's SQLite file.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use std::marker::PhantomData;
 use std::path::Path;
 
 use crate::{
@@ -11,14 +12,21 @@ use crate::{
 
 use super::{open_existing_validated, WriteAuditError};
 
-pub(crate) struct RetainedCasBody {
+/// Proof that this transaction has retained the full body in CAS storage.
+///
+/// The lifetimes bind the proof to the transaction that inserted or verified
+/// the body, and the private transaction pointer lets the audit append sink
+/// reject a proof from a different live transaction with the same lifetime.
+pub(crate) struct RetainedCasBody<'tx, 'conn> {
     target: ValidatedWorldPath,
     body_sha256: BodySha256,
     size: i64,
     inserted: bool,
+    tx: *const Transaction<'conn>,
+    _tx: PhantomData<&'tx Transaction<'conn>>,
 }
 
-impl RetainedCasBody {
+impl<'tx, 'conn> RetainedCasBody<'tx, 'conn> {
     pub(crate) fn target(&self) -> &ValidatedWorldPath {
         &self.target
     }
@@ -34,13 +42,17 @@ impl RetainedCasBody {
     pub(crate) fn inserted(&self) -> bool {
         self.inserted
     }
+
+    pub(crate) fn was_retained_in(&self, tx: &Transaction<'conn>) -> bool {
+        std::ptr::eq(self.tx, tx)
+    }
 }
 
-pub(super) fn retain_body_tx(
-    tx: &Transaction<'_>,
+pub(super) fn retain_body_tx<'tx, 'conn>(
+    tx: &'tx Transaction<'conn>,
     target: &ValidatedWorldPath,
     body: &[u8],
-) -> Result<RetainedCasBody, WriteAuditError> {
+) -> Result<RetainedCasBody<'tx, 'conn>, WriteAuditError> {
     let body_sha256 = BodySha256::for_body(body);
     let size = i64::try_from(body.len())
         .map_err(|_| WriteAuditError::StorageInvariant("body length does not fit i64"))?;
@@ -63,6 +75,8 @@ pub(super) fn retain_body_tx(
         body_sha256,
         size,
         inserted,
+        tx,
+        _tx: PhantomData,
     })
 }
 
