@@ -1592,6 +1592,25 @@ mod tests {
             );
         }
 
+        let duplicate_mode = run(
+            Method::GET,
+            "/home/timeline/errors".to_string(),
+            raw_query(
+                "timeline=1&timeline=0&timeline-generation=0123456789abcdef0123456789abcdef&\
+                 timeline-seq=1&timeline-body-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            316,
+        )
+        .await;
+        assert_eq!(duplicate_mode.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_text(duplicate_mode).await,
+            "bad request: invalid timeline query: DuplicateTimelineMode\n"
+        );
+
         let memory_engine = state.engine().clone();
         for (idx, prefix) in ["tmp", "dev", "sys"].into_iter().enumerate() {
             let world = format!("{prefix}/timeline/errors");
@@ -1606,7 +1625,7 @@ mod tests {
                 HeaderMap::new(),
                 Bytes::new(),
                 &state,
-                316 + idx as u64,
+                317 + idx as u64,
             )
             .await;
             assert_eq!(memory.status(), StatusCode::BAD_REQUEST);
