@@ -105,6 +105,27 @@ Historical `GET` responses return the full body. Historical `GET` and `HEAD`
 responses include `X-Timeline-*` proof headers. `HEAD` returns headers only.
 They do not emit current-world `ETag`, range, or monitor-link headers.
 
+Timeline-looking requests have a closed status vocabulary:
+
+| Case | Status | Output shape |
+|------|--------|--------------|
+| `OPTIONS`, even with timeline-looking or malformed timeline query strings | `204` | Ordinary world-route `Allow`, no timeline dereference. |
+| Historical `GET` | `200` | Historical body bytes plus `X-Timeline-*` proof headers. |
+| Historical `HEAD` | `200` | Same proof headers, no body. |
+| Invalid timeline query, duplicate fields, unknown timeline fields, extra query fields, malformed coordinates, memory-world coordinates, or invalid stored metadata | `400` | Text error. |
+| Missing or invalid read token when a read token is configured | `401` | Existing read-token challenge. |
+| Timeline mode with any method other than `GET`, `HEAD`, or `OPTIONS` | `405` | `Allow: GET, HEAD, OPTIONS`. |
+| Raw query over the adapter cap | `414` | Text error. |
+| Generation or body-SHA-256 mismatch | `409` | Text reason. |
+| Non-body event, missing row, or unproven coordinate | `404` | Text reason. |
+| Corrupt verified row, worker failure, or other storage/internal failure | `500` | Text error. |
+| Transient storage failure or shutdown | `503` | Retryable storage response. |
+| Insufficient storage | `507` | Insufficient-storage response. |
+
+`HEAD` timeline failures preserve the same status and headers as `GET` but
+return no response body. Timeline mode never falls back to the current world
+body when the historical coordinate cannot be proven.
+
 ## `/proc/*`
 
 The binary exposes text-shaped `/proc/*` endpoints over HTTP. These are adapter
