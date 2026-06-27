@@ -1870,3 +1870,42 @@ Validation:
 - `cargo fmt --manifest-path bin\Cargo.toml --check`
 - `cargo fmt --manifest-path core\Cargo.toml --check`
 - `cargo fmt --manifest-path ffi\Cargo.toml --check`
+
+## 22r93: Panic discipline wording matches current lint gate
+
+- Branch: `stack/22r93-panic-discipline-current`
+- Commit: `d9f590d docs: align panic discipline with current lint gate`
+- Base: `stack/22r92-timeline-no-env-doc`
+- Scope: removes stale process wording that described the crate-root
+  `clippy::unwrap_used` / `clippy::expect_used` deny gate as a future target
+  even though `core`, `bin`, and `ffi` already carry the lint wall.
+- Production diff: docs-only. The only changed file is `AGENTS.md`.
+
+The panic-discipline contract now states the current rule directly:
+production crates carry crate-root deny attributes for naked `unwrap` and
+`expect`; reviewers must keep that lint wall present; any production escape
+must be local, documented, and accepted by `tools/panic_discipline_scan.py`.
+
+Fresh review:
+
+- Leibniz the 3rd / Sagan + Heisenberg: clean P0-P3. Confirmed the wording
+  does not overclaim compiler enforcement: unsafe remains the compiler wall,
+  while unwrap/expect is described as a Clippy lint wall plus process/scanner
+  enforcement. Confirmed `core`, `bin`, and `ffi` crate roots match the new
+  wording and the scanner still enforces exact lint-name suppressors.
+- Peirce the 3rd / Bacon + Mencius + QA-Enforcement: initially found one P2
+  process issue: the layer was not commit-ready until this durable ledger entry
+  recorded the branch, validation, reviewer lenses, and fresh clearance. The
+  re-review was clean P0-P3 and confirmed the entry does not overclaim the
+  initial QA result.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --stat`
+- `git diff --check`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `cargo clippy --locked --manifest-path core\Cargo.toml --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
