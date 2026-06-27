@@ -23,6 +23,8 @@ pub(crate) async fn execute_timeline(
 ) -> Phase {
     let engine = state.engine().clone();
     let worker_coordinate = coordinate.clone();
+    // Timeline dereference verifies SQLite audit rows and reads retained CAS
+    // bytes; keep that filesystem/read-cache work off Tokio worker threads.
     let joined = tokio::task::spawn_blocking(move || {
         engine.dereference_timeline_coordinate(&worker_coordinate, tier)
     })
