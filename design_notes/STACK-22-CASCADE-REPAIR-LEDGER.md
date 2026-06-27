@@ -1409,3 +1409,40 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r82: Timeline missing-row wire distinction
+
+- Branch: `stack/22r82-timeline-missing-row-wire`
+- Commit: `85c124b bin: distinguish missing timeline rows`
+- Base: `stack/22r81-timeline-duplicate-mode-wall`
+- Scope: test-only route-level coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample G:
+  an existing durable world with a valid generation/hash but missing event row
+  must not collapse into the missing-world/unproven-coordinate response.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer extends `pipeline_timeline_head_errors_have_no_body`. It first writes
+the durable world and captures a real timeline address, then asks for the same
+generation and body hash at sequence `99`. GET must return `404` with
+`timeline row not found\n`; HEAD on the same coordinate must still return
+`404` with an empty body. The previous 22r80 test remains the separate proof
+that a missing durable file returns `timeline coordinate not proven\n`.
+
+Fresh review:
+
+- Ohm the 2nd / Popper: clean P0-P3. Confirmed the valid address stem plus
+  absent sequence proves MissingRow, not UnprovenCoordinate, and noted that the
+  GET-before-HEAD cache warming does not affect response-body suppression.
+- Hubble the 2nd / Mencius + QA-Enforcement: clean P0-P3. Confirmed the layer
+  is test-only, introduces no production unwrap/expect/unsafe, changes no
+  internal API or type-seal boundary, and keeps route-level HTTP walls explicit.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_head_errors_have_no_body -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
