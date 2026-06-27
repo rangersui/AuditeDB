@@ -1483,3 +1483,40 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r84: Timeline body-hash-mismatch wire body
+
+- Branch: `stack/22r84-timeline-bodyhash-wire`
+- Commit: `6dc51d8 bin: assert timeline body hash mismatch body`
+- Base: `stack/22r83-timeline-generation-wire`
+- Scope: test-only route-level coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample H:
+  an existing row with a different body hash must map to the distinct
+  BodyHashMismatch `409` body rather than MissingRow, GenMismatch, or Corrupt.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer extends `pipeline_timeline_head_errors_have_no_body`. It reuses a
+real durable timeline address, preserves the generation and sequence, and
+changes only the body SHA-256. GET must return `409` with
+`timeline body sha256 mismatch\n`; HEAD on the same coordinate still returns
+`409` with an empty body. This pins the neighbouring `409` branch that 22r83
+left distinguishable only through core tests and handler code.
+
+Fresh review:
+
+- Hypatia the 2nd / Popper: clean P0-P3. Confirmed the test is not redundant
+  because it proves the HTTP wire body for BodyHashMismatch rather than the
+  lower-level enum branch.
+- Bernoulli the 2nd / Mencius + QA-Enforcement: clean P0-P3. Confirmed the
+  layer is test-only, changes no production API, introduces no production
+  unwrap/expect/unsafe, and preserves type-seal discipline.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_head_errors_have_no_body -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
