@@ -1252,6 +1252,7 @@ Validation:
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
 
+
 ## 22r78: Reserved route topology
 
 - Branch: `stack/22r78-route-topology-owned-prefixes`
@@ -1368,6 +1369,42 @@ Validation:
 
 - `cargo fmt --manifest-path bin\Cargo.toml -- --check`
 - `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_missing_world_is_unproven_not_gone -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
+
+## 22r81: Duplicate timeline mode wall
+
+- Branch: `stack/22r81-timeline-duplicate-mode-wall`
+- Commit: `a16bed6 bin: reject duplicate timeline mode`
+- Base: `stack/22r80-timeline-unproven-not-gone`
+- Scope: test-only route-level coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample N:
+  duplicate `timeline` mode parameters must not collapse through a map parser.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer extends `pipeline_timeline_query_errors_are_closed_and_head_empty`
+with a full `pipeline::run` request containing `timeline=1&timeline=0` plus a
+complete coordinate. The response must be `400` with
+`DuplicateTimelineMode`. The current-body sentinel already present in the test
+would catch current-read fallthrough; the exact error body also catches both
+"first value wins" and "last value wins" map-collapse regressions.
+
+Fresh review:
+
+- Euler the 2nd / Popper: clean P0-P3. Confirmed this closes Counterexample N
+  at route level and the exact body rules out both duplicate-collapse
+  directions and current-read fallthrough.
+- Hume the 2nd / QA-Enforcement: clean P0-P3. Confirmed the layer is minimal,
+  test-only, introduces no production unwrap/expect/unsafe, preserves stacked
+  minimality, and has sufficient local validation.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_query_errors_are_closed_and_head_empty -- --nocapture`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
