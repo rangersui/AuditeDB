@@ -1391,6 +1391,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pipeline_timeline_missing_world_is_unproven_not_gone() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-unproven");
+        let state = server_state_for_engine_for_tests(engine);
+
+        let resp = run(
+            Method::GET,
+            "/home/timeline/unproven".to_string(),
+            raw_query(
+                "timeline=1&timeline-generation=0123456789abcdef0123456789abcdef&\
+                 timeline-seq=1&timeline-body-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            319,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response_text(resp).await,
+            "timeline coordinate not proven\n"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn pipeline_timeline_head_errors_have_no_body() {
         let (engine, dir) = test_engine_for_server("pipeline-timeline-head-errors");
         let address = write_body_and_capture_timeline_address(
