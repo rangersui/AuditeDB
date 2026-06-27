@@ -1,3 +1,5 @@
+use std::num::IntErrorKind;
+
 use elastik_core::{InvalidTimelineCoordinate, TimelineCoordinate, ValidatedWorldPath};
 
 pub(crate) const MAX_RAW_QUERY_BYTES: usize = 8192;
@@ -23,7 +25,8 @@ pub(crate) enum TimelineQueryError {
     UnknownTimelineCoordinateField,
     UnsupportedTimelineQueryField,
     TimelineWorldComesFromPath,
-    InvalidTimelineSeq,
+    TimelineSeqNotInteger,
+    TimelineSeqOutOfRange,
     InvalidTimelineCoordinate(InvalidTimelineCoordinate),
 }
 
@@ -55,20 +58,8 @@ pub(super) fn classify_raw_query(
     let mut fields = TimelineFields::default();
     for raw_pair in raw.split('&') {
         let (raw_key, raw_value) = raw_pair.split_once('=').unwrap_or((raw_pair, ""));
-        let key = match decode_query_component(raw_key) {
-            Ok(key) => key,
-            Err(err)
-                if fields.saw_timeline_field
-                    || raw_key.starts_with("timeline")
-                    || raw_key_may_be_timeline(raw_key) =>
-            {
-                return Err(err);
-            }
-            Err(_) => {
-                fields.saw_pre_timeline_ordinary_field = true;
-                continue;
-            }
-        };
+        let key = decode_query_component(raw_key)?;
+        let value = decode_query_component(raw_value)?;
         let timeline_key = key == "timeline" || key.starts_with("timeline-");
 
         if !fields.saw_timeline_field && !timeline_key {
@@ -83,7 +74,6 @@ pub(super) fn classify_raw_query(
 
         match key.as_str() {
             "timeline" => {
-                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.mode,
                     value,
@@ -91,7 +81,6 @@ pub(super) fn classify_raw_query(
                 )?;
             }
             "timeline-generation" => {
-                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.generation,
                     value,
@@ -99,7 +88,6 @@ pub(super) fn classify_raw_query(
                 )?;
             }
             "timeline-seq" => {
-                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.seq,
                     value,
@@ -107,7 +95,6 @@ pub(super) fn classify_raw_query(
                 )?;
             }
             "timeline-body-sha256" => {
-                let value = decode_query_component(raw_value)?;
                 set_once(
                     &mut fields.body_sha256,
                     value,
@@ -137,23 +124,6 @@ fn set_once(
     }
     *slot = Some(value);
     Ok(())
-}
-
-fn raw_key_may_be_timeline(raw: &str) -> bool {
-    let mut pos = 0;
-    for byte in raw.bytes() {
-        if pos >= b"timeline".len() {
-            return byte == b'-' || byte == b'%';
-        }
-        if byte == b'%' {
-            return true;
-        }
-        if byte != b"timeline"[pos] {
-            return false;
-        }
-        pos += 1;
-    }
-    pos == b"timeline".len()
 }
 
 fn finish_classification(
@@ -192,13 +162,23 @@ fn finish_classification(
     let body_sha256 = fields
         .body_sha256
         .ok_or(TimelineQueryError::MissingTimelineCoordinateField)?;
-    let seq = seq
-        .parse::<i64>()
-        .map_err(|_| TimelineQueryError::InvalidTimelineSeq)?;
+    let seq = parse_timeline_seq(&seq)?;
 
     TimelineCoordinate::from_wire_parts(world.as_str(), generation, seq, body_sha256)
         .map(TimelineRequestMode::Timeline)
         .map_err(TimelineQueryError::InvalidTimelineCoordinate)
+}
+
+fn parse_timeline_seq(raw: &str) -> Result<i64, TimelineQueryError> {
+    raw.parse::<i64>().map_err(|err| match err.kind() {
+        IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => {
+            TimelineQueryError::TimelineSeqOutOfRange
+        }
+        IntErrorKind::Empty | IntErrorKind::InvalidDigit | IntErrorKind::Zero => {
+            TimelineQueryError::TimelineSeqNotInteger
+        }
+        _ => TimelineQueryError::TimelineSeqNotInteger,
+    })
 }
 
 fn decode_query_component(raw: &str) -> Result<String, TimelineQueryError> {
@@ -285,25 +265,33 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_malformed_value_stays_current_compatible() {
-        assert!(matches!(
-            classify("/home/config?x=%ZZ").unwrap(),
-            TimelineRequestMode::Current
-        ));
+    fn unrelated_malformed_value_is_rejected() {
+        assert_eq!(
+            classify("/home/config?x=%ZZ").unwrap_err(),
+            TimelineQueryError::MalformedPercentEncoding
+        );
     }
 
     #[test]
-    fn unrelated_plain_malformed_key_stays_current_compatible() {
-        assert!(matches!(
-            classify("/home/config?x%ZZ=1").unwrap(),
-            TimelineRequestMode::Current
-        ));
+    fn unrelated_plain_malformed_key_is_rejected() {
+        assert_eq!(
+            classify("/home/config?x%ZZ=1").unwrap_err(),
+            TimelineQueryError::MalformedPercentEncoding
+        );
     }
 
     #[test]
     fn malformed_timeline_like_key_is_rejected() {
         assert_eq!(
             classify("/home/config?time%ZZline=1").unwrap_err(),
+            TimelineQueryError::MalformedPercentEncoding
+        );
+    }
+
+    #[test]
+    fn unknown_timeline_field_malformed_value_is_rejected() {
+        assert_eq!(
+            classify("/home/config?timeline-extra=%ZZ").unwrap_err(),
             TimelineQueryError::MalformedPercentEncoding
         );
     }
@@ -435,7 +423,7 @@ mod tests {
         let query = good_query().replace("timeline-seq=42", "timeline-seq=not-an-int");
         assert_eq!(
             classify(&format!("/home/config?{query}")).unwrap_err(),
-            TimelineQueryError::InvalidTimelineSeq
+            TimelineQueryError::TimelineSeqNotInteger
         );
     }
 
@@ -466,7 +454,7 @@ mod tests {
         let query = good_query().replace("timeline-seq=42", "timeline-seq=9223372036854775808");
         assert_eq!(
             classify(&format!("/home/config?{query}")).unwrap_err(),
-            TimelineQueryError::InvalidTimelineSeq
+            TimelineQueryError::TimelineSeqOutOfRange
         );
     }
 

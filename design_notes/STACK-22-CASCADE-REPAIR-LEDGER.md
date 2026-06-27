@@ -579,3 +579,124 @@ P3 fixed after that round:
 
 The final substantive review state after adjudication is zero confirmed P0-P2.
 Remote GitHub CI remains the live post-push source of truth.
+
+## 2026-06-27 Continuation: 22r70 -> 22r71
+
+The active stack remains under the repair/continuation exception. The user has
+explicitly authorised an unlimited stacked-PR continuation for this already
+deep stack and will review the final result rather than each intermediate
+layer. This does not waive the per-layer requirements: each layer still needs a
+small diff, local validation, fresh subagent QA, and no confirmed P0-P2 before
+it is considered ready.
+
+Current base before this layer:
+
+- Branch: `stack/22r70-ci-lock-rustdoc`
+- Head: `1f5d721 ci: lock rustdoc dependencies`
+- Local depth over `master` at the start of `22r71`: 25 commits
+
+Layer under review:
+
+- Branch: `stack/22r71-query-percent-fail-loud`
+- Plan section: `PLAN-http-timeline-dereference.md` section 3, query
+  classification before dispatch.
+- Scope: one parser contract fix in `bin/src/server/pipeline/query.rs`.
+- Current `query.rs` diff after the seq-parse reason fix: +39/-51 total.
+- Production file size after the change: 213 lines before `#[cfg(test)]`.
+- Runtime behaviour: non-`OPTIONS` query parsing now decodes every ordered
+  query key and value before classification. Malformed percent encoding can no
+  longer downgrade to `Current`. `OPTIONS` still bypasses query decoding in the
+  route handler.
+- Active skills checked for this layer: `stacked-pr`,
+  `rust-type-seal-enforcement`, `http-type-seal-review`,
+  `monte-carlo-review`, `assign-scientist-reviewers`, and
+  `delegation-doctrine`.
+
+Validation run locally on `stack/22r71-query-percent-fail-loud`:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline::query --all-features`
+  - observed: 26 passed
+- `cargo test --locked --manifest-path bin\Cargo.toml --all-features`
+  - observed: 201 passed
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-features --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
+- `git diff --check`
+
+Fresh QA round:
+
+- Aquinas / Popper: clean P0-P2. Independently verified malformed percent
+  decoding, encoded timeline keys, unrelated well-formed current-query
+  compatibility, and `OPTIONS` bypass. Also ran
+  `cargo test --manifest-path bin/Cargo.toml query --quiet`; observed 30
+  passed in that subagent workspace.
+- Hegel the 2nd / Mencius: clean P0-P2. Confirmed raw query strings remain at
+  the parser boundary, `TimelineCoordinate::from_wire_parts` is the only
+  timeline-coordinate minting path, and validation reasons are preserved rather
+  than erased.
+- Wegener the 2nd / QA-Enforcement: found two process P2 items before this
+  addendum: stale deep-stack exception evidence and missing durable validation
+  evidence. Code scope, line budget, test shape, docs/env scope, panic posture,
+  and reason propagation were otherwise clean.
+
+Disposition:
+
+- The validation evidence and current stack-depth exception evidence are now
+  recorded here.
+- Because this addendum changes only the process ledger, a fresh enforcement
+  round must confirm the P2s are closed before the layer is committed.
+
+Second fresh QA round:
+
+- Meitner the 2nd / Popper: clean P0-P2. Static diff review found no
+  counterexample for malformed-percent fallthrough, `OPTIONS` decoding,
+  encoded timeline keys, or unrelated well-formed current-query compatibility.
+- Kant the 2nd / Mencius: found one P2. The ledger wording overclaimed
+  validation-reason preservation because `timeline-seq` parse failures still
+  collapsed every `ParseIntError` into one query error.
+- Copernicus the 2nd / QA-Enforcement: clean P0-P2 for process evidence before
+  the seq-parse repair. P3 only: the "unlimited stacked-PR continuation"
+  wording is broad but not blocking because this addendum preserves per-layer
+  requirements.
+
+Fix after second round:
+
+- `timeline-seq` parsing now classifies integer syntax failures separately
+  from integer overflow. This removes the broad reason-erasing parse mapping
+  without changing the HTTP wall: both remain typed bad timeline-query errors.
+
+Because the seq-parse repair changes production code, another fresh round must
+confirm P0-P2 are clear before this layer is committed.
+
+Post-fix validation run locally on the current `22r71` worktree:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `git diff --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline::query --all-features`
+  - observed: 26 passed
+- `cargo test --locked --manifest-path bin\Cargo.toml --all-features`
+  - observed: 201 passed
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-features --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
+
+Final fresh QA round after the seq-parse repair:
+
+- Poincare the 2nd / Popper: clean P0-P2. Confirmed decoded key/value parsing,
+  malformed-percent `400`, `OPTIONS` bypass, encoded timeline keys,
+  well-formed unrelated `Current`, and seq syntax-vs-overflow split. Ran
+  focused query, `world_handler_options`, and `pipeline_timeline` tests plus
+  `git diff --check`.
+- Goodall the 2nd / Mencius: clean P0-P2. Confirmed the previous broad
+  parse-reason P2 is fixed, the wildcard `IntErrorKind` fallback remains
+  fail-closed and typed, `TimelineCoordinate::from_wire_parts` remains the
+  coordinate seal, and `ErrorReason::TimelineQuery(other)` preserves the typed
+  query error.
+- Dirac the 2nd / QA-Enforcement: P2 before this closeout only because this
+  final post-fix validation and zero-P0-P2 review round was not yet recorded in
+  the durable ledger. Code scope and query behaviour were otherwise clean.
+
+Final disposition for this layer:
+
+- The final fresh code review round is zero confirmed P0-P2.
+- The process P2 from Dirac the 2nd is closed by this addendum: it records the
+  post-fix validation evidence and the final fresh zero-P0-P2 round.
+- This layer is ready to commit as the next stacked PR layer once a final local
+  `git diff --check` confirms the ledger edit itself is clean.
