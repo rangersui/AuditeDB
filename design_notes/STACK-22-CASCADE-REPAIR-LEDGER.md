@@ -1446,3 +1446,40 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r83: Timeline generation-mismatch wire body
+
+- Branch: `stack/22r83-timeline-generation-wire`
+- Commit: `2e9c217 bin: assert timeline generation mismatch body`
+- Base: `stack/22r82-timeline-missing-row-wire`
+- Scope: test-only route-level coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample I:
+  generation mismatch must be decided before row/hash lookup and must map to a
+  distinct `409` wire body.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer extends `pipeline_timeline_head_errors_have_no_body`. It reuses a
+real durable timeline address, changes only the generation, and sends GET
+before the existing HEAD assertion. GET must return `409` with
+`timeline generation mismatch\n`; HEAD on the same coordinate still returns
+`409` with an empty body. This distinguishes GenMismatch from the neighbouring
+`409` BodyHashMismatch branch, which HEAD alone cannot prove.
+
+Fresh review:
+
+- Heisenberg the 2nd / Popper: clean P0-P3. Confirmed the assertion is not
+  redundant with HEAD because HEAD suppresses the body and both GenMismatch and
+  BodyHashMismatch use `409`.
+- Jason the 2nd / Mencius + QA-Enforcement: clean P0-P3. Confirmed the layer
+  is test-only, adds no production API surface, introduces no production
+  unwrap/expect/unsafe, and touches no type-seal boundary.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_head_errors_have_no_body -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
