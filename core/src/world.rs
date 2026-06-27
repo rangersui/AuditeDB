@@ -90,8 +90,18 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Open or create the world's universe.db with the v5.2 schema.
+#[cfg(test)]
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     open_with_generation_minter(data_root, world, || {
+        world_generation::WorldGeneration::mint().map_err(mint_generation_error)
+    })
+}
+
+pub fn open_validated(
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> rusqlite::Result<Connection> {
+    open_with_generation_minter(data_root, world.as_str(), || {
         world_generation::WorldGeneration::mint().map_err(mint_generation_error)
     })
 }

@@ -91,9 +91,9 @@ impl LedgerWriter {
     ) -> Result<String, BlockingSqliteError> {
         let mut guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {
-            // Lazy init. `world::open` creates the schema; safe to
+            // Lazy init. `world::open_validated` creates the schema; safe to
             // call whether or not the ledger DB exists on disk.
-            let conn = world::open(data, job.ledger_world.as_str())
+            let conn = world::open_validated(data, &job.ledger_world)
                 .map_err(BlockingSqliteError::Sqlite)?;
             *guard = Some(conn);
             self.inits.fetch_add(1, Ordering::Relaxed);
