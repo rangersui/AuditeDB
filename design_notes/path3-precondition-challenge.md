@@ -82,16 +82,20 @@ id=42 carries TimelineAddress { world=config, gen, seq=42, body_sha256 }
 client calls read(TimelineAddress)
 ```
 
-Expected outcomes:
+V1 expected outcomes:
 
 - body present -> returns B;
-- body expired with durable retention proof -> returns Expired/410-class with
-  the same chain coordinate;
-- body missing without expiry proof -> Corrupt/MissingBody, not Expired;
+- body older than the retained CAS floor -> `NeverRetained`;
+- body missing inside the retained range -> `Corrupt`/`MissingBody`, not
+  `Expired`;
 - gen mismatch -> reset/incarnation mismatch, not a read from the new world;
-- subject deleted -> Gone/ledger-backed tombstone for that subject gen;
-- chain row missing without a matching tombstone -> corruption/truncation
-  signal, not current C.
+- subject deleted without a ledger-backed read proof -> `Unproven` or
+  `GenMismatch`, not `Gone`;
+- chain row missing without a matching proof -> `MissingRow`/corruption signal,
+  not current C.
+
+`Expired` and `Gone` are future proof-bearing outcomes. They do not belong in
+the v1 return surface until GC/retention and delete-ledger proof types exist.
 
 If any implementation path returns C for the id=42 fetch, Path 3 failed.
 If documentation calls the expired case "value catch-up", the documentation
@@ -251,13 +255,16 @@ No user-visible persisted CAS/timeline writes may land before the format marker
 and expiry-proof story are explicit. New readers can fail loudly on unknown
 layout; they cannot silently reinterpret an unmarked world as timeline-capable.
 
-The first safe CAS semantic layer starts with the core timeline-address
+The first safe CAS semantic layer starts with the v1 core timeline-address
 contract and the normative event classifier together:
 
 ```text
 TimelineAddress = { world, gen, seq, body_sha256 }
-read(TimelineAddress) -> Body | Expired | Gone | GenMismatch | MissingRow | MissingBody | Corrupt
+read(TimelineAddress) -> Body | NeverRetained | GenMismatch | MissingRow | AddressMismatch | Unproven | Corrupt
 ```
+
+`Expired` and `Gone` require durable proof types. Until those land, missing
+proof stays explicit instead of being named as expiry or deletion.
 
 `gen` is not only an SSE cursor decoration. It is part of the storage-engine
 proof that a historical read is resolving the same world incarnation that

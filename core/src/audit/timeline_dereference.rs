@@ -188,9 +188,7 @@ fn dereference_snapshot(
     ) {
         TimelineRead::Body(body) => Ok(TimelineDereference::Body(body)),
         TimelineRead::Corrupt { reason, .. } => Ok(corrupt(coordinate, reason)),
-        TimelineRead::Expired { .. }
-        | TimelineRead::Gone { .. }
-        | TimelineRead::GenMismatch { .. }
+        TimelineRead::GenMismatch { .. }
         | TimelineRead::MissingRow { .. }
         | TimelineRead::NeverRetained { .. }
         | TimelineRead::AddressMismatch { .. }
@@ -252,11 +250,11 @@ pub struct VerifiedMissingRow {
 /// Result of dereferencing an untrusted [`TimelineCoordinate`].
 ///
 /// This is intentionally separate from [`crate::TimelineRead`].
-/// [`crate::TimelineRead`] is for already proof-bearing timeline addresses and
-/// can report address-bearing states such as `Gone` or `Expired`. Coordinate
-/// dereference starts before that proof exists, so every verified historical
-/// negative outcome carries a sealed proof value and unproven absence stays
-/// distinct.
+/// [`crate::TimelineRead`] is for already proof-bearing timeline addresses.
+/// Coordinate dereference starts before that proof exists, so every verified
+/// historical negative outcome carries a sealed proof value and unproven
+/// absence stays distinct. Delete and pruning outcomes stay out of the v1
+/// coordinate contract until their own proof types exist.
 ///
 /// Public callers cannot mint verified negative outcomes with raw constructors:
 ///

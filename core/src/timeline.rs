@@ -173,18 +173,6 @@ pub enum TimelineRead {
         /// Address that could not be materialized.
         address: TimelineAddress,
     },
-    /// The audit row exists, and pruning metadata proves the retained CAS body
-    /// has aged out.
-    Expired {
-        /// Address that could not be materialized.
-        address: TimelineAddress,
-    },
-    /// Delete-ledger proof says the addressed durable world was physically
-    /// deleted.
-    Gone {
-        /// Address that could not be materialized.
-        address: TimelineAddress,
-    },
     /// The path was deleted and recreated; the address belongs to an older
     /// generation than the current world.
     GenMismatch {
@@ -755,46 +743,38 @@ mod tests {
             TimelineRead::NeverRetained {
                 address: address(1),
             },
-            TimelineRead::Expired {
+            TimelineRead::MissingRow {
                 address: address(2),
             },
-            TimelineRead::Gone {
-                address: address(3),
-            },
-            TimelineRead::MissingRow {
-                address: address(4),
-            },
             TimelineRead::GenMismatch {
-                requested: address(5),
+                requested: address(3),
                 actual: actual.clone(),
             },
             TimelineRead::AddressMismatch {
-                requested: address(6),
+                requested: address(4),
                 actual: BodySha256::for_body(b"actual"),
             },
             TimelineRead::Unproven {
-                address: address(7),
+                address: address(5),
             },
         ];
 
         for read in reads {
             match read {
                 TimelineRead::NeverRetained { address } => assert_eq!(address.seq().get(), 1),
-                TimelineRead::Expired { address } => assert_eq!(address.seq().get(), 2),
-                TimelineRead::Gone { address } => assert_eq!(address.seq().get(), 3),
-                TimelineRead::MissingRow { address } => assert_eq!(address.seq().get(), 4),
+                TimelineRead::MissingRow { address } => assert_eq!(address.seq().get(), 2),
                 TimelineRead::GenMismatch {
                     requested,
                     actual: got,
                 } => {
-                    assert_eq!(requested.seq().get(), 5);
+                    assert_eq!(requested.seq().get(), 3);
                     assert_eq!(got, actual);
                 }
                 TimelineRead::AddressMismatch { requested, actual } => {
-                    assert_eq!(requested.seq().get(), 6);
+                    assert_eq!(requested.seq().get(), 4);
                     assert_eq!(actual, BodySha256::for_body(b"actual"));
                 }
-                TimelineRead::Unproven { address } => assert_eq!(address.seq().get(), 7),
+                TimelineRead::Unproven { address } => assert_eq!(address.seq().get(), 5),
                 TimelineRead::Body(_) | TimelineRead::Corrupt { .. } => {
                     panic!("unexpected read mode")
                 }
