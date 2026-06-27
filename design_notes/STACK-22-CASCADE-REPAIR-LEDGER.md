@@ -1165,3 +1165,53 @@ Validation:
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
 - `git diff --cached --check`
+
+## 22r76: Timeline ordinary-query wall
+
+- Branch: `stack/22r76-timeline-ordinary-query-wall`
+- Commit: `2ae6831 bin: cover timeline ordinary-query wall`
+- Base: `stack/22r75-timeline-head-corrupt-test`
+- Scope: test-only coverage for
+  `design_notes/PLAN-http-timeline-dereference.md` Counterexample O and the
+  endpoint checklist rule that timeline mode must not ignore ordinary query
+  fields.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/pipeline.rs` under the existing `#[cfg(test)]` module.
+
+The layer extends `pipeline_timeline_query_errors_are_closed_and_head_empty`.
+It first writes a real current body at `home/timeline/errors`, then sends two
+timeline-looking requests that also carry an ordinary `x=1` query field:
+
+- `x=1` after the timeline coordinate fields;
+- `x=1` before the timeline mode field.
+
+Both requests must return `400` with
+`UnsupportedTimelineQueryField`. This proves the route does not fall through
+to the current read path and does not leak the current body when a timeline
+request is malformed by extra ordinary query state.
+
+Confirmed and fixed review findings:
+
+- Descartes the 2nd / Popper found P3 in the first version: it covered only
+  `x=1` after timeline fields and asserted only `400` plus "not current",
+  not the exact closed error reason. Fixed by covering both ordinary-field
+  orderings and asserting the exact
+  `bad request: invalid timeline query: UnsupportedTimelineQueryField\n`
+  response body.
+
+Fresh post-fix review:
+
+- Descartes the 2nd / Popper: clean P0-P3. Confirmed the prior P3 is fully
+  closed and the test proves no current-body fallthrough for the plan gap.
+- Zeno the 2nd / QA-Enforcement: clean P0-P3. Confirmed the layer remains a
+  one-file test-only stacked change with no production unwrap/expect/unsafe
+  additions and sufficient local validation.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_query_errors_are_closed_and_head_empty -- --nocapture`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
