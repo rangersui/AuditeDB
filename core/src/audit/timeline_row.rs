@@ -118,7 +118,7 @@ impl TimelineEventSnapshot {
             Ok(body_sha256) => body_sha256,
             Err(err) => return TimelineBodyRowMatch::InvalidBodySha256(err),
         };
-        if &body_sha256 != expected_body_sha256 {
+        if !body_sha256.ct_eq(expected_body_sha256) {
             return TimelineBodyRowMatch::BodyHashMismatch(body_sha256);
         }
         TimelineBodyRowMatch::Body(MatchedTimelineBodyRow {

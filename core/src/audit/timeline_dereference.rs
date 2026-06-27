@@ -34,7 +34,7 @@ impl VerifiedCoordinateBodyEvent {
         gen: WorldGeneration,
         body_sha256: BodySha256,
     ) -> Option<Self> {
-        if coordinate.generation() != &gen || coordinate.body_sha256() != &body_sha256 {
+        if coordinate.generation() != &gen || !coordinate.body_sha256().ct_eq(&body_sha256) {
             return None;
         }
         Some(Self {
@@ -349,7 +349,7 @@ impl VerifiedGenerationMismatch {
 
 impl VerifiedBodyHashMismatch {
     fn new(requested: TimelineCoordinate, actual_body_sha256: BodySha256) -> Option<Self> {
-        if requested.body_sha256() == &actual_body_sha256 {
+        if requested.body_sha256().ct_eq(&actual_body_sha256) {
             return None;
         }
         Some(Self {

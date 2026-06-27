@@ -36,7 +36,7 @@ fn live_body_head_break(
             actual: format!("live-body-sha256-{}", live_hash.as_str()),
         });
     };
-    if body_sha256 != live_hash.as_str() {
+    if !live_hash.ct_eq_str(&body_sha256) {
         return Some(VerifyBreak {
             break_at,
             expected: format!("live-body-sha256-{body_sha256}"),

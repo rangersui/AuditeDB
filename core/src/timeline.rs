@@ -441,6 +441,10 @@ impl BodySha256 {
         &self.0
     }
 
+    pub(crate) fn ct_eq(&self, other: &Self) -> bool {
+        crate::auth::ct_eq(self.0.as_bytes(), other.0.as_bytes())
+    }
+
     pub(crate) fn ct_eq_str(&self, other: &str) -> bool {
         crate::auth::ct_eq(self.0.as_bytes(), other.as_bytes())
     }
