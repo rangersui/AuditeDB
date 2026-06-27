@@ -187,7 +187,7 @@ pub(crate) fn world_db_path_for_server_tests(data_root: impl AsRef<Path>, world:
     let disk_name = utf8_percent_encode(world, TEST_DISK_ENCODE).to_string();
     data_root.as_ref().join(disk_name).join("universe.db")
 }
-const TEST_HMAC_KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
+pub(crate) const TEST_HMAC_KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
 fn test_hmac_key() -> AuditHmacKey {
     AuditHmacKey::try_from_slice(TEST_HMAC_KEY).expect("test hmac key")

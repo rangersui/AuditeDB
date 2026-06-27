@@ -460,13 +460,15 @@ mod tests {
         server::test_support::{
             server_state_for_engine_for_tests, test_engine_for_server,
             test_engine_for_server_with_read_token, world_db_path_for_server_tests,
-            write_text_world_for_tests,
+            write_text_world_for_tests, TEST_HMAC_KEY,
         },
     };
     use axum::{
         body::to_bytes,
         http::{header, HeaderValue, StatusCode},
     };
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::{Digest, Sha256};
 
     fn world_path(world: &str) -> ValidatedWorldPath {
         ValidatedWorldPath::new(world).unwrap()
@@ -510,6 +512,102 @@ mod tests {
             "timeline=1&timeline-generation={}&timeline-seq={}&timeline-body-sha256={}",
             generation, seq, body_sha256
         )
+    }
+
+    fn timeline_test_meta_sha256(content_type: &str, headers: &[(String, String)]) -> String {
+        let mut h = Sha256::new();
+        h.update(b"content-type\0");
+        h.update(content_type.as_bytes());
+        h.update(b"\0");
+        for (name, value) in headers {
+            h.update(name.as_bytes());
+            h.update(b"\0");
+            h.update(value.as_bytes());
+            h.update(b"\0");
+        }
+        hex::encode(h.finalize())
+    }
+
+    fn timeline_test_hmac_field(mac: &mut Hmac<Sha256>, label: &[u8], value: &str) {
+        mac.update(label);
+        mac.update(b"\0");
+        mac.update(value.len().to_string().as_bytes());
+        mac.update(b"\0");
+        mac.update(value.as_bytes());
+        mac.update(b"\0");
+    }
+
+    struct TimelineTestEventHmacInput<'a> {
+        prev: &'a str,
+        event_type: &'a str,
+        target: &'a str,
+        generation: &'a str,
+        body_sha256: &'a str,
+        size: i64,
+        content_type: &'a str,
+        meta_sha256: &'a str,
+    }
+
+    fn timeline_test_event_hmac(input: TimelineTestEventHmacInput<'_>) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(TEST_HMAC_KEY).unwrap();
+        timeline_test_hmac_field(&mut mac, b"prev", input.prev);
+        timeline_test_hmac_field(&mut mac, b"type", input.event_type);
+        timeline_test_hmac_field(&mut mac, b"target", input.target);
+        timeline_test_hmac_field(&mut mac, b"gen", input.generation);
+        timeline_test_hmac_field(&mut mac, b"body-sha256", input.body_sha256);
+        timeline_test_hmac_field(&mut mac, b"size", &input.size.to_string());
+        timeline_test_hmac_field(&mut mac, b"content-type", input.content_type);
+        timeline_test_hmac_field(&mut mac, b"meta-sha256", input.meta_sha256);
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    fn rewrite_first_event_as_non_body_for_tests(
+        data_root: &std::path::Path,
+        world: &str,
+    ) -> String {
+        let db = world_db_path_for_server_tests(data_root, world);
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let generation: String = conn
+            .query_row("SELECT generation FROM stage_meta WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let event_type = "delete_intent";
+        let body_sha256 = "";
+        let content_type = "";
+        let meta_sha256 = timeline_test_meta_sha256(content_type, &[]);
+        let hmac = timeline_test_event_hmac(TimelineTestEventHmacInput {
+            prev: "",
+            event_type,
+            target: world,
+            generation: &generation,
+            body_sha256,
+            size: 0,
+            content_type,
+            meta_sha256: &meta_sha256,
+        });
+        conn.execute("DELETE FROM event_headers WHERE event_id=1", [])
+            .unwrap();
+        conn.execute("DELETE FROM cas_bodies", []).unwrap();
+        conn.execute(
+            "UPDATE cas_state SET first_retained_seq=NULL WHERE id=1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET event_type=?1, target=?2, body_sha256=?3, size=0, \
+             content_type=?4, meta_sha256=?5, hmac=?6, prev_hmac='' WHERE id=1",
+            rusqlite::params![
+                event_type,
+                world,
+                body_sha256,
+                content_type,
+                meta_sha256,
+                hmac
+            ],
+        )
+        .unwrap();
+        generation
     }
 
     async fn write_body_and_capture_timeline_address_with_tier(
@@ -1534,6 +1632,45 @@ mod tests {
         assert_eq!(hash_mismatch.status(), StatusCode::CONFLICT);
         assert_eq!(hash_mismatch.headers(), &hash_headers);
         assert_eq!(response_text(hash_mismatch).await, "");
+
+        write_text_world_for_tests(&engine, "home/timeline/non-body", "metadata").await;
+        let non_body_generation =
+            rewrite_first_event_as_non_body_for_tests(&dir, "home/timeline/non-body");
+        let non_body_query = timeline_query_parts(
+            &non_body_generation,
+            1,
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        );
+        let non_body_get = run(
+            Method::GET,
+            "/home/timeline/non-body".to_string(),
+            raw_query(&non_body_query),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            323,
+        )
+        .await;
+        assert_eq!(non_body_get.status(), StatusCode::NOT_FOUND);
+        let non_body_headers = non_body_get.headers().clone();
+        assert_eq!(
+            response_text(non_body_get).await,
+            "timeline event has no body\n"
+        );
+
+        let non_body_head = run(
+            Method::HEAD,
+            "/home/timeline/non-body".to_string(),
+            raw_query(&non_body_query),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            324,
+        )
+        .await;
+        assert_eq!(non_body_head.status(), StatusCode::NOT_FOUND);
+        assert_eq!(non_body_head.headers(), &non_body_headers);
+        assert_eq!(response_text(non_body_head).await, "");
 
         write_text_world_for_tests(&engine, "home/timeline/deleted", "gone").await;
         engine
