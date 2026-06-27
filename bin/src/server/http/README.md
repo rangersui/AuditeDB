@@ -48,7 +48,7 @@ Common binary environment variables:
 | `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE subscriptions. |
 | `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Replay ring size for reconnecting SSE clients. |
 | `ELASTIK_READ_CACHE_MAX_ENTRIES` | `5000` | Read-cache entry cap. |
-| `ELASTIK_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set. |
+| `ELASTIK_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set to `1`, `true`, `yes`, or `on`. |
 
 MQTT and CoAP options live in their adapter READMEs:
 [`mqtt/README.md`](../mqtt/README.md) and [`coap/README.md`](../coap/README.md).

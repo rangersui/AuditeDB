@@ -611,9 +611,9 @@ in *this* codebase, and even those prefer typed `InternalInvariant`
 errors at public boundaries.
 
 **Origin:** the core/ audit found that most `unwrap`/`expect` use was
-test-only, while production relied on review discipline. The lint gate
-is the planned physics; this rule prevents new debt before that gate
-lands.
+test-only, while production relied on review discipline. The lint gate is
+now part of the crate root contract; this rule prevents new debt and keeps
+local suppressors narrow, documented, and auditable.
 
 ## Security Constants Cite Their Standard
 

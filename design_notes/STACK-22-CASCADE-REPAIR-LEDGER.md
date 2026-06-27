@@ -1909,3 +1909,58 @@ Validation:
 - `cargo clippy --locked --manifest-path core\Cargo.toml --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
+
+## 22r94: Config and process docs drift cleanup
+
+- Branch: `stack/22r94-doc-drift-cleanup`
+- Base: `stack/22r93-panic-discipline-current`
+- Scope: docs drift cleanup across existing config and process docs. This
+  layer fixes three documentation subclaims without changing code:
+  `AGENTS.md` panic-discipline origin wording, `.env.example` cap parser
+  fallback wording, and HTTP README trace-env wording.
+- Production diff: docs-only. Changed files are `AGENTS.md`, `.env.example`,
+  and `bin/src/server/http/README.md`.
+
+Findings fixed:
+
+- Curie the 3rd / Heisenberg + Sagan found P2: `AGENTS.md` still said the
+  unwrap/expect lint gate was planned physics even though `core`, `bin`, and
+  `ffi` already carry crate-root `clippy::unwrap_used` /
+  `clippy::expect_used` deny gates. The origin text now says the lint gate is
+  part of the crate-root contract.
+- Curie also found P3: `.env.example` said zero and non-numeric cap values
+  both fall back for connection/replay/CoAP caps. The implementation maps zero
+  to default but fails startup on non-numeric values, so the docs now state that
+  distinction.
+- Curie also found P3: the HTTP README said `ELASTIK_TRACE_PIPELINE` emits
+  trace lines "when set". The implementation enables trace only for `1`,
+  `true`, `yes`, or `on`, so the README now names those truthy values.
+
+Fresh review:
+
+- Noether the 3rd / Heisenberg + Sagan: clean P0-P3. Confirmed the three
+  reported docs drift items are fixed and no new unsupported overclaim was
+  introduced.
+- Maxwell the 3rd / Bacon + QA-Enforcement initially found one process P2: the
+  layer was not commit-ready without this durable ledger entry. It also noted
+  P3 requirements to name the three docs subclaims and record Curie's findings
+  honestly rather than flattening them into a clean review.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --cached --name-status`
+- `git diff --stat`
+- `git diff --numstat`
+- `git diff --check`
+- `git diff --name-only -- '*.rs' '*.toml' '*.lock' '*.py' '*.yml' '*.yaml'`
+  returned no matches.
+- Diff symbol scan for code/API/unsafe/panic tokens returned no matches.
+- `rg -n "planned physics|before that gate lands|Zero/non-numeric|Emit request pipeline trace lines when set\.|Zero or non-numeric" AGENTS.md .env.example bin\src\server\http\README.md` returned no matches.
+- `rg -n "ELASTIK_TRACE_PIPELINE|truthy_env|trace" bin\src\server\pipeline\context.rs bin\src\server\mod.rs bin\src\server\http\README.md`
+- `cargo test --locked --manifest-path bin\Cargo.toml resource_cap_env -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml optional_storage_quota_zero_is_unlimited -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml init_trace_from_env -- --nocapture`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `python tools\header_policy_scan.py --offline`
