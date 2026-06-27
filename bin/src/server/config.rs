@@ -7,6 +7,7 @@
 //! (env should be latched into `Core` at startup, not re-read).
 
 use std::net::{IpAddr, SocketAddr};
+use std::num::IntErrorKind;
 
 use crate::engine_types::{AuditHmacKey, InvalidHmacKey};
 
@@ -26,11 +27,15 @@ pub(crate) const DEFAULT_MQTT_CONNECT_TIMEOUT_MS: usize = 3000;
 #[cfg(feature = "mqtt")]
 pub(crate) const DEFAULT_MQTT_MAX_PREAUTH_PER_IP: usize = 32;
 
-pub(crate) fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .unwrap_or(default)
+pub(crate) fn env_usize(name: &str, default: usize) -> Result<usize, String> {
+    let raw = match std::env::var(name) {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!("{name} must be valid Unicode"));
+        }
+    };
+    parse_usize_env_value(name, &raw, "non-negative integer")
 }
 
 pub(crate) fn env_optional_usize(name: &str) -> Result<Option<usize>, String> {
@@ -45,16 +50,34 @@ pub(crate) fn env_optional_usize(name: &str) -> Result<Option<usize>, String> {
     if value.is_empty() {
         return Ok(None);
     }
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| format!("{name} must be a non-negative integer byte count"))?;
+    let parsed = parse_usize_env_value(name, value, "non-negative integer byte count")?;
     Ok((parsed > 0).then_some(parsed))
 }
 
-pub(crate) fn env_nonzero_usize(name: &str, default: usize) -> usize {
-    match env_usize(name, default) {
-        0 => default,
-        value => value,
+pub(crate) fn env_nonzero_usize(name: &str, default: usize) -> Result<usize, String> {
+    match env_usize(name, default)? {
+        0 => Ok(default),
+        value => Ok(value),
+    }
+}
+
+fn parse_usize_env_value(name: &str, raw: &str, expected: &str) -> Result<usize, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(format!("{name} must be a {expected}"));
+    }
+    match value.parse::<usize>() {
+        Ok(value) => Ok(value),
+        Err(err) => match err.kind() {
+            IntErrorKind::PosOverflow => {
+                Err(format!("{name} is too large for usize on this platform"))
+            }
+            IntErrorKind::Empty
+            | IntErrorKind::InvalidDigit
+            | IntErrorKind::NegOverflow
+            | IntErrorKind::Zero => Err(format!("{name} must be a {expected}")),
+            _ => Err(format!("{name} is invalid: {err}")),
+        },
     }
 }
 
@@ -212,9 +235,35 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         let key = format!("ELASTIK_TEST_ZERO_CAP_{}", std::process::id());
         std::env::set_var(&key, "0");
-        assert_eq!(env_nonzero_usize(&key, 7), 7);
+        assert_eq!(env_nonzero_usize(&key, 7), Ok(7));
         std::env::set_var(&key, "9");
-        assert_eq!(env_nonzero_usize(&key, 7), 9);
+        assert_eq!(env_nonzero_usize(&key, 7), Ok(9));
+        std::env::remove_var(&key);
+    }
+
+    #[test]
+    fn resource_cap_env_invalid_values_fail_loud() {
+        let _guard = env_lock().lock().unwrap();
+        let key = format!("ELASTIK_TEST_INVALID_CAP_{}", std::process::id());
+        std::env::remove_var(&key);
+        assert_eq!(env_usize(&key, 7), Ok(7));
+        std::env::set_var(&key, "11");
+        assert_eq!(env_usize(&key, 7), Ok(11));
+        std::env::set_var(&key, "");
+        assert_eq!(
+            env_usize(&key, 7),
+            Err(format!("{key} must be a non-negative integer"))
+        );
+        std::env::set_var(&key, "10GB");
+        assert_eq!(
+            env_nonzero_usize(&key, 7),
+            Err(format!("{key} must be a non-negative integer"))
+        );
+        std::env::set_var(&key, "18446744073709551616");
+        assert_eq!(
+            env_usize(&key, 7),
+            Err(format!("{key} is too large for usize on this platform"))
+        );
         std::env::remove_var(&key);
     }
 
@@ -236,6 +285,11 @@ mod tests {
         assert_eq!(
             env_optional_usize(&key),
             Err(format!("{key} must be a non-negative integer byte count"))
+        );
+        std::env::set_var(&key, "18446744073709551616");
+        assert_eq!(
+            env_optional_usize(&key),
+            Err(format!("{key} is too large for usize on this platform"))
         );
         std::env::remove_var(&key);
     }

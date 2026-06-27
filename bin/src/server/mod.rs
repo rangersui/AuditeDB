@@ -86,45 +86,45 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
     #[cfg(feature = "mqtt")]
     let mqtt_metrics = mqtt_bind.as_ref().map(|_| mqtt::MqttMetrics::shared());
     let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
-    let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES);
-    let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES);
+    let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES)?;
+    let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES)?;
     let max_storage_bytes = env_optional_usize("ELASTIK_MAX_STORAGE_BYTES")?;
     let max_listen_connections = env_nonzero_usize(
         "ELASTIK_MAX_LISTEN_CONNECTIONS",
         DEFAULT_MAX_LISTEN_CONNECTIONS,
-    );
+    )?;
     let listen_replay_max =
-        env_nonzero_usize("ELASTIK_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX);
+        env_nonzero_usize("ELASTIK_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX)?;
     #[cfg(feature = "coap")]
     let coap_max_in_flight =
-        env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT);
+        env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT)?;
     #[cfg(feature = "mqtt")]
     let mqtt_max_packet_bytes = env_nonzero_usize(
         "ELASTIK_MQTT_MAX_PACKET_BYTES",
         mqtt_max_packet_default(max_world_bytes),
-    );
+    )?;
     #[cfg(feature = "mqtt")]
     let mqtt_max_connections =
-        env_nonzero_usize("ELASTIK_MQTT_MAX_CONNECTIONS", DEFAULT_MQTT_MAX_CONNECTIONS);
+        env_nonzero_usize("ELASTIK_MQTT_MAX_CONNECTIONS", DEFAULT_MQTT_MAX_CONNECTIONS)?;
     #[cfg(feature = "mqtt")]
     let mqtt_max_pending_qos2_bytes = env_nonzero_usize(
         "ELASTIK_MQTT_MAX_PENDING_QOS2_BYTES",
         DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
-    );
+    )?;
     #[cfg(feature = "mqtt")]
     let mqtt_connect_timeout_ms = env_nonzero_usize(
         "ELASTIK_MQTT_CONNECT_TIMEOUT_MS",
         DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
-    );
+    )?;
     #[cfg(feature = "mqtt")]
     let mqtt_max_preauth_per_ip = env_nonzero_usize(
         "ELASTIK_MQTT_MAX_PREAUTH_PER_IP",
         DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
-    );
+    )?;
     let read_cache_max_entries = env_nonzero_usize(
         "ELASTIK_READ_CACHE_MAX_ENTRIES",
         DEFAULT_READ_CACHE_MAX_ENTRIES,
-    );
+    )?;
     let raw_hmac_key = match std::env::var("ELASTIK_KEY") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
