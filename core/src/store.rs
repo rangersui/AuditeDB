@@ -81,15 +81,15 @@ impl MemoryStore {
 
     /// Read body + metadata only, without the body hash. Currently unused
     /// since `read_with_hash` covers all internal callers, but kept as a
-    /// convenience wrapper for future external SDK code.
+    /// convenience wrapper for future internal tooling.
     #[allow(dead_code)]
-    pub fn read(&self, world: &str) -> Option<Stage> {
+    pub fn read(&self, world: &ValidatedWorldPath) -> Option<Stage> {
         self.read_with_hash(world).map(|(stage, _)| stage)
     }
 
-    pub fn read_with_hash(&self, world: &str) -> Option<(Stage, String)> {
+    pub fn read_with_hash(&self, world: &ValidatedWorldPath) -> Option<(Stage, String)> {
         let map = self.map_guard();
-        let e = map.get(world)?;
+        let e = map.get(world.as_str())?;
         Some((
             Stage {
                 body: e.body.clone(),
@@ -100,14 +100,14 @@ impl MemoryStore {
         ))
     }
 
-    pub fn metadata(&self, world: &str) -> Option<WorldMetadata> {
+    pub fn metadata(&self, world: &ValidatedWorldPath) -> Option<WorldMetadata> {
         let map = self.map_guard();
-        let e = map.get(world)?;
+        let e = map.get(world.as_str())?;
         Some((e.body.len(), e.content_type.clone(), e.headers.clone()))
     }
 
-    pub fn contains(&self, world: &str) -> bool {
-        self.map_guard().contains_key(world)
+    pub fn contains(&self, world: &ValidatedWorldPath) -> bool {
+        self.map_guard().contains_key(world.as_str())
     }
 
     /// Unconditional write without quota enforcement. Used only by the
@@ -117,13 +117,13 @@ impl MemoryStore {
     #[allow(dead_code)]
     pub fn write(
         &self,
-        world: &str,
+        world: &ValidatedWorldPath,
         body: &[u8],
         content_type: &str,
         headers: &[(String, String)],
     ) {
         let mut map = self.map_guard();
-        let e = map.entry(world.to_string()).or_default();
+        let e = map.entry(world.as_str().to_owned()).or_default();
         e.body = body.to_vec();
         e.body_hash = world::sha256_hex(body);
         e.content_type = content_type.to_string();
@@ -135,9 +135,9 @@ impl MemoryStore {
     /// for future tooling that wants the raw primitive (e.g. tests
     /// asserting growth behavior).
     #[allow(dead_code)]
-    pub fn append(&self, world: &str, body: &[u8]) -> Option<AppendResult> {
+    pub fn append(&self, world: &ValidatedWorldPath, body: &[u8]) -> Option<AppendResult> {
         let mut map = self.map_guard();
-        let e = map.get_mut(world)?;
+        let e = map.get_mut(world.as_str())?;
         e.body.extend_from_slice(body);
         let after = world::sha256_hex(&e.body);
         e.body_hash = after.clone();
@@ -161,15 +161,19 @@ impl MemoryStore {
     /// `max_total_bytes`.
     pub fn write_with_quota(
         &self,
-        world: &str,
+        world: &ValidatedWorldPath,
         body: &[u8],
         content_type: &str,
         headers: &[(String, String)],
         max_total_bytes: usize,
     ) -> Result<MemoryWriteOutcome, MemoryQuotaError> {
         let mut map = self.map_guard();
+        let world_name = world.as_str();
         let used: usize = map.values().map(|entry| entry.body.len()).sum();
-        let prev_len = map.get(world).map(|entry| entry.body.len()).unwrap_or(0);
+        let prev_len = map
+            .get(world_name)
+            .map(|entry| entry.body.len())
+            .unwrap_or(0);
         let projected = used.saturating_sub(prev_len).saturating_add(body.len());
         if projected > max_total_bytes {
             return Err(MemoryQuotaError {
@@ -178,8 +182,8 @@ impl MemoryStore {
                 projected,
             });
         }
-        let existed = map.contains_key(world);
-        let e = map.entry(world.to_string()).or_default();
+        let existed = map.contains_key(world_name);
+        let e = map.entry(world_name.to_owned()).or_default();
         e.body = body.to_vec();
         e.body_hash = world::sha256_hex(body);
         e.content_type = content_type.to_string();
@@ -194,7 +198,7 @@ impl MemoryStore {
     /// `Ok(Some(result))` with the post-append SHA-256 of the body.
     pub fn append_with_quota(
         &self,
-        world: &str,
+        world: &ValidatedWorldPath,
         body: &[u8],
         max_total_bytes: usize,
     ) -> Result<Option<AppendResult>, MemoryQuotaError> {
@@ -208,7 +212,7 @@ impl MemoryStore {
                 projected,
             });
         }
-        let Some(entry) = map.get_mut(world) else {
+        let Some(entry) = map.get_mut(world.as_str()) else {
             return Ok(None);
         };
         entry.body.extend_from_slice(body);
@@ -221,9 +225,9 @@ impl MemoryStore {
         }))
     }
 
-    pub fn delete(&self, world: &str) -> bool {
+    pub fn delete(&self, world: &ValidatedWorldPath) -> bool {
         let mut map = self.map_guard();
-        map.remove(world).is_some()
+        map.remove(world.as_str()).is_some()
     }
 
     pub fn list(&self) -> Vec<String> {

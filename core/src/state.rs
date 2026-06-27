@@ -207,11 +207,10 @@ impl Core {
         &self,
         world: &ValidatedWorldPath,
     ) -> rusqlite::Result<Option<(Stage, String)>> {
-        let world_name = world.as_str();
         if store::is_memory_world(world) {
             Ok(self
                 .mem
-                .read_with_hash(world_name)
+                .read_with_hash(world)
                 .map(|(stage, hash)| (stage, format!("sha256-{hash}"))))
         } else {
             Ok(self
@@ -348,7 +347,7 @@ impl Core {
         let world_path = ValidatedWorldPath::new(world)
             .map_err(|_| world::WriteAuditError::StorageInvariant("invalid fixture world path"))?;
         if store::is_memory_world(&world_path) {
-            self.mem.write(world, body, content_type, headers);
+            self.mem.write(&world_path, body, content_type, headers);
             Ok(())
         } else {
             let current_len = world::storage_len(&self.data, &world_path)?;
@@ -393,7 +392,7 @@ impl Core {
 
     pub(crate) async fn delete_world_blocking(&self, world: &ValidatedWorldPath) -> bool {
         if store::is_memory_world(world) {
-            self.mem.delete(world.as_str())
+            self.mem.delete(world)
         } else {
             let data = self.data.clone();
             let world = world.clone();
