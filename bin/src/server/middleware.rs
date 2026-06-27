@@ -72,6 +72,7 @@ pub(crate) fn stamp_core_response_headers(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

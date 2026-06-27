@@ -116,6 +116,7 @@ pub(crate) fn hmac_key_from_env_value(
     value.map(|s| AuditHmacKey::new(s.into_bytes())).transpose()
 }
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::sync::{Mutex as TestMutex, OnceLock};

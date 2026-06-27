@@ -329,6 +329,7 @@ pub(crate) fn world_list_body(names: &[String]) -> String {
     }
 }
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

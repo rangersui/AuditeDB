@@ -929,6 +929,7 @@ fn code_label(sqlite_code: Option<i32>) -> String {
 impl std::error::Error for FfiError {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

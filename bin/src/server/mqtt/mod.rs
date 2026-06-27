@@ -26,9 +26,11 @@ use tokio::{
     time::{timeout, Duration},
 };
 
+#[cfg(test)]
+use crate::engine_types::SubscriptionResume;
 use crate::{
     engine::{Engine, ShutdownToken},
-    engine_types::{AccessTier, SubscriptionResume},
+    engine_types::AccessTier,
 };
 
 use self::{
@@ -270,7 +272,7 @@ impl PreAuthLimiter {
         if self.max_per_ip == 0 {
             return None;
         }
-        let mut counts = self.inner.lock().expect("pre-auth limiter poisoned");
+        let mut counts = self.counts_guard();
         let count = counts.entry(ip).or_insert(0);
         if *count >= self.max_per_ip {
             return None;
@@ -283,7 +285,7 @@ impl PreAuthLimiter {
     }
 
     fn release(&self, ip: IpAddr) {
-        let mut counts = self.inner.lock().expect("pre-auth limiter poisoned");
+        let mut counts = self.counts_guard();
         let Some(count) = counts.get_mut(&ip) else {
             return;
         };
@@ -295,12 +297,14 @@ impl PreAuthLimiter {
 
     #[cfg(test)]
     fn count_for(&self, ip: IpAddr) -> usize {
-        self.inner
-            .lock()
-            .expect("pre-auth limiter poisoned")
-            .get(&ip)
-            .copied()
-            .unwrap_or(0)
+        self.counts_guard().get(&ip).copied().unwrap_or(0)
+    }
+
+    fn counts_guard(&self) -> std::sync::MutexGuard<'_, HashMap<IpAddr, usize>> {
+        // Poison means a previous limiter mutation panicked while holding the
+        // lock. Continuing would risk leaking or overcounting pre-auth slots.
+        #[allow(clippy::expect_used)]
+        self.inner.lock().expect("pre-auth limiter poisoned")
     }
 }
 
@@ -482,6 +486,7 @@ fn keep_alive_timeout(keep_alive_seconds: u16) -> Option<Duration> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::{
         collections::HashMap,

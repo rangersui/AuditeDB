@@ -45,18 +45,13 @@ impl ClientRegistry {
     pub(super) fn register(&self, client_id: String) -> ClientRegistration {
         let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
         let (shutdown, shutdown_rx) = mpsc::channel(1);
-        let old = self
-            .inner
-            .entries
-            .lock()
-            .expect("mqtt client registry poisoned")
-            .insert(
-                client_id.clone(),
-                ClientEntry {
-                    generation,
-                    shutdown,
-                },
-            );
+        let old = self.inner.entries_guard().insert(
+            client_id.clone(),
+            ClientEntry {
+                generation,
+                shutdown,
+            },
+        );
         if let Some(old) = old {
             let _ = old.shutdown.try_send(());
             let total = self.metrics.client_id_replaced();
@@ -74,11 +69,7 @@ impl ClientRegistry {
     }
 
     fn unregister(&self, client_id: &str, generation: u64) {
-        let mut entries = self
-            .inner
-            .entries
-            .lock()
-            .expect("mqtt client registry poisoned");
+        let mut entries = self.inner.entries_guard();
         let Some(entry) = entries.get(client_id) else {
             return;
         };
@@ -90,9 +81,7 @@ impl ClientRegistry {
     #[cfg(test)]
     fn contains_generation(&self, client_id: &str, generation: u64) -> bool {
         self.inner
-            .entries
-            .lock()
-            .expect("mqtt client registry poisoned")
+            .entries_guard()
             .get(client_id)
             .map(|entry| entry.generation == generation)
             .unwrap_or(false)
@@ -100,11 +89,17 @@ impl ClientRegistry {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.inner
-            .entries
-            .lock()
-            .expect("mqtt client registry poisoned")
-            .len()
+        self.inner.entries_guard().len()
+    }
+}
+
+impl ClientRegistryInner {
+    fn entries_guard(&self) -> std::sync::MutexGuard<'_, HashMap<String, ClientEntry>> {
+        // Poison means a previous registry mutation panicked while holding the
+        // lock. The registry is now internally suspect; fail loud instead of
+        // continuing with possibly stale client shutdown state.
+        #[allow(clippy::expect_used)]
+        self.entries.lock().expect("mqtt client registry poisoned")
     }
 }
 
@@ -135,6 +130,7 @@ impl Drop for ClientRegistration {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

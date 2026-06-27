@@ -7,6 +7,7 @@
 // UniFFI's export macro references deprecated smoke exports inside this crate.
 // The deprecation remains part of the generated ABI for downstream consumers.
 #![allow(deprecated)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{sync::Arc, time::Duration};
 
@@ -491,6 +492,7 @@ fn subscription_next_from_recv(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use elastik_core::{AuditVerify, EngineBuildError, EngineError};

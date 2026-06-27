@@ -36,6 +36,7 @@ mod delete;
 #[path = "handler/post.rs"]
 mod post;
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "handler/tests.rs"]
 mod tests;
 #[path = "handler/timeline.rs"]

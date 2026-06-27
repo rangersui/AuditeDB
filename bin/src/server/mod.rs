@@ -21,6 +21,7 @@ pub(crate) mod response;
 pub(crate) mod route;
 mod state;
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(crate) mod test_support;
 pub(crate) use pipeline::{ErrorReason, Phase, TraceCtx, Verb};
 #[cfg(feature = "mqtt")]
@@ -202,8 +203,11 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
         }
         let mqtt_engine = engine.clone();
         let mqtt_shutdown = mqtt_engine.shutdown_receiver();
-        let mqtt_metrics =
-            mqtt_metrics.expect("MQTT metrics should exist when MQTT bind is configured");
+        let Some(mqtt_metrics) = mqtt_metrics.clone() else {
+            return Err(
+                "internal error: MQTT metrics missing while MQTT bind is configured".into(),
+            );
+        };
         tokio::spawn(async move {
             mqtt::serve(
                 mqtt_engine,

@@ -1,4 +1,5 @@
 #![cfg_attr(test, allow(dead_code))]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 mod core_bridge;
 #[path = "server/mod.rs"]

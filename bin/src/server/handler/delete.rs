@@ -323,6 +323,7 @@ fn invariant_delete_error_phase(message: &'static str, last_step: DeleteStep) ->
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::{

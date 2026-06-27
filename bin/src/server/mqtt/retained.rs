@@ -278,6 +278,7 @@ fn log_replay_error(metrics: &MqttMetrics, err: RetainedReplayError) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::super::topic::mqtt_filter_to_route;
     use super::*;
