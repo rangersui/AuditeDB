@@ -36,8 +36,8 @@ impl<'a> MemoryWorldPath<'a> {
         is_memory_world(world).then_some(Self(world))
     }
 
-    fn as_str(&self) -> &str {
-        self.0.as_str()
+    fn as_path(&self) -> &ValidatedWorldPath {
+        self.0
     }
 }
 
@@ -61,7 +61,7 @@ struct MemEntry {
 
 #[derive(Default)]
 pub struct MemoryStore {
-    map: Mutex<HashMap<String, MemEntry>>,
+    map: Mutex<HashMap<ValidatedWorldPath, MemEntry>>,
 }
 
 /// Returned by `write_with_quota` / `append_with_quota` when the requested
@@ -101,7 +101,7 @@ impl MemoryStore {
 
     pub fn read_with_hash(&self, world: MemoryWorldPath<'_>) -> Option<(Stage, String)> {
         let map = self.map_guard();
-        let e = map.get(world.as_str())?;
+        let e = map.get(world.as_path())?;
         Some((
             Stage {
                 body: e.body.clone(),
@@ -114,12 +114,12 @@ impl MemoryStore {
 
     pub fn metadata(&self, world: MemoryWorldPath<'_>) -> Option<WorldMetadata> {
         let map = self.map_guard();
-        let e = map.get(world.as_str())?;
+        let e = map.get(world.as_path())?;
         Some((e.body.len(), e.content_type.clone(), e.headers.clone()))
     }
 
     pub fn contains(&self, world: MemoryWorldPath<'_>) -> bool {
-        self.map_guard().contains_key(world.as_str())
+        self.map_guard().contains_key(world.as_path())
     }
 
     /// Unconditional write without quota enforcement. Used only by the
@@ -135,7 +135,7 @@ impl MemoryStore {
         headers: &[(String, String)],
     ) {
         let mut map = self.map_guard();
-        let e = map.entry(world.as_str().to_owned()).or_default();
+        let e = map.entry(world.as_path().clone()).or_default();
         e.body = body.to_vec();
         e.body_hash = world::sha256_hex(body);
         e.content_type = content_type.to_string();
@@ -149,7 +149,7 @@ impl MemoryStore {
     #[allow(dead_code)]
     pub fn append(&self, world: MemoryWorldPath<'_>, body: &[u8]) -> Option<AppendResult> {
         let mut map = self.map_guard();
-        let e = map.get_mut(world.as_str())?;
+        let e = map.get_mut(world.as_path())?;
         e.body.extend_from_slice(body);
         let after = world::sha256_hex(&e.body);
         e.body_hash = after.clone();
@@ -180,10 +180,9 @@ impl MemoryStore {
         max_total_bytes: usize,
     ) -> Result<MemoryWriteOutcome, MemoryQuotaError> {
         let mut map = self.map_guard();
-        let world_name = world.as_str();
         let used: usize = map.values().map(|entry| entry.body.len()).sum();
         let prev_len = map
-            .get(world_name)
+            .get(world.as_path())
             .map(|entry| entry.body.len())
             .unwrap_or(0);
         let projected = used.saturating_sub(prev_len).saturating_add(body.len());
@@ -194,8 +193,8 @@ impl MemoryStore {
                 projected,
             });
         }
-        let existed = map.contains_key(world_name);
-        let e = map.entry(world_name.to_owned()).or_default();
+        let existed = map.contains_key(world.as_path());
+        let e = map.entry(world.as_path().clone()).or_default();
         e.body = body.to_vec();
         e.body_hash = world::sha256_hex(body);
         e.content_type = content_type.to_string();
@@ -224,7 +223,7 @@ impl MemoryStore {
                 projected,
             });
         }
-        let Some(entry) = map.get_mut(world.as_str()) else {
+        let Some(entry) = map.get_mut(world.as_path()) else {
             return Ok(None);
         };
         entry.body.extend_from_slice(body);
@@ -239,15 +238,11 @@ impl MemoryStore {
 
     pub fn delete(&self, world: MemoryWorldPath<'_>) -> bool {
         let mut map = self.map_guard();
-        map.remove(world.as_str()).is_some()
+        map.remove(world.as_path()).is_some()
     }
 
     pub fn list(&self) -> Vec<ValidatedWorldPath> {
-        let mut out: Vec<ValidatedWorldPath> = self
-            .map_guard()
-            .keys()
-            .map(|world| memory_world_from_storage(world))
-            .collect();
+        let mut out: Vec<ValidatedWorldPath> = self.map_guard().keys().cloned().collect();
         out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         out
     }
@@ -256,8 +251,8 @@ impl MemoryStore {
         let mut out: Vec<ValidatedWorldPath> = self
             .map_guard()
             .keys()
-            .filter(|world| world.starts_with(prefix.as_str()))
-            .map(|world| memory_world_from_storage(world))
+            .filter(|world| world.as_str().starts_with(prefix.as_str()))
+            .cloned()
             .collect();
         out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         out
@@ -272,12 +267,12 @@ impl MemoryStore {
         for world in self
             .map_guard()
             .keys()
-            .filter(|world| world.starts_with(prefix.as_str()))
+            .filter(|world| world.as_str().starts_with(prefix.as_str()))
         {
             if out.len() >= max {
                 return None;
             }
-            out.push(memory_world_from_storage(world));
+            out.push(world.clone());
         }
         out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         Some(out)
@@ -294,24 +289,15 @@ impl MemoryStore {
         let mut out: Vec<(String, usize)> = self
             .map_guard()
             .iter()
-            .map(|(world, entry)| (world.clone(), entry.body.len()))
+            .map(|(world, entry)| (world.as_str().to_owned(), entry.body.len()))
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
 
-    fn map_guard(&self) -> MutexGuard<'_, HashMap<String, MemEntry>> {
+    fn map_guard(&self) -> MutexGuard<'_, HashMap<ValidatedWorldPath, MemEntry>> {
         self.map.lock().unwrap_or_else(|poison| poison.into_inner())
     }
-}
-
-fn memory_world_from_storage(world: &str) -> ValidatedWorldPath {
-    // The only write/delete paths into MemoryStore accept MemoryWorldPath,
-    // which is minted from ValidatedWorldPath and memory-prefix routing. A
-    // malformed key here means this module corrupted its own private map.
-    #[allow(clippy::expect_used)]
-    ValidatedWorldPath::from_canonical(world.to_owned())
-        .expect("memory store contains only validated memory world paths")
 }
 
 /// Combined view: sqlite + memory. Used by tests that assert both stores agree.
