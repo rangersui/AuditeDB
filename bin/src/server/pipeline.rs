@@ -1524,6 +1524,23 @@ mod tests {
     #[tokio::test]
     async fn pipeline_timeline_missing_world_is_unproven_not_gone() {
         let (engine, dir) = test_engine_for_server("pipeline-timeline-unproven");
+        let deleted_address = write_body_and_capture_timeline_address(
+            &engine,
+            "home/timeline/deleted-unproven",
+            b"gone",
+            Vec::new(),
+        )
+        .await;
+        engine
+            .delete(
+                &world_path("home/timeline/deleted-unproven"),
+                Preconditions::none(),
+                AccessTier::Approve,
+            )
+            .await
+            .unwrap();
+        assert!(world_db_path_for_server_tests(&dir, "var/log/deletes").exists());
+
         let state = server_state_for_engine_for_tests(engine);
 
         let resp = run(
@@ -1543,6 +1560,23 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert_eq!(
             response_text(resp).await,
+            "timeline coordinate not proven\n"
+        );
+
+        let deleted = run(
+            Method::GET,
+            "/home/timeline/deleted-unproven".to_string(),
+            raw_query(&timeline_query(&deleted_address)),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            325,
+        )
+        .await;
+
+        assert_eq!(deleted.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response_text(deleted).await,
             "timeline coordinate not proven\n"
         );
 
