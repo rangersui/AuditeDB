@@ -392,11 +392,11 @@ pub fn body_len(data_root: &Path, world: &ValidatedWorldPath) -> rusqlite::Resul
     .map(Some)
 }
 
-pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(String, usize)>> {
+pub fn sizes(data_root: &Path) -> rusqlite::Result<Vec<(ValidatedWorldPath, usize)>> {
     let mut out = Vec::new();
     for world_path in list(data_root)? {
         if let Some(size) = storage_len(data_root, &world_path)? {
-            out.push((world_path.as_str().to_owned(), size));
+            out.push((world_path, size));
         }
     }
     Ok(out)

@@ -285,13 +285,13 @@ impl MemoryStore {
             .sum()
     }
 
-    pub fn sizes(&self) -> Vec<(String, usize)> {
-        let mut out: Vec<(String, usize)> = self
+    pub fn sizes(&self) -> Vec<(ValidatedWorldPath, usize)> {
+        let mut out: Vec<(ValidatedWorldPath, usize)> = self
             .map_guard()
             .iter()
-            .map(|(world, entry)| (world.as_str().to_owned(), entry.body.len()))
+            .map(|(world, entry)| (world.clone(), entry.body.len()))
             .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         out
     }
 

@@ -352,17 +352,12 @@ impl EngineOps<'_> {
         let mut sizes = world::sizes(&self.core().data)
             .map_err(|err| storage_error_to_engine("proc du", err, "du", None))?;
         sizes.extend(self.core().mem.sizes());
-        sizes.sort_by(|a, b| a.0.cmp(&b.0));
+        sizes.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         sizes.dedup_by(|a, b| a.0 == b.0);
-        sizes
+        Ok(sizes
             .into_iter()
-            .map(|(world, bytes)| {
-                Ok(WorldUsage {
-                    world: validated_world_from_storage(world)?,
-                    bytes,
-                })
-            })
-            .collect()
+            .map(|(world, bytes)| WorldUsage { world, bytes })
+            .collect())
     }
 
     pub(crate) fn df(
@@ -689,11 +684,6 @@ fn storage_error_to_engine(
             EngineError::Storage
         }
     }
-}
-
-fn validated_world_from_storage(world: String) -> Result<ValidatedWorldPath, EngineError> {
-    ValidatedWorldPath::from_canonical(world)
-        .map_err(|_| EngineError::InternalInvariant("storage returned invalid world path"))
 }
 
 fn sort_dedup_worlds(worlds: &mut Vec<ValidatedWorldPath>) {
