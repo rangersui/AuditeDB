@@ -1564,3 +1564,47 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `python tools\panic_discipline_scan.py core bin ffi`
+
+## 22r86: Timeline namespace pair cap proof
+
+- Branch: `stack/22r86-timeline-pair-cap-test`
+- Commit: `67a24ca bin: prove timeline namespace pair cap`
+- Base: `stack/22r85-timeline-doc-statuses`
+- Scope: closes Hooke the 3rd's PLAN section 8 P2 that the decoded-pair cap
+  had no test evidence. The layer adds parser and full-pipeline coverage for
+  saturated timeline-control namespace queries.
+- Production diff: small parser guard only in `bin/src/server/pipeline/query.rs`.
+  Test coverage is in `bin/src/server/pipeline/query.rs` and
+  `bin/src/server/pipeline.rs`; `PLAN-http-timeline-dereference.md` was
+  clarified to match the reviewed cap semantics.
+
+The parser now counts decoded pairs once a timeline control key has appeared.
+Ordinary query strings with no timeline-looking key remain `Current`. Small
+timeline-control mistakes keep their specific `400` reasons, including
+`UnsupportedTimelineQueryField` for one extra ordinary field and
+`TimelineWorldComesFromPath` for `timeline-world`. Saturated
+timeline-control namespace requests return `TooManyTimelineFields`, and the
+full `pipeline::run` test proves that response is a `400` rather than current
+body fallthrough.
+
+Fresh review:
+
+- Singer the 3rd / Popper + Poincare: clean P0-P3. Confirmed the cap path does
+  not regress current-query compatibility, specific small-error reasons, or the
+  full pipeline no-fallthrough rule.
+- Hegel the 3rd / Bacon + Mencius + QA-Enforcement initially found P3
+  PLAN/implementation drift because the first version increased the cap without
+  updating PLAN wording. The PLAN was clarified to distinguish small semantic
+  errors from saturated namespace floods, and the re-review returned clean
+  P0-P3.
+
+Validation:
+
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline_namespace_pair_cap_is_enforced_after_control_key -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_query_errors_are_closed_and_head_empty -- --nocapture`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `git diff --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
