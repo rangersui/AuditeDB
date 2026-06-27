@@ -1,11 +1,9 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use bytes::Bytes;
-use rusqlite::{ffi, params, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 
 use crate::{
-    engine_types::{AuditHmacKey, Representation, ValidatedWorldPath},
-    event::AuditEventKind,
+    engine_types::{AuditHmacKey, ValidatedWorldPath},
     read_cache::TrackedReadConnection,
     timeline::{
         BodySha256, TimelineAddress, TimelineAddressLookup, TimelineCorruption, TimelineRead,
@@ -13,6 +11,11 @@ use crate::{
     },
     world_generation::WorldGeneration,
     world_schema,
+};
+
+use super::timeline_row::{
+    corrupt, load_event_identity, load_event_snapshot, load_latest_body_head, TimelineBodyRowMatch,
+    TimelineEventSnapshot,
 };
 
 pub(crate) struct VerifiedBodyEvent {
@@ -80,15 +83,6 @@ impl VerifiedBodyHead {
     }
 }
 
-struct TimelineEventSnapshot {
-    event_type: String,
-    target: String,
-    body_sha256: String,
-    size: i64,
-    content_type: String,
-    headers: Vec<(String, String)>,
-}
-
 pub(crate) fn verified_timeline_address_via_conn(
     tracked: &mut TrackedReadConnection,
     world: &ValidatedWorldPath,
@@ -102,33 +96,18 @@ pub(crate) fn verified_timeline_address_via_conn(
     // address lookup.
     super::require_intact(super::verify_world_tx(&tx, world, key)?)?;
 
-    let Some(row) = tx
-        .query_row(
-            "SELECT event_type, target, body_sha256 FROM events WHERE id=?1",
-            params![seq.get()],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .optional()?
-    else {
+    let Some(row) = load_event_identity(&tx, seq)? else {
         return Ok(TimelineAddressLookup::MissingRow);
     };
 
-    let kind = AuditEventKind::from_storage(&row.0)
-        .ok_or_else(|| corrupt("events.event_type is not a known audit event"))?;
+    let kind = row.kind_or_corrupt()?;
     if !kind.class().body_bearing {
         return Ok(TimelineAddressLookup::NoBody);
     }
-    if row.1 != world.as_str() {
+    if !row.target_matches(world) {
         return Err(corrupt("events.target does not match requested world").into());
     }
-    let body_sha256 = BodySha256::new(row.2)
-        .map_err(|err| corrupt(&format!("events.body_sha256 is invalid: {err:?}")))?;
+    let body_sha256 = row.body_sha256_or_corrupt()?;
     let gen = world_schema::generation(&tx)?;
     let event = VerifiedBodyEvent::new(world.clone(), gen, seq, body_sha256);
     let lookup = TimelineAddressLookup::Body(TimelineAddress::from_verified_body_event(event));
@@ -151,45 +130,24 @@ pub(crate) fn verified_latest_body_head_via_conn(
         return Err(super::AuditError::ChainBroken(break_report));
     }
 
-    let Some((seq, event_type, target, body_sha256, hmac)) = tx
-        .query_row(
-            "SELECT id, event_type, target, body_sha256, hmac
-             FROM events
-             WHERE event_type IN ('put', 'append')
-             ORDER BY id DESC
-             LIMIT 1",
-            [],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            },
-        )
-        .optional()?
-    else {
+    let Some(head) = load_latest_body_head(&tx)? else {
         tx.commit()?;
         return Ok(None);
     };
 
-    let kind = AuditEventKind::from_storage(&event_type)
-        .ok_or_else(|| corrupt("events.event_type is not a known audit event"))?;
+    let row = head.event();
+    let kind = row.kind_or_corrupt()?;
     if !kind.class().body_bearing {
         return Err(corrupt("latest body query returned a metadata event").into());
     }
-    if target != world.as_str() {
+    if !row.target_matches(world) {
         return Err(corrupt("events.target does not match requested world").into());
     }
-    let seq = TimelineSeq::new(seq).map_err(|_| corrupt("events.id is not positive"))?;
-    let body_sha256 = BodySha256::new(body_sha256)
-        .map_err(|err| corrupt(&format!("events.body_sha256 is invalid: {err:?}")))?;
+    let body_sha256 = row.body_sha256_or_corrupt()?;
     let gen = world_schema::generation(&tx)?;
-    let event = VerifiedBodyEvent::new(world.clone(), gen, seq, body_sha256);
+    let event = VerifiedBodyEvent::new(world.clone(), gen, head.seq(), body_sha256);
     let address = TimelineAddress::from_verified_body_event(event);
-    let head = VerifiedBodyHead::new(address, super::hmac_label(&hmac));
+    let head = VerifiedBodyHead::new(address, head.hmac_label().to_owned());
     tx.commit()?;
     Ok(Some(head))
 }
@@ -221,87 +179,34 @@ pub(crate) fn read_timeline_body_via_conn(
     Ok(read)
 }
 
-fn load_event_snapshot(
-    tx: &rusqlite::Transaction<'_>,
-    seq: TimelineSeq,
-) -> rusqlite::Result<Option<TimelineEventSnapshot>> {
-    let Some((event_type, target, body_sha256, size, content_type)) = tx
-        .query_row(
-            "SELECT event_type, target, body_sha256, size, content_type FROM events WHERE id=?1",
-            params![seq.get()],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            },
-        )
-        .optional()?
-    else {
-        return Ok(None);
-    };
-
-    let mut headers = Vec::new();
-    {
-        let mut stmt = tx.prepare(
-            "SELECT name, value FROM event_headers WHERE event_id=?1 ORDER BY name, value",
-        )?;
-        let rows = stmt.query_map(params![seq.get()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for pair in rows {
-            headers.push(pair?);
-        }
-    }
-
-    Ok(Some(TimelineEventSnapshot {
-        event_type,
-        target,
-        body_sha256,
-        size,
-        content_type,
-        headers,
-    }))
-}
-
 fn timeline_read_from_snapshot(
     tx: &rusqlite::Transaction<'_>,
     address: &TimelineAddress,
     row: TimelineEventSnapshot,
 ) -> rusqlite::Result<TimelineRead> {
-    let Some(kind) = AuditEventKind::from_storage(&row.event_type) else {
-        return Ok(timeline_corrupt(
-            address,
-            TimelineCorruption::InvalidEventShape,
-        ));
+    let row = match row.match_body_row(address.world(), address.body_sha256()) {
+        TimelineBodyRowMatch::Body(row) => row,
+        TimelineBodyRowMatch::NonBody => {
+            return Ok(timeline_corrupt(
+                address,
+                TimelineCorruption::MissingBodyForPresentRow,
+            ));
+        }
+        TimelineBodyRowMatch::BodyHashMismatch(actual) => {
+            return Ok(TimelineRead::AddressMismatch {
+                requested: address.clone(),
+                actual,
+            });
+        }
+        TimelineBodyRowMatch::InvalidEventKind
+        | TimelineBodyRowMatch::TargetMismatch
+        | TimelineBodyRowMatch::InvalidBodySha256 => {
+            return Ok(timeline_corrupt(
+                address,
+                TimelineCorruption::InvalidEventShape,
+            ));
+        }
     };
-    if !kind.class().body_bearing {
-        return Ok(timeline_corrupt(
-            address,
-            TimelineCorruption::MissingBodyForPresentRow,
-        ));
-    }
-    if row.target != address.world().as_str() {
-        return Ok(timeline_corrupt(
-            address,
-            TimelineCorruption::InvalidEventShape,
-        ));
-    }
-    let Ok(body_sha256) = BodySha256::new(row.body_sha256) else {
-        return Ok(timeline_corrupt(
-            address,
-            TimelineCorruption::InvalidEventShape,
-        ));
-    };
-    if &body_sha256 != address.body_sha256() {
-        return Ok(TimelineRead::AddressMismatch {
-            requested: address.clone(),
-            actual: body_sha256,
-        });
-    }
 
     let Some(body) = tx
         .query_row(
@@ -313,17 +218,14 @@ fn timeline_read_from_snapshot(
     else {
         return missing_timeline_body_read(tx, address);
     };
-    if i64::try_from(body.len()).ok() != Some(row.size) {
+    let Some(representation) = row.into_representation(body) else {
         return Ok(timeline_corrupt(
             address,
             TimelineCorruption::InvalidEventShape,
         ));
-    }
+    };
 
-    Ok(TimelineRead::body(
-        address.clone(),
-        Representation::new(Bytes::from(body), row.content_type, row.headers),
-    ))
+    Ok(TimelineRead::body(address.clone(), representation))
 }
 
 fn timeline_corrupt(address: &TimelineAddress, reason: TimelineCorruption) -> TimelineRead {
@@ -360,13 +262,6 @@ fn first_retained_seq(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<Option
     .transpose()
 }
 
-fn corrupt(message: &str) -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(
-        ffi::Error::new(ffi::SQLITE_CORRUPT),
-        Some(message.to_owned()),
-    )
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -379,6 +274,7 @@ mod tests {
     use crate::{
         engine::Engine,
         engine_types::{AccessTier, AuditHmacKey, Preconditions, Representation},
+        event::AuditEventKind,
     };
     use bytes::Bytes;
 
@@ -653,6 +549,85 @@ mod tests {
                 .body,
             Bytes::from_static(b"new")
         );
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verified_latest_body_head_returns_none_for_metadata_only_chain() {
+        let key = key();
+        let world = ValidatedWorldPath::new("home/metadata-only").unwrap();
+        let conn = single_event_conn(&world, "delete_intent", "", &key);
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+
+        let head = verified_latest_body_head_via_conn(&mut tracked, &world, &key).unwrap();
+
+        assert!(head.is_none());
+    }
+
+    #[tokio::test]
+    async fn verified_latest_body_head_skips_metadata_tail() {
+        let root = temp_root("latest-body-head-metadata-tail");
+        let engine = Engine::builder()
+            .data_root(root.clone())
+            .key(key())
+            .build()
+            .unwrap();
+        let world = ValidatedWorldPath::new("home/latest-head").unwrap();
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"value"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        let mut conn =
+            rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
+                .unwrap();
+        let gen = world_schema::generation(&conn).unwrap();
+        let first_hmac: String = conn
+            .query_row("SELECT hmac FROM events WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        {
+            let tx = conn.transaction().unwrap();
+            let audit_tx = super::super::verify_appendable_tx_existing_checked(
+                &tx,
+                &world,
+                &engine.core().hmac_key,
+            )
+            .unwrap();
+            super::super::append_tx_inner(
+                &audit_tx,
+                AuditEventKind::DeleteIntent,
+                world.as_str(),
+                &BodySha256::for_body(b""),
+                0,
+                "",
+                &[],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
+
+        let head =
+            verified_latest_body_head_via_conn(&mut tracked, &world, &engine.core().hmac_key)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(head.address().world(), &world);
+        assert_eq!(head.address().gen(), &gen);
+        assert_eq!(head.address().seq().get(), 1);
+        assert_eq!(
+            head.address().body_sha256(),
+            &BodySha256::for_body(b"value")
+        );
+        assert_eq!(head.hmac(), format!("hmac-{first_hmac}"));
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);

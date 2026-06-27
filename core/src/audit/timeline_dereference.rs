@@ -6,12 +6,10 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use bytes::Bytes;
 use rusqlite::{params, OptionalExtension};
 
 use crate::{
-    engine_types::{AuditHmacKey, Representation, ValidatedWorldPath},
-    event::AuditEventKind,
+    engine_types::{AuditHmacKey, ValidatedWorldPath},
     read_cache::TrackedReadConnection,
     timeline::{
         BodySha256, TimelineBody, TimelineCoordinate, TimelineCorruption, TimelineRead, TimelineSeq,
@@ -20,14 +18,7 @@ use crate::{
     world_schema,
 };
 
-struct TimelineEventSnapshot {
-    event_type: String,
-    target: String,
-    body_sha256: String,
-    size: i64,
-    content_type: String,
-    headers: Vec<(String, String)>,
-}
+use super::timeline_row::{load_event_snapshot, TimelineBodyRowMatch, TimelineEventSnapshot};
 
 pub(super) struct VerifiedCoordinateBodyEvent {
     world: ValidatedWorldPath,
@@ -85,82 +76,36 @@ pub(crate) fn dereference_timeline_coordinate_via_conn(
     Ok(result)
 }
 
-fn load_event_snapshot(
-    tx: &rusqlite::Transaction<'_>,
-    seq: TimelineSeq,
-) -> rusqlite::Result<Option<TimelineEventSnapshot>> {
-    let Some((event_type, target, body_sha256, size, content_type)) = tx
-        .query_row(
-            "SELECT event_type, target, body_sha256, size, content_type FROM events WHERE id=?1",
-            params![seq.get()],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            },
-        )
-        .optional()?
-    else {
-        return Ok(None);
-    };
-
-    let mut headers = Vec::new();
-    {
-        let mut stmt = tx.prepare(
-            "SELECT name, value FROM event_headers WHERE event_id=?1 ORDER BY name, value",
-        )?;
-        let rows = stmt.query_map(params![seq.get()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for pair in rows {
-            headers.push(pair?);
-        }
-    }
-
-    Ok(Some(TimelineEventSnapshot {
-        event_type,
-        target,
-        body_sha256,
-        size,
-        content_type,
-        headers,
-    }))
-}
-
 fn dereference_snapshot(
     tx: &rusqlite::Transaction<'_>,
     coordinate: &TimelineCoordinate,
     row: TimelineEventSnapshot,
     gen: WorldGeneration,
 ) -> rusqlite::Result<TimelineDereference> {
-    let Some(kind) = AuditEventKind::from_storage(&row.event_type) else {
-        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+    let row = match row.match_body_row_target_first(coordinate.world(), coordinate.body_sha256()) {
+        TimelineBodyRowMatch::Body(row) => row,
+        TimelineBodyRowMatch::NonBody => {
+            return Ok(TimelineDereference::NonBodyEvent(
+                VerifiedNonBodyEvent::new(coordinate.clone()),
+            ));
+        }
+        TimelineBodyRowMatch::BodyHashMismatch(actual_body_sha256) => {
+            return Ok(
+                match VerifiedBodyHashMismatch::new(coordinate.clone(), actual_body_sha256) {
+                    Some(proof) => TimelineDereference::BodyHashMismatch(proof),
+                    None => corrupt(coordinate, TimelineCorruption::InvalidEventShape),
+                },
+            );
+        }
+        TimelineBodyRowMatch::InvalidEventKind
+        | TimelineBodyRowMatch::TargetMismatch
+        | TimelineBodyRowMatch::InvalidBodySha256 => {
+            return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
+        }
     };
-    if row.target != coordinate.world().as_str() {
-        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
-    }
-    if !kind.class().body_bearing {
-        return Ok(TimelineDereference::NonBodyEvent(
-            VerifiedNonBodyEvent::new(coordinate.clone()),
-        ));
-    }
-    let Ok(body_sha256) = BodySha256::new(row.body_sha256) else {
-        return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
-    };
-    if &body_sha256 != coordinate.body_sha256() {
-        return Ok(
-            match VerifiedBodyHashMismatch::new(coordinate.clone(), body_sha256) {
-                Some(proof) => TimelineDereference::BodyHashMismatch(proof),
-                None => corrupt(coordinate, TimelineCorruption::InvalidEventShape),
-            },
-        );
-    }
 
-    let Some(event) = VerifiedCoordinateBodyEvent::new(coordinate, gen, body_sha256) else {
+    let Some(event) = VerifiedCoordinateBodyEvent::new(coordinate, gen, row.body_sha256().clone())
+    else {
         return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
     };
     let address =
@@ -178,14 +123,11 @@ fn dereference_snapshot(
             TimelineCorruption::MissingBodyForPresentRow,
         ));
     };
-    if i64::try_from(body.len()).ok() != Some(row.size) {
+    let Some(representation) = row.into_representation(body) else {
         return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
-    }
+    };
 
-    match TimelineRead::body(
-        address,
-        Representation::new(Bytes::from(body), row.content_type, row.headers),
-    ) {
+    match TimelineRead::body(address, representation) {
         TimelineRead::Body(body) => Ok(TimelineDereference::Body(body)),
         TimelineRead::Corrupt { reason, .. } => Ok(corrupt(coordinate, reason)),
         TimelineRead::GenMismatch { .. }

@@ -20,6 +20,7 @@ mod retention;
 mod test_support;
 mod timeline_address;
 pub(crate) mod timeline_dereference;
+mod timeline_row;
 
 #[cfg(test)]
 use append::test_only_append_tx_inner as append_tx_inner;
