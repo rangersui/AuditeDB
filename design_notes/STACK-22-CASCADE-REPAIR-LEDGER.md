@@ -1825,3 +1825,48 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `python tools\panic_discipline_scan.py core bin ffi`
+
+## 22r92: Timeline no-new-env parity
+
+- Branch: `stack/22r92-timeline-no-env-doc`
+- Commit: `13eaeae docs: document timeline env parity`
+- Base: `stack/22r91-timeline-spawn-blocking-evidence`
+- Scope: closes the PLAN section 8 `.env.example` parity item by documenting
+  why timeline mode adds no environment variables instead of inventing a fake
+  timeline-specific knob.
+- Production diff: docs-only. The only changed file is
+  `bin/src/server/http/README.md`.
+
+Timeline mode reuses the existing HTTP adapter controls: read-token
+authorization, header persistence policy, read-cache settings, and storage
+settings. The README now states that explicitly next to the timeline
+dereference contract, so `.env.example` stays aligned without adding a dead
+configuration surface.
+
+Fresh review:
+
+- Newton the 3rd / Sagan + Heisenberg: clean P0-P3. Confirmed the diff is
+  docs-only, matches the PLAN allowance for either env parity or explicit
+  no-new-env rationale, and the reused-setting list matches the implementation
+  paths for read authorization, timeline dereference, persisted metadata, and
+  hard-denied `x-timeline-*` spoofing.
+- Socrates the 3rd / Bacon + Mencius + QA-Enforcement: clean P0-P3. Confirmed
+  the layer adds no code/API/unsafe/panic diff, introduces no timeline env var,
+  satisfies the AGENTS README / `.env.example` parity rule, and remains inside
+  the deep-stack local repair exception constraints.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --stat`
+- `git diff --check`
+- `rg -n "ELASTIK_.*TIMELINE|TIMELINE_.*ELASTIK" -S .` returned no matches.
+- `rg -n "Timeline mode adds no environment variables" bin/src/server/http/README.md`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `cargo fmt --manifest-path bin\Cargo.toml --check`
+- `cargo fmt --manifest-path core\Cargo.toml --check`
+- `cargo fmt --manifest-path ffi\Cargo.toml --check`
