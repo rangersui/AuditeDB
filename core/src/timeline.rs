@@ -103,7 +103,7 @@ pub(crate) struct MintedTimelineAddress {
 pub struct TimelineSeq(NonZeroI64);
 
 /// SHA-256 digest of a body value, rendered as 64 lowercase hex characters.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BodySha256(String);
 
 /// Body value resolved from a timeline address.
@@ -229,7 +229,7 @@ impl TimelineBody {
 impl TimelineRead {
     pub(crate) fn body(address: TimelineAddress, representation: Representation) -> Self {
         let actual = crate::world::sha256_hex(&representation.body);
-        if !crate::auth::ct_eq(actual.as_bytes(), address.body_sha256().as_str().as_bytes()) {
+        if !address.body_sha256().ct_eq_str(&actual) {
             return Self::Corrupt {
                 address,
                 reason: TimelineCorruption::BodyHashMismatch,
@@ -439,6 +439,10 @@ impl BodySha256 {
     /// Returns the 64-character lowercase hexadecimal digest.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub(crate) fn ct_eq_str(&self, other: &str) -> bool {
+        crate::auth::ct_eq(self.0.as_bytes(), other.as_bytes())
     }
 }
 

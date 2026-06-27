@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     engine_types::{AuditHmacKey, ValidatedWorldPath},
-    timeline::TimelineSeq,
+    timeline::{BodySha256, TimelineSeq},
     world,
     world_generation::WorldGeneration,
 };
@@ -209,7 +209,7 @@ struct VerifyAccumulator {
     events: usize,
     first_body_event: Option<TimelineSeq>,
     saw_retention_floor: bool,
-    referenced_retained_bodies: HashSet<String>,
+    referenced_retained_bodies: HashSet<BodySha256>,
 }
 
 struct EventHmacInput<'a> {

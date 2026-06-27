@@ -12,7 +12,7 @@ use super::{EventRow, VerifyAccumulator, VerifyBreak};
 
 pub(super) struct CasRetentionState {
     first_retained_seq: Option<TimelineSeq>,
-    bodies: HashMap<String, RetainedCasBodyInfo>,
+    bodies: HashMap<BodySha256, RetainedCasBodyInfo>,
 }
 
 impl CasRetentionState {
@@ -43,12 +43,12 @@ pub(super) fn load(c: &Connection) -> rusqlite::Result<CasRetentionState> {
         for row in rows {
             let (body_sha256, body) = row?;
             let computed = BodySha256::for_body(&body);
-            if computed.as_str() != body_sha256 {
+            if !computed.ct_eq_str(&body_sha256) {
                 return Err(corrupt_error("cas_bodies.body does not match body_sha256"));
             }
             let len = i64::try_from(body.len())
                 .map_err(|_| corrupt_error("cas_bodies.body length does not fit i64"))?;
-            bodies.insert(body_sha256, RetainedCasBodyInfo { len });
+            bodies.insert(computed, RetainedCasBodyInfo { len });
         }
     }
     if first_retained_seq.is_none() && !bodies.is_empty() {
@@ -136,14 +136,17 @@ pub(super) fn verify_retained_body(
     if row.id < floor.get() || !is_body_event {
         return None;
     }
-    if BodySha256::new(row.body_sha256.clone()).is_err() {
-        return Some(VerifyBreak {
-            break_at: idx,
-            expected: "valid body_sha256".to_owned(),
-            actual: format!("body-sha256-{}", row.body_sha256),
-        });
-    }
-    let Some(retained) = retention.bodies.get(&row.body_sha256) else {
+    let body_sha256 = match BodySha256::new(row.body_sha256.clone()) {
+        Ok(body_sha256) => body_sha256,
+        Err(_) => {
+            return Some(VerifyBreak {
+                break_at: idx,
+                expected: "valid body_sha256".to_owned(),
+                actual: format!("body-sha256-{}", row.body_sha256),
+            });
+        }
+    };
+    let Some(retained) = retention.bodies.get(&body_sha256) else {
         return Some(VerifyBreak {
             break_at: idx,
             expected: format!("cas-body-{}", row.body_sha256),
@@ -160,9 +163,7 @@ pub(super) fn verify_retained_body(
     if row.id == floor.get() {
         state.saw_retention_floor = true;
     }
-    state
-        .referenced_retained_bodies
-        .insert(row.body_sha256.clone());
+    state.referenced_retained_bodies.insert(body_sha256);
     None
 }
 
