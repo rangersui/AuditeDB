@@ -31,6 +31,9 @@ jobs:
       - name: binary format
         working-directory: bin
         run: cargo fmt --check
+      - name: ffi format
+        working-directory: ffi
+        run: cargo fmt --check
       - name: core no structured data
         run: python core/no_json.py core/src
       - name: core contraband
@@ -43,31 +46,40 @@ jobs:
           core/src
       - name: core production clippy doctrine lint
         working-directory: core
-        run: cargo clippy --lib -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --locked --lib -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
       - name: binary production clippy doctrine lint
         working-directory: bin
-        run: cargo clippy --bin elastik-core -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --locked --bin elastik-core -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
+      - name: ffi production clippy doctrine lint
+        working-directory: ffi
+        run: cargo clippy --locked --lib -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
       - name: core production clippy doctrine lint minimal
         working-directory: core
-        run: cargo clippy --lib --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --locked --lib --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
       - name: binary production clippy doctrine lint minimal
         working-directory: bin
-        run: cargo clippy --bin elastik-core --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::print_stdout
+        run: cargo clippy --locked --bin elastik-core --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
       - name: clippy
         working-directory: core
-        run: cargo clippy --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
+        run: cargo clippy --locked --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
       - name: binary clippy
         working-directory: bin
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked -- -D warnings
+      - name: ffi clippy
+        working-directory: ffi
+        run: cargo clippy --locked --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
       - name: rustdoc warnings
         working-directory: core
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
       - name: unit tests
         working-directory: core
-        run: cargo test
+        run: cargo test --locked
       - name: binary tests
         working-directory: bin
-        run: cargo test
+        run: cargo test --locked
+      - name: ffi tests
+        working-directory: ffi
+        run: cargo test --locked
 
   sdk-blackbox:
     name: sdk blackbox (${{ matrix.os }})
