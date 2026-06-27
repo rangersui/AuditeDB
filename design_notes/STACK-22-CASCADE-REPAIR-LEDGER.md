@@ -1779,3 +1779,49 @@ Validation:
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r91: Timeline blocking-boundary evidence
+
+- Branch: `stack/22r91-timeline-spawn-blocking-evidence`
+- Commit: `8227cfa bin: document timeline blocking boundary`
+- Base: `stack/22r90-timeline-deleted-unproven`
+- Scope: closes the PLAN section 7/8 evidence item that HTTP timeline
+  dereference must run SQLite / filesystem / read-cache work through
+  `spawn_blocking` at the binary adapter boundary.
+- Production diff: comment-only. The only changed file is
+  `bin/src/server/handler/timeline.rs`, where the comment is attached to the
+  existing `tokio::task::spawn_blocking` boundary in `execute_timeline`.
+
+The call graph is:
+
+`execute_timeline` -> `spawn_blocking` ->
+`Engine::dereference_timeline_coordinate` -> `EngineOps` ->
+`world_read_ops::dereference_timeline_coordinate` ->
+`ReadCache::cached_dereference_timeline_coordinate` ->
+`with_tracked_conn` -> `dereference_timeline_coordinate_via_conn`.
+
+Pre-dispatch work remains query classification only, and post-await work
+remains response mapping. The SQLite open/verify path, audit transaction, audit
+chain verification, row classification, and retained-CAS body lookup stay
+inside the blocking worker.
+
+Fresh review:
+
+- Avicenna the 3rd / Hooke + Bacon: clean P0-P3. Confirmed the
+  `spawn_blocking` closure covers the full dereference path, including
+  read-cache connection open/verify, audit transaction, and retained-CAS lookup;
+  no storage work happens on the Tokio worker before or after the closure; and
+  no runtime hook is needed because the call graph pins the boundary directly.
+- Wegener the 3rd / Mencius + QA-Enforcement: clean P0-P3. Confirmed the layer
+  is a valid small comment-only stack layer, the comment captures a non-obvious
+  blocking/resource invariant, and no public API, unsafe, behaviour change, or
+  unwrap/expect is introduced.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `git diff --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
