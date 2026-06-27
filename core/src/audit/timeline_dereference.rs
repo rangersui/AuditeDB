@@ -12,7 +12,8 @@ use crate::{
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     read_cache::TrackedReadConnection,
     timeline::{
-        BodySha256, TimelineBody, TimelineCoordinate, TimelineCorruption, TimelineRead, TimelineSeq,
+        BodySha256, InvalidBodySha256, TimelineBody, TimelineCoordinate, TimelineCorruption,
+        TimelineRead, TimelineSeq,
     },
     world_generation::WorldGeneration,
     world_schema,
@@ -97,9 +98,10 @@ fn dereference_snapshot(
                 },
             );
         }
-        TimelineBodyRowMatch::InvalidEventKind
-        | TimelineBodyRowMatch::TargetMismatch
-        | TimelineBodyRowMatch::InvalidBodySha256 => {
+        TimelineBodyRowMatch::InvalidBodySha256(reason) => {
+            return Ok(corrupt(coordinate, invalid_body_sha256_corruption(reason)));
+        }
+        TimelineBodyRowMatch::InvalidEventKind | TimelineBodyRowMatch::TargetMismatch => {
             return Ok(corrupt(coordinate, TimelineCorruption::InvalidEventShape));
         }
     };
@@ -144,6 +146,14 @@ fn corrupt(coordinate: &TimelineCoordinate, reason: TimelineCorruption) -> Timel
     TimelineDereference::Corrupt {
         coordinate: coordinate.clone(),
         reason,
+    }
+}
+
+fn invalid_body_sha256_corruption(reason: InvalidBodySha256) -> TimelineCorruption {
+    match reason {
+        InvalidBodySha256::WrongLength | InvalidBodySha256::NotLowerHex => {
+            TimelineCorruption::InvalidEventShape
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use rusqlite::{ffi, params, OptionalExtension, Transaction};
 use crate::{
     engine_types::{Representation, ValidatedWorldPath},
     event::AuditEventKind,
-    timeline::{BodySha256, TimelineSeq},
+    timeline::{BodySha256, InvalidBodySha256, TimelineSeq},
 };
 
 pub(super) struct TimelineEventIdentity {
@@ -42,7 +42,7 @@ pub(super) enum TimelineBodyRowMatch {
     NonBody,
     TargetMismatch,
     InvalidEventKind,
-    InvalidBodySha256,
+    InvalidBodySha256(InvalidBodySha256),
     BodyHashMismatch(BodySha256),
 }
 
@@ -62,10 +62,6 @@ impl TimelineEventIdentity {
 
     pub(super) fn target(&self) -> &str {
         &self.target
-    }
-
-    pub(super) fn body_sha256(&self) -> Option<BodySha256> {
-        BodySha256::new(self.body_sha256.clone()).ok()
     }
 
     pub(super) fn body_sha256_or_corrupt(&self) -> rusqlite::Result<BodySha256> {
@@ -118,8 +114,9 @@ impl TimelineEventSnapshot {
         if target_mismatch {
             return TimelineBodyRowMatch::TargetMismatch;
         }
-        let Some(body_sha256) = self.identity.body_sha256() else {
-            return TimelineBodyRowMatch::InvalidBodySha256;
+        let body_sha256 = match BodySha256::new(self.identity.body_sha256.clone()) {
+            Ok(body_sha256) => body_sha256,
+            Err(err) => return TimelineBodyRowMatch::InvalidBodySha256(err),
         };
         if &body_sha256 != expected_body_sha256 {
             return TimelineBodyRowMatch::BodyHashMismatch(body_sha256);
@@ -274,4 +271,50 @@ pub(super) fn corrupt(message: &str) -> rusqlite::Error {
         ffi::Error::new(ffi::SQLITE_CORRUPT),
         Some(message.to_owned()),
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn snapshot(body_sha256: &str) -> TimelineEventSnapshot {
+        TimelineEventSnapshot {
+            identity: TimelineEventIdentity {
+                event_type: AuditEventKind::Put.as_str().to_owned(),
+                target: "home/a".to_owned(),
+                body_sha256: body_sha256.to_owned(),
+            },
+            size: 0,
+            content_type: "application/octet-stream".to_owned(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn world() -> ValidatedWorldPath {
+        ValidatedWorldPath::new("home/a").unwrap()
+    }
+
+    fn expected_body_sha256() -> BodySha256 {
+        BodySha256::new("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap()
+    }
+
+    #[test]
+    fn timeline_body_row_match_carries_invalid_body_hash_reason() {
+        match snapshot("abc").match_body_row(&world(), &expected_body_sha256()) {
+            TimelineBodyRowMatch::InvalidBodySha256(reason) => {
+                assert_eq!(reason, InvalidBodySha256::WrongLength);
+            }
+            _ => panic!("expected wrong length body hash"),
+        }
+
+        match snapshot("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF")
+            .match_body_row(&world(), &expected_body_sha256())
+        {
+            TimelineBodyRowMatch::InvalidBodySha256(reason) => {
+                assert_eq!(reason, InvalidBodySha256::NotLowerHex);
+            }
+            _ => panic!("expected non-lowerhex body hash"),
+        }
+    }
 }

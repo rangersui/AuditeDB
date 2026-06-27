@@ -5,7 +5,10 @@ use rusqlite::{params, OptionalExtension};
 use crate::{
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     read_cache::TrackedReadConnection,
-    timeline::{BodySha256, TimelineAddress, TimelineCorruption, TimelineRead, TimelineSeq},
+    timeline::{
+        BodySha256, InvalidBodySha256, TimelineAddress, TimelineCorruption, TimelineRead,
+        TimelineSeq,
+    },
     world_generation::WorldGeneration,
     world_schema,
 };
@@ -277,9 +280,13 @@ fn timeline_read_from_snapshot(
                 actual,
             });
         }
-        TimelineBodyRowMatch::InvalidEventKind
-        | TimelineBodyRowMatch::TargetMismatch
-        | TimelineBodyRowMatch::InvalidBodySha256 => {
+        TimelineBodyRowMatch::InvalidBodySha256(reason) => {
+            return Ok(timeline_corrupt(
+                address,
+                invalid_body_sha256_corruption(reason),
+            ));
+        }
+        TimelineBodyRowMatch::InvalidEventKind | TimelineBodyRowMatch::TargetMismatch => {
             return Ok(timeline_corrupt(
                 address,
                 TimelineCorruption::InvalidEventShape,
@@ -311,6 +318,14 @@ fn timeline_corrupt(address: &TimelineAddress, reason: TimelineCorruption) -> Ti
     TimelineRead::Corrupt {
         address: address.clone(),
         reason,
+    }
+}
+
+fn invalid_body_sha256_corruption(reason: InvalidBodySha256) -> TimelineCorruption {
+    match reason {
+        InvalidBodySha256::WrongLength | InvalidBodySha256::NotLowerHex => {
+            TimelineCorruption::InvalidEventShape
+        }
     }
 }
 
