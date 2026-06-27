@@ -268,6 +268,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reserved_routes_keep_ownership_ahead_of_world_catchall() {
+        let (engine, dir) = test_engine_for_server("reserved-route-ownership");
+        let state = server_state_for_engine_for_tests(engine);
+        let app = build_app(state);
+
+        let root = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        assert!(response_text(root).await.contains("try: curl /proc/worlds"));
+
+        let listen_options = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("OPTIONS")
+                    .uri("/listen/home/task/foo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listen_options.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            listen_options.headers().get(header::ALLOW).unwrap(),
+            crate::server::listen::ALLOW
+        );
+
+        let proc_version = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/proc/version")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(proc_version.status(), StatusCode::OK);
+        assert!(response_text(proc_version)
+            .await
+            .starts_with("elastik-core "));
+
+        let proc_reserved_options = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("OPTIONS")
+                    .uri("/proc/not-a-world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(proc_reserved_options.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            proc_reserved_options.headers().get(header::ALLOW).unwrap(),
+            crate::server::proc::PROC_ALLOW
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn proc_audit_verify_routes_through_full_app() {
         let (engine, dir) = test_engine_for_server("proc-audit-route");
         write_text_world_for_tests(&engine, "home/audit-route", "hello").await;
