@@ -1520,3 +1520,47 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `git diff --check`
+
+## 22r85: Timeline HTTP status docs
+
+- Branch: `stack/22r85-timeline-doc-statuses`
+- Commit: `d84c47e docs: document timeline HTTP statuses`
+- Base: `stack/22r84-timeline-bodyhash-wire`
+- Scope: docs-only parity for
+  `design_notes/PLAN-http-timeline-dereference.md` section 8: the HTTP adapter
+  README now documents the timeline query mode statuses, proof-header output
+  shape, `HEAD` body suppression, and the no-current-body fallback rule.
+- Production diff: 0 lines. The only changed file is
+  `bin/src/server/http/README.md`.
+
+The layer extends the `/listen/*` timeline section with a closed status table
+for timeline-looking HTTP requests. It documents `204` policy-free `OPTIONS`,
+historical `GET` and `HEAD` `200` responses, timeline query `400` failures,
+read-token `401`, timeline-method `405`, raw-query-cap `414`, resolver `409`
+and `404` distinctions, and storage/internal `500` / `503` / `507` failures.
+It also states that `HEAD` timeline failures keep status and headers while
+returning no body, and that failed historical dereference never falls back to
+the current world body.
+
+Fresh review:
+
+- Rawls the 2nd / Sagan + Heisenberg initially found two P3 documentation
+  drift issues: the table omitted policy-free `OPTIONS` `204`, and the `400`
+  row omitted the `EngineError::InvalidMetadata` mapping. Both were fixed, and
+  the re-review returned clean P0-P3.
+- Ptolemy the 3rd / Bacon + Mencius + QA-Enforcement: clean P0-P3. Confirmed
+  the layer is docs-only, the status table matches `timeline_mode.rs`,
+  `timeline.rs`, and `route.rs`, and no code/type-seal/unsafe/unwrap surface
+  changed.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
