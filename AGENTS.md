@@ -585,19 +585,30 @@ This rule keeps validation paths from drifting back toward "absence,"
 
 ## Panic Discipline
 
+Unsafe is a compiler wall, not a review preference. Production crates
+default to `#![deny(unsafe_code)]`; any exception must be local,
+documented, and treated as a boundary crossing. Adapter crates that do
+not own an audited unsafe boundary, including `bin` and `ffi`, also carry
+CI `-D unsafe_code` gates.
+
 Target state: production crates carry
 `#![deny(clippy::unwrap_used, clippy::expect_used)]` at the crate root
 (tests get a module-level `allow`). Until the lint gate is landed in a
 dedicated PR, reviewers enforce the same rule on new and touched
 production code.
 
-A new production `unwrap`/`expect` requires a local `#[allow]` with a
-one-line invariant comment. That escape is only for impossible states
-inside this codebase, never for validation, IO, config, storage, FFI,
-auth, audit, or user-controlled input. Expected failures are protocol
-states (`507`/`413`/`503`/`401`), never panics. Panics are reserved for
-invariant violations that indicate a bug in *this* codebase, and even
-those prefer typed `InternalInvariant` errors at public boundaries.
+A new production `unwrap`/`expect` requires a local lint suppressor with
+a nearby `Invariant:` or `Poison means` comment; CI enforces that with
+`tools/panic_discipline_scan.py`. The suppressor must name the exact
+panic lint (`clippy::unwrap_used` or `clippy::expect_used`); group
+suppressors such as `clippy::all` or `clippy::restriction` are not valid
+panic-discipline escapes. That escape is only for impossible states inside
+this codebase, never for validation, IO, config, storage, FFI, auth,
+audit, or user-controlled input.
+Expected failures are protocol states (`507`/`413`/`503`/`401`), never
+panics. Panics are reserved for invariant violations that indicate a bug
+in *this* codebase, and even those prefer typed `InternalInvariant`
+errors at public boundaries.
 
 **Origin:** the core/ audit found that most `unwrap`/`expect` use was
 test-only, while production relied on review discipline. The lint gate

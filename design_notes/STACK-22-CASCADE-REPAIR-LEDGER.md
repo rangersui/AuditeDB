@@ -700,3 +700,420 @@ Final disposition for this layer:
   post-fix validation evidence and the final fresh zero-P0-P2 round.
 - This layer is ready to commit as the next stacked PR layer once a final local
   `git diff --check` confirms the ledger edit itself is clean.
+
+## 2026-06-27 Continuation: 22r71 -> 22r72
+
+Layer: `stack/22r72-ffi-bindgen-unwrap-deny`
+
+Plan section implemented: AGENTS.md Panic Discipline and Sealed-Type Boundary
+Rules. The change closes the remaining Rust crate-root gap for the FFI
+bindgen helper.
+
+Scope:
+
+- Add crate-level `#![deny(clippy::unwrap_used, clippy::expect_used)]` to
+  `ffi/src/bin/uniffi-bindgen.rs`.
+- Add CI doctrine lint coverage for FFI production binaries with
+  `cargo clippy --locked --bins`.
+- Add CI doctrine lint coverage for the binary adapter with all features
+  enabled, including the non-default `mqtt` production feature.
+- Use `--bins` for binary adapter doctrine lints so future
+  `bin/src/bin/*.rs` production roots are covered too.
+- Disable implicit binary auto-discovery for the library-only core crate with
+  `autobins = false`.
+- Add `tools/panic_discipline_scan.py` and CI wiring so production
+  `#[allow(clippy::unwrap_used|expect_used)]` exceptions must carry a nearby
+  invariant comment.
+- Add unwrap/expect doctrine flags to the core `--all-targets` clippy step so
+  future explicit core targets are covered.
+- No runtime behaviour, ABI, SDK, storage, auth, audit, or wire contract
+  change.
+
+Trigger:
+
+- Mencius the 2nd found that `ffi/Cargo.toml` declares an extra binary crate
+  root, `src/bin/uniffi-bindgen.rs`. `ffi/src/lib.rs` was already sealed, but
+  the bindgen binary was not covered by the FFI `--lib` doctrine lint.
+- Averroes the 2nd found that a CI lint targeting only `--bin uniffi-bindgen`
+  would miss future `ffi/src/bin/*.rs` targets because Cargo auto-discovers
+  binaries.
+- Chandrasekhar the 2nd found that `bin`'s doctrine lint covered default and
+  minimal features, but not the non-default production `mqtt` feature.
+- Mill the 2nd found that the repaired binary adapter lint still named only
+  `--bin elastik-core`, so a future `bin/src/bin/*.rs` target could escape
+  the doctrine lint.
+- Pauli the 2nd found that a future `core/src/bin/*.rs` target could be
+  auto-discovered by Cargo and would not inherit the library crate-root deny.
+- Godel the 2nd found two more gaps before the final repair: a future explicit
+  core `[[bin]]` would not be covered by core `--lib` doctrine lints, and local
+  production `#[allow]` attributes can override `deny` unless the repository
+  separately enforces documented exceptions.
+- Beauvoir the 2nd and Dewey the 2nd found that the first scanner was too
+  line-oriented: a comment containing `cfg(test)`, a multiline `#[allow(...)]`,
+  or a `cfg_attr(not(test), allow(...))` could evade the documentation check.
+- Bacon the 2nd found that `#[allow(clippy::restriction)]` suppresses
+  `unwrap_used` and `expect_used`, and that `#[expect(clippy::unwrap_used)]`
+  is also a suppressor form. The scanner initially checked only exact
+  `allow(clippy::unwrap_used|expect_used)` spellings.
+- Gauss the 2nd, Darwin the 2nd, and Socrates the 2nd found that
+  `cfg_attr(feature = "...", allow(...))` and `cfg_attr(not(test), allow(...))`
+  could still hide production suppressors because suppressor detection only
+  matched direct `allow(...)` / `expect(...)` attribute heads.
+- Peirce the 2nd found three final scanner gaps: spaced lint paths such as
+  `clippy :: unwrap_used`, multiline attribute blocks containing `]` inside
+  string literals, and macro-body suppressors such as `#[allow($lint)]`.
+- Aristotle the 2nd and James the 2nd found the final parser/scope gaps:
+  comments inside attribute tokens, `]` inside attribute comments, and a single
+  documented module/function-level suppressor could still hide later bare
+  unwrap/expect calls.
+
+Active skills checked for this layer: `stacked-pr`,
+`rust-type-seal-enforcement`, `monte-carlo-review`,
+`assign-scientist-reviewers`, and `delegation-doctrine`.
+
+Validation run locally on `stack/22r72-ffi-bindgen-unwrap-deny`:
+
+- `cargo fmt --manifest-path ffi\Cargo.toml -- --check`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --bin uniffi-bindgen -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks`
+- `git diff --check`
+
+Precondition design review was not required for this layer: it changes no
+runtime semantics or wire/storage contract. It only tightens compile-time and
+CI lint enforcement for existing Rust targets and production feature coverage.
+
+Fresh QA round before final repair:
+
+- Averroes the 2nd / Popper: found P2. The first CI repair linted only
+  `--bin uniffi-bindgen`; a future `ffi/src/bin/other.rs` would be
+  auto-discovered by Cargo and miss the doctrine lint.
+- Chandrasekhar the 2nd / Mencius: found P1. `bin` has a non-default
+  production `mqtt` feature, but CI did not run the binary production doctrine
+  lint with `mqtt` enabled.
+- Bohr the 2nd / QA-Enforcement: found P2 before closeout. The ledger did not
+  yet record a final zero-P0-P2 fresh round.
+
+Fixes applied after that round:
+
+- FFI binary doctrine lint now uses `--bins`, covering current and future
+  FFI production binaries.
+- Binary adapter doctrine lints now use `--bins` for default, minimal, and
+  all-features runs. The all-features run covers MQTT production code; the
+  `--bins` target selection covers future binary roots.
+- The core package now sets `autobins = false`, so the library crate cannot
+  grow an implicit binary root by file placement alone.
+- Core `--all-targets` clippy now also denies unwrap/expect, so an explicit
+  future core target is covered by the normal CI path.
+- Production lint exceptions are checked by `tools/panic_discipline_scan.py`:
+  test-module allows are accepted; production allows require a nearby
+  `Invariant:` or `Poison means` comment.
+- The scanner now parses attribute blocks, including multiline attributes and
+  crate-level attributes, and treats only real `#[cfg(test)]` /
+  `#[cfg_attr(test, ...)]` attributes as test-only.
+- The scanner now treats `allow` and `expect` attributes for
+  `clippy::unwrap_used`, `clippy::expect_used`, `clippy::restriction`, and
+  `clippy::all` as relevant suppressors. `deny` attributes are not flagged.
+- Group suppressors such as `clippy::restriction` and `clippy::all` are hard
+  failures for panic discipline. They are detected because they can cover
+  unwrap/expect, but they cannot be documented into production; only exact
+  `clippy::unwrap_used` / `clippy::expect_used` suppressors are valid local
+  escapes.
+- The scanner now detects suppressor operations inside `cfg_attr(...)` too.
+  Only exact test-only forms such as `#[cfg_attr(test, allow(...))]` are
+  exempt; feature-gated or `not(test)` suppressors require invariant
+  documentation like any other production suppressor.
+- The scanner now normalises lint paths around `::`, ignores bracket-like
+  characters inside string and raw-string literals while collecting attribute
+  blocks, and treats macro lint metavariables as relevant suppressors.
+- The scanner now ignores line/block comments while collecting and matching
+  attribute tokens, and rejects production suppressors attached to crate,
+  module, function, impl, type, and other item scope. Documented suppressors
+  must be local to the statement or block that needs them.
+- The scanner now detects item-scope suppressors from a token window rather
+  than one physical line. This catches split and spaced visibility forms such
+  as `pub` newline `fn`, `pub(crate) fn`, and `pub /*comment*/ (crate) fn`.
+- The scanner now checks source-level `.unwrap()` / `.expect()` calls, not only
+  lint suppressor attributes. A naked call hidden behind an uncompiled feature
+  branch now fails the scanner unless it is inside exact test-only code or
+  covered by a documented local lint suppressor.
+- The scanner now treats Rust lifetimes such as `Transaction<'_>` as lifetimes,
+  not char literals, so test-module and item-range parsing does not stop early.
+- The scanner now rejects documented `macro_rules!` item suppressors; the item
+  regex handles `macro_rules!` without relying on a trailing word boundary after
+  `!`.
+- The scanner no longer trusts filenames such as `tests.rs` or
+  `test_support.rs` as proof of test-only status. External module files are
+  exempt only when the parent module declaration is under exact `#[cfg(test)]`,
+  including `#[path = "..."]` modules.
+- The scanner now treats suppressor attributes containing macro metavariables
+  such as `$lint` as hard failures. They cannot be documented into production,
+  because the generated lint could suppress unwrap/expect while hiding the
+  generated call from source scanning.
+- The scanner now also rejects `unwrap_err` / `expect_err` and UFCS forms such
+  as `Option::unwrap(v)` / `Result::expect_err(r, ...)`, so inactive feature
+  branches cannot dodge the source-level panic-call search by avoiding method
+  syntax.
+- UFCS detection now covers turbofish and angle-qualified forms such as
+  `Option::<u8>::unwrap(v)`, `<Option<u8>>::unwrap(v)`, and
+  `Result::<u8, ()>::unwrap_err(r)`, plus raw identifier method calls such as
+  `x.r#unwrap()`.
+- The scanner now recognises `macro_rules !` with whitespace before `!` as an
+  item-scope macro definition and rejects unwrap/expect suppressors attached to
+  it.
+- The scanner now collects inline attributes as well as line-start attributes,
+  so macro bodies such as `{ #[allow($lint)] fn f() {} }` are rejected by the
+  same macro-metavariable rule.
+- Inline attribute normalisation means same-line item suppressors such as
+  `#[allow(...)] fn f(...)` and same-line test modules such as
+  `#[cfg(test)] mod tests { ... }` are scanned using the same rules as
+  multi-line attributes.
+- The tokenizer now preserves raw-string length correctly when crossing raw
+  string closing delimiters, preventing later attribute offsets from drifting.
+- External `#[cfg(test)]` module files are no longer exempt when the same file
+  is also included by a production `mod` declaration. Test proof is attached to
+  the module occurrence, not permanently to the file path.
+- CI scans crate directories (`core`, `bin`, `ffi`) rather than only `src`
+  directories, so future package-root Rust files such as `build.rs` are covered
+  by the same panic-discipline rule.
+- CI now runs no-`unstable-engine` doctrine lint shapes for core and bin, and
+  the bin/FFI all-target clippy jobs also deny unwrap/expect. That covers
+  examples/tests/current and future target roots at the normal clippy layer.
+
+Post-fix validation run locally:
+
+- `cargo fmt --manifest-path ffi\Cargo.toml -- --check`
+- `cargo fmt --manifest-path core\Cargo.toml -- --check`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `python -m py_compile tools\panic_discipline_scan.py`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- Scanner probe: comment-faked `cfg(test)`, multiline `#[allow(...)]`, and
+  `#[cfg_attr(not(test), allow(...))]` are rejected; real `#[cfg(test)]` and
+  documented `Invariant:` allows are accepted.
+- Scanner probe: undocumented `#[allow(clippy::restriction)]`,
+  `#[expect(clippy::unwrap_used)]`, and multiline `#[allow(clippy::all)]`
+  suppressors are rejected; documented group suppressors are also rejected,
+  while real test `expect` attributes are accepted.
+- Scanner probe: `cfg_attr(feature = "unstable-engine", allow(...))` and
+  `cfg_attr(not(test), allow(...))` are rejected; exact
+  `cfg_attr(test, allow(...))` is accepted. `#[allow(warnings)]` was tested
+  separately with Clippy and does not suppress the command-line
+  `-D clippy::unwrap_used` gate.
+- Scanner probe: `#[allow(clippy :: unwrap_used)]`, a multiline
+  `cfg_attr(..., doc = "]", allow(...))`, and `#[allow($lint)]` inside a macro
+  body are rejected; `$lint` macro-metavariable suppressors are never
+  documentable production escapes.
+- Scanner probe: `#[allow(/*comment*/ ...)]`, `#[allow(... // ] ...)]`,
+  documented module-level suppressors, and documented function-level
+  suppressors are rejected. Local documented block suppressors and test-module
+  suppressors remain accepted.
+- Scanner probe: documented item-level suppressors split across `pub` newline
+  `fn`, `pub(crate) fn`, and `pub /*comment*/ (crate) fn` are rejected.
+- Scanner probe: documented `macro_rules!` item suppressors are rejected.
+- Scanner probe: a package-root `build.rs` naked unwrap is rejected when
+  scanning the parent crate directory.
+- Scanner probe: a naked unwrap hidden behind
+  `#[cfg(all(feature = "mqtt", not(feature = "multi-thread")))]` is rejected
+  source-wide, independent of the active Cargo feature shape.
+- Scanner probe: exact test-module suppressors still cover test code containing
+  lifetime syntax such as `Transaction<'_>`.
+- Scanner probe: bare `tests.rs`, `test_support.rs`, and
+  `examples/tests.rs` files with naked unwraps are rejected unless included by
+  an exact `#[cfg(test)]` parent module.
+- Scanner probe: `#[cfg(test)] #[path = "handler/tests.rs"] mod tests;` and
+  `#[cfg(test)] mod test_support;` parent declarations exempt those external
+  files without trusting their basenames.
+- Scanner probe: documented `#[allow($lint)]` inside a macro body is rejected
+  as an unprovable macro-generated suppressor.
+- Scanner probe: `Option::unwrap(v)`, `Result::unwrap_err(r)`, and method
+  `expect_err(...)` forms are rejected even when hidden behind inactive feature
+  cfgs.
+- Scanner probe: `Option::<u8>::unwrap(v)`, `<Option<u8>>::unwrap(v)`,
+  `Result::<u8, ()>::unwrap_err(r)`, and `v.r#unwrap()` are rejected.
+- Scanner probe: multiline UFCS forms such as `Option::<` newline `u8`
+  newline `>::unwrap(v)` and `<Option<` newline `u8` newline `>>::unwrap(v)`
+  are rejected.
+- Scanner probe: array and const-generic UFCS forms such as
+  `Option::<[u8; 1]>::unwrap(v)` and `<Option<[u8; 1]>>::unwrap(v)` are
+  rejected.
+- Scanner probe: braced const-generic UFCS forms such as
+  `Option::<[u8; { N }]>::unwrap(x)` are rejected.
+- Scanner probe: `macro_rules !` item suppressors with whitespace before `!`
+  are rejected.
+- Scanner probe: inline `#[allow($lint)]` attributes inside macro bodies are
+  rejected, not only attributes beginning a physical source line.
+- Scanner probe: same-line item suppressors
+  `#[allow(clippy::unwrap_used)] fn hidden(...)` are rejected as broad
+  item-scope suppressors.
+- Scanner probe: same-line exact test modules
+  `#[cfg(test)] mod tests { ... }` and same-line parent path modules
+  `#[cfg(test)] #[path = "test_support.rs"] mod test_support;` are accepted.
+- Scanner probe: a file included by both production `mod shared;` and
+  `#[cfg(test)] #[path = "shared.rs"] mod shared_test;` is treated as
+  production-included and rejected if it carries naked or broadly-suppressed
+  unwrap/expect.
+- Scanner probe: a transitive test-only module tree
+  `#[cfg(test)] mod tests;` -> `tests.rs` -> `tests/child.rs` is accepted when
+  no production module reaches the child.
+- Scanner probe: inline test-only module trees such as
+  `#[cfg(test)] mod tests { mod child; }` -> `tests/child.rs` are accepted when
+  no production module reaches the child.
+- Scanner probe: split-visibility test modules such as `#[cfg(test)]`
+  newline `pub(crate)` newline `mod tests;` are accepted as test-only.
+- Scanner probe: the same transitive child is rejected once a production
+  module also includes it, so test-only context does not launder production
+  code.
+- Scanner probe: documented local `#[allow(clippy::restriction)]` and
+  `#[allow(clippy::all)]` suppressors are rejected; group suppressors cannot be
+  used as panic-discipline escapes.
+- Scanner probe: `#[allow(clippy::expect_used)]` does not cover `unwrap()`,
+  and `#[allow(clippy::unwrap_used)]` does not cover `expect()`; documented
+  suppressor ranges are bound to the exact panic method family they suppress.
+- `cargo clippy --locked --manifest-path core\Cargo.toml --lib -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path core\Cargo.toml --lib --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path core\Cargo.toml --lib --no-default-features --features bundled-sqlite -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path core\Cargo.toml --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --bins -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins --all-features -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins --no-default-features --features bundled-sqlite,unstable-engine -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins --no-default-features --features bundled-sqlite -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --lib -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --lib --no-default-features -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --bins --no-default-features -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
+- `git diff --check`
+
+Adjudication before final round:
+
+- Godel the 2nd's explicit core-target finding was accepted and fixed by the
+  core `--all-targets` doctrine flags plus `autobins = false`.
+- Godel the 2nd's local-allow finding was accepted as a documentation
+  enforcement gap, not as a requirement to `forbid`: AGENTS.md intentionally
+  permits local production allows only for documented impossible states. The
+  new scanner makes undocumented production allows fail CI.
+- Beauvoir the 2nd and Dewey the 2nd's scanner-parser findings were accepted
+  and fixed by block-based Rust attribute collection plus a stricter real
+  `cfg(test)` exemption.
+- Bacon the 2nd's group-lint and `expect` suppressor findings were accepted
+  and fixed by scanning suppressor operations and group lints, while leaving
+  crate-root `deny` attributes outside the scanner's failure set.
+- Gauss/Darwin/Socrates' `cfg_attr` suppressor findings were accepted and
+  fixed by scanning suppressor operations anywhere inside an attribute block
+  while keeping the test-only exemption exact.
+- Peirce's final scanner findings were accepted and fixed by lint-path
+  normalisation, bracket-aware attribute collection, and `$lint` detection.
+- Aristotle/James' parser and broad-scope findings were accepted and fixed by
+  comment-aware attribute tokenisation plus an item-scope suppressor ban.
+- Anscombe/Volta's final feature-shape and macro findings were accepted and
+  fixed by source-level naked-call scanning, the `macro_rules!` regex fix,
+  no-`unstable-engine` doctrine lint jobs, and unwrap/expect denial on bin/FFI
+  all-target clippy jobs.
+- Parfit/Carver's basename-trust and macro-metavariable findings were accepted
+  and fixed by parent-cfg external module discovery and a hard ban on `$` lint
+  suppressors.
+- Faraday/Hooke's UFCS, unwrap_err/expect_err, macro layout, inline-attribute,
+  and dual-include findings were accepted and fixed by broadening panic-call
+  detection, recognising spaced `macro_rules !`, collecting inline attributes,
+  and distinguishing test-only external modules from files also included by
+  production modules.
+- Ampere/Einstein's final scanner findings were accepted and fixed by covering
+  turbofish/angle-qualified UFCS, raw identifier calls, same-line item
+  suppressors, same-line exact test modules, and the raw-string token length
+  drift that could misalign later attributes.
+- Raman/Franklin's multiline-UFCS and transitive-test-module findings were
+  accepted and fixed by allowing newlines inside type-path panic-call matching
+  and computing module context as a graph closure from production roots and
+  exact test-only roots.
+- Sagan's exact-suppressor finding was accepted and fixed by making
+  `clippy::restriction` / `clippy::all` hard failures. Panic-discipline escapes
+  now must name `clippy::unwrap_used` or `clippy::expect_used` exactly.
+- Boole/Schrodinger/Kepler's final exactness findings were accepted and fixed
+  by structurally matching braced const-generic UFCS calls, binding documented
+  suppressor ranges to the exact unwrap/expect lint they name, and preserving
+  inline test-module child declarations during module graph discovery.
+
+Line budget sign-off:
+
+- Staged implementation surface exceeds the nominal 500-line production budget
+  because `tools/panic_discipline_scan.py` is a new source scanner rather than a
+  small local Rust edit. The overage is intentional and contained: the scanner
+  is a CI enforcement tool, not runtime storage/auth/audit behaviour. The Rust
+  production edits are crate-root lint walls and target-shape wiring:
+  `bin/src/main.rs`, `ffi/src/lib.rs`, `ffi/src/bin/uniffi-bindgen.rs`, and the
+  one-line `core/Cargo.toml` target-shape guard. Splitting the scanner into
+  multiple PRs would create weaker intermediate CI states, so this layer keeps
+  the enforcement physics atomic. Codex read the scanner in full during this
+  final pass and signs off the overage as the implementation maintainer for
+  this stack layer; the user authorised continuing the stack to completion and
+  reviewing the final result rather than every intermediate slice.
+
+FFI no-default validation note:
+
+- CI includes `ffi --lib --no-default-features` and `ffi --bins
+  --no-default-features` doctrine lints. `ffi/Cargo.toml` currently has no
+  package features and still depends on `elastik-core` with
+  `unstable-engine`; these commands are currently equivalent to the default
+  FFI package shape but are kept as future-proof target wiring.
+
+Final QA is recorded below after fresh reviewers inspect this latest repair.
+
+Final QA repair addendum:
+
+- Helmholtz the 2nd / QA-Enforcement found no P0/P1/P2 implementation issue
+  and requested only final closeout plus `git diff --cached --check` evidence.
+- Fermat the 2nd / Popper found two P1 scanner bypasses: function-item panic
+  calls such as `Option::unwrap` and macro method-ident calls such as
+  `call_method!(v, unwrap)`. Both were accepted and fixed by adding path-item
+  detection and macro invocation ident scanning to
+  `tools/panic_discipline_scan.py`.
+- Cicero the 2nd / Mencius found a P2 unsafe-code physics gap: `bin` and `ffi`
+  denied unwrap/expect but did not carry their own `unsafe_code` wall. This was
+  accepted and fixed by adding crate-root `#![deny(unsafe_code)]` to
+  `bin/src/main.rs`, `ffi/src/lib.rs`, and `ffi/src/bin/uniffi-bindgen.rs`,
+  plus explicit CI `-D unsafe_code` gates for bin/FFI clippy jobs.
+
+Additional validation after those repairs:
+
+- Scanner probe: `values.into_iter().map(Option::unwrap).collect()` is
+  rejected.
+- Scanner probe: `call_method!(v, unwrap)` where a macro body calls
+  `$v.$method()` is rejected.
+- Scanner probe: `values.into_iter().map(Result::unwrap_err).collect()` is
+  rejected.
+- Scanner probe: a documented local `#[allow(clippy::unwrap_used)]` around
+  `Option::unwrap(v)` is accepted.
+- `python -m py_compile tools\panic_discipline_scan.py`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins --all-features -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins --no-default-features --features bundled-sqlite,unstable-engine -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --bins --no-default-features --features bundled-sqlite -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --lib -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --bins -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --lib --no-default-features -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --bins --no-default-features -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout`
+
+Final closeout after read-only QA rerun:
+
+- Popper rerun result: no remaining P0/P1/P2 findings for the prior
+  function-item and macro-ident bypass class. The scanner now rejects
+  `Option::unwrap` / `Result::unwrap_err` path items and panic method names
+  passed inside macro invocation bodies.
+- Mencius rerun result: no remaining unsafe-code physics gap for this layer.
+  `bin` and `ffi` now carry crate-root `unsafe_code` denies and CI also passes
+  `-D unsafe_code` for their clippy jobs.
+- QA-Enforcement rerun result: no scope, residue, AGENTS, or staged-diff issue
+  remains after this closeout. The staged surface is still intentionally one
+  atomic CI enforcement layer.
+
+Fresh final validation:
+
+- `python -m py_compile tools\panic_discipline_scan.py`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
+- `git diff --check`
+- `git diff --cached --check`

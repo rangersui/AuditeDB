@@ -7,6 +7,7 @@
 // UniFFI's export macro references deprecated smoke exports inside this crate.
 // The deprecation remains part of the generated ABI for downstream consumers.
 #![allow(deprecated)]
+#![deny(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{sync::Arc, time::Duration};
