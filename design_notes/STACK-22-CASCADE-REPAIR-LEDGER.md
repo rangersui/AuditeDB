@@ -1645,3 +1645,51 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `python tools\panic_discipline_scan.py core bin ffi`
+
+## 22r88: Timeline non-body event wire proof
+
+- Branch: `stack/22r88-timeline-nonbody-event-wire`
+- Commit: `5e5f699 bin: cover timeline non-body event wire`
+- Base: `stack/22r87-timeline-head-header-parity`
+- Scope: closes Hooke the 3rd's PLAN section 8 P2 that
+  `TimelineDereference::NonBodyEvent` had core resolver coverage and handler
+  mapping but no full HTTP endpoint proof.
+- Production diff: 0 lines. The changed Rust source is test-only under
+  `#[cfg(test)]`; `bin` gained direct `hmac` and `sha2` dev-dependency edges so
+  the endpoint fixture can sign a valid audit row with the same algorithm as
+  core. The lockfile diff only adds those root dev-dependency edges.
+
+The layer adds a full pipeline `GET`/`HEAD` proof for a durable world whose
+first audit row is rewritten into a signed non-body `delete_intent` event. The
+fixture uses the server test HMAC key, the same HMAC field labels/order as
+core (`prev`, `type`, `target`, `gen`, `body-sha256`, `size`,
+`content-type`, `meta-sha256`), clears CAS retention state so audit
+verification remains intact, and keeps the event target equal to the request
+world. The request therefore reaches the resolver's `NonBodyEvent` branch
+instead of corruption, missing-row, body-hash mismatch, or unproven-coordinate
+branches. The HTTP proof asserts `GET` returns `404` with
+`timeline event has no body\n`, and `HEAD` returns the same headers with an
+empty body.
+
+Fresh review:
+
+- Dewey the 3rd / Popper + Noether: clean P0-P3. Confirmed HMAC/meta parity
+  with core, generation and audit-chain verification before row
+  classification, target-first non-body classification, CAS retention clearing,
+  full `pipeline::run` coverage, and `TimelineDereference::NonBodyEvent` handler
+  mapping to `404`.
+- Gauss the 3rd / Carson + Bacon + Mencius + QA-Enforcement: clean P0-P3.
+  Confirmed `hmac` and `sha2` are direct `bin` dev-dependencies only, both were
+  already present through `elastik-core`, the lockfile diff only adds root
+  edges, no production code path changed, and `TEST_HMAC_KEY` is exposed only
+  through the `#[cfg(test)]` server test-support module.
+
+Validation:
+
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_head_errors_have_no_body -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `git diff --check`
