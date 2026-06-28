@@ -1918,8 +1918,9 @@ Validation:
   layer fixes three documentation subclaims without changing code:
   `AGENTS.md` panic-discipline origin wording, `.env.example` cap parser
   fallback wording, and HTTP README trace-env wording.
-- Production diff: docs-only. Changed files are `AGENTS.md`, `.env.example`,
-  and `bin/src/server/http/README.md`.
+- Production-facing docs diff: `AGENTS.md`, `.env.example`, and
+  `bin/src/server/http/README.md`. This ledger file was updated as the durable
+  review artifact for the layer.
 
 Findings fixed:
 
@@ -2049,3 +2050,42 @@ Validation:
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `python tools\header_policy_scan.py --offline`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+
+## 22r97: Listen cursor docs use opaque SSE IDs
+
+- Branch: `stack/22r97-listen-cursor-doc-parity`
+- Base: `stack/22r96-timeline-poisoned-header-proof`
+- Scope: closes Harvey the 3rd's P2 docs/type-shape drift: primary listen
+  examples still showed decimal SSE `id` values even though the implementation
+  emits opaque subscription cursors. This layer also fixes two nearby P3 docs
+  drift items reported in the same review round.
+- Production diff: docs-only. No Rust, route, public API, storage, unsafe,
+  panic-policy, or lint-wall change.
+
+Findings fixed:
+
+- Harvey the 3rd / Heisenberg + Sagan found P2: the HTTP README and Elastik
+  skill reference showed `id: 42` / `id: 43`, while `listen.rs` emits
+  `change.cursor.to_string()` and `SubscriptionCursor` renders as
+  `<32 lowercase hex epoch>:<decimal event id>`. The examples now use that
+  opaque shape.
+- Harvey found P3: `.env.example` pointed readers at a nonexistent trace
+  section in the README. The trace comment now stops at the implemented
+  startup/frozen-lifetime behaviour.
+- Harvey found P3: the 22r94 ledger's changed-file sentence omitted this
+  ledger file. The wording now distinguishes production-facing docs from the
+  durable review artifact.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --stat`
+- `git diff --cached --name-status`
+- `git diff --check`
+- Targeted residue scans over production-facing docs found no stale decimal SSE
+  IDs or stale trace-section pointer. The ledger intentionally retains Harvey's
+  historical finding text while narrowing the corrected 22r94 changed-file
+  wording.
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `python tools\header_policy_scan.py --offline`

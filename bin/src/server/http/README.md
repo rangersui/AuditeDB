@@ -78,7 +78,7 @@ the world's body.
 
 ```text
 event: put
-id: 42
+id: 0123456789abcdef0123456789abcdef:42
 data: path: /home/task/a
 data: method: PUT
 data: etag: hmac-...

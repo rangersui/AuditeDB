@@ -236,13 +236,13 @@ not "one path per line"; it is SSE.
 
 ```text
 event: put
-id: 42
+id: 0123456789abcdef0123456789abcdef:42
 data: path: /home/task/a
 data: method: PUT
 data: etag: hmac-...
 
 event: delete
-id: 43
+id: 0123456789abcdef0123456789abcdef:43
 data: path: /home/task/a
 data: method: DELETE
 
