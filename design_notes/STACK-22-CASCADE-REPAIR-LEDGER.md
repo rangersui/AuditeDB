@@ -2280,3 +2280,48 @@ Validation:
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pre-push.ps1`
 - `git diff --check`
+
+## 22r104: Local FFI cargo gate
+
+- Branch: `stack/22r104-local-ffi-cargo-gate`
+- Base: `stack/22r103-local-panic-discipline-gate`
+- Active skills checked: `stacked-pr`, `rust-type-seal-enforcement`,
+  `http-type-seal-review`, `monte-carlo-review`,
+  `assign-scientist-reviewers`, `delegation-doctrine`,
+  `precondition-problem`, `http-peer-protocol`, and `AGENTS.md`.
+- Scope: brings the FFI crate into the local pre-push Rust format, clippy,
+  debug-test, and strict release-test gates. Manual local verification already
+  covered `ffi`; the pre-push hook now covers the same shipped Rust crate set
+  instead of relying on GitHub CI for FFI.
+- Production diff: 0 Rust lines. Local tooling and ledger only.
+
+Finding fixed:
+
+- Follow-up local gate audit: after 22r103, `scripts/pre-push.ps1` ran panic
+  discipline over `core bin ffi`, but cargo format/clippy/tests still covered
+  only `core` and `bin`. With GitHub unavailable, the local hook must exercise
+  the FFI adapter crate too.
+
+Review:
+
+- Zeno the 3rd / Bacon + QA-Enforcement: clean P0-P3. Confirmed FFI format,
+  clippy, and test commands are in the unconditional local gate and run before
+  both fast-only and strict-only branches. Noted that strict release tests were
+  still core/bin-only under the earlier basic cargo-gate scope; this layer now
+  also includes FFI in strict release tests.
+- Linnaeus the 3rd / Popper + Mencius: clean P0-P2 on coverage, scope, and
+  stacked discipline. Found P3 that this review section still said pending; this
+  entry records the fresh P0-P2-clearing round and closes that process gap.
+- Kant the 3rd / Hypatia + QA-Enforcement: clean P0-P2 after the placeholder
+  repair, then found P3 that this entry did not name active skills as required
+  by AGENTS.md. This entry now records the active skills checked and closes that
+  process gap.
+
+Validation:
+
+- `cargo fmt --manifest-path ffi\Cargo.toml -- --check`
+- `cargo clippy --manifest-path ffi\Cargo.toml -- -D warnings`
+- `cargo test --manifest-path ffi\Cargo.toml`
+- `cargo test --manifest-path ffi\Cargo.toml --release`
+- `git diff --check`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pre-push.ps1`

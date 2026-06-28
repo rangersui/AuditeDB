@@ -117,16 +117,19 @@ if ($strict) {
 Step "Rust format" {
     Run cargo fmt --manifest-path core/Cargo.toml "--" --check
     Run cargo fmt --manifest-path bin/Cargo.toml "--" --check
+    Run cargo fmt --manifest-path ffi/Cargo.toml "--" --check
 }
 
 Step "Rust clippy" {
     Run cargo clippy --manifest-path core/Cargo.toml "--" "-D" warnings
     Run cargo clippy --manifest-path bin/Cargo.toml "--" "-D" warnings
+    Run cargo clippy --manifest-path ffi/Cargo.toml "--" "-D" warnings
 }
 
 Step "Rust tests" {
     Run cargo test --manifest-path core/Cargo.toml
     Run cargo test --manifest-path bin/Cargo.toml
+    Run cargo test --manifest-path ffi/Cargo.toml
 }
 
 Step "Panic discipline scan" {
@@ -147,6 +150,7 @@ if ($strict) {
     Step "Rust release tests" {
         Run cargo test --manifest-path core/Cargo.toml --release
         Run cargo test --manifest-path bin/Cargo.toml --release
+        Run cargo test --manifest-path ffi/Cargo.toml --release
     }
 }
 
