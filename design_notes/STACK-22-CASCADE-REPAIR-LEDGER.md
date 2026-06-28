@@ -1964,3 +1964,46 @@ Validation:
 - `cargo test --locked --manifest-path bin\Cargo.toml init_trace_from_env -- --nocapture`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `python tools\header_policy_scan.py --offline`
+
+## 22r95: Timeline delete ledger does not overclaim earlier coordinates
+
+- Branch: `stack/22r95-timeline-delete-earlier-coordinate-proof`
+- Base: `stack/22r94-doc-drift-cleanup`
+- Scope: closes Darwin the 3rd's P3 evidence gap for PLAN Counterexample K.
+  The new endpoint test covers the exact shape where seq 1 has body `B`, seq 2
+  has final body `C`, the world is deleted, and the client later asks for seq 1.
+- Production diff: 0 lines. The only changed production-adjacent file is
+  `bin/src/server/pipeline.rs`, under the existing `#[cfg(test)]` module.
+
+The test writes `home/timeline/delete-ledger-k` once and asserts the captured
+timeline address has sequence 1. It writes the same world again with a different
+body, asserts the captured final address has sequence 2 and a different body
+hash, then deletes the world and confirms `var/log/deletes` exists. A timeline
+GET for the seq-1 coordinate then returns `404` with
+`timeline coordinate not proven\n`, proving the current v1 HTTP path does not
+turn the final delete fact into `410 Gone` for an earlier coordinate.
+
+Fresh review:
+
+- Nietzsche the 3rd / Popper + Noether: clean P0-P3. Confirmed the test covers
+  Counterexample K's required shape, changes no production code, and excludes
+  `410 Gone` by asserting `404` plus the unproven body.
+- Heisenberg the 3rd / Bacon + QA-Enforcement initially found one process P2:
+  the content was clean but not commit-ready until this durable ledger entry
+  recorded the layer evidence. It also confirmed the diff is test-only,
+  single-concern, and introduces no production code, public API, unsafe, route,
+  lint-wall, or panic-policy change.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --stat`
+- `git diff --cached --name-status`
+- `git diff --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_delete_ledger_does_not_overclaim_earlier_coordinates -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`

@@ -1584,6 +1584,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pipeline_timeline_delete_ledger_does_not_overclaim_earlier_coordinates() {
+        let (engine, dir) = test_engine_for_server("pipeline-timeline-delete-ledger-k");
+        let first_address = write_body_and_capture_timeline_address(
+            &engine,
+            "home/timeline/delete-ledger-k",
+            b"first",
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(first_address.seq().get(), 1);
+
+        let final_address = write_body_and_capture_timeline_address(
+            &engine,
+            "home/timeline/delete-ledger-k",
+            b"final",
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(final_address.seq().get(), 2);
+        assert_ne!(
+            first_address.body_sha256().as_str(),
+            final_address.body_sha256().as_str()
+        );
+
+        engine
+            .delete(
+                &world_path("home/timeline/delete-ledger-k"),
+                Preconditions::none(),
+                AccessTier::Approve,
+            )
+            .await
+            .expect("delete should succeed");
+        assert!(world_db_path_for_server_tests(&dir, "var/log/deletes").exists());
+
+        let state = server_state_for_engine_for_tests(engine);
+        let resp = run(
+            Method::GET,
+            "/home/timeline/delete-ledger-k".to_string(),
+            raw_query(&timeline_query(&first_address)),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            326,
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response_text(resp).await,
+            "timeline coordinate not proven\n"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn pipeline_timeline_head_errors_have_no_body() {
         let (engine, dir) = test_engine_for_server("pipeline-timeline-head-errors");
         let address = write_body_and_capture_timeline_address(
