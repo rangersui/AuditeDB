@@ -2089,3 +2089,56 @@ Validation:
   wording.
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `python tools\header_policy_scan.py --offline`
+
+## 22r98: Generation mismatch wins before absent-row lookup
+
+- Branch: `stack/22r98-generation-mismatch-absent-seq-proof`
+- Base: `stack/22r97-listen-cursor-doc-parity`
+- Scope: closes Arendt the 3rd's P3 Counterexample I test gap. The resolver and
+  HTTP adapter already returned generation mismatch before row lookup; this
+  layer adds explicit evidence for the edge where the requested generation is
+  wrong and the requested sequence is absent.
+- Production diff: 0 lines. Only existing `#[cfg(test)]` modules changed in
+  `core/src/audit/timeline_dereference.rs` and `bin/src/server/pipeline.rs`.
+
+The core test now asks for the wrong generation with sequence `99`, while the
+subject world has only sequence `1`, and still expects
+`TimelineDereference::GenMismatch`. The HTTP pipeline test sends the same shape
+over the wire and expects `409 Conflict` with
+`timeline generation mismatch\n`, not `404 timeline row not found\n`.
+
+Finding fixed:
+
+- Arendt the 3rd / Popper + Precondition found P3: Counterexample I had
+  existing-generation mismatch tests only for an existing sequence. The missing
+  edge was wrong generation plus absent requested sequence.
+
+Fresh review:
+
+- Boole the 3rd / Popper + Precondition: clean P0-P3. Confirmed the new core
+  and HTTP tests close Counterexample I's absent-sequence edge and do not change
+  production behavior.
+- Carver the 3rd / Bacon + QA-Enforcement initially found one process P2: this
+  entry did not yet record the QA/enforcement reviewer or broader Rust
+  readiness evidence. The code/test content was clean, test-only plus ledger,
+  and single-concern.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --stat`
+- `git diff --cached --name-status`
+- `git diff --check`
+- `cargo test --locked --manifest-path core\Cargo.toml coordinate_resolver_returns_generation_mismatch_after_chain_verification -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_head_errors_have_no_body -- --nocapture`
+- `cargo test --locked --manifest-path core\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path core\Cargo.toml`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo fmt --manifest-path core\Cargo.toml -- --check`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo clippy --locked --manifest-path core\Cargo.toml --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `python tools\header_policy_scan.py --offline`

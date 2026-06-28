@@ -740,6 +740,22 @@ mod tests {
             _ => panic!("expected generation mismatch"),
         }
 
+        let absent_seq = TimelineCoordinate::from_wire_parts(
+            world.as_str(),
+            "fedcba9876543210fedcba9876543210",
+            99,
+            actual.body_sha256().as_str(),
+        )
+        .unwrap();
+
+        match dereference(&engine, &absent_seq) {
+            TimelineDereference::GenMismatch(proof) => {
+                assert_eq!(proof.requested(), &absent_seq);
+                assert_eq!(proof.actual(), actual.generation());
+            }
+            _ => panic!("expected generation mismatch before row lookup"),
+        }
+
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
     }

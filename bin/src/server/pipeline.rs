@@ -1727,6 +1727,27 @@ mod tests {
         assert_eq!(gen_mismatch.headers(), &gen_headers);
         assert_eq!(response_text(gen_mismatch).await, "");
 
+        let wrong_generation_absent_seq = timeline_query_parts(
+            "fedcba9876543210fedcba9876543210",
+            99,
+            address.body_sha256().as_str(),
+        );
+        let gen_absent_seq = run(
+            Method::GET,
+            "/home/timeline/head-errors".to_string(),
+            raw_query(&wrong_generation_absent_seq),
+            HeaderMap::new(),
+            Bytes::new(),
+            &state,
+            323,
+        )
+        .await;
+        assert_eq!(gen_absent_seq.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_text(gen_absent_seq).await,
+            "timeline generation mismatch\n"
+        );
+
         let wrong_hash = timeline_query_parts(
             address.generation().as_str(),
             address.seq().get(),
