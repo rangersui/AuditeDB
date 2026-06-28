@@ -2350,6 +2350,35 @@ Finding fixed:
 
 Review:
 
+- Dirac the 3rd / Hypatia + QA-Enforcement: final fresh review clean P0-P3.
+  Confirmed the missing Boyle evidence is now recorded in the 22r104 entry, the
+  22r105 scope is honestly ledger-only, active skills are recorded, the diff is
+  one Markdown file with 0 Rust production lines, and validation claims only
+  `git diff --check`.
+
+Validation:
+
+- `git diff --check`
+
+## 22r106: Final ledger closeout
+
+- Branch: `stack/22r106-final-ledger-closeout`
+- Base: `stack/22r105-ffi-gate-final-review-ledger`
+- Active skills checked: `stacked-pr`, `monte-carlo-review`,
+  `assign-scientist-reviewers`, `delegation-doctrine`,
+  `http-peer-protocol`, and `AGENTS.md`.
+- Scope: ledger-only repair that records Dirac the 3rd's final clean review for
+  22r105 after that review was received before commit but not durably recorded
+  in the 22r105 entry.
+- Production diff: 0 Rust lines. Ledger only.
+
+Finding fixed:
+
+- Self-audit found P3: 22r105 had committed after Dirac the 3rd returned clean
+  P0-P3, but the 22r105 ledger entry still said fresh QA review was pending.
+
+Review:
+
 - Pending fresh QA review for this ledger-only repair.
 
 Validation:
