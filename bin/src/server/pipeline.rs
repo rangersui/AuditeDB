@@ -1275,6 +1275,13 @@ mod tests {
                     "x-timeline-body-sha256".to_string(),
                     "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_string(),
                 ),
+                ("etag".to_string(), "\"hmac-spoof\"".to_string()),
+                ("accept-ranges".to_string(), "bytes".to_string()),
+                ("content-range".to_string(), "bytes 0-0/999".to_string()),
+                (
+                    "link".to_string(),
+                    "</listen/home/timeline/http>; rel=\"monitor\"".to_string(),
+                ),
             ],
         )
         .await;

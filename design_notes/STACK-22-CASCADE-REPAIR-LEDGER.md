@@ -2007,3 +2007,45 @@ Validation:
 - `cargo fmt --manifest-path bin\Cargo.toml -- --check`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+
+## 22r96: Timeline poisoned current headers stay suppressed
+
+- Branch: `stack/22r96-timeline-poisoned-header-proof`
+- Base: `stack/22r95-timeline-delete-earlier-coordinate-proof`
+- Scope: closes Darwin the 3rd's P3 evidence gap for PLAN section 8 header
+  deny-list endpoint evidence. The historical response test now poisons
+  persisted metadata with current-read response headers and proves they are
+  filtered before the response is returned.
+- Production diff: 0 lines. The only changed production-adjacent file is
+  `bin/src/server/pipeline.rs`, under the existing `#[cfg(test)]` module.
+
+The strengthened test stores allowed metadata, spoofed `X-Timeline-*` proof
+headers, and poisoned current-read response headers: `ETag`, `Accept-Ranges`,
+`Content-Range`, and `Link`. It still asserts allowed metadata survives,
+trusted proof headers are single-valued and core-minted, and historical
+responses suppress `ETag`, `Accept-Ranges`, `Content-Range`, and `Link`.
+
+Fresh review:
+
+- Galileo the 3rd / Popper + Sagan: clean P0-P3. Confirmed the poisoned
+  headers and suppression assertions match PLAN section 8, and no production
+  code changed.
+- Tesla the 3rd / Bacon + QA-Enforcement initially found one process P2: the
+  content was clean but not commit-ready until this durable ledger entry
+  recorded the branch, base, scope, production diff, reviewer lenses, and
+  validation evidence.
+
+Validation:
+
+- `git status --short --branch`
+- `git diff --name-status`
+- `git diff --stat`
+- `git diff --cached --name-status`
+- `git diff --check`
+- `cargo test --locked --manifest-path bin\Cargo.toml pipeline_timeline_get_returns_historical_body_and_proof_headers -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml timeline -- --nocapture`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `python tools\header_policy_scan.py --offline`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
