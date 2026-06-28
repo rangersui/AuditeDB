@@ -112,7 +112,7 @@ Timeline-looking requests have a closed status vocabulary:
 | `OPTIONS`, even with timeline-looking or malformed timeline query strings | `204` | Ordinary world-route `Allow`, no timeline dereference. |
 | Historical `GET` | `200` | Historical body bytes plus `X-Timeline-*` proof headers. |
 | Historical `HEAD` | `200` | Same proof headers, no body. |
-| Invalid timeline query, duplicate fields, unknown timeline fields, extra query fields, malformed coordinates, memory-world coordinates, or invalid stored metadata | `400` | Text error. |
+| Invalid timeline query, duplicate fields, unknown timeline fields, extra query fields, malformed coordinates, or memory-world coordinates | `400` | Text error. |
 | Missing or invalid read token when a read token is configured | `401` | Existing read-token challenge. |
 | Timeline mode with any method other than `GET`, `HEAD`, or `OPTIONS` | `405` | `Allow: GET, HEAD, OPTIONS`. |
 | Raw query over the adapter cap | `414` | Text error. |
@@ -125,6 +125,9 @@ Timeline-looking requests have a closed status vocabulary:
 `HEAD` timeline failures preserve the same status and headers as `GET` but
 return no response body. Timeline mode never falls back to the current world
 body when the historical coordinate cannot be proven.
+
+Persisted metadata is filtered before historical response headers are emitted.
+Invalid or denied stored metadata does not become a timeline parse failure.
 
 Timeline mode adds no environment variables. It uses the existing read-token,
 header persistence, read-cache, and storage settings listed above.
