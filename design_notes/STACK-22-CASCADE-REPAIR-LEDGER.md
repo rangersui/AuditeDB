@@ -1737,31 +1737,6 @@ Validation:
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `python tools\header_policy_scan.py --offline`
-
-## 22r100: Timeline README metadata status wording
-
-- Branch: `stack/22r100-timeline-readme-metadata-status`
-- Base: `stack/22r99-ledger-qa-closure-wording`
-- Scope: closes Kierkegaard the 3rd's P3 docs overclaim. The HTTP README status
-  table no longer says invalid stored metadata is a `400` timeline query
-  failure. It now states the implemented behaviour: persisted metadata is
-  filtered before historical response headers are emitted, and invalid or
-  denied stored metadata does not become a timeline parse failure.
-- Production diff: 0 Rust lines. Documentation and ledger only.
-
-Finding fixed:
-
-- Kierkegaard the 3rd / Popper + Precondition found P3: README line 115 grouped
-  "invalid stored metadata" with `400` timeline query failures, but
-  `timeline_body_response` renders successful historical bodies and
-  `apply_meta_headers` filters denied or invalid persisted metadata instead of
-  returning `400`.
-
-Validation:
-
-- `git diff --check`
-- `python tools\panic_discipline_scan.py core bin ffi`
-- `python tools\header_policy_scan.py --offline`
 - `git diff --check`
 
 ## 22r90: Deleted timeline worlds stay unproven
@@ -2168,5 +2143,52 @@ Validation:
 - `cargo fmt --manifest-path bin\Cargo.toml -- --check`
 - `cargo clippy --locked --manifest-path core\Cargo.toml --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks -D clippy::unwrap_used -D clippy::expect_used`
 - `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `python tools\header_policy_scan.py --offline`
+
+## 22r100: Timeline README metadata status wording
+
+- Branch: `stack/22r100-timeline-readme-metadata-status`
+- Base: `stack/22r99-ledger-qa-closure-wording`
+- Scope: closes Kierkegaard the 3rd's P3 docs overclaim. The HTTP README status
+  table no longer says invalid stored metadata is a `400` timeline query
+  failure. It now states the implemented behaviour: persisted metadata is
+  filtered before historical response headers are emitted, and invalid or
+  denied stored metadata does not become a timeline parse failure.
+- Production diff: 0 Rust lines. Documentation and ledger only.
+
+Finding fixed:
+
+- Kierkegaard the 3rd / Popper + Precondition found P3: README line 115 grouped
+  "invalid stored metadata" with `400` timeline query failures, but
+  `timeline_body_response` renders successful historical bodies and
+  `apply_meta_headers` filters denied or invalid persisted metadata instead of
+  returning `400`.
+
+Validation:
+
+- `git diff --check`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `python tools\header_policy_scan.py --offline`
+
+## 22r101: Ledger placement for 22r100
+
+- Branch: `stack/22r101-ledger-placement-fix`
+- Base: `stack/22r100-timeline-readme-metadata-status`
+- Scope: closes Laplace the 3rd's P3 ledger-structure finding. The 22r100 entry
+  was first inserted inside the 22r89 validation list, which mis-attributed a
+  pre-existing `git diff --check` bullet. This layer moves the 22r100 entry to
+  the end of the ledger and leaves the older validation list intact.
+- Production diff: 0 Rust lines. Ledger only.
+
+Finding fixed:
+
+- Laplace the 3rd / Sagan + Docs Drift found P3: the 22r100 ledger block split a
+  prior validation list, so the ledger structure overclaimed which command
+  belonged to which layer.
+
+Validation:
+
+- `git diff --check`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `python tools\header_policy_scan.py --offline`
