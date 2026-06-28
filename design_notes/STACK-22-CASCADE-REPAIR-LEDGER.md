@@ -2379,7 +2379,10 @@ Finding fixed:
 
 Review:
 
-- Pending fresh QA review for this ledger-only repair.
+- Faraday the 3rd / Hypatia + QA-Enforcement: final fresh review clean P0-P3.
+  Confirmed Dirac's final review is now recorded in the 22r105 entry, 22r106 is
+  ledger-only, active skills are recorded, the process gap is named as P3, the
+  production diff is 0 Rust lines, and validation claims only `git diff --check`.
 
 Validation:
 
