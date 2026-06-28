@@ -2316,6 +2316,11 @@ Review:
   repair, then found P3 that this entry did not name active skills as required
   by AGENTS.md. This entry now records the active skills checked and closes that
   process gap.
+- Boyle the 3rd / Sagan + QA-Enforcement: final fresh review clean P0-P3 after
+  the active-skills fix and strict FFI release-test addition. Confirmed FFI is
+  in unconditional format/clippy/debug-test gates, FFI is in the strict release
+  gate, the ledger records active skills and reviewer lenses, and validation
+  remains local-only without claiming full strict pre-push or remote CI.
 
 Validation:
 
@@ -2325,3 +2330,28 @@ Validation:
 - `cargo test --manifest-path ffi\Cargo.toml --release`
 - `git diff --check`
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pre-push.ps1`
+
+## 22r105: FFI gate final review ledger
+
+- Branch: `stack/22r105-ffi-gate-final-review-ledger`
+- Base: `stack/22r104-local-ffi-cargo-gate`
+- Active skills checked: `stacked-pr`, `monte-carlo-review`,
+  `assign-scientist-reviewers`, `delegation-doctrine`,
+  `http-peer-protocol`, and `AGENTS.md`.
+- Scope: ledger-only repair that records the final fresh Boyle review for
+  22r104 after that review was received before commit but not durably recorded
+  in the 22r104 ledger entry.
+- Production diff: 0 Rust lines. Ledger only.
+
+Finding fixed:
+
+- Self-audit found P3: 22r104 had committed after Boyle the 3rd returned clean
+  P0-P3, but the 22r104 ledger entry did not name that final fresh review.
+
+Review:
+
+- Pending fresh QA review for this ledger-only repair.
+
+Validation:
+
+- `git diff --check`
