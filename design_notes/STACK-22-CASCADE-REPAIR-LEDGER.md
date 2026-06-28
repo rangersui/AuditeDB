@@ -2235,3 +2235,48 @@ Validation:
 - `git diff --check`
 - `python tools\panic_discipline_scan.py core bin ffi`
 - `python tools\header_policy_scan.py --offline`
+
+## 22r103: Local panic discipline gate
+
+- Branch: `stack/22r103-local-panic-discipline-gate`
+- Base: `stack/22r102-local-completion-audit`
+- Scope: wires the existing panic-discipline scanner into the local pre-push
+  gate, so local validation enforces the same documented unwrap/expect
+  suppressor discipline that CI already runs.
+- Production diff: 0 Rust lines. Local tooling and ledger only.
+
+Finding fixed:
+
+- Hume the 3rd / Mencius + QA-Enforcement found P3: CI runs
+  `tools/panic_discipline_scan.py core bin ffi`, but `scripts/pre-push.ps1`
+  did not. With GitHub unavailable, local gates must catch undocumented
+  production unwrap/expect suppressors before push.
+
+Review:
+
+- Pauli the 3rd / Popper + Bacon found no P0-P2 counterexample where production
+  naked `.unwrap()` or `.expect()` can pass the local CI-equivalent gates.
+  Pauli noted the remaining semantic review duty: a documented suppressor can
+  still be a bad suppressor if it is used around validation, IO, config,
+  storage, FFI, auth, audit, or user-controlled input. That is reviewer-owned,
+  not syntax-owned.
+
+Validation:
+
+- `cargo fmt --manifest-path core\Cargo.toml -- --check`
+- `cargo fmt --manifest-path bin\Cargo.toml -- --check`
+- `cargo fmt --manifest-path ffi\Cargo.toml -- --check`
+- `cargo clippy --locked --manifest-path core\Cargo.toml --all-targets -- -D warnings`
+- `cargo clippy --locked --manifest-path bin\Cargo.toml --all-targets -- -D warnings`
+- `cargo clippy --locked --manifest-path ffi\Cargo.toml --all-targets -- -D warnings`
+- `cargo test --locked --manifest-path core\Cargo.toml`
+- `cargo test --locked --manifest-path bin\Cargo.toml`
+- `cargo test --locked --manifest-path ffi\Cargo.toml`
+- `python tools\version_consistency_check.py`
+- `python tools\header_policy_scan.py --offline`
+- `python sdk\tests\test_tools.py`
+- `python -m py_compile sdk\src\elastik\sdk.py sdk\src\elastik\__init__.py sdk\src\elastik\testing.py sdk\src\elastik\reactor.py`
+- `python sdk\tests\e2e_blackbox.py`
+- `python tools\panic_discipline_scan.py core bin ffi`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pre-push.ps1`
+- `git diff --check`

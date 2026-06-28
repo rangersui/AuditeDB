@@ -129,6 +129,10 @@ Step "Rust tests" {
     Run cargo test --manifest-path bin/Cargo.toml
 }
 
+Step "Panic discipline scan" {
+    Run python tools/panic_discipline_scan.py core bin ffi
+}
+
 Step "Version consistency" {
     Run python tools/version_consistency_check.py
 }
