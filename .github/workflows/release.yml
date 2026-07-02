@@ -1,0 +1,685 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-core-assets:
+    name: build core asset (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-musl
+            asset-name: elastik-core-linux-x64.zip
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-musl
+            asset-name: elastik-core-linux-arm64.zip
+          - name: macos-arm64
+            os: macos-14
+            rust-target: ""
+            asset-name: elastik-core-darwin-arm64.zip
+          - name: windows-x64
+            os: windows-2025-vs2026
+            rust-target: ""
+            asset-name: elastik-core-win32-x64.zip
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: verify release versions match tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
+      - name: add rust target
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+      - name: install musl toolchain
+        if: startsWith(matrix.rust-target, 'x86_64-unknown-linux-musl') || startsWith(matrix.rust-target, 'aarch64-unknown-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: show musl compiler
+        if: startsWith(matrix.rust-target, 'x86_64-unknown-linux-musl') || startsWith(matrix.rust-target, 'aarch64-unknown-linux-musl')
+        shell: bash
+        run: |
+          command -v musl-gcc
+          musl-gcc --version
+          musl-gcc -dumpmachine || true
+
+      - name: build core (musl)
+        if: matrix.rust-target != ''
+        shell: bash
+        run: |
+          case "${{ matrix.rust-target }}" in
+            x86_64-unknown-linux-musl)
+              export CC_x86_64_unknown_linux_musl=musl-gcc
+              ;;
+            aarch64-unknown-linux-musl)
+              export CC_aarch64_unknown_linux_musl=musl-gcc
+              ;;
+          esac
+          cargo build --release --manifest-path bin/Cargo.toml --target ${{ matrix.rust-target }}
+
+      - name: build core (native)
+        if: matrix.rust-target == ''
+        run: cargo build --release --manifest-path bin/Cargo.toml
+
+      - name: package core asset (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force asset | Out-Null
+          Copy-Item bin/target/release/elastik-core.exe asset/elastik-core.exe
+          Compress-Archive -Path asset/* -DestinationPath ${{ matrix.asset-name }}
+
+      - name: package core asset (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p asset
+          if [ -n "${{ matrix.rust-target }}" ]; then
+            cp "bin/target/${{ matrix.rust-target }}/release/elastik-core" asset/elastik-core
+          else
+            cp bin/target/release/elastik-core asset/elastik-core
+          fi
+          chmod +x asset/elastik-core
+          (cd asset && zip -9 "../${{ matrix.asset-name }}" elastik-core)
+
+      - name: upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset-name }}
+
+      - name: upload core asset artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-asset-${{ matrix.name }}
+          path: ${{ matrix.asset-name }}
+          if-no-files-found: error
+
+  build-ffi-assets:
+    name: build ffi asset (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            library-path: target/release/libelastik_ffi.so
+            asset-name: elastik-ffi-linux-x64.zip
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            library-path: target/release/libelastik_ffi.so
+            asset-name: elastik-ffi-linux-arm64.zip
+          - name: macos-arm64
+            os: macos-14
+            library-path: target/release/libelastik_ffi.dylib
+            asset-name: elastik-ffi-darwin-arm64.zip
+          - name: windows-x64
+            os: windows-2025-vs2026
+            library-path: target/release/elastik_ffi.dll
+            asset-name: elastik-ffi-win32-x64.zip
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: verify release versions match tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
+
+      - name: build ffi library
+        run: cargo build --release --manifest-path ffi/Cargo.toml
+
+      - name: generate Python UniFFI binding
+        shell: bash
+        working-directory: ffi
+        run: |
+          bindgen="target/release/uniffi-bindgen"
+          if [ -x "target/release/uniffi-bindgen.exe" ]; then
+            bindgen="target/release/uniffi-bindgen.exe"
+          fi
+          "$bindgen" generate "${{ matrix.library-path }}" \
+            --language python \
+            --out-dir target/bindings/python
+
+      - name: smoke generated Python binding
+        shell: bash
+        working-directory: ffi
+        env:
+          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import shutil
+          import sqlite3
+          import sys
+          import tempfile
+
+          bindings = pathlib.Path("target/bindings/python").resolve()
+          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
+          if not library.exists():
+              raise SystemExit(f"missing FFI library: {library}")
+          shutil.copy2(library, bindings / library.name)
+          sys.path.insert(0, str(bindings))
+
+          import elastik_ffi as e
+
+          root = pathlib.Path(tempfile.mkdtemp(prefix="elastik-ffi-release-"))
+          none = e.FfiPreconditions(if_match=[], if_none_match=[])
+          engine = e.FfiEngine.open(e.FfiEngineConfig(
+              data_root=str(root),
+              hmac_key=b"0123456789abcdef0123456789abcdef",
+              read_token=None,
+              write_token=None,
+              approve_token=None,
+              max_world_bytes=None,
+              max_memory_bytes=None,
+              max_storage_bytes=None,
+              max_listen_connections=None,
+              listen_replay_max=8,
+              read_cache_max_entries=2,
+          ))
+          engine.replace("home/ffi", e.FfiRepresentation(
+              body=b"release",
+              content_type="text/plain",
+              headers=[],
+          ), none, e.FfiAccessTier.WRITE)
+          read = engine.read("home/ffi", e.FfiAccessTier.READ)
+          assert read is not None
+          assert read.representation.body == b"release"
+          subscription = engine.subscribe(
+              "home/*",
+              e.FfiAccessTier.READ,
+              e.FfiSubscriptionResume(after_cursor=None, after_event_id=None),
+          )
+          engine.append("home/ffi", b" asset", none, e.FfiAccessTier.WRITE)
+          event = subscription.next(5_000)
+          assert event.kind == e.FfiSubscriptionNextKind.EVENT, event.kind
+          assert event.event.verb == e.FfiChangeVerb.APPEND, event.event.verb
+          assert event.event.path == "home/ffi", event.event.path
+          engine.delete_with_metadata("home/ffi", e.FfiDeleteMetadata(
+              content_type="text/plain; charset=utf-8",
+              headers=[e.FfiHeader(name="x-meta-author", value="release")],
+          ), none, e.FfiAccessTier.APPROVE)
+          deleted = subscription.next(5_000)
+          assert deleted.kind == e.FfiSubscriptionNextKind.EVENT, deleted.kind
+          assert deleted.event.verb == e.FfiChangeVerb.DELETE, deleted.event.verb
+          assert deleted.event.path == "home/ffi", deleted.event.path
+          assert engine.read("home/ffi", e.FfiAccessTier.READ) is None
+          ledger = root / "var%2Flog%2Fdeletes" / "universe.db"
+          with sqlite3.connect(ledger) as conn:
+              row = conn.execute(
+                  "SELECT content_type FROM events WHERE event_type='delete_intent'"
+              ).fetchone()
+              assert row == ("text/plain; charset=utf-8",), row
+              row = conn.execute(
+                  "SELECT COUNT(*) FROM event_headers WHERE name='x-meta-author' AND value='release'"
+              ).fetchone()
+              assert row == (2,), row
+          engine.shutdown()
+          print("ffi release smoke ok", e.ffi_version(), root)
+          PY
+
+      - name: package ffi asset
+        shell: bash
+        working-directory: ffi
+        env:
+          ELASTIK_FFI_NAME: ${{ matrix.name }}
+          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
+          ELASTIK_FFI_ASSET: ${{ matrix.asset-name }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import shutil
+          import zipfile
+
+          name = os.environ["ELASTIK_FFI_NAME"]
+          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
+          asset = pathlib.Path(os.environ["ELASTIK_FFI_ASSET"]).resolve()
+          bindings = pathlib.Path("target/bindings/python").resolve()
+          out = pathlib.Path("ffi-release-asset").resolve()
+
+          if out.exists():
+              shutil.rmtree(out)
+          out.joinpath("lib").mkdir(parents=True)
+          out.joinpath("python").mkdir(parents=True)
+
+          native_dst = out / "lib" / library.name
+          shutil.copy2(library, native_dst)
+          shutil.copy2(bindings / "elastik_ffi.py", out / "python" / "elastik_ffi.py")
+          shutil.copy2(library, out / "python" / library.name)
+
+          def sha256(path: pathlib.Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          out.joinpath("MANIFEST.txt").write_text("\n".join([
+              f"name={name}",
+              f"library={library.name}",
+              f"library_sha256={sha256(native_dst)}",
+              "python_binding=python/elastik_ffi.py",
+              "",
+          ]), encoding="utf-8")
+
+          if asset.exists():
+              asset.unlink()
+          with zipfile.ZipFile(asset, "w", zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(out.rglob("*")):
+                  if path.is_file():
+                      z.write(path, path.relative_to(out).as_posix())
+          print(asset)
+          PY
+
+      - name: upload ffi release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ffi/${{ matrix.asset-name }}
+
+      - name: upload ffi asset artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffi-asset-${{ matrix.name }}
+          path: ffi/${{ matrix.asset-name }}
+          if-no-files-found: error
+
+  build-wheels:
+    name: build wheel (${{ matrix.name }})
+    needs: build-core-assets
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            wheel-platform-tag: ""
+            wheel-platform-regex: "manylinux.*_x86_64"
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            wheel-platform-tag: ""
+            wheel-platform-regex: "manylinux.*_aarch64"
+          - name: macos-arm64
+            os: macos-14
+            wheel-platform-tag: "macosx_11_0_arm64"
+            wheel-platform-regex: "macosx_.*_arm64"
+          - name: windows-x64
+            os: windows-2025-vs2026
+            wheel-platform-tag: ""
+            wheel-platform-regex: "win_amd64"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: show platform
+        run: python -c "import platform, sys; print(sys.platform, platform.machine())"
+
+      - name: verify release versions match tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
+
+      - name: download core asset
+        uses: actions/download-artifact@v8
+        with:
+          name: core-asset-${{ matrix.name }}
+          path: core-asset
+
+      - name: unpack core asset
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+          import stat
+          import zipfile
+
+          zips = list(pathlib.Path("core-asset").glob("*.zip"))
+          if len(zips) != 1:
+              raise SystemExit(f"expected one core asset zip, got {zips}")
+          out = pathlib.Path("core-asset/unpacked")
+          out.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(zips[0]) as z:
+              z.extractall(out)
+          candidates = [
+              out / "elastik-core",
+              out / "elastik-core.exe",
+          ]
+          binary = next((p for p in candidates if p.exists()), None)
+          if binary is None:
+              raise SystemExit("core asset does not contain elastik-core binary")
+          if binary.name == "elastik-core":
+              binary.chmod(binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+          print(binary)
+          PY
+
+      - name: bundle core binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force sdk/src/elastik/_bin | Out-Null
+          Copy-Item core-asset/unpacked/elastik-core.exe sdk/src/elastik/_bin/elastik-core.exe
+
+      - name: bundle core binary (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p sdk/src/elastik/_bin
+          cp core-asset/unpacked/elastik-core sdk/src/elastik/_bin/elastik-core
+          chmod +x sdk/src/elastik/_bin/elastik-core
+
+      - name: build wheel
+        env:
+          ELASTIK_WHEEL_PLATFORM_TAG: ${{ matrix.wheel-platform-tag }}
+        run: |
+          python -m pip install --upgrade pip build wheel
+          python -m build --wheel sdk
+
+      - name: repair linux wheel tag
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python -m pip install --upgrade auditwheel
+          mkdir -p sdk/wheelhouse
+          python -m auditwheel repair --wheel-dir sdk/wheelhouse sdk/dist/*.whl
+          rm sdk/dist/*.whl
+          mv sdk/wheelhouse/*.whl sdk/dist/
+
+      - name: smoke wheel artifact
+        shell: bash
+        env:
+          WHEEL_PLATFORM_REGEX: ${{ matrix.wheel-platform-regex }}
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import re
+          import sys
+          import zipfile
+
+          wheels = glob.glob("sdk/dist/*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, got {wheels}")
+          wheel = wheels[0]
+          wheel_name = os.path.basename(wheel)
+          if wheel.endswith("none-any.whl"):
+              raise SystemExit(f"wheel must be platform-specific, got {wheel}")
+          expected = os.environ["WHEEL_PLATFORM_REGEX"]
+          if not re.search(expected, wheel_name):
+              raise SystemExit(f"wheel {wheel_name} does not match expected platform /{expected}/")
+          if re.search(r"-linux_[^-]+\.whl$", wheel_name):
+              raise SystemExit(f"PyPI rejects raw linux platform tags: {wheel_name}")
+          with zipfile.ZipFile(wheel) as z:
+              names = z.namelist()
+              wheel_meta = next(name for name in names if name.endswith(".dist-info/WHEEL"))
+              wheel_text = z.read(wheel_meta).decode("utf-8")
+          if "Root-Is-Purelib: false" not in wheel_text:
+              raise SystemExit("wheel must be platlib, not purelib")
+          if any(".data/purelib/" in name for name in names):
+              raise SystemExit("native wheel must not install files into purelib")
+          if not any(name.endswith("elastik/_bin/elastik-core") or name.endswith("elastik/_bin/elastik-core.exe") for name in names):
+              raise SystemExit("wheel does not contain elastik-core binary")
+          print(wheel)
+          PY
+
+      - name: upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: elastik-wheel-${{ matrix.name }}
+          path: sdk/dist/*.whl
+          if-no-files-found: error
+
+  publish-pypi:
+    name: publish to PyPI
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: download wheels
+        uses: actions/download-artifact@v8
+        with:
+          pattern: elastik-wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: list wheels
+        run: ls -lah dist
+
+      - name: publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  publish-crates:
+    name: publish Rust crate
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: verify release versions match tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
+      - name: publish elastik-core to crates.io
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          api_url="https://crates.io/api/v1/crates/elastik-core/${version}"
+          if curl -fsS -H "User-Agent: Elastik release workflow" "$api_url" >/dev/null; then
+            echo "elastik-core ${version} already published; skipping cargo publish"
+            exit 0
+          fi
+          : "${CARGO_REGISTRY_TOKEN:?CARGO_REGISTRY_TOKEN secret is required to publish elastik-core}"
+          cargo publish \
+            --manifest-path core/Cargo.toml \
+            --features unstable-engine \
+            --token "$CARGO_REGISTRY_TOKEN"
+      - name: verify crates.io publish
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          api_url="https://crates.io/api/v1/crates/elastik-core/${version}"
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if curl -fsS -H "User-Agent: Elastik release workflow" "$api_url" >/dev/null; then
+              cargo search elastik-core --limit 3
+              exit 0
+            fi
+            echo "crates.io has not propagated elastik-core ${version} yet; retry ${attempt}/8"
+            sleep 15
+          done
+          exit 1
+
+  release-checksums:
+    name: publish release checksums
+    needs:
+      - build-ffi-assets
+      - publish-pypi
+      - publish-crates
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: generate checksum manifests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import tarfile
+          import zipfile
+
+          root = pathlib.Path("artifacts")
+          packages = sorted(
+              p for p in root.rglob("*")
+              if p.is_file() and p.suffix in {".zip", ".whl", ".tgz"}
+          )
+          if not packages:
+              raise SystemExit("no release package artifacts found")
+
+          def sha256_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          def sha256_file(path: pathlib.Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          package_lines = []
+          binary_lines = []
+          binary_by_channel = {}
+
+          for path in packages:
+              rel = path.relative_to(root).as_posix()
+              package_lines.append(f"{sha256_file(path)}  {rel}")
+
+              artifact_dir = rel.split("/", 1)[0]
+              channel = None
+              platform = None
+              if artifact_dir.startswith("core-asset-"):
+                  channel = "github-release"
+                  platform = artifact_dir.removeprefix("core-asset-")
+              elif artifact_dir.startswith("elastik-wheel-"):
+                  channel = "pypi"
+                  platform = artifact_dir.removeprefix("elastik-wheel-")
+
+              def record_binary(name: str, data: bytes) -> None:
+                  digest = sha256_bytes(data)
+                  binary_lines.append(f"{digest}  {rel}!{name}")
+                  if channel and platform:
+                      binary_by_channel[(channel, platform)] = digest
+
+              if path.suffix in {".zip", ".whl"}:
+                  with zipfile.ZipFile(path) as z:
+                      for name in sorted(z.namelist()):
+                          if pathlib.PurePosixPath(name).name in {
+                              "elastik-core",
+                              "elastik-core.exe",
+                              "elastik_ffi.dll",
+                              "libelastik_ffi.dylib",
+                              "libelastik_ffi.so",
+                          }:
+                              record_binary(name, z.read(name))
+              elif path.suffix == ".tgz":
+                  with tarfile.open(path, "r:gz") as t:
+                      for member in sorted(t.getmembers(), key=lambda m: m.name):
+                          if pathlib.PurePosixPath(member.name).name in {"elastik-core", "elastik-core.exe"}:
+                              extracted = t.extractfile(member)
+                              if extracted is not None:
+                                  record_binary(member.name, extracted.read())
+
+          match_lines = []
+          platforms = sorted({
+              platform
+              for channel, platform in binary_by_channel
+              if channel in {"github-release", "pypi"}
+          })
+          for platform in platforms:
+              if ("github-release", platform) not in binary_by_channel:
+                  continue
+              release_digest = binary_by_channel[("github-release", platform)]
+              matched_channels = ["GitHub Release"]
+              for channel, label in [("pypi", "PyPI")]:
+                  if (channel, platform) not in binary_by_channel:
+                      continue
+                  channel_digest = binary_by_channel[(channel, platform)]
+                  if release_digest != channel_digest:
+                      raise SystemExit(
+                          f"binary mismatch for {platform}: "
+                          f"GitHub Release {release_digest} != {label} {channel_digest}"
+                      )
+                  matched_channels.append(label)
+              if len(matched_channels) > 1:
+                  match_lines.append(f"{platform}: {' == '.join(matched_channels)} ({release_digest})")
+
+          pathlib.Path("SHA256SUMS.txt").write_text("\n".join(package_lines) + "\n", encoding="utf-8")
+          pathlib.Path("BINARY-SHA256SUMS.txt").write_text("\n".join(binary_lines) + "\n", encoding="utf-8")
+          pathlib.Path("CHANNEL-MATCHES.txt").write_text("\n".join(match_lines) + "\n", encoding="utf-8")
+
+          note = [
+              "## Release checksums",
+              "",
+              "These checksums are generated by CI from the exact artifacts uploaded or published for this tag.",
+              "",
+              "Package file hashes are in `SHA256SUMS.txt`.",
+              "Embedded `elastik-core` binary and native FFI library hashes are in `BINARY-SHA256SUMS.txt`.",
+              "Cross-channel binary equality checks are in `CHANNEL-MATCHES.txt`.",
+              "",
+              "The workflow fails if a GitHub Release core zip and its matching PyPI wheel contain different core bytes.",
+              "",
+              "```text",
+              *package_lines,
+              "```",
+          ]
+          pathlib.Path("CHECKSUMS.md").write_text("\n".join(note) + "\n", encoding="utf-8")
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          release_notes = pathlib.Path("release_notes") / f"RELEASE-NOTES-{tag}.md"
+          if not release_notes.is_file():
+              raise SystemExit(f"missing release notes: {release_notes}")
+          release_body = (
+              release_notes.read_text(encoding="utf-8").rstrip()
+              + "\n\n"
+              + pathlib.Path("CHECKSUMS.md").read_text(encoding="utf-8").lstrip()
+          )
+          pathlib.Path("RELEASE-BODY.md").write_text(release_body, encoding="utf-8")
+          PY
+          cat SHA256SUMS.txt
+          cat BINARY-SHA256SUMS.txt
+          cat CHANNEL-MATCHES.txt
+
+      - name: upload checksum assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SHA256SUMS.txt
+            BINARY-SHA256SUMS.txt
+            CHANNEL-MATCHES.txt
+          body_path: RELEASE-BODY.md

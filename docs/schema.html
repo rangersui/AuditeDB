@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AuditeDB Engine — Storage Internals</title>
+<style>
+  body { font-family: serif; max-width: 680px; margin: 2em auto; padding: 0 1em; line-height: 1.6; }
+  h1 { font-size: 1.6em; }
+  h2 { font-size: 1.2em; margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: 2px; }
+  h3 { font-size: 1em; margin-top: 1.4em; }
+  .subtitle { color: #555; margin-bottom: 1em; }
+  a { color: #0645ad; }
+
+  pre { background: #f5f5f5; border: 1px solid #ddd; padding: 1em; overflow-x: auto; font-size: 0.95em; line-height: 1.5; margin: 0.8em 0; }
+  code { font-size: 0.95em; }
+  pre .kw { color: #00008b; }
+  pre .str { color: #006400; }
+  pre .cmt { color: #888; }
+  pre .val { color: #00008b; }
+  pre .ok { color: #006400; }
+  pre .err { color: #8b0000; }
+
+  table { border-collapse: collapse; margin: 0.8em 0; }
+  td, th { border: 1px solid #ccc; padding: 4px 10px; text-align: left; }
+
+  .note { color: #555; margin: 0.8em 0; padding: 0.5em 1em; border-left: 3px solid #ccc; }
+
+  .row-diagram { display: flex; gap: 2px; margin: 0.8em 0; flex-wrap: wrap; }
+  .fb { border: 1px solid #ccc; padding: 6px 8px; text-align: center; min-width: 80px; }
+  .fb .l { font-size: 0.8em; color: #555; text-transform: uppercase; }
+  .fb .v { font-size: 0.95em; margin-top: 3px; font-family: monospace; }
+
+  .chain-dia { display: flex; align-items: stretch; gap: 0; margin: 1em 0; overflow-x: auto; }
+  .cr { border: 1px solid #ccc; padding: 10px 14px; min-width: 200px; flex-shrink: 0; }
+  .cr .rid { color: #555; font-weight: 600; font-size: 0.9em; }
+  .cr .f { font-size: 0.85em; color: #555; margin: 4px 0; line-height: 1.5; }
+  .cr .f span { font-family: monospace; }
+  .cr .hv { font-family: monospace; font-size: 0.85em; padding: 2px 4px; margin-top: 3px; display: inline-block; border: 1px solid #ccc; }
+  .ha { background: #e6f4ea; color: #006400; border-color: #a8d5b5; }
+  .hb { background: #f0e6f6; color: #5b2c8b; border-color: #c5a8d5; }
+  .hc { background: #fdf0e0; color: #8b4500; border-color: #d5c5a8; }
+  .ca { display: flex; align-items: center; justify-content: center; min-width: 50px; color: #888; font-size: 18px; flex-shrink: 0; }
+
+  .framing { display: flex; align-items: center; gap: 0; margin: 0.6em 0; flex-wrap: wrap; }
+  .framing .s { padding: 5px 8px; font-family: monospace; font-size: 0.95em; border: 1px solid #ccc; }
+  .framing .s:first-child { border-radius: 3px 0 0 3px; }
+  .framing .s:last-child { border-radius: 0 3px 3px 0; }
+  .framing .sl { color: #00008b; background: #e8f0fe; border-color: #a8c0e0; }
+  .framing .sn { color: #888; background: #f5f5f5; min-width: 24px; text-align: center; }
+  .framing .sd { color: #8b4500; background: #fdf0e0; border-color: #d5c5a8; }
+  .framing .sv { color: #006400; background: #e6f4ea; border-color: #a8d5b5; }
+
+  .toc { margin: 1em 0; padding: 0.8em 1em; background: #f5f5f5; border: 1px solid #ddd; }
+  .toc a { display: block; font-size: 0.9em; line-height: 1.8; color: #555; text-decoration: none; }
+  .toc a:hover { color: #0645ad; }
+  .toc .indent { padding-left: 16px; }
+  hr { border: none; border-top: 1px solid #ccc; margin: 2em 0; }
+</style>
+</head>
+<body>
+
+<h1>AuditeDB Engine — Storage Internals</h1>
+<p class="subtitle">Per-world SQLite. HMAC chain. CAS. Five verbs. Format v2.</p>
+
+<div class="toc">
+<a href="#s1">1. Overview</a>
+<a href="#s2">2. Per-world SQLite schema</a>
+<a href="#s3">3. HMAC chain</a>
+<a href="#s4">4. Length-prefix framing</a>
+<a href="#s5">5. meta_sha256</a>
+<a href="#s6">6. CAS (content-addressable storage)</a>
+<a href="#s7">7. Generation lifecycle</a>
+<a href="#s8">8. Timeline reads</a>
+<a href="#s9">9. Two coordinate systems</a>
+<a href="#s10">10. Append verification</a>
+<a href="#s11">11. Five verbs</a>
+<a href="#s12">12. Delete — two-phase with ledger</a>
+<a href="#s13">13. Subscribe (SSE)</a>
+<a href="#s14">14. Four trust tiers</a>
+<a href="#s15">15. Path validation</a>
+<a href="#s16">16. Tamper detection</a>
+<a href="#s17">17. Security boundary</a>
+<a href="#s18">18. Format v2 marker</a>
+<a href="#s19">19. HTTP reference</a>
+<a href="#s20">20. On-disk layout</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s1">1. Overview</h2>
+
+<p>AuditeDB is an embedded audit-trail storage engine. Each key (called a
+<em>world</em>) is a separate SQLite database containing an append-only HMAC
+chain and a content-addressable body store. The engine exposes five verbs:
+read, replace, append, delete, subscribe. Protocol adapters (HTTP, CoAP, MQTT,
+SSE) map onto these verbs; the engine knows nothing about protocols.</p>
+
+<p>Everything below describes the on-disk format and the invariants the engine
+enforces. If you can read a SQLite file, you can verify the chain yourself
+without the engine binary.</p>
+
+<!-- ============================================================ -->
+<h2 id="s2">2. Per-world SQLite schema</h2>
+
+<p>Each world is one directory containing <code>universe.db</code>. The database
+has these tables:</p>
+
+<pre>
+<span class="kw">CREATE TABLE</span> world_format(
+    id      <span class="val">INTEGER PRIMARY KEY CHECK(id=1)</span>,
+    version <span class="val">INTEGER NOT NULL CHECK(typeof(version)='integer') CHECK(version=2)</span>
+);
+
+<span class="kw">CREATE TABLE</span> stage_meta(
+    id          <span class="val">INTEGER PRIMARY KEY CHECK(id=1)</span>,
+    generation  <span class="val">TEXT NOT NULL</span>,               <span class="cmt">-- 32 lowercase hex, unique per incarnation</span>
+    body        <span class="val">BLOB DEFAULT x''</span>,
+    content_type <span class="val">TEXT DEFAULT 'application/octet-stream'</span>
+);
+
+<span class="kw">CREATE TABLE</span> events(
+    id           <span class="val">INTEGER PRIMARY KEY AUTOINCREMENT</span>,  <span class="cmt">-- TimelineSeq</span>
+    timestamp    <span class="val">TEXT NOT NULL</span>,                       <span class="cmt">-- UTC ms, e.g. 2026-06-30T12:00:00.000Z</span>
+    event_type   <span class="val">TEXT NOT NULL</span>,                       <span class="cmt">-- put | append | delete_intent | delete_commit | delete_commit_failed | format</span>
+    target       <span class="val">TEXT DEFAULT ''</span>,                     <span class="cmt">-- world path</span>
+    body_sha256  <span class="val">TEXT DEFAULT ''</span>,                     <span class="cmt">-- 64 hex, points into cas_bodies</span>
+    size         <span class="val">INTEGER DEFAULT 0</span>,                   <span class="cmt">-- body byte count</span>
+    content_type <span class="val">TEXT DEFAULT ''</span>,                     <span class="cmt">-- MIME type</span>
+    meta_sha256  <span class="val">TEXT DEFAULT ''</span>,                     <span class="cmt">-- 64 hex, SHA256 of canonical metadata</span>
+    hmac         <span class="val">TEXT NOT NULL</span>,                       <span class="cmt">-- 64 hex, this row's HMAC</span>
+    prev_hmac    <span class="val">TEXT DEFAULT ''</span>                      <span class="cmt">-- 64 hex, previous row's HMAC (empty for genesis)</span>
+);
+
+<span class="kw">CREATE TABLE</span> event_headers(
+    event_id <span class="val">INTEGER NOT NULL</span>,
+    name     <span class="val">TEXT NOT NULL</span>,
+    value    <span class="val">TEXT NOT NULL</span>
+);
+
+<span class="kw">CREATE TABLE</span> cas_bodies(
+    body_sha256 <span class="val">TEXT NOT NULL PRIMARY KEY
+        CHECK(typeof(body_sha256)='text')
+        CHECK(length(body_sha256)=64)
+        CHECK(body_sha256 NOT GLOB '*[^0-9a-f]*')</span>,
+    body        <span class="val">BLOB NOT NULL CHECK(typeof(body)='blob')</span>
+) <span class="kw">WITHOUT ROWID</span>;
+
+<span class="kw">CREATE TABLE</span> cas_state(
+    id                  <span class="val">INTEGER PRIMARY KEY CHECK(id=1)</span>,
+    first_retained_seq  <span class="val">INTEGER
+        CHECK(first_retained_seq IS NULL OR
+              (typeof(first_retained_seq)='integer' AND first_retained_seq &gt; 0))</span>
+                              <span class="cmt">-- NULL = retain all; positive = prune before this seq</span>
+);
+
+<span class="kw">CREATE TABLE</span> meta_headers(
+    name  <span class="val">TEXT NOT NULL</span>,
+    value <span class="val">TEXT NOT NULL</span>,
+    <span class="val">PRIMARY KEY(name)</span>
+);
+</pre>
+
+<p>The world generation is stored once in <code>stage_meta.generation</code>.
+It is signed into every event HMAC, but it is not an <code>events</code>
+column.</p>
+
+<p>You can inspect any world directly:</p>
+
+<pre>
+$ sqlite3 data/home%2Fnote/universe.db
+sqlite&gt; <span class="kw">SELECT</span> id, event_type, substr(hmac,1,16) <span class="kw">FROM</span> events <span class="kw">ORDER BY</span> id;
+1|format|33c6613d544b458b
+2|put|739117dead6c29a1
+3|put|9abd91d155abf461
+
+sqlite&gt; <span class="kw">SELECT</span> substr(body_sha256,1,16), length(body) <span class="kw">FROM</span> cas_bodies;
+ac1b5c0961a7269b|11
+e600da3b270f05a4|12
+
+sqlite&gt; <span class="kw">SELECT</span> generation <span class="kw">FROM</span> stage_meta;
+0a1b2c3d4e5f67890a1b2c3d4e5f6789
+
+sqlite&gt; <span class="kw">SELECT</span> version <span class="kw">FROM</span> world_format;
+2
+</pre>
+
+<h3>event_type values</h3>
+
+<table>
+<tr><th>event_type</th><th>body-bearing</th><th>id-bearing</th><th>where</th></tr>
+<tr><td><code>put</code></td><td>yes</td><td>yes</td><td>target world</td></tr>
+<tr><td><code>append</code></td><td>yes</td><td>yes</td><td>target world</td></tr>
+<tr><td><code>delete_intent</code></td><td>no</td><td>yes</td><td>var/log/deletes</td></tr>
+<tr><td><code>delete_commit</code></td><td>no</td><td>yes</td><td>var/log/deletes</td></tr>
+<tr><td><code>delete_commit_failed</code></td><td>no</td><td>yes</td><td>var/log/deletes</td></tr>
+<tr><td><code>format</code></td><td>no</td><td>yes</td><td>target world (genesis row)</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s3">3. HMAC chain</h2>
+
+<p>Every row in the events table carries an HMAC computed over 10 fields in
+fixed order. Each row's <code>prev_hmac</code> is the previous row's
+<code>hmac</code>. The first row (always <code>format</code>) has
+<code>prev_hmac = ""</code>.</p>
+
+<div class="chain-dia">
+  <div class="cr">
+    <div class="rid">Row 1 (format)</div>
+    <div class="f">prev_hmac: <span>""</span></div>
+    <div class="f">type: <span>format</span></div>
+    <div class="hv ha">hmac: 3a7f...c2</div>
+  </div>
+  <div class="ca">&rarr;</div>
+  <div class="cr">
+    <div class="rid">Row 2 (put)</div>
+    <div class="f">prev_hmac: <span style="color:#006400">3a7f...c2</span></div>
+    <div class="f">body: <span>"hello"</span></div>
+    <div class="hv hb">hmac: 8b21...e5</div>
+  </div>
+  <div class="ca">&rarr;</div>
+  <div class="cr">
+    <div class="rid">Row 3 (put)</div>
+    <div class="f">prev_hmac: <span style="color:#5b2c8b">8b21...e5</span></div>
+    <div class="f">body: <span>"updated"</span></div>
+    <div class="hv hc">hmac: d4e9...a1</div>
+  </div>
+  <div class="ca">&rarr;</div>
+  <div class="cr" style="border-style:dashed;opacity:0.5">
+    <div class="rid">Row N ...</div>
+    <div class="f">prev_hmac: <span style="color:#8b4500">d4e9...a1</span></div>
+  </div>
+</div>
+
+<p>Change any signed field &rarr; recomputation fails. Break a link &rarr; the
+next row's <code>prev_hmac</code> does not match. Delete or insert a row &rarr;
+the verified walk fails. Without the HMAC key, a valid chain cannot be
+forged.</p>
+
+<h3>HMAC computation — 10 fields</h3>
+
+<pre>
+hmac = HMAC-SHA256(key,
+    <span class="str">prev</span>         \0 len \0 &lt;prev row hmac hex&gt;  \0
+    <span class="str">world</span>        \0 len \0 home/note             \0
+    <span class="str">timestamp</span>    \0 len \0 2026-06-30T12:00:00.000Z \0
+    <span class="str">type</span>         \0 len \0 put                    \0
+    <span class="str">target</span>       \0 len \0 home/note             \0
+    <span class="str">gen</span>          \0 len \0 0a1b2c3d...ef         \0
+    <span class="str">body-sha256</span>  \0 len \0 e3b0c442...8e         \0
+    <span class="str">size</span>         \0 len \0 42                    \0
+    <span class="str">content-type</span> \0 len \0 text/plain            \0
+    <span class="str">meta-sha256</span>  \0 len \0 a1b2c3d4...f0         \0
+)
+</pre>
+
+<p>Each field uses length-prefix framing (see next section). The key is the
+HMAC secret, typically from <code>ELASTIK_HMAC_KEY</code> environment variable.
+It never touches disk.</p>
+
+<!-- ============================================================ -->
+<h2 id="s4">4. Length-prefix framing</h2>
+
+<p>Both HMAC and meta_sha256 use the same framing for every field:</p>
+
+<div class="framing">
+  <div class="s sl">label</div>
+  <div class="s sn">\0</div>
+  <div class="s sd">byte_len</div>
+  <div class="s sn">\0</div>
+  <div class="s sv">value</div>
+  <div class="s sn">\0</div>
+</div>
+
+<p>Example: field <code>type</code> with value <code>put</code>:</p>
+
+<div class="framing">
+  <div class="s sl">type</div>
+  <div class="s sn">\0</div>
+  <div class="s sd">3</div>
+  <div class="s sn">\0</div>
+  <div class="s sv">put</div>
+  <div class="s sn">\0</div>
+</div>
+
+<p>The length is the UTF-8 byte count of the value, not the character count.
+For ASCII they are equal; for multibyte characters (CJK, emoji) they differ.
+Both the Rust engine and the Python verifier use byte length.</p>
+
+<p class="note">Why length-prefix instead of bare \0 separators? Without it,
+<code>value="a\0b"</code> and <code>value="a" + next_label="b"</code> produce
+the same byte sequence. The length makes field boundaries unambiguous. This was
+fixed in format v2; see <code>sha256_field</code> in <code>audit.rs</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="s5">5. meta_sha256</h2>
+
+<p>The <code>meta_sha256</code> column is a SHA-256 hash of the event's metadata
+(content type + any custom headers). Headers are lowercased and sorted
+alphabetically before hashing.</p>
+
+<pre>
+meta_sha256 = SHA256(
+    <span class="str">content-type</span>  \0  <span class="val">10</span>  \0  <span class="ok">text/plain</span>  \0
+    <span class="str">header-name</span>   \0  <span class="val">8</span>   \0  <span class="ok">x-custom</span>    \0
+    <span class="str">header-value</span>  \0  <span class="val">5</span>   \0  <span class="ok">hello</span>       \0
+)
+</pre>
+
+<p>Same length-prefix framing as HMAC. The labels are literal strings
+<code>content-type</code>, <code>header-name</code>, <code>header-value</code>.
+The meta_sha256 is then fed into the HMAC computation as field #10.</p>
+
+<p>You can verify it with sqlite3 and Python:</p>
+
+<pre>
+$ sqlite3 data/home%2Fnote/universe.db \
+    "SELECT content_type, meta_sha256 FROM events WHERE id=2;"
+text/plain|a1b2c3d4e5f6...
+
+$ python3 -c "
+import hashlib
+def sha256_field(h, label, value):
+    encoded = value.encode('utf-8')
+    h.update(label); h.update(b'\0')
+    h.update(str(len(encoded)).encode('ascii')); h.update(b'\0')
+    h.update(encoded); h.update(b'\0')
+
+h = hashlib.sha256()
+sha256_field(h, b'content-type', 'text/plain')
+<span class="cmt"># add header-name/header-value pairs here if any</span>
+print(h.hexdigest())
+"
+</pre>
+
+<!-- ============================================================ -->
+<h2 id="s6">6. CAS (content-addressable storage)</h2>
+
+<p>Current bytes live inline in <code>stage_meta.body</code> for fast current
+reads. Timeline-addressed body copies live in <code>cas_bodies</code>, addressed by
+their SHA-256 hash. The <code>cas_bodies</code> table uses
+<code>INSERT OR IGNORE</code>: if two audit rows refer to the same historical
+body, only one CAS copy is stored.</p>
+
+<pre>
+<span class="cmt">-- Write path (inside one SQLite transaction):</span>
+<span class="kw">UPDATE</span> stage_meta
+   <span class="kw">SET</span> body=?1, content_type=?2
+ <span class="kw">WHERE</span> id=1;
+
+<span class="kw">DELETE FROM</span> meta_headers;
+<span class="kw">INSERT INTO</span> meta_headers(name, value)
+    <span class="kw">VALUES</span>(...);
+
+<span class="kw">INSERT OR IGNORE INTO</span> cas_bodies(body_sha256, body)
+    <span class="kw">VALUES</span>(?3, ?1);
+
+<span class="kw">INSERT INTO</span> events(timestamp, event_type, target,
+    body_sha256, size, content_type, meta_sha256, hmac, prev_hmac)
+    <span class="kw">VALUES</span>(...);
+</pre>
+
+<p>The events table references cas_bodies by hash. Multiple events can
+point to the same body (dedup). Retention prunes cas_bodies rows whose hash is
+no longer referenced by any event within the retention window. Chain rows
+(events) are never deleted.</p>
+
+<pre>
+<span class="cmt">-- Verify CAS integrity: actual hash must match stored hash</span>
+sqlite&gt; <span class="kw">SELECT</span> body_sha256,
+        hex(substr(body,1,8)),
+        <span class="kw">CASE WHEN</span> body_sha256 = lower(hex(sha256(body)))
+             <span class="kw">THEN</span> <span class="ok">'OK'</span> <span class="kw">ELSE</span> <span class="err">'TAMPERED'</span> <span class="kw">END</span> as status
+   <span class="kw">FROM</span> cas_bodies;
+</pre>
+
+<p class="note">Note: SQLite does not have a built-in <code>sha256()</code>
+function. Use the Python verifier (<code>tools/audit_chain_verify.py</code>)
+or load an extension. The point is that the hash is deterministic and
+verifiable outside the engine.</p>
+
+<h3>Retention</h3>
+
+<p><code>cas_state.first_retained_seq</code> tracks the retention floor. Bodies
+referenced only by events before this seq are eligible for pruning. On each
+durable write, the engine computes the new floor from the configured retained
+body count, deletes CAS rows that are referenced only before that floor, and
+then advances <code>cas_state</code> in the same SQLite transaction.</p>
+
+<p>Chain rows are permanent. You can always walk the chain and see that event
+#3 wrote a body with hash <code>e600da3b...</code>, even if the body bytes
+have been pruned. The chain records <em>what happened</em>; CAS stores
+<em>what it was</em>. Pruning CAS does not break the chain.</p>
+
+<!-- ============================================================ -->
+<h2 id="s7">7. Generation lifecycle</h2>
+
+<p>A <em>generation</em> is a 32-character lowercase hex string minted when a
+world is first created. It is stored in <code>stage_meta.generation</code> and
+signed into every event HMAC. The generation uniquely identifies one
+incarnation of a world.</p>
+
+<pre>
+<span class="cmt"># Create a world (first PUT auto-creates it)</span>
+$ curl -X PUT -H "Authorization: Bearer $TOKEN" \
+    -d "first version" http://localhost:7777/home/note
+<span class="ok">201 Created</span>
+
+$ sqlite3 data/home%2Fnote/universe.db \
+    "SELECT generation FROM stage_meta;"
+<span class="val">a3f7c2e1b9d04856a3f7c2e1b9d04856</span>
+
+<span class="cmt"># Delete it</span>
+$ curl -X DELETE -H "Authorization: Bearer $APPROVE_TOKEN" \
+    http://localhost:7777/home/note
+<span class="ok">204 No Content</span>
+
+<span class="cmt"># Re-create (PUT to a deleted world = new world)</span>
+$ curl -X PUT -H "Authorization: Bearer $TOKEN" \
+    -d "phoenix" http://localhost:7777/home/note
+<span class="ok">201 Created</span>
+
+$ sqlite3 data/home%2Fnote/universe.db \
+    "SELECT generation FROM stage_meta;"
+<span class="val">5b2c7ed2f1a093475b2c7ed2f1a09347</span>   <span class="cmt">← different</span>
+</pre>
+
+<p>Old timeline coordinates that reference the previous generation return
+<code>409 Conflict</code>, not <code>404</code>. The world exists, but it is
+not the same world. Clients holding stale cursors detect this and reset.</p>
+
+<p>Generation entropy: 16 bytes from <code>getrandom</code>, rendered as 32
+lowercase hexadecimal characters. Collision probability is negligible for any
+practical workload.</p>
+
+<!-- ============================================================ -->
+<h2 id="s8">8. Timeline reads</h2>
+
+<p>Every body-bearing event produces a <em>timeline address</em>: the
+coordinates needed to read that exact historical body later. The address has
+four parts:</p>
+
+<table>
+<tr><th>Parameter</th><th>Source</th></tr>
+<tr><td><code>timeline-seq</code></td><td>events.id (TimelineSeq)</td></tr>
+<tr><td><code>timeline-generation</code></td><td>stage_meta.generation (signed into the event HMAC)</td></tr>
+<tr><td><code>timeline-body-sha256</code></td><td>events.body_sha256 (64 hex)</td></tr>
+<tr><td><code>timeline-world</code></td><td>world path</td></tr>
+</table>
+
+<p>Durable body-bearing events carry these coordinates. To read the historical
+body:</p>
+
+<pre>
+<span class="cmt"># Read current value</span>
+$ curl http://localhost:7777/home/note
+<span class="ok">version 10</span>
+
+<span class="cmt"># Read the body that was written at event seq=2</span>
+$ curl "http://localhost:7777/home/note?timeline=1\
+&amp;timeline-generation=a3f7c2e1b9d04856a3f7c2e1b9d04856\
+&amp;timeline-seq=2\
+&amp;timeline-body-sha256=ac1b5c0961a7269bf4ed..."
+<span class="ok">version 1</span>
+
+<span class="cmt"># Response headers include proof:</span>
+<span class="val">x-timeline-hmac: 739117dead6c29a1...</span>
+<span class="val">x-timeline-seq: 2</span>
+<span class="val">x-timeline-generation: a3f7c2e1b9d04856...</span>
+</pre>
+
+<p>All four coordinates must match. If any one is wrong:</p>
+
+<table>
+<tr><th>Condition</th><th>Response</th></tr>
+<tr><td>Wrong generation</td><td><code>409 Conflict</code></td></tr>
+<tr><td>Wrong body_sha256</td><td><code>409 Conflict</code></td></tr>
+<tr><td>seq out of range</td><td><code>404 Not Found</code></td></tr>
+<tr><td>seq points to non-body event (format)</td><td><code>404 Not Found</code></td></tr>
+<tr><td>Body pruned by retention</td><td><code>410 Gone</code> with timeline proof headers</td></tr>
+<tr><td>seq=0 or negative</td><td><code>400 Bad Request</code></td></tr>
+</table>
+
+<p class="note">The timeline address is not a subscription cursor. The SSE id
+(<code>world@generation=seq</code>) is for reconnection. The world component
+keeps <code>/</code> path separators and percent-escapes spaces or other
+non-canonical id bytes. The timeline address is for reading the exact body
+that was written at that point in history.</p>
+
+<!-- ============================================================ -->
+<h2 id="s9">9. Two coordinate systems</h2>
+
+<p>There are two different sequence numbers. Confusing them is a bug.</p>
+
+<table>
+<tr><th></th><th>TimelineSeq</th><th>ChainSeq</th></tr>
+<tr><td>What</td><td>SQLite rowid (<code>events.id</code>)</td><td>Verified audit-chain ordinal</td></tr>
+<tr><td>Meaning</td><td>Storage coordinate for timeline reads and SSE ids</td><td>Proof coordinate minted by verifier walk</td></tr>
+<tr><td>Source</td><td>SQLite AUTOINCREMENT</td><td>Verifier walk from row 1</td></tr>
+<tr><td>Used in</td><td>Timeline reads, SSE ids</td><td>ChainStamp, witness judgments</td></tr>
+<tr><td>Type in Rust</td><td><code>TimelineSeq</code></td><td><code>ChainSeq</code> (NonZeroI64)</td></tr>
+</table>
+
+<pre>
+<span class="cmt">-- Normal intact chain: the values usually match, but they prove
+-- different things. TimelineSeq names a row; ChainSeq names a verified step.</span>
+events.id | event_type | ChainSeq (not stored, computed by verifier)
+----------+------------+---------
+    1     | format     |    1
+    2     | put        |    2
+    3     | put        |    3
+    4     | append     |    4
+</pre>
+
+<h3>ChainStamp</h3>
+
+<p>A ChainStamp is a proof of position in the verified chain. It is only
+minted by the verifier after walking the chain from the beginning. It cannot be
+constructed from outside.</p>
+
+<pre>
+ChainStamp {
+    generation: <span class="val">"0a1b2c3d...ef"</span>,   <span class="cmt">// which incarnation</span>
+    seq:        <span class="val">ChainSeq(5)</span>,        <span class="cmt">// verified step #5</span>
+    hmac:       <span class="val">"hmac-d4e9...a1"</span>,   <span class="cmt">// HMAC at that step</span>
+}
+</pre>
+
+<pre>
+<span class="cmt"># Query chain head (latest verified position)</span>
+$ curl -I http://localhost:7777/proc/audit/home/note/head
+
+<span class="cmt"># Query chain stamp at ordinal 3</span>
+$ curl -I http://localhost:7777/proc/audit/home/note/stamp/3
+</pre>
+
+<!-- ============================================================ -->
+<h2 id="s10">10. Append verification</h2>
+
+<p>Before every durable write, the engine verifies the existing chain inside
+the same SQLite transaction. The append sink requires a
+<code>VerifiedAuditTx</code>; code that has not proven the chain intact cannot
+append a new audit row.</p>
+
+<pre>
+<span class="cmt">-- Pseudocode of write path:</span>
+1. Acquire per-world write lock
+2. Open a SQLite transaction
+3. Verify the existing audit chain and live-body invariants
+4. Mint VerifiedAuditTx                    <span class="cmt">-- proof token</span>
+5. Compute new HMAC with prev = last hmac
+6. INSERT into events + cas_bodies
+7. Commit
+8. Notify subscribers
+</pre>
+
+<p>This is intentionally a type-seal boundary, not a convention. The checked
+transaction is the proof object; the append helpers require it. Full audit
+verification and append verification use the same signed rows and generation
+value.</p>
+
+<!-- ============================================================ -->
+<h2 id="s11">11. Five verbs</h2>
+
+<table>
+<tr><th>Verb</th><th>HTTP</th><th>Auth tier</th><th>Audited</th></tr>
+<tr><td><code>read</code></td><td><code>GET /home/note</code></td><td>read</td><td>no (read-only)</td></tr>
+<tr><td><code>replace</code></td><td><code>PUT /home/note</code></td><td>write</td><td>yes (put event)</td></tr>
+<tr><td><code>append</code></td><td><code>POST /home/note</code></td><td>write</td><td>yes (append event)</td></tr>
+<tr><td><code>delete</code></td><td><code>DELETE /home/note</code></td><td>approve</td><td>yes (two-phase)</td></tr>
+<tr><td><code>subscribe</code></td><td><code>GET /listen/home/*</code></td><td>read</td><td>no (read-only)</td></tr>
+</table>
+
+<pre>
+<span class="cmt"># replace</span>
+$ curl -X PUT -H "Authorization: Bearer $WRITE" \
+    -d "new value" http://localhost:7777/home/note
+
+<span class="cmt"># read</span>
+$ curl http://localhost:7777/home/note
+
+<span class="cmt"># append</span>
+$ curl -X POST -H "Authorization: Bearer $WRITE" \
+    -d "appended line" http://localhost:7777/home/log
+
+<span class="cmt"># delete (requires approve-tier token)</span>
+$ curl -X DELETE -H "Authorization: Bearer $APPROVE" \
+    http://localhost:7777/home/note
+
+<span class="cmt"># conditional write (optimistic lock)</span>
+$ curl -X PUT -H "Authorization: Bearer $WRITE" \
+    -H "If-Match: \"hmac-739117dead6c29a1...\"" \
+    -d "updated" http://localhost:7777/home/note
+<span class="cmt"># 200 if ETag matches, 412 Precondition Failed if stale</span>
+
+<span class="cmt"># range read</span>
+$ curl -H "Range: bytes=0-9" http://localhost:7777/home/note
+<span class="cmt"># 206 Partial Content, Content-Range: bytes 0-9/42</span>
+</pre>
+
+<!-- ============================================================ -->
+<h2 id="s12">12. Delete — two-phase with ledger</h2>
+
+<p>Delete is the most complex verb. It writes to two worlds in one
+operation:</p>
+
+<pre>
+1. Acquire target world lock (home/note)
+2. Append <span class="str">delete_intent</span> to ledger     <span class="cmt">← "I intend to delete home/note"</span>
+3. Install tombstone and drain read-cache fds
+4. Physically delete the target world directory
+5. Clear tombstone, success or failure
+6. If physical delete failed: return 500, with no <span class="str">delete_commit_failed</span> row
+7. Notify subject-world subscribers that the world is gone
+8. Append <span class="str">delete_commit</span> to ledger      <span class="cmt">← "home/note is gone"</span>
+9. If commit append fails after physical delete:
+     Append <span class="str">delete_commit_failed</span>       <span class="cmt">← "world is gone; normal commit append failed"</span>
+</pre>
+
+<p>The delete ledger (<code>var/log/deletes</code>) is a regular world with
+its own HMAC chain. Its events carry proof headers identifying the deleted
+target:</p>
+
+<table>
+<tr><th>Header</th><th>Value</th></tr>
+<tr><td><code>auditedb-delete-subject-world</code></td><td>target world path</td></tr>
+<tr><td><code>auditedb-delete-subject-generation</code></td><td>32 hex of deleted incarnation</td></tr>
+<tr><td><code>auditedb-delete-subject-seq</code></td><td>timeline seq (positive i64)</td></tr>
+<tr><td><code>auditedb-delete-subject-body-sha256</code></td><td>64 hex</td></tr>
+<tr><td><code>auditedb-delete-subject-hmac</code></td><td>hmac-&lt;64hex&gt;</td></tr>
+</table>
+
+<pre>
+<span class="cmt"># Inspect the delete ledger</span>
+$ sqlite3 data/var%2Flog%2Fdeletes/universe.db \
+    "SELECT id, event_type, target FROM events ORDER BY id;"
+1|format|var/log/deletes
+2|delete_intent|home/note
+3|delete_commit|home/note
+</pre>
+
+<p class="note">Consequence: if the chain is tampered, delete also fails
+(because appending to the ledger requires a valid chain). An attacker who
+corrupts data cannot then delete it through the API to cover their tracks.
+The corrupted world is frozen.</p>
+
+<!-- ============================================================ -->
+<h2 id="s13">13. Subscribe (SSE)</h2>
+
+<pre>
+<span class="cmt"># Listen for changes on all home/ worlds</span>
+$ curl -N -H "Authorization: Bearer $READ" \
+    http://localhost:7777/listen/home/*
+
+event: put
+data: path: /home/note
+data: method: PUT
+data: etag: hmac-739117dead6c29a1...
+data: timeline-world: home/note
+data: timeline-generation: a3f7c2e1b9d04856...
+data: timeline-seq: 2
+data: timeline-body-sha256: ac1b5c0961a7269b...
+data: event-type: put
+data: target: /home/note
+data: body-sha256: ac1b5c0961a7269b...
+data: size: 11
+data: content-type: text/plain
+id: home/note@a3f7c2e1b9d04856a3f7c2e1b9d04856=2
+
+</pre>
+
+<p>The SSE <code>id</code> is a durable subscription cursor:
+<code>world@generation=timeline_seq</code>. On reconnect, pass
+<code>Last-Event-ID</code> to resume from where you left off. Exact durable
+world subscriptions replay from that world's audit timeline. Wildcard
+subscriptions can only replay from the current process's bounded live ring; if
+the marker has fallen out, the stream reports <code>reset</code> with
+<code>ring-miss</code>.</p>
+
+<table>
+<tr><th>Event kind</th><th>Has id</th><th>Replayable</th></tr>
+<tr><td>put, append, format</td><td>yes</td><td>yes</td></tr>
+<tr><td>delete (on ledger world)</td><td>yes</td><td>yes</td></tr>
+<tr><td>delete ping (on subject world)</td><td>no</td><td>no (live-only)</td></tr>
+<tr><td>reset (generation changed, lagged)</td><td>no</td><td>no</td></tr>
+</table>
+
+<p class="note">Subscriptions do not carry body bytes. The event includes a
+timeline address; use a timeline read to fetch the actual body. This prevents
+large bodies from flooding the SSE stream.</p>
+
+<!-- ============================================================ -->
+<h2 id="s14">14. Four trust tiers</h2>
+
+<table>
+<tr><th>Tier</th><th>Token env var</th><th>Can do</th></tr>
+<tr><td><code>anon</code></td><td>(none)</td><td>nothing</td></tr>
+<tr><td><code>read</code></td><td><code>ELASTIK_READ_TOKEN</code></td><td>read, subscribe, introspect</td></tr>
+<tr><td><code>write</code></td><td><code>ELASTIK_WRITE_TOKEN</code></td><td>read + replace, append</td></tr>
+<tr><td><code>approve</code></td><td><code>ELASTIK_APPROVE_TOKEN</code></td><td>read + write + delete</td></tr>
+</table>
+
+<pre>
+<span class="cmt"># No token → 401</span>
+$ curl -X PUT -d "test" http://localhost:7777/home/note
+<span class="err">401 Unauthorized</span>
+
+<span class="cmt"># Read token → can read, cannot write</span>
+$ curl -H "Authorization: Bearer $READ" http://localhost:7777/home/note
+<span class="ok">200 OK</span>
+
+<span class="cmt"># Write token → cannot delete</span>
+$ curl -X DELETE -H "Authorization: Bearer $WRITE" http://localhost:7777/home/note
+<span class="err">401 Unauthorized</span>
+</pre>
+
+<p>Tokens are compared in constant time. The HMAC key
+(<code>ELASTIK_HMAC_KEY</code>) is separate from auth tokens and never
+leaves memory. On process exit, the key is overwritten with zeros (volatile
+wipe).</p>
+
+<!-- ============================================================ -->
+<h2 id="s15">15. Path validation</h2>
+
+<p>World paths are validated at the routing layer before reaching the engine.
+Invalid paths return <code>400 Bad Request</code>, not storage errors.</p>
+
+<table>
+<tr><th>Rule</th><th>Example rejected</th></tr>
+<tr><td>Must start with a known namespace</td><td><code>foo/bar</code></td></tr>
+<tr><td>No backslashes</td><td><code>home/a\b</code></td></tr>
+<tr><td>No empty segments</td><td><code>home//note</code></td></tr>
+<tr><td>No dot segments</td><td><code>home/../etc/passwd</code></td></tr>
+<tr><td>No percent-encoded dot segments</td><td><code>home/%2e%2e/secret</code></td></tr>
+<tr><td>No control characters</td><td><code>home/a\x00b</code></td></tr>
+<tr><td>No bare namespace roots</td><td><code>home</code> (need <code>home/x</code>)</td></tr>
+<tr><td>No reserved paths</td><td><code>proc/version</code></td></tr>
+<tr><td>Encoded disk name &le; 200 bytes</td><td><code>home/aaa...aaa</code> (195 a's)</td></tr>
+</table>
+
+<p>The 200-byte limit applies to the percent-encoded directory name, not the
+visible string length. A path with slashes, spaces, or non-ASCII characters
+will be percent-encoded on disk, and each encoded byte counts as 3. This
+prevents filesystem errors (ext4: 255-byte component limit) from becoming
+storage-layer 500 errors.</p>
+
+<!-- ============================================================ -->
+<h2 id="s16">16. Tamper detection</h2>
+
+<p>If someone modifies the SQLite file outside the engine (e.g. with
+<code>sqlite3</code> directly), the engine detects it and locks down:</p>
+
+<table>
+<tr><th>What was tampered</th><th>Detection</th><th>Engine behavior</th></tr>
+<tr><td>CAS body bytes</td><td>SHA-256 mismatch on timeline read</td><td>500 "timeline storage failure"</td></tr>
+<tr><td>HMAC value</td><td>next row's prev_hmac doesn't match</td><td>500 on write (append verification fails)</td></tr>
+<tr><td>Any events field</td><td>HMAC recomputation fails</td><td>500 on verify</td></tr>
+<tr><td>Deleted a row</td><td>prev_hmac gap</td><td>chain broken on verify</td></tr>
+<tr><td>Inserted a row</td><td>HMAC doesn't match expected prev</td><td>chain broken on verify</td></tr>
+</table>
+
+<pre>
+<span class="cmt"># Tamper a CAS body</span>
+$ sqlite3 data/home%2Fnote/universe.db \
+    "UPDATE cas_bodies SET body=x'48414348454421' WHERE rowid=1;"
+
+<span class="cmt"># Attempt to write → engine detects broken chain</span>
+$ curl -X PUT -H "Authorization: Bearer $WRITE" \
+    -d "test" http://localhost:7777/home/note
+<span class="err">500 Internal Server Error</span>
+<span class="err">internal error: storage failure</span>
+
+<span class="cmt"># Attempt to read → also rejected</span>
+$ curl http://localhost:7777/home/note
+<span class="err">500 Internal Server Error</span>
+
+<span class="cmt"># Attempt to delete → also rejected (can't append to broken chain)</span>
+$ curl -X DELETE -H "Authorization: Bearer $APPROVE" \
+    http://localhost:7777/home/note
+<span class="err">500 Internal Server Error</span>
+</pre>
+
+<p>After tampering, the world is frozen: no reads, writes, or deletes.
+The corrupted file is preserved for forensic investigation. Recovery
+requires manual removal of the SQLite file and re-creation of the world
+(which gets a new generation).</p>
+
+<p class="note">The only way to forge a valid chain is to have the HMAC key.
+The key is in memory only (environment variable), never written to disk.
+If the key leaks, the entire trust model collapses — but that is a
+key-management problem, not a storage problem.</p>
+
+<!-- ============================================================ -->
+<h2 id="s17">17. Security boundary</h2>
+
+<p>The engine protects against API-layer attacks. It does not protect against
+OS-layer attacks. This is the same boundary as any database.</p>
+
+<table>
+<tr><th>Layer</th><th>What it provides</th><th>What it cannot prevent</th></tr>
+<tr><td>Engine (L5)</td><td>HMAC chain, CAS integrity, auth tiers, path validation</td><td><code>rm -rf</code>, disk replacement, memory inspection</td></tr>
+<tr><td>SQLite</td><td>ACID transactions, crash recovery</td><td>file deletion, external modification</td></tr>
+<tr><td>Filesystem</td><td>permissions (<code>chmod 600</code>)</td><td>root access</td></tr>
+<tr><td>OS kernel</td><td>process isolation</td><td>physical access to hardware</td></tr>
+</table>
+
+<pre>
+<span class="cmt"># This is detected and blocked (API layer):</span>
+$ sqlite3 data/home%2Fnote/universe.db "UPDATE events SET hmac='fake';"
+$ curl http://localhost:7777/home/note   <span class="cmt">→ 500</span>
+
+<span class="cmt"># This is NOT detected (OS layer):</span>
+$ rm -rf data/home%2Fnote/
+<span class="cmt"># world is gone. delete ledger has no record.</span>
+<span class="cmt"># re-creating via PUT will produce a new generation.</span>
+</pre>
+
+<h3>Known attack vectors</h3>
+
+<table>
+<tr><th>Attack</th><th>Severity</th><th>Mitigation</th></tr>
+<tr><td>Token leaked (git commit .env)</td><td>high</td><td>separate read/write/approve tokens; rotate</td></tr>
+<tr><td>Plaintext HTTP (network sniff)</td><td>high</td><td>enable TLS for remote deployments</td></tr>
+<tr><td>SQLite copied (body is plaintext)</td><td>medium</td><td>per-world encryption (not yet implemented)</td></tr>
+<tr><td>HMAC key leaked</td><td>critical</td><td>env-only, volatile wipe on exit; no disk persistence</td></tr>
+<tr><td>SQLite replaced with forged chain</td><td>critical (requires key)</td><td>external anchoring (out of scope)</td></tr>
+<tr><td>No rate limiting</td><td>low</td><td>not yet implemented</td></tr>
+<tr><td>Core dump leaks HMAC key</td><td>low</td><td><code>ulimit -c 0</code></td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s18">18. Format v2 marker</h2>
+
+<pre>
+<span class="kw">CREATE TABLE</span> world_format(
+    id      <span class="val">INTEGER PRIMARY KEY CHECK(id=1)</span>,
+    version <span class="val">INTEGER NOT NULL CHECK(typeof(version)='integer') CHECK(version=2)</span>
+);
+<span class="kw">INSERT INTO</span> world_format(id, version) <span class="kw">VALUES</span>(1, 2);
+</pre>
+
+<p>Single row, hard-checked. Old binaries that do not know about this table
+fail on <code>world_schema::verify()</code> because the table is missing.
+New binaries opening old (v1) databases fail because <code>world_format</code>
+does not exist. There is no silent degradation: either the format is understood
+or the world is refused.</p>
+
+<!-- ============================================================ -->
+<h2 id="s19">19. HTTP reference</h2>
+
+<pre>
+<span class="cmt">Path                             Auth      Description</span>
+GET    /{world}                  read      current body (200) or 404
+PUT    /{world}                  write     replace body (201 or 200)
+POST   /{world}                 write     append body (201 or 200)
+DELETE /{world}                  approve   two-phase delete (204)
+HEAD   /{world}                  read      ETag + headers, no body
+
+GET    /{world}?timeline=1&...   read      historical body by timeline address
+GET    /listen/{pattern}         read      SSE event stream
+
+GET/HEAD /proc/version           public    engine version string
+GET/HEAD /proc/worlds            read      list all worlds
+GET/HEAD /proc/du                read      per-world storage sizes
+GET/HEAD /proc/df                read      storage capacity summary
+GET/HEAD /proc/pool              read      connection pool + metrics
+GET/HEAD /proc/audit/{world}/verify read   chain verification (status in headers)
+GET/HEAD /proc/audit/{world}/head   read   current chain head (HeadStamp)
+GET/HEAD /proc/audit/{world}/stamp/{n} read verified HMAC at chain ordinal n
+</pre>
+
+<h3>Response headers</h3>
+
+<table>
+<tr><th>Header</th><th>When</th></tr>
+<tr><td><code>ETag</code></td><td>current-world read/write; durable <code>"hmac-{64hex}"</code>, memory <code>"sha256-{64hex}"</code></td></tr>
+<tr><td><code>Accept-Ranges: bytes</code></td><td>current-world GET with body</td></tr>
+<tr><td><code>X-Audit-Valid: true|false|n/a</code></td><td>on verify</td></tr>
+<tr><td><code>X-Timeline-*</code></td><td>on timeline reads</td></tr>
+<tr><td><code>X-Content-Type-Options: nosniff</code></td><td>always</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s20">20. On-disk layout</h2>
+
+<pre>
+data/                                <span class="cmt">← data root (ELASTIK_DATA or ./data)</span>
+  home%2Fnote/                       <span class="cmt">← world "home/note" (percent-encoded)</span>
+    universe.db                      <span class="cmt">← SQLite: events + cas_bodies + stage_meta + ...</span>
+  home%2Ftask%2F123/                 <span class="cmt">← world "home/task/123"</span>
+    universe.db
+  var%2Flog%2Fdeletes/               <span class="cmt">← delete ledger (engine-private)</span>
+    universe.db
+  .elastik-writer-lock.sqlite3       <span class="cmt">← single-writer SQLite lock (local FS only)</span>
+</pre>
+
+<p>Each world is one directory with one SQLite file. <code>cp -r
+data/home%2Fnote/ backup/</code> is a valid backup of that world.
+The directory name is the world path with <code>/</code>, <code>%</code>,
+<code>.</code>, spaces, non-ASCII bytes, and filesystem-sensitive characters
+percent-encoded. Control characters, backslashes, empty segments, and dot
+segments are rejected before the path reaches disk. The engine rejects paths
+whose encoded name exceeds 200 bytes.</p>
+
+<p><code>.elastik-writer-lock.sqlite3</code> is a SQLite database held open
+with an uncommitted <code>BEGIN IMMEDIATE</code> transaction. It ensures
+single-writer semantics within one host. It does not protect against NFS;
+network-FS deployments need external fencing.</p>
+
+<div style="margin-top:3em;padding-top:1em;border-top:1px solid #ccc;color:#888;font-size:0.85em">
+  AuditeDB Engine &middot; format v2 &middot; 2026-06-30
+</div>
+
+</body>
+</html>

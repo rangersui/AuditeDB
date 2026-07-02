@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible AuditeDB bug.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report vulnerabilities here. Use SECURITY.md for private security reporting.
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Paste the smallest command, request, script, or test case that reproduces the bug.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Rust core
+        - Python SDK
+        - CoAP
+        - Packaging / release
+        - Docs
+        - CI
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v8.0.0, git SHA, or branch name
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Windows 11, Ubuntu 24.04, macOS, Docker, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or trace
+      description: Include stderr, HTTP response, pipeline trace, or test output if useful.
+      render: text
+    validations:
+      required: false

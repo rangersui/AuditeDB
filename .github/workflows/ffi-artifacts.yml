@@ -1,0 +1,204 @@
+name: ffi artifacts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ffi-artifacts.yml"
+      - "core/**"
+      - "ffi/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-ffi-artifact:
+    name: build ffi artifact (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            library-path: target/release/libelastik_ffi.so
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            library-path: target/release/libelastik_ffi.so
+          - name: macos-arm64
+            os: macos-14
+            library-path: target/release/libelastik_ffi.dylib
+          - name: windows-x64
+            os: windows-2025-vs2026
+            library-path: target/release/elastik_ffi.dll
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: build native FFI library
+        run: cargo build --release --manifest-path ffi/Cargo.toml
+
+      - name: generate Python UniFFI binding
+        shell: bash
+        working-directory: ffi
+        run: |
+          bindgen="target/release/uniffi-bindgen"
+          if [ -x "target/release/uniffi-bindgen.exe" ]; then
+            bindgen="target/release/uniffi-bindgen.exe"
+          fi
+          "$bindgen" generate "${{ matrix.library-path }}" \
+            --language python \
+            --out-dir target/bindings/python
+
+      - name: smoke generated Python binding
+        shell: bash
+        working-directory: ffi
+        env:
+          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import shutil
+          import sqlite3
+          import sys
+          import tempfile
+
+          bindings = pathlib.Path("target/bindings/python").resolve()
+          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
+          if not library.exists():
+              raise SystemExit(f"missing FFI library: {library}")
+          shutil.copy2(library, bindings / library.name)
+          sys.path.insert(0, str(bindings))
+
+          import elastik_ffi as e
+
+          root = pathlib.Path(tempfile.mkdtemp(prefix="elastik-ffi-ci-"))
+          none = e.FfiPreconditions(if_match=[], if_none_match=[])
+          engine = e.FfiEngine.open(e.FfiEngineConfig(
+              data_root=str(root),
+              hmac_key=b"0123456789abcdef0123456789abcdef",
+              read_token=None,
+              write_token=None,
+              approve_token=None,
+              max_world_bytes=None,
+              max_memory_bytes=None,
+              max_storage_bytes=None,
+              max_listen_connections=None,
+              listen_replay_max=8,
+              read_cache_max_entries=2,
+          ))
+
+          engine.replace("home/ffi", e.FfiRepresentation(
+              body=b"hello",
+              content_type="text/plain",
+              headers=[],
+          ), none, e.FfiAccessTier.WRITE)
+          read = engine.read("home/ffi", e.FfiAccessTier.READ)
+          assert read is not None
+          assert read.representation.body == b"hello"
+
+          subscription = engine.subscribe(
+              "home/*",
+              e.FfiAccessTier.READ,
+              e.FfiSubscriptionResume(after_cursor=None, after_event_id=None),
+          )
+          engine.append("home/ffi", b" world", none, e.FfiAccessTier.WRITE)
+          event = subscription.next(5_000)
+          assert event.kind == e.FfiSubscriptionNextKind.EVENT, event.kind
+          assert event.event.verb == e.FfiChangeVerb.APPEND, event.event.verb
+          assert event.event.path == "home/ffi", event.event.path
+          engine.delete_with_metadata("home/ffi", e.FfiDeleteMetadata(
+              content_type="text/plain; charset=utf-8",
+              headers=[e.FfiHeader(name="x-meta-author", value="ci")],
+          ), none, e.FfiAccessTier.APPROVE)
+          deleted = subscription.next(5_000)
+          assert deleted.kind == e.FfiSubscriptionNextKind.EVENT, deleted.kind
+          assert deleted.event.verb == e.FfiChangeVerb.DELETE, deleted.event.verb
+          assert deleted.event.path == "home/ffi", deleted.event.path
+          assert engine.read("home/ffi", e.FfiAccessTier.READ) is None
+          ledger = root / "var%2Flog%2Fdeletes" / "universe.db"
+          with sqlite3.connect(ledger) as conn:
+              row = conn.execute(
+                  "SELECT content_type FROM events WHERE event_type='delete_intent'"
+              ).fetchone()
+              assert row == ("text/plain; charset=utf-8",), row
+              row = conn.execute(
+                  "SELECT COUNT(*) FROM event_headers WHERE name='x-meta-author' AND value='ci'"
+              ).fetchone()
+              assert row == (2,), row
+
+          engine.shutdown()
+          closed = subscription.next(5_000)
+          assert closed.kind == e.FfiSubscriptionNextKind.CLOSED, closed.kind
+          print("ffi artifact smoke ok", e.ffi_version(), root)
+          PY
+
+      - name: package FFI artifact
+        shell: bash
+        working-directory: ffi
+        env:
+          ELASTIK_FFI_NAME: ${{ matrix.name }}
+          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import shutil
+          import zipfile
+
+          name = os.environ["ELASTIK_FFI_NAME"]
+          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
+          bindings = pathlib.Path("target/bindings/python").resolve()
+          out = pathlib.Path("ffi-artifact").resolve()
+          package = pathlib.Path(f"elastik-ffi-{name}.zip").resolve()
+
+          if out.exists():
+              shutil.rmtree(out)
+          out.joinpath("lib").mkdir(parents=True)
+          out.joinpath("python").mkdir(parents=True)
+
+          native_dst = out / "lib" / library.name
+          shutil.copy2(library, native_dst)
+          shutil.copy2(bindings / "elastik_ffi.py", out / "python" / "elastik_ffi.py")
+          shutil.copy2(library, out / "python" / library.name)
+
+          def sha256(path: pathlib.Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          manifest = "\n".join([
+              f"name={name}",
+              f"library={library.name}",
+              f"library_sha256={sha256(native_dst)}",
+              "python_binding=python/elastik_ffi.py",
+              "",
+          ])
+          out.joinpath("MANIFEST.txt").write_text(manifest, encoding="utf-8")
+
+          if package.exists():
+              package.unlink()
+          with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(out.rglob("*")):
+                  if path.is_file():
+                      z.write(path, path.relative_to(out).as_posix())
+          print(package)
+          PY
+
+      - name: upload FFI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: elastik-ffi-${{ matrix.name }}
+          path: ffi/elastik-ffi-${{ matrix.name }}.zip
+          if-no-files-found: error

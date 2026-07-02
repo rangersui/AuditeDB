@@ -1,0 +1,514 @@
+//! HTTP response constructors and small header helpers.
+//!
+//! Centralized so handlers, audit verifiers, listen, and coap all emit
+//! the same error/status shapes. Functions here are pure: they take
+//! primitive inputs and return a `Response` (or a header value / body
+//! string). They do not touch `Core`, locks, or storage.
+//!
+//! Re-exported into the crate root by `main.rs` so existing call sites
+//! like `crate::not_found()` keep working without import changes.
+//!
+use axum::{
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Response},
+};
+
+use crate::engine_introspection::{AuditBroken, AuditValid, ChainStampRead, HeadStamp};
+
+// ─── header utility ─────────────────────────────────────────────────
+
+pub(crate) fn to_header_map(pairs: Vec<(HeaderName, HeaderValue)>) -> HeaderMap {
+    let mut hm = HeaderMap::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        hm.append(k, v);
+    }
+    hm
+}
+
+#[inline]
+pub(crate) fn decimal_header_value(value: usize) -> HeaderValue {
+    HeaderValue::from(value as u64)
+}
+
+#[inline]
+pub(crate) fn content_range_value(start: usize, end: usize, len: usize) -> HeaderValue {
+    HeaderValue::from_str(&format!("bytes {start}-{end}/{len}"))
+        .unwrap_or_else(|_| HeaderValue::from_static("bytes */0"))
+}
+
+#[inline]
+pub(crate) fn unsatisfied_range_value(len: usize) -> HeaderValue {
+    HeaderValue::from_str(&format!("bytes */{len}"))
+        .unwrap_or_else(|_| HeaderValue::from_static("bytes */0"))
+}
+
+// ─── basic error responses ──────────────────────────────────────────
+
+pub(crate) fn not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "world not found\n",
+    )
+        .into_response()
+}
+
+pub(crate) fn unauthorized(msg: &str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::WWW_AUTHENTICATE, "Bearer realm=\"elastik\""),
+        ],
+        format!("auth required: {msg}\n"),
+    )
+        .into_response()
+}
+
+pub(crate) fn forbidden(msg: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("forbidden: {msg}\n"),
+    )
+        .into_response()
+}
+
+pub(crate) fn bad_request(msg: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("bad request: {msg}\n"),
+    )
+        .into_response()
+}
+
+pub(crate) fn uri_too_long(msg: &str) -> Response {
+    (
+        StatusCode::URI_TOO_LONG,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("uri too long: {msg}\n"),
+    )
+        .into_response()
+}
+
+pub(crate) fn payload_too_large(max_bytes: usize) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("payload too large: max bytes {max_bytes}\n"),
+    )
+        .into_response()
+}
+
+pub(crate) fn precondition_failed(msg: &str) -> Response {
+    (
+        StatusCode::PRECONDITION_FAILED,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("precondition failed: {msg}\n"),
+    )
+        .into_response()
+}
+
+pub(crate) fn server_error(msg: String) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!("internal error: {msg}\n"),
+    )
+        .into_response()
+}
+
+pub(crate) fn method_not_allowed(allow: &'static str) -> Response {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::ALLOW, allow),
+        ],
+        "method not allowed\n",
+    )
+        .into_response()
+}
+
+pub(crate) fn options_response(allow: &'static str) -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        [(header::ALLOW, allow), (header::CONTENT_LENGTH, "0")],
+        "",
+    )
+        .into_response()
+}
+
+// ─── storage / quota responses ─────────────────────────────────────
+
+pub(crate) fn insufficient_storage() -> Response {
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "insufficient storage: disk full\n",
+    )
+        .into_response()
+}
+
+pub(crate) fn storage_temporarily_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::RETRY_AFTER, "1"),
+        ],
+        "storage temporarily unavailable: database busy\n",
+    )
+        .into_response()
+}
+
+pub(crate) fn storage_quota_exceeded(used: usize, quota: usize, projected: usize) -> Response {
+    let needed = projected.saturating_sub(quota);
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        to_header_map(vec![
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; charset=utf-8"),
+            ),
+            (
+                HeaderName::from_static("x-storage-usage"),
+                decimal_header_value(used),
+            ),
+            (
+                HeaderName::from_static("x-storage-quota"),
+                decimal_header_value(quota),
+            ),
+            (
+                HeaderName::from_static("x-storage-needed"),
+                decimal_header_value(needed),
+            ),
+        ]),
+        format!(
+            "storage quota exceeded: current {used} bytes, quota {quota} bytes, need {needed} more bytes\n"
+        ),
+    )
+        .into_response()
+}
+
+// ─── audit verify responses ────────────────────────────────────────
+
+pub(crate) fn audit_valid(report: AuditValid) -> Response {
+    (
+        StatusCode::OK,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-valid"),
+                HeaderValue::from_static("true"),
+            ),
+            (
+                HeaderName::from_static("x-audit-events"),
+                decimal_header_value(report.events),
+            ),
+            (
+                HeaderName::from_static("x-audit-genesis"),
+                audit_header_value(&report.genesis),
+            ),
+            (
+                HeaderName::from_static("x-audit-latest"),
+                audit_header_value(&report.latest),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+pub(crate) fn audit_broken(report: AuditBroken) -> Response {
+    (
+        StatusCode::CONFLICT,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-valid"),
+                HeaderValue::from_static("false"),
+            ),
+            (
+                HeaderName::from_static("x-audit-break-at"),
+                decimal_header_value(report.break_at),
+            ),
+            (
+                HeaderName::from_static("x-audit-expected"),
+                audit_header_value(&report.expected),
+            ),
+            (
+                HeaderName::from_static("x-audit-actual"),
+                audit_header_value(&report.actual),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+pub(crate) fn audit_not_applicable() -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-valid"),
+                HeaderValue::from_static("n/a"),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+pub(crate) fn audit_head(stamp: HeadStamp) -> Response {
+    if stamp.seq <= 0 {
+        return server_error("audit head internal invariant: non-positive seq".to_owned());
+    }
+    (
+        StatusCode::OK,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-head"),
+                HeaderValue::from_static("true"),
+            ),
+            (
+                HeaderName::from_static("x-audit-generation"),
+                audit_header_value(stamp.generation.as_str()),
+            ),
+            (
+                HeaderName::from_static("x-audit-seq"),
+                decimal_header_value(stamp.seq as usize),
+            ),
+            (
+                HeaderName::from_static("x-audit-hmac"),
+                audit_header_value(&stamp.hmac),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+pub(crate) fn audit_head_not_applicable() -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-head"),
+                HeaderValue::from_static("n/a"),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+pub(crate) fn audit_stamp(result: ChainStampRead) -> Response {
+    match result {
+        ChainStampRead::Found(stamp) => {
+            let seq = match u64::try_from(stamp.seq().get()) {
+                Ok(seq) => seq,
+                Err(_) => {
+                    return server_error("audit stamp internal invariant: negative seq".to_owned())
+                }
+            };
+            (
+                StatusCode::OK,
+                to_header_map(vec![
+                    (
+                        HeaderName::from_static("x-audit-stamp"),
+                        HeaderValue::from_static("true"),
+                    ),
+                    (
+                        HeaderName::from_static("x-audit-generation"),
+                        audit_header_value(stamp.generation().as_str()),
+                    ),
+                    (
+                        HeaderName::from_static("x-audit-seq"),
+                        HeaderValue::from(seq),
+                    ),
+                    (
+                        HeaderName::from_static("x-audit-hmac"),
+                        audit_header_value(stamp.hmac().as_str()),
+                    ),
+                    (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+                ]),
+                "",
+            )
+                .into_response()
+        }
+        ChainStampRead::Missing(missing) => (
+            StatusCode::NO_CONTENT,
+            to_header_map(vec![
+                (
+                    HeaderName::from_static("x-audit-stamp"),
+                    HeaderValue::from_static("n/a"),
+                ),
+                (
+                    HeaderName::from_static("x-audit-generation"),
+                    audit_header_value(missing.generation().as_str()),
+                ),
+                (
+                    HeaderName::from_static("x-audit-events"),
+                    decimal_header_value(missing.observed().get()),
+                ),
+                (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+            ]),
+            "",
+        )
+            .into_response(),
+        _ => server_error("unknown audit stamp result".to_owned()),
+    }
+}
+
+pub(crate) fn audit_stamp_not_applicable() -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        to_header_map(vec![
+            (
+                HeaderName::from_static("x-audit-stamp"),
+                HeaderValue::from_static("n/a"),
+            ),
+            (header::CONTENT_LENGTH, HeaderValue::from_static("0")),
+        ]),
+        "",
+    )
+        .into_response()
+}
+
+pub(crate) fn audit_header_value(value: &str) -> HeaderValue {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if (0x20..=0x7e).contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("\\x{b:02x}"));
+        }
+    }
+    HeaderValue::from_str(&out).unwrap_or_else(|_| HeaderValue::from_static("invalid"))
+}
+
+// ─── proc/* response helpers ───────────────────────────────────────
+
+pub(crate) fn proc_text_response(method: Method, body: String) -> Response {
+    let mut resp_headers = vec![(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    )];
+    if method == Method::HEAD {
+        resp_headers.push((header::CONTENT_LENGTH, decimal_header_value(body.len())));
+    }
+    (
+        StatusCode::OK,
+        to_header_map(resp_headers),
+        if method == Method::HEAD {
+            String::new()
+        } else {
+            body
+        },
+    )
+        .into_response()
+}
+
+pub(crate) fn du_body(sizes: &[(String, usize, usize, usize, usize)]) -> String {
+    let mut out = String::new();
+    for (world, total, current, retained, events) in sizes {
+        out.push_str(world);
+        out.push('\t');
+        out.push_str(&total.to_string());
+        out.push('\t');
+        out.push_str(&current.to_string());
+        out.push('\t');
+        out.push_str(&retained.to_string());
+        out.push('\t');
+        out.push_str(&events.to_string());
+        out.push('\n');
+    }
+    out
+}
+
+pub(crate) struct DfBodySnapshot {
+    pub(crate) storage_used: usize,
+    pub(crate) storage_current_body_bytes: usize,
+    pub(crate) storage_retained_cas_body_bytes: usize,
+    pub(crate) storage_audit_chain_events: usize,
+    pub(crate) storage_quota: Option<usize>,
+    pub(crate) memory_used: usize,
+    pub(crate) memory_quota: usize,
+    pub(crate) worlds: usize,
+}
+
+pub(crate) fn df_body(snapshot: DfBodySnapshot) -> String {
+    let (storage_quota, storage_available) = match snapshot.storage_quota {
+        Some(quota) => (
+            quota.to_string(),
+            quota.saturating_sub(snapshot.storage_used).to_string(),
+        ),
+        None => ("unlimited".to_string(), "unlimited".to_string()),
+    };
+    let memory_available = snapshot.memory_quota.saturating_sub(snapshot.memory_used);
+    format!(
+        "storage\t{}\t{storage_quota}\t{storage_available}\n\
+         storage_current_body_bytes\t{}\tunlimited\tunlimited\n\
+         storage_retained_cas_body_bytes\t{}\tunlimited\tunlimited\n\
+         storage_audit_chain_events\t{}\tunlimited\tunlimited\n\
+         memory\t{}\t{}\t{memory_available}\n\
+         worlds\t{}\tunlimited\tunlimited\n",
+        snapshot.storage_used,
+        snapshot.storage_current_body_bytes,
+        snapshot.storage_retained_cas_body_bytes,
+        snapshot.storage_audit_chain_events,
+        snapshot.memory_used,
+        snapshot.memory_quota,
+        snapshot.worlds
+    )
+}
+
+pub(crate) fn world_list_body(names: &[String]) -> String {
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", names.join("\n"))
+    }
+}
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unauthorized_responses_advertise_bearer_challenge() {
+        let resp = unauthorized("read requires read token");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Bearer realm=\"elastik\""
+        );
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn proc_worlds_body_is_plain_lines() {
+        assert_eq!(world_list_body(&[]), "");
+        assert_eq!(
+            world_list_body(&["home/a".to_owned(), "tmp/b".to_owned()]),
+            "home/a\ntmp/b\n"
+        );
+    }
+
+    #[test]
+    fn proc_worlds_body_preserves_unicode_world_names() {
+        assert_eq!(
+            world_list_body(&["home/销售/报告".to_owned()]),
+            "home/销售/报告\n"
+        );
+    }
+}

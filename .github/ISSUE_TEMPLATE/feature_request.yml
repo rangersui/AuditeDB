@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose a small, concrete AuditeDB capability.
+title: "[feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What cannot be done cleanly today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: Describe the smallest mechanism that would solve it.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Best surface
+      description: Where should this live?
+      options:
+        - Rust core
+        - Python SDK
+        - Docs
+        - Packaging / release
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What can users do today instead?
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Links, examples, protocol references, or prior discussion.
+    validations:
+      required: false
+  - type: dropdown
+    id: implementation
+    attributes:
+      label: Implementation
+      description: Are you willing to send the pull request?
+      options:
+        - "Yes, I'll send the PR"
+        - "Maybe, with guidance"
+        - "No, I'm proposing only"
+    validations:
+      required: false

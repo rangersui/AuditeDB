@@ -1,0 +1,48 @@
+[package]
+name = "elastik-core"
+version = "8.3.0"
+edition = "2021"
+autobins = false
+description = "AuditeDB — the db that listens. Powered by the Elastik L5 Engine."
+license = "MIT"
+repository = "https://github.com/rangersui/AuditeDB"
+homepage = "https://github.com/rangersui/AuditeDB"
+
+[package.metadata.docs.rs]
+features = ["unstable-engine"]
+all-features = false
+
+[lib]
+name = "elastik_core"
+path = "src/lib.rs"
+
+[dependencies]
+bytes = "1"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+rusqlite = { version = "0.40", default-features = false }
+hmac = "0.13"
+sha2 = "0.11"
+hex = "0.4"
+percent-encoding = "2"
+dashmap = "6"
+tracing = { version = "0.1", optional = true }
+getrandom = { version = "0.2", default-features = false }
+
+[features]
+default = ["bundled-sqlite", "unstable-engine"]
+bundled-sqlite = ["rusqlite/bundled"]
+unstable-engine = ["dep:tracing"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.rut241]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
