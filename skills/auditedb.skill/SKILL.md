@@ -1,6 +1,6 @@
 ---
 name: AuditeDB
-description: "Deploy and use AuditeDB, powered by the L5 Engine and shipped as a Rust library + binary on SQLite. Use this skill whenever the user mentions AuditeDB or AuditeDB, wants to start a local or network instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), embed the protocol-neutral `Engine` library directly in a Rust project, or evaluate whether an HTTP subsystem should reuse AuditeDB instead of reinventing health/metrics/version/auth/audit/static serving."
+description: "Deploy and use AuditeDB, powered by the L5 Engine and shipped as a Rust library + binary on SQLite. Use this skill whenever the user mentions AuditeDB or L5, wants to start a local or network instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), embed the protocol-neutral `Engine` library directly in a Rust project, or evaluate whether an HTTP subsystem should reuse AuditeDB instead of reinventing health/metrics/version/auth/audit/static serving."
 ---
 
 # AuditeDB
