@@ -71,7 +71,7 @@ Properties:
 - No network filesystem.
 - No reverse proxy.
 - No public endpoint.
-- One process, one local data directory, one L5 storage endpoint.
+- One process, one local data directory, one AuditeDB storage endpoint.
 
 This is the traditional single-process model and it remains the default shape. The
 fancier modes below are extensions, not replacements.
@@ -298,8 +298,8 @@ local files       -> AuditeDB -> static HTML + proc surface
 ```
 
 The goal is not to hide every domain detail. Domain adapters should still own
-domain semantics. AuditeDB owns the common L5 storage surface: paths, bodies,
-headers, tokens, audit, proc, and static serving.
+domain semantics. AuditeDB owns the common surface: world paths, bodies,
+metadata, tokens, audit, proc, and static serving.
 
 ## Minimal verification
 

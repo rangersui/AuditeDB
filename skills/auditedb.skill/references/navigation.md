@@ -112,7 +112,7 @@ curl -sS -N "$BASE/listen/home/project/a"
 `/listen/*` is a Server-Sent Events stream. The `-N` flag disables curl
 buffering so events print as they arrive. The wire is SSE frames, not bare
 paths. Use `EventSource` only when no read token is needed; otherwise use
-`fetch` + `ReadableStream` or the SDK. See `http-worlds.md` for the frame
+`fetch` + `ReadableStream` and parse SSE manually. See `http-worlds.md` for the frame
 shape.
 
 ## Browser

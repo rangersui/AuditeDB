@@ -137,7 +137,7 @@ are intentional.
 ## One writer per data directory
 
 AuditeDB holds a SQLite-backed writer lock on
-`AUDITEDB_DATA/.AuditeDB-writer-lock.sqlite3` for the lifetime of the process. A
+`AUDITEDB_DATA/.auditedb-writer-lock.sqlite3` for the lifetime of the process. A
 second AuditeDB process pointed at the same data directory fails to start with a
 lock error instead of silently corrupting state. The error includes a
 best-effort holder PID when the previous owner committed one before taking the

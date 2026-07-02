@@ -36,7 +36,7 @@ Common projection -> AuditeDB primitive:
 
 The design error is not "writing an adapter." The error is putting common
 control-plane concerns inside every adapter instead of mounting adapters onto
-the shared L5 storage surface.
+the shared AuditeDB surface.
 
 ## PLC gateway pattern (example)
 

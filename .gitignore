@@ -49,7 +49,7 @@ semantic-results.md
 # mini.py test worlds
 examples/worlds/
 # --- pytorch-style branch additions ---
-# Rust / JS / SDK build outputs
+# Rust / Python SDK build outputs
 /target/
 **/target/
 node_modules/
@@ -78,12 +78,3 @@ sdk-rs/README.md
 sdk/src/l5/_ffi/*.dll
 sdk/src/l5/_ffi/*.so
 sdk/src/l5/_ffi/*.dylib
-
-# CurlBench run artifacts. Harness writes raw per-model JSON via
-# --out cb-*.json. The prompt YAML, design doc, results tables, and
-# harness ARE tracked; raw run JSON is transient. gh-models may also
-# leave 0-byte locked files on Windows.
-cb-*.json
-prompts/*.iter*.eval.*
-prompts/*.eval.json
-prompts/*.eval.stderr.txt

@@ -219,5 +219,4 @@ Use curl for bare-metal HTTP checks. Browsers are policy stacks.
 - Dillo does not execute JavaScript; use explicit no-JS pages instead of
   user-agent sniffing.
 - Native `EventSource` cannot set the `Authorization` header; if reads require
-  a token, use `fetch` + `ReadableStream` and parse SSE manually, or use the
-  SDK's `listen()`.
+  a token, use `fetch` + `ReadableStream` and parse `/listen/*` SSE manually.

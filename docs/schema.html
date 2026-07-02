@@ -254,7 +254,7 @@ hmac = HMAC-SHA256(key,
 </pre>
 
 <p>Each field uses length-prefix framing (see next section). The key is the
-HMAC secret, typically from <code>AUDITEDB_HMAC_KEY</code> environment variable.
+HMAC secret, typically from <code>AUDITEDB_KEY</code> environment variable.
 It never touches disk.</p>
 
 <!-- ============================================================ -->
@@ -714,7 +714,7 @@ $ curl -X DELETE -H "Authorization: Bearer $WRITE" http://localhost:7777/home/no
 </pre>
 
 <p>Tokens are compared in constant time. The HMAC key
-(<code>AUDITEDB_HMAC_KEY</code>) is separate from auth tokens and never
+(<code>AUDITEDB_KEY</code>) is separate from auth tokens and never
 leaves memory. On process exit, the key is overwritten with zeros (volatile
 wipe).</p>
 
