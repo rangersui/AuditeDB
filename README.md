@@ -2,71 +2,56 @@
 
 **the db that listens.**
 
-Audit the past. Subscribe to the future.
+AuditeDB is a flat key-value store that borrows the Unix filesystem
+hierarchy as its namespace. `home/` is user data, `etc/` is config,
+`tmp/` is scratch — not by analogy, by design. You `put` and `get`
+bytes at paths the same way you'd `fopen` a file, but durable writes
+are HMAC-audited, durable paths keep timeline history, and paths can be
+subscribed to for live change events.
 
-A filesystem-backed flat key-value store with an audit trail. Embed the `l5` engine as a library, or run the `auditedb` HTTP server as a HTTP disk.
+Each durable path maps to a percent-encoded directory with one SQLite
+file inside. No cluster, no migration, `cp -r` is your backup.
 
-Powered by the L5 Engine.
+## Why
 
-```text
-GET /home/a     read bytes
-PUT /home/a     replace bytes
-POST /home/a    append bytes
-DELETE /home/a  remove bytes
-LISTEN /home/*  subscribe to changes
+You're already using SQLite to store things. But:
+
+- **Who changed it?** You don't know — there's no audit trail.
+- **Did it change?** You have to poll to find out.
+- **What was it before?** Gone — you overwrote it.
+
+AuditeDB gives your local storage an audit chain, change subscriptions,
+and timeline history. No infrastructure to add — plain files on disk,
+`cp -r` is backup. Same operational model, but it remembers.
+
+## Two ways to use it
+
+**Embed the engine:** add the `l5` crate (Rust) or `l5` package
+(Python) and call five verbs directly. No network, no server.
+
+**Run the server:** start the `auditedb` binary and use `curl`.
+CoAP is included by default; MQTT is available with the `mqtt` feature.
+
+## Quick start — Python
+
+```python
+import l5, secrets
+
+with l5.open("./data", key=secrets.token_bytes(32)) as db:
+    db.put("home/hello", b"world")
+    print(db.get_text("home/hello"))   # "world"
+    print("home/hello" in db)          # True
+    print(db.list_worlds())            # ["home/hello"]
 ```
 
-5 verbs · HMAC audit chain · SQLite inside.
-
 ```
-┌─ l5 (L5 Engine, core/) ────────────────────┐
-│ paths + bytes + ETags + HMAC chain + auth  │
-│ no HTTP, no sockets, no env vars           │
-└─────────────────────┬──────────────────────┘
-                      │ pub Engine API
-┌─ auditedb (AuditeDB server, bin/) ─────────┐
-│ HTTP + CoAP + MQTT + SSE adapters          │
-│ config, routing, auth parsing, /proc/*     │
-└────────────────────────────────────────────┘
+pip install l5
 ```
 
----
-
-## Documentation map
-
-See the [wiki](https://github.com/rangersui/AuditeDB/wiki) for design documentation: storage model, audit chain, namespace system, auth tiers, and operational guides.
-
-This README is the Engine/library reference: storage model, trust tiers, audit chain, namespaces, and the Rust `Engine` API. Protocol adapters have their own README files so wire-specific behaviour does not get mistaken for Engine physics.
-
-| Surface | README | Scope |
-|---------|--------|-------|
-| Engine library | this file | Protocol-neutral paths, bytes, ETags, audit, auth, subscriptions. |
-| HTTP binary adapter | [`bin/src/server/http/README.md`](bin/src/server/http/README.md) | `auditedb` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
-| MQTT binary adapter | [`bin/src/server/mqtt/README.md`](bin/src/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
-| CoAP binary adapter | [`bin/src/server/coap/README.md`](bin/src/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
-| FFI adapter | [`ffi/README.md`](ffi/README.md) | UniFFI binding: Python, Kotlin, Swift. Blocking pull, same Engine verbs. |
-| Python SDK | [`sdk/src/l5`](sdk/src/l5) | In-process Python handle over the L5 FFI binding. |
-
-Library embedders call typed Engine methods instead of HTTP `/proc/*` paths or
-timeline query URLs:
-
-| Engine method | Return shape |
-|---------------|--------------|
-| `Engine::list_worlds` | `Vec<ValidatedWorldPath>` |
-| `Engine::du` | `Vec<WorldUsage>` |
-| `Engine::df` | `DfSnapshot` |
-| `Engine::pool` | `PoolSnapshot` |
-| `Engine::verify_audit` | `AuditVerify` |
-| `Engine::chain_head` | `Option<HeadStamp>` |
-| `Engine::chain_stamp` | `ChainStampRead` |
-| `Engine::dereference_timeline_coordinate` | `TimelineDereference` |
-
-## Quick start — library
+## Quick start — Rust
 
 ```rust
-use l5::{
-    AccessTier, AuditHmacKey, Engine, Preconditions, Representation, ValidatedWorldPath,
-};
+use l5::{AccessTier, AuditHmacKey, Engine, Preconditions, Representation, ValidatedWorldPath};
 use bytes::Bytes;
 
 #[tokio::main(flavor = "current_thread")]
@@ -81,7 +66,7 @@ async fn main() {
 
     engine.replace(
         &world,
-        Representation::new(Bytes::from_static(b"hi"), "text/plain", Vec::new()),
+        Representation::new(Bytes::from_static(b"world"), "text/plain", Vec::new()),
         Preconditions::none(),
         AccessTier::Write,
     ).await.unwrap();
@@ -93,170 +78,113 @@ async fn main() {
 
 ```toml
 [dependencies]
-l5 = { version = "=8.3.0", default-features = false,
-       features = ["bundled-sqlite", "unstable-engine"] }
+l5 = { version = "=8.3.0", features = ["bundled-sqlite", "unstable-engine"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
-The `unstable-engine` gate explicitly marks the public Engine API unstable.
-API shapes may change between minor versions until that gate is removed. Pin an
-exact `l5` version when embedding the unstable Engine API.
-
----
-
-## Five engine verbs
-
-| Verb        | Engine method        | What it does                                         |
-|-------------|----------------------|------------------------------------------------------|
-| `read`      | `Engine::read`       | Full representation; `None` if missing.              |
-| `replace`   | `Engine::replace`    | Overwrite body + headers + content type.             |
-| `append`    | `Engine::append`     | Extend body; headers untouched.                      |
-| `delete`    | `Engine::delete`     | Unlink the world; audit chain advances.              |
-| `subscribe` | `Engine::subscribe`  | Replay-then-live `ChangeEvent` stream.               |
-
-In the Rust API, `read` and introspection calls are synchronous. Mutating operations (`replace`, `append`, `delete`) are async; `subscribe` returns a subscription synchronously, and `EngineSubscription::recv().await` waits for events.
-
-Durable audit rows sign `prev`, `world`, `timestamp`, `type`, `target`, `gen`,
-`body-sha256`, `size`, `content-type`, and `meta-sha256` in that order. The
-metadata hash (`meta_sha256`) is length-framed separately: `content-type`, each
-header name, and each header value are hashed as `label\0len\0value\0` fields.
-The same frames are used by the Rust Engine and by `tools/audit_chain_verify.py`.
-
-Subscriptions do not carry body bytes. Durable body writes carry a
-`TimelineAddress`; callers that need the exact historical body call
-`Engine::dereference_timeline_coordinate` with the timeline coordinate instead
-of racing a current `read`. `ChangeEvent::id()` is diagnostic only. Durable
-reconnect state lives in `ChangeEvent::identity()` as a `SubscriptionEventId`
-rendered by adapters as `<world>@<generation>=<timeline-seq>`. That sequence is
-the current timeline row coordinate, not a `ChainSeq` audit-stamp ordinal.
-
-HTTP, CoAP, MQTT, and SSE are adapter mappings over these verbs. The library does not know about those protocols; it knows about the five verbs.
-
-## Four trust tiers
-
-`Anon` ⊂ `Read` ⊂ `Write` ⊂ `Approve`. Every operation declares the minimum
-tier it requires; the engine refuses with `EngineError::Auth(...)` below it.
-
-| Tier      | Source                  | Allowed                                                     |
-|-----------|-------------------------|-------------------------------------------------------------|
-| `Anon`    | caller supplies no credential | public reads, when the configured policy allows them |
-| `Read`    | caller proves read tier       | read, list, subscribe, audit verify |
-| `Write`   | caller proves write tier      | everything `Read` + ordinary replace/append (`home/`, `tmp/`, `dev/`, `sys/`, non-log `var/`) |
-| `Approve` | caller proves approve tier    | everything `Write` + delete + writes in protected namespaces (`etc/`, `lib/`, `boot/`, `usr/`, `var/log/`) |
-
----
-
-## Storage namespaces
-
-Path prefix decides backend. `ValidatedWorldPath::new` validates once;
-downstream operations cannot drift.
-
-| Prefix    | Backend  | Durable | Audited | Default | Notes |
-|-----------|----------|---------|---------|---------|-------|
-| `home/`   | SQLite   | yes     | yes     | `Write` | application data |
-| `etc/`    | SQLite   | yes     | yes     | `Approve` | configuration |
-| `lib/`    | SQLite   | yes     | yes     | `Approve` | inert blobs |
-| `boot/`   | SQLite   | yes     | yes     | `Approve` | bootstrap state |
-| `usr/`    | SQLite   | yes     | yes     | `Approve` | user-scoped data |
-| `var/`    | SQLite   | yes     | yes     | `Write` | variable durable state; `var/log/` requires `Approve` and `var/log/deletes` is append-only |
-| `tmp/`    | memory   | no      | no      | `Write` | scratch |
-| `dev/`    | memory   | no      | no      | `Write` | device-like ephemeral |
-| `sys/`    | memory   | no      | no      | `Write` | service-info ephemeral |
-
-Bare names (`foo`) and wire paths (`/foo`) are rejected by the library. The
-binary adapters may apply wire-specific canonicalisation before constructing a
-validated path. Those adapter rules live in the adapter README files linked
-above.
-
----
-
-## Feature flags
-
-`l5` is the library package. Its feature surface is small:
-
-| Feature                | Default | Pulls in                                                       | Purpose                            |
-|------------------------|:-------:|---------------------------------------------------------------|------------------------------------|
-| `bundled-sqlite`       |    ✓    | `rusqlite/bundled`                                            | static SQLite link                 |
-| `unstable-engine`      |    ✓    | `tracing`                                                      | public `Engine` API                |
-
-Library-only build, no HTTP stack:
+## Quick start — curl
 
 ```bash
-cargo build --manifest-path core/Cargo.toml --lib --no-default-features --features bundled-sqlite,unstable-engine
+export AUDITEDB_KEY=$(openssl rand -hex 32)
+export AUDITEDB_WRITE_TOKEN=my-write-token
+auditedb &
+
+curl -X PUT -H "Authorization: Bearer my-write-token" \
+     -d 'world' http://localhost:3105/home/hello
+
+curl http://localhost:3105/home/hello
+# world
 ```
 
-The resulting dependency tree has zero `axum`, `hyper`, `tower`,
-`tokio-stream`, `futures-util`, `rumqttd`, or `base64`.
+## Five verbs
 
-The binary package in [`bin/Cargo.toml`](bin/Cargo.toml) owns adapter/runtime
-features:
+| Verb          | What it does                            |
+| ------------- | --------------------------------------- |
+| `read`      | Return the stored bytes, or nothing.    |
+| `replace`   | Overwrite the body.                     |
+| `append`    | Extend the body.                        |
+| `delete`    | Remove the world; durable deletes advance audit. |
+| `subscribe` | Stream change events.                   |
 
-| Feature           | Default | Pulls in                         | Purpose                       |
-|-------------------|:-------:|----------------------------------|-------------------------------|
-| `bundled-sqlite`  |    ✓    | `l5/bundled-sqlite`              | static SQLite link            |
-| `coap`            |    ✓    | —                                | CoAP adapter                  |
-| `multi-thread`    |    ✓    | `tokio/rt-multi-thread`          | multi-thread runtime          |
-| `mqtt`            |         | `rumqttd`, Tokio I/O utilities   | MQTT 3.1.1 adapter            |
-| `unstable-engine` |    ✓    | —                                | local `cfg` gate for tracing / error arms in binary code |
+In Rust, `read` is synchronous. `replace`, `append`, and `delete` are
+async. `subscribe` returns a synchronous handle whose `recv()` is
+awaitable.
 
----
+In Python, all calls are synchronous, and the FFI boundary runs the async runtime internally.
 
-## Architecture — library + binary split
+## Namespaces
 
-The codebase is two Rust packages:
+The path prefix determines storage backend and default auth tier.
 
-| Package | Path | Cargo name | Produces |
-|---------|------|------------|----------|
-| Library | `core/` | `l5` | `libl5.rlib` |
-| Binary  | `bin/`  | `auditedb` | `auditedb` executable |
+| Prefix    | Storage | Audited | Default tier |
+| --------- | ------- | ------- | -------- |
+| `home/` | SQLite  | yes     | Write    |
+| `etc/`  | SQLite  | yes     | Approve  |
+| `lib/`  | SQLite  | yes     | Approve  |
+| `boot/` | SQLite  | yes     | Approve  |
+| `usr/`  | SQLite  | yes     | Approve  |
+| `var/`  | SQLite  | yes     | Write    |
+| `tmp/`  | memory  | no      | Write    |
+| `dev/`  | memory  | no      | Write    |
+| `sys/`  | memory  | no      | Write    |
 
-The library is the embedded L5 Engine. The binary package is the AuditeDB
-distribution and produces the `auditedb` executable.
+Transient namespaces (`tmp/`, `dev/`, `sys/`) are not audited and do not
+survive restart.
 
-- **Library** (`core/src/lib.rs` + `engine*.rs` + storage primitives):
-  the protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars,
-  no sockets. Safe to embed in any Rust context.
-- **Binary** (`bin/src/main.rs` + `bin/src/server/...` + adapter-side config,
-  routing, response rendering, path canonicalisation): the HTTP + CoAP + MQTT
-  server. Owns Authorization parsing, request lifecycle, graceful shutdown.
-  Consumes the library through the public `Engine` facade only.
+## Auth tiers
 
-The split is real, not cosmetic:
+Four tiers, each a superset of the previous:
 
-- `cargo build --manifest-path core/Cargo.toml --lib --no-default-features --features bundled-sqlite,unstable-engine`
-  produces an embeddable Engine library whose dep tree contains **zero**
-  HTTP-shaped crates (`axum`, `hyper`, `tower`, `rumqttd`, `base64` are all absent).
-- `cargo build --manifest-path bin/Cargo.toml` builds the `auditedb`
-  binary and all server adapters from the binary package.
+`Anon` → `Read` → `Write` → `Approve`
 
----
+Configure tokens via `AUDITEDB_READ_TOKEN`, `AUDITEDB_WRITE_TOKEN`,
+`AUDITEDB_APPROVE_TOKEN`. Pass them as `Authorization: Bearer <token>`.
 
-## The name
+## Audit chain
 
-AuditeDB comes from `audire`: to listen.
+Every durable write signs the previous HMAC, world path, timestamp, body
+hash, and metadata hash into a new event. The chain is verifiable:
 
-The tagline is literal. AuditeDB listens forward through `subscribe`, so
-clients can react to changes instead of polling. It also listens backward
-through the HMAC audit chain, so durable writes leave a verifiable history.
-
-AuditeDB is the product. L5 is the engine.
-
-### Why "L5"
-
-CRUD has four operations. AuditeDB has five:
-
-```text
-read · replace · append · delete · subscribe
+```bash
+curl http://localhost:3105/proc/audit/home/hello/verify
 ```
 
-The fifth verb is the point. Storage can be observed, not just polled.
+```python
+db.verify("home/hello")  # True
+```
 
-The engine stays small: validate the path, prove authority, mutate bytes,
-advance the audit chain, notify listeners. Anything that needs to interpret
-stored content belongs in a client, worker, or adapter.
+The HMAC key (`AUDITEDB_KEY`) stays in memory and never touches disk.
 
----
+## Subscriptions
+
+```python
+with db.subscribe("home/*") as sub:
+    for event in sub:
+        if event["kind"] == "event":
+            print(event["verb"], event["path"])
+```
+
+```bash
+curl -N http://localhost:3105/listen/home/*
+```
+
+Exact-world subscriptions can replay from a durable cursor. Wildcard
+subscriptions stream from the in-memory ring.
+
+## Project layout
+
+```
+core/   l5 engine library (Rust)     — paths, bytes, ETags, audit, auth
+bin/    auditedb server binary       — HTTP + CoAP adapters (+MQTT opt-in)
+ffi/    UniFFI bridge                — currently packaged for Python
+sdk/    l5 Python package            — in-process Engine handle over FFI
+```
+
+## Schema reference
+
+See [docs/schema.html](docs/schema.html) for the storage schema, HMAC
+framing, and wire format.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT

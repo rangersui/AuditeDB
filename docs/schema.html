@@ -286,10 +286,10 @@ It never touches disk.</p>
 For ASCII they are equal; for multibyte characters (CJK, emoji) they differ.
 Both the Rust engine and the Python verifier use byte length.</p>
 
-<p class="note">Why length-prefix instead of bare \0 separators? Without it,
-<code>value="a\0b"</code> and <code>value="a" + next_label="b"</code> produce
-the same byte sequence. The length makes field boundaries unambiguous. This was
-fixed in format v2; see <code>sha256_field</code> in <code>audit.rs</code>.</p>
+<p class="note">Length-prefix framing makes adjacent fields unambiguous:
+<code>value="a\0b"</code> and <code>value="a" + next_label="b"</code> would
+produce the same byte sequence without framing. Format v2; see
+<code>sha256_field</code> in <code>audit.rs</code>.</p>
 
 <!-- ============================================================ -->
 <h2 id="s5">5. meta_sha256</h2>
@@ -402,7 +402,7 @@ incarnation of a world.</p>
 <pre>
 <span class="cmt"># Create a world (first PUT auto-creates it)</span>
 $ curl -X PUT -H "Authorization: Bearer $TOKEN" \
-    -d "first version" http://localhost:7777/home/note
+    -d "first version" http://localhost:3105/home/note
 <span class="ok">201 Created</span>
 
 $ sqlite3 data/home%2Fnote/universe.db \
@@ -411,12 +411,12 @@ $ sqlite3 data/home%2Fnote/universe.db \
 
 <span class="cmt"># Delete it</span>
 $ curl -X DELETE -H "Authorization: Bearer $APPROVE_TOKEN" \
-    http://localhost:7777/home/note
+    http://localhost:3105/home/note
 <span class="ok">204 No Content</span>
 
 <span class="cmt"># Re-create (PUT to a deleted world = new world)</span>
 $ curl -X PUT -H "Authorization: Bearer $TOKEN" \
-    -d "phoenix" http://localhost:7777/home/note
+    -d "phoenix" http://localhost:3105/home/note
 <span class="ok">201 Created</span>
 
 $ sqlite3 data/home%2Fnote/universe.db \
@@ -452,11 +452,11 @@ body:</p>
 
 <pre>
 <span class="cmt"># Read current value</span>
-$ curl http://localhost:7777/home/note
+$ curl http://localhost:3105/home/note
 <span class="ok">version 10</span>
 
 <span class="cmt"># Read the body that was written at event seq=2</span>
-$ curl "http://localhost:7777/home/note?timeline=1\
+$ curl "http://localhost:3105/home/note?timeline=1\
 &amp;timeline-generation=a3f7c2e1b9d04856a3f7c2e1b9d04856\
 &amp;timeline-seq=2\
 &amp;timeline-body-sha256=ac1b5c0961a7269bf4ed..."
@@ -527,10 +527,10 @@ ChainStamp {
 
 <pre>
 <span class="cmt"># Query chain head (latest verified position)</span>
-$ curl -I http://localhost:7777/proc/audit/home/note/head
+$ curl -I http://localhost:3105/proc/audit/home/note/head
 
 <span class="cmt"># Query chain stamp at ordinal 3</span>
-$ curl -I http://localhost:7777/proc/audit/home/note/stamp/3
+$ curl -I http://localhost:3105/proc/audit/home/note/stamp/3
 </pre>
 
 <!-- ============================================================ -->
@@ -553,10 +553,9 @@ append a new audit row.</p>
 8. Notify subscribers
 </pre>
 
-<p>This is intentionally a type-seal boundary, not a convention. The checked
-transaction is the proof object; the append helpers require it. Full audit
-verification and append verification use the same signed rows and generation
-value.</p>
+<p><code>VerifiedAuditTx</code> carries the checked transaction; append helpers
+require it. Full audit verification and append verification use the same signed rows
+and generation value.</p>
 
 <!-- ============================================================ -->
 <h2 id="s11">11. Five verbs</h2>
@@ -573,27 +572,27 @@ value.</p>
 <pre>
 <span class="cmt"># replace</span>
 $ curl -X PUT -H "Authorization: Bearer $WRITE" \
-    -d "new value" http://localhost:7777/home/note
+    -d "new value" http://localhost:3105/home/note
 
 <span class="cmt"># read</span>
-$ curl http://localhost:7777/home/note
+$ curl http://localhost:3105/home/note
 
 <span class="cmt"># append</span>
 $ curl -X POST -H "Authorization: Bearer $WRITE" \
-    -d "appended line" http://localhost:7777/home/log
+    -d "appended line" http://localhost:3105/home/log
 
 <span class="cmt"># delete (requires approve-tier token)</span>
 $ curl -X DELETE -H "Authorization: Bearer $APPROVE" \
-    http://localhost:7777/home/note
+    http://localhost:3105/home/note
 
 <span class="cmt"># conditional write (optimistic lock)</span>
 $ curl -X PUT -H "Authorization: Bearer $WRITE" \
     -H "If-Match: \"hmac-739117dead6c29a1...\"" \
-    -d "updated" http://localhost:7777/home/note
+    -d "updated" http://localhost:3105/home/note
 <span class="cmt"># 200 if ETag matches, 412 Precondition Failed if stale</span>
 
 <span class="cmt"># range read</span>
-$ curl -H "Range: bytes=0-9" http://localhost:7777/home/note
+$ curl -H "Range: bytes=0-9" http://localhost:3105/home/note
 <span class="cmt"># 206 Partial Content, Content-Range: bytes 0-9/42</span>
 </pre>
 
@@ -649,7 +648,7 @@ The corrupted world is frozen.</p>
 <pre>
 <span class="cmt"># Listen for changes on all home/ worlds</span>
 $ curl -N -H "Authorization: Bearer $READ" \
-    http://localhost:7777/listen/home/*
+    http://localhost:3105/listen/home/*
 
 event: put
 data: path: /home/note
@@ -701,15 +700,15 @@ large bodies from flooding the SSE stream.</p>
 
 <pre>
 <span class="cmt"># No token → 401</span>
-$ curl -X PUT -d "test" http://localhost:7777/home/note
+$ curl -X PUT -d "test" http://localhost:3105/home/note
 <span class="err">401 Unauthorized</span>
 
 <span class="cmt"># Read token → can read, cannot write</span>
-$ curl -H "Authorization: Bearer $READ" http://localhost:7777/home/note
+$ curl -H "Authorization: Bearer $READ" http://localhost:3105/home/note
 <span class="ok">200 OK</span>
 
 <span class="cmt"># Write token → cannot delete</span>
-$ curl -X DELETE -H "Authorization: Bearer $WRITE" http://localhost:7777/home/note
+$ curl -X DELETE -H "Authorization: Bearer $WRITE" http://localhost:3105/home/note
 <span class="err">401 Unauthorized</span>
 </pre>
 
@@ -765,17 +764,17 @@ $ sqlite3 data/home%2Fnote/universe.db \
 
 <span class="cmt"># Attempt to write → engine detects broken chain</span>
 $ curl -X PUT -H "Authorization: Bearer $WRITE" \
-    -d "test" http://localhost:7777/home/note
+    -d "test" http://localhost:3105/home/note
 <span class="err">500 Internal Server Error</span>
 <span class="err">internal error: storage failure</span>
 
 <span class="cmt"># Attempt to read → also rejected</span>
-$ curl http://localhost:7777/home/note
+$ curl http://localhost:3105/home/note
 <span class="err">500 Internal Server Error</span>
 
 <span class="cmt"># Attempt to delete → also rejected (can't append to broken chain)</span>
 $ curl -X DELETE -H "Authorization: Bearer $APPROVE" \
-    http://localhost:7777/home/note
+    http://localhost:3105/home/note
 <span class="err">500 Internal Server Error</span>
 </pre>
 
@@ -784,10 +783,8 @@ The corrupted file is preserved for forensic investigation. Recovery
 requires manual removal of the SQLite file and re-creation of the world
 (which gets a new generation).</p>
 
-<p class="note">The only way to forge a valid chain is to have the HMAC key.
-The key is in memory only (environment variable), never written to disk.
-If the key leaks, the entire trust model collapses — but that is a
-key-management problem, not a storage problem.</p>
+<p class="note">Forging a valid chain requires the HMAC key. The key is in
+memory only (environment variable), never written to disk.</p>
 
 <!-- ============================================================ -->
 <h2 id="s17">17. Security boundary</h2>
@@ -806,7 +803,7 @@ OS-layer attacks. This is the same boundary as any database.</p>
 <pre>
 <span class="cmt"># This is detected and blocked (API layer):</span>
 $ sqlite3 data/home%2Fnote/universe.db "UPDATE events SET hmac='fake';"
-$ curl http://localhost:7777/home/note   <span class="cmt">→ 500</span>
+$ curl http://localhost:3105/home/note   <span class="cmt">→ 500</span>
 
 <span class="cmt"># This is NOT detected (OS layer):</span>
 $ rm -rf data/home%2Fnote/
@@ -838,11 +835,9 @@ $ rm -rf data/home%2Fnote/
 <span class="kw">INSERT INTO</span> world_format(id, version) <span class="kw">VALUES</span>(1, 2);
 </pre>
 
-<p>Single row, hard-checked. Old binaries that do not know about this table
-fail on <code>world_schema::verify()</code> because the table is missing.
-New binaries opening old (v1) databases fail because <code>world_format</code>
-does not exist. There is no silent degradation: either the format is understood
-or the world is refused.</p>
+<p>The marker is required. Old binaries fail on
+<code>world_schema::verify()</code> because the table is missing. New binaries
+reject v1 databases because <code>world_format</code> does not exist.</p>
 
 <!-- ============================================================ -->
 <h2 id="s19">19. HTTP reference</h2>
