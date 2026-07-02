@@ -330,7 +330,7 @@ impl ValidatedWorldPath {
     /// ```
     /// # #[cfg(feature = "unstable-engine")]
     /// # fn run() {
-    /// use elastik_core::ValidatedWorldPath;
+    /// use l5::ValidatedWorldPath;
     ///
     /// assert_eq!(
     ///     ValidatedWorldPath::new("home/jobs/42").unwrap().as_str(),

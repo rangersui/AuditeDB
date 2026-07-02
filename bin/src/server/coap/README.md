@@ -38,9 +38,9 @@ DTLS-PSK, or another trusted edge if the token must not be visible on the wire.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ELASTIK_COAP_HOST` | `127.0.0.1` | CoAP bind host when CoAP is enabled. |
-| `ELASTIK_COAP_PORT` | unset | Enables the CoAP UDP surface on this port. |
-| `ELASTIK_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent CoAP requests. |
+| `AUDITEDB_COAP_HOST` | `127.0.0.1` | CoAP bind host when CoAP is enabled. |
+| `AUDITEDB_COAP_PORT` | unset | Enables the CoAP UDP surface on this port. |
+| `AUDITEDB_COAP_MAX_IN_FLIGHT` | `1024` | Maximum concurrent CoAP requests. |
 
 Shared Engine and auth environment variables are documented in
 [`../http/README.md`](../http/README.md), because the HTTP adapter is also the

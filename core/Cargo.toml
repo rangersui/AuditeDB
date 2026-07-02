@@ -1,9 +1,9 @@
 [package]
-name = "elastik-core"
+name = "l5"
 version = "8.3.0"
 edition = "2021"
 autobins = false
-description = "AuditeDB — the db that listens. Powered by the Elastik L5 Engine."
+description = "L5 Engine — embedded audit-trail storage for AuditeDB."
 license = "MIT"
 repository = "https://github.com/rangersui/AuditeDB"
 homepage = "https://github.com/rangersui/AuditeDB"
@@ -13,7 +13,7 @@ features = ["unstable-engine"]
 all-features = false
 
 [lib]
-name = "elastik_core"
+name = "l5"
 path = "src/lib.rs"
 
 [dependencies]

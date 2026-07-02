@@ -18,12 +18,12 @@ or GitHub Security Advisories.
 
 Do not open a public issue for a vulnerability.
 
-Please include the affected version, platform, component (`elastik-core`,
-Python SDK, or packaging), and a small reproduction if possible.
+Please include the affected version, platform, component (`auditedb`, `l5`,
+`l5-ffi`, Python SDK, or packaging), and a small reproduction if possible.
 
 ## Security Boundary
 
-The Elastik L5 Engine is a byte store.
+The L5 Engine is a byte store.
 
 The engine accepts bytes, stores bytes, returns bytes, enforces token tiers,
 signs durable writes into an HMAC audit chain, and replays safe persisted
@@ -46,7 +46,7 @@ Good security reports usually involve one of these:
 - A published package ships the wrong binary or a binary that does not match
   the source/release.
 
-Usually outside the Elastik Engine's security boundary:
+Usually outside the L5 Engine's security boundary:
 
 - HTML sanitization, XSS filtering, CSP authoring, iframe policy, or browser
   sandboxing.
@@ -56,7 +56,7 @@ Usually outside the Elastik Engine's security boundary:
 
 If you store an HTML app, that HTML app owns its browser policy. If you expose
 an AuditeDB deployment to a network, that deployment owns its edge policy. The
-Elastik L5 Engine remains a small storage engine: bytes in, bytes out, with
+L5 Engine remains a small storage engine: bytes in, bytes out, with
 token gates and an audit chain.
 On the optional CoAP/UDP binary surface, auth tokens travel as plaintext
 datagram metadata unless you wrap that edge in CoAPS/DTLS or another trusted

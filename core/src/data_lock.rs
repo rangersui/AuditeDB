@@ -3,7 +3,7 @@
 //! This is a SQLite-backed mutex for one host process at a time. It is not a
 //! distributed lease and should not be treated as reliable fencing on NFS or
 //! other network filesystems with weak locking/cache semantics. Put
-//! `ELASTIK_DATA` on a local filesystem, or use an external coordinator that is
+//! `AUDITEDB_DATA` on a local filesystem, or use an external coordinator that is
 //! designed for distributed ownership.
 //!
 //! The lock database deliberately uses rollback-journal mode. WAL is useful for
@@ -47,7 +47,7 @@ impl From<rusqlite::Error> for DataRootWriterLockError {
 pub(crate) fn acquire_data_root_writer_lock(
     data: &Path,
 ) -> Result<rusqlite::Connection, DataRootWriterLockError> {
-    let c = rusqlite::Connection::open(data.join(".elastik-writer-lock.sqlite3"))?;
+    let c = rusqlite::Connection::open(data.join(".auditedb-writer-lock.sqlite3"))?;
     c.busy_timeout(Duration::from_millis(0))?;
     c.execute_batch(
         r#"
@@ -95,7 +95,7 @@ fn lock_attempt_error(
 
 #[cfg(test)]
 fn read_data_root_writer_lock_holder(data: &Path) -> rusqlite::Result<Option<String>> {
-    let c = rusqlite::Connection::open(data.join(".elastik-writer-lock.sqlite3"))?;
+    let c = rusqlite::Connection::open(data.join(".auditedb-writer-lock.sqlite3"))?;
     c.busy_timeout(Duration::from_millis(0))?;
     query_holder(&c)
 }
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn data_root_writer_lock_is_exclusive() {
         let dir =
-            std::env::temp_dir().join(format!("elastik-data-lock-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("auditedb-data-lock-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -174,7 +174,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("elastik-data-lock-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("auditedb-data-lock-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

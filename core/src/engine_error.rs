@@ -124,9 +124,9 @@ fn log_storage_invariant(
     #[cfg(not(feature = "unstable-engine"))]
     match world {
         Some(world) => {
-            eprintln!("elastik-core internal {scope} ({operation}) world={world}: {reason_text}");
+            eprintln!("l5 internal {scope} ({operation}) world={world}: {reason_text}");
         }
-        None => eprintln!("elastik-core internal {scope} ({operation}): {reason_text}"),
+        None => eprintln!("l5 internal {scope} ({operation}): {reason_text}"),
     }
 }
 
@@ -161,9 +161,9 @@ pub(crate) fn log_storage_error(
     #[cfg(not(feature = "unstable-engine"))]
     match world {
         Some(world) => {
-            eprintln!("elastik-core internal {scope} ({operation}) world={world}: {err}");
+            eprintln!("l5 internal {scope} ({operation}) world={world}: {err}");
         }
-        None => eprintln!("elastik-core internal {scope} ({operation}): {err}"),
+        None => eprintln!("l5 internal {scope} ({operation}): {err}"),
     }
 }
 
@@ -187,11 +187,11 @@ pub(crate) fn log_audit_chain_error(
     #[cfg(not(feature = "unstable-engine"))]
     match world {
         Some(world) => eprintln!(
-            "elastik-core internal {scope} ({operation}) world={world}: audit chain broken at event {}: expected {}, actual {}",
+            "l5 internal {scope} ({operation}) world={world}: audit chain broken at event {}: expected {}, actual {}",
             break_report.break_at, break_report.expected, break_report.actual
         ),
         None => eprintln!(
-            "elastik-core internal {scope} ({operation}): audit chain broken at event {}: expected {}, actual {}",
+            "l5 internal {scope} ({operation}): audit chain broken at event {}: expected {}, actual {}",
             break_report.break_at, break_report.expected, break_report.actual
         ),
     }
@@ -224,11 +224,11 @@ pub(crate) fn log_blocking_storage_error(
             match world {
                 Some(world) => {
                     eprintln!(
-                        "elastik-core internal {scope} ({operation}) world={world}: sqlite worker failed"
+                        "l5 internal {scope} ({operation}) world={world}: sqlite worker failed"
                     );
                 }
                 None => {
-                    eprintln!("elastik-core internal {scope} ({operation}): sqlite worker failed");
+                    eprintln!("l5 internal {scope} ({operation}): sqlite worker failed");
                 }
             }
         }

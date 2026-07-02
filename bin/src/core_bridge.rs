@@ -1,47 +1,47 @@
 //! Public Engine API imports for the binary crate.
 //!
 //! This module keeps the adapter-facing import paths stable while ensuring
-//! both production and test builds consume `elastik_core` as an external
+//! both production and test builds consume `l5` as an external
 //! library. It must not `#[path]` into `core/src`; if bin tests need a core
 //! capability, expose it through the public Engine API or a bin-owned test
 //! helper.
 
 pub(crate) mod defaults {
     #[allow(unused_imports)]
-    pub(crate) use elastik_core::{
+    pub(crate) use l5::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES, DEFAULT_RETAINED_BODY_COUNT,
     };
 }
 
 pub(crate) mod path {
-    pub(crate) use elastik_core::{validate_world_name, NAMESPACE_PREFIXES};
+    pub(crate) use l5::{validate_world_name, NAMESPACE_PREFIXES};
 }
 
 pub(crate) mod engine {
     #[cfg(any(feature = "coap", feature = "mqtt"))]
-    pub(crate) use elastik_core::ShutdownToken;
+    pub(crate) use l5::ShutdownToken;
     #[allow(unused_imports)]
-    pub(crate) use elastik_core::{Engine, EngineBuilder, EngineError};
+    pub(crate) use l5::{Engine, EngineBuilder, EngineError};
 }
 
 pub(crate) mod engine_introspection {
-    pub(crate) use elastik_core::{
+    pub(crate) use l5::{
         AuditBroken, AuditValid, AuditVerify, ChainSeq, ChainStampRead, HeadStamp, PoolSnapshot,
         WorldUsage,
     };
 }
 
 pub(crate) mod engine_trace {
-    pub(crate) use elastik_core::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};
+    pub(crate) use l5::{DeleteMetadata, EngineDeleteTraceHooks, EngineWriteTraceHooks};
 }
 
 pub(crate) mod engine_types {
     #[cfg(feature = "mqtt")]
-    pub(crate) use elastik_core::EngineSubscription;
+    pub(crate) use l5::EngineSubscription;
     #[cfg(test)]
-    pub(crate) use elastik_core::WriteResult;
-    pub(crate) use elastik_core::{
+    pub(crate) use l5::WriteResult;
+    pub(crate) use l5::{
         parse_etag_matchers, AccessTier, AuditHmacKey, ChangeEvent, ChangeEventIdentity,
         ChangeVerb, EtagMatcher, InvalidHmacKey, Preconditions, Representation, SubscribePattern,
         SubscriptionEventId, SubscriptionRecvError, SubscriptionResetReason, SubscriptionResume,
@@ -51,11 +51,11 @@ pub(crate) mod engine_types {
 
 pub(crate) mod timeline {
     #[cfg(test)]
-    pub(crate) use elastik_core::TimelineAddress;
-    pub(crate) use elastik_core::{
+    pub(crate) use l5::TimelineAddress;
+    pub(crate) use l5::{
         TimelineBody, TimelineCoordinate, TimelineDereference, VerifiedExpiredBody,
         VerifiedNonBodyEvent,
     };
 }
 
-pub(crate) use elastik_core::AuthGate;
+pub(crate) use l5::AuthGate;

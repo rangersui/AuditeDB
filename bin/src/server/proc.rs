@@ -50,7 +50,7 @@ pub(crate) const AUDIT_VERIFY_ALLOW: &str = "GET, HEAD, OPTIONS";
 /// `/etc`, `/lib`, `/var`. Browser shells are SDK-app territory; core
 /// never serves HTML, never sets CSP, never thinks about iframes.
 pub(crate) async fn root_hint(method: Method) -> Response {
-    let body = format!("elastik-core {VERSION} (rust)\ntry: curl /proc/worlds\n");
+    let body = format!("auditedb {VERSION} (rust)\ntry: curl /proc/worlds\n");
     match method {
         Method::GET => (
             StatusCode::OK,
@@ -77,7 +77,7 @@ pub(crate) async fn root_hint(method: Method) -> Response {
 
 // ─── /proc/version ──────────────────────────────────────────────────
 pub(crate) async fn proc_version(method: Method) -> Response {
-    let body = format!("elastik-core {VERSION} (rust)\n");
+    let body = format!("auditedb {VERSION} (rust)\n");
     match method {
         Method::GET => (
             StatusCode::OK,
@@ -873,7 +873,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            "Bearer realm=\"elastik\""
+            "Bearer realm=\"auditedb\""
         );
 
         let _ = std::fs::remove_dir_all(dir);

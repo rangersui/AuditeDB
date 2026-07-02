@@ -25,6 +25,14 @@ jobs:
         run: python tools/version_consistency_check.py
       - name: audit chain verifier self-test
         run: python tools/audit_chain_verify.py --self-test
+      - name: build l5 ffi native library for Python smoke
+        run: cargo build --release --manifest-path ffi/Cargo.toml
+      - name: stage l5 ffi native library for Python smoke
+        run: cp ffi/target/release/libl5_ffi.so sdk/src/l5/_ffi/libl5_ffi.so
+      - name: python l5 sdk smoke
+        env:
+          PYTHONPATH: sdk/src
+        run: python tools/l5_python_smoke.py
       - name: format
         working-directory: core
         run: cargo fmt --check
@@ -100,26 +108,3 @@ jobs:
       - name: ffi tests
         working-directory: ffi
         run: cargo test --locked
-
-  sdk-blackbox:
-    name: sdk blackbox (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-2025-vs2026
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: python sdk blackbox
-        run: python sdk/tests/e2e_blackbox.py
-      - name: trusted shell pool
-        run: python sdk/tests/test_tools.py
-      - name: python compileall
-        run: python -m compileall -q sdk/src sdk/tests

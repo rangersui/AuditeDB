@@ -4,9 +4,9 @@
 
 Audit the past. Subscribe to the future.
 
-A filesystem-backed flat key-value store with an audit trail. Embed the engine as a library, or run the `elastik-core` HTTP server as a HTTP disk.
+A filesystem-backed flat key-value store with an audit trail. Embed the `l5` engine as a library, or run the `auditedb` HTTP server as a HTTP disk.
 
-Powered by the Elastik L5 Engine.
+Powered by the L5 Engine.
 
 ```text
 GET /home/a     read bytes
@@ -19,12 +19,12 @@ LISTEN /home/*  subscribe to changes
 5 verbs · HMAC audit chain · SQLite inside.
 
 ```
-┌─ elastik-core (Elastik L5 Engine, core/) ──┐
+┌─ l5 (L5 Engine, core/) ────────────────────┐
 │ paths + bytes + ETags + HMAC chain + auth  │
 │ no HTTP, no sockets, no env vars           │
 └─────────────────────┬──────────────────────┘
                       │ pub Engine API
-┌─ elastik-bin (AuditeDB server, bin/) ──────┐
+┌─ auditedb (AuditeDB server, bin/) ─────────┐
 │ HTTP + CoAP + MQTT + SSE adapters          │
 │ config, routing, auth parsing, /proc/*     │
 └────────────────────────────────────────────┘
@@ -41,11 +41,11 @@ This README is the Engine/library reference: storage model, trust tiers, audit c
 | Surface | README | Scope |
 |---------|--------|-------|
 | Engine library | this file | Protocol-neutral paths, bytes, ETags, audit, auth, subscriptions. |
-| HTTP binary adapter | [`bin/src/server/http/README.md`](bin/src/server/http/README.md) | `elastik-core` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
+| HTTP binary adapter | [`bin/src/server/http/README.md`](bin/src/server/http/README.md) | `auditedb` startup, HTTP worlds, `/proc/*`, `/listen/*`, curl. |
 | MQTT binary adapter | [`bin/src/server/mqtt/README.md`](bin/src/server/mqtt/README.md) | MQTT 3.1.1 scope, retain tier mapping, QoS, and limits. |
 | CoAP binary adapter | [`bin/src/server/coap/README.md`](bin/src/server/coap/README.md) | CoAP UDP mapping and deployment knobs. |
 | FFI adapter | [`ffi/README.md`](ffi/README.md) | UniFFI binding: Python, Kotlin, Swift. Blocking pull, same Engine verbs. |
-| Python SDK | [`sdk/README.md`](sdk/README.md) | Python client surface. |
+| Python SDK | [`sdk/src/l5`](sdk/src/l5) | In-process Python handle over the L5 FFI binding. |
 
 Library embedders call typed Engine methods instead of HTTP `/proc/*` paths or
 timeline query URLs:
@@ -64,7 +64,7 @@ timeline query URLs:
 ## Quick start — library
 
 ```rust
-use elastik_core::{
+use l5::{
     AccessTier, AuditHmacKey, Engine, Preconditions, Representation, ValidatedWorldPath,
 };
 use bytes::Bytes;
@@ -93,14 +93,14 @@ async fn main() {
 
 ```toml
 [dependencies]
-elastik-core = { version = "=8.3.0", default-features = false,
-                 features = ["bundled-sqlite", "unstable-engine"] }
+l5 = { version = "=8.3.0", default-features = false,
+       features = ["bundled-sqlite", "unstable-engine"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
 The `unstable-engine` gate explicitly marks the public Engine API unstable.
 API shapes may change between minor versions until that gate is removed. Pin an
-exact `elastik-core` version when embedding the unstable Engine API.
+exact `l5` version when embedding the unstable Engine API.
 
 ---
 
@@ -172,7 +172,7 @@ above.
 
 ## Feature flags
 
-`elastik-core` is now the library package only. Its feature surface is small:
+`l5` is the library package. Its feature surface is small:
 
 | Feature                | Default | Pulls in                                                       | Purpose                            |
 |------------------------|:-------:|---------------------------------------------------------------|------------------------------------|
@@ -193,7 +193,7 @@ features:
 
 | Feature           | Default | Pulls in                         | Purpose                       |
 |-------------------|:-------:|----------------------------------|-------------------------------|
-| `bundled-sqlite`  |    ✓    | `elastik-core/bundled-sqlite`    | static SQLite link            |
+| `bundled-sqlite`  |    ✓    | `l5/bundled-sqlite`              | static SQLite link            |
 | `coap`            |    ✓    | —                                | CoAP adapter                  |
 | `multi-thread`    |    ✓    | `tokio/rt-multi-thread`          | multi-thread runtime          |
 | `mqtt`            |         | `rumqttd`, Tokio I/O utilities   | MQTT 3.1.1 adapter            |
@@ -207,12 +207,11 @@ The codebase is two Rust packages:
 
 | Package | Path | Cargo name | Produces |
 |---------|------|------------|----------|
-| Library | `core/` | `elastik-core` | `libelastik_core.rlib` |
-| Binary  | `bin/`  | `elastik-bin`  | `elastik-core` executable |
+| Library | `core/` | `l5` | `libl5.rlib` |
+| Binary  | `bin/`  | `auditedb` | `auditedb` executable |
 
-The binary package is named `elastik-bin` so Cargo can distinguish it from the
-library. The compiled executable is still called `elastik-core` (set by the
-`[[bin]]` table in `bin/Cargo.toml`).
+The library is the embedded L5 Engine. The binary package is the AuditeDB
+distribution and produces the `auditedb` executable.
 
 - **Library** (`core/src/lib.rs` + `engine*.rs` + storage primitives):
   the protocol-neutral Engine. No HTTP, no CoAP, no MQTT, no SSE, no env vars,
@@ -227,7 +226,7 @@ The split is real, not cosmetic:
 - `cargo build --manifest-path core/Cargo.toml --lib --no-default-features --features bundled-sqlite,unstable-engine`
   produces an embeddable Engine library whose dep tree contains **zero**
   HTTP-shaped crates (`axum`, `hyper`, `tower`, `rumqttd`, `base64` are all absent).
-- `cargo build --manifest-path bin/Cargo.toml` builds the `elastik-core`
+- `cargo build --manifest-path bin/Cargo.toml` builds the `auditedb`
   binary and all server adapters from the binary package.
 
 ---
@@ -240,7 +239,7 @@ The tagline is literal. AuditeDB listens forward through `subscribe`, so
 clients can react to changes instead of polling. It also listens backward
 through the HMAC audit chain, so durable writes leave a verifiable history.
 
-AuditeDB is the product. Elastik L5 is the engine.
+AuditeDB is the product. L5 is the engine.
 
 ### Why "L5"
 

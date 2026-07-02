@@ -2,24 +2,24 @@
 
 ## One line
 
-Elastik can act as a zero-knowledge relay. Client and sidecar use their own
-keypairs for signing and encryption; Elastik only stores ciphertext bytes.
+AuditeDB can act as a zero-knowledge relay. Client and sidecar use their own
+keypairs for signing and encryption; AuditeDB only stores ciphertext bytes.
 
 Signatures replace passwords. A folder of trusted public keys replaces the user
 database.
 
 ## Core finding
 
-Elastik only stores bytes. Encrypted, signed bytes are still bytes. Both ends
-hold their own keypairs and pass signed-then-encrypted blobs through Elastik,
+AuditeDB only stores bytes. Encrypted, signed bytes are still bytes. Both ends
+hold their own keypairs and pass signed-then-encrypted blobs through AuditeDB,
 with the core participating in nothing and learning nothing. This gives
 application-level confidentiality, authentication, and authorisation without
-adding an identity system to Elastik itself.
+adding an identity system to AuditeDB itself.
 
 ## Architecture
 
 ```text
-client                         Elastik shelf          sidecar
+client                         AuditeDB shelf          sidecar
   |                                |                     |
   | sign(payload, client.key)      |                     |
   | encrypt(bundle, sidecar.pub)   |                     |
@@ -46,7 +46,7 @@ clearer.
 ## Two independent auth layers
 
 ```text
-Layer 1: Elastik token
+Layer 1: AuditeDB token
   -> can this caller read/write this world path?
   -> controls PUT/GET authority at the HTTP shelf
   -> if leaked: attacker can read ciphertext, but cannot decrypt or impersonate
@@ -54,11 +54,11 @@ Layer 1: Elastik token
 Layer 2: E2E keypair
   -> who signed this payload?
   -> what can that verified identity do?
-  -> checked by the sidecar, not by Elastik
-  -> private key never crosses Elastik
+  -> checked by the sidecar, not by AuditeDB
+  -> private key never crosses AuditeDB
 ```
 
-The two layers are independent. Holding an Elastik write token does not let an
+The two layers are independent. Holding an AuditeDB write token does not let an
 attacker impersonate Alice: messages without a valid signature from Alice's
 private key are rejected by the sidecar.
 
@@ -83,7 +83,7 @@ What disappears:
 Private-key theft is still endpoint compromise. Malware, bad backups, or
 copying a key to the wrong machine can steal a key. That compromise affects the
 endpoint identity until the public key is removed or rotated; it is not an
-Elastik credential leak.
+AuditeDB credential leak.
 
 ## Minimum implementation shape
 
@@ -166,7 +166,7 @@ requests.put(
 ```
 
 The JSON above is application payload inside an encrypted blob. It is not a core
-Elastik world-operation envelope.
+AuditeDB world-operation envelope.
 
 ### Sidecar: decrypt, verify, then authorise
 
@@ -245,7 +245,7 @@ This is the SSH `authorized_keys` model.
 ```text
 authentication   signature over payload verified against trusted_keys/<who>.pub
 authorisation    sidecar maps verified identity -> permission table
-confidentiality  encrypted body; Elastik sees only ciphertext bytes
+confidentiality  encrypted body; AuditeDB sees only ciphertext bytes
 integrity        signature plus AEAD tag catch tampering
 replay defence   nonce cache plus timestamp window
 zero knowledge   AuditeDB stores opaque bytes
@@ -254,10 +254,10 @@ zero knowledge   AuditeDB stores opaque bytes
 ## Attack-surface analysis
 
 ```text
-attacker holds an Elastik read token:
+attacker holds an AuditeDB read token:
   can read ciphertext -> cannot decrypt
 
-attacker holds an Elastik write token:
+attacker holds an AuditeDB write token:
   can PUT garbage or claimed identity -> signature check fails
 
 attacker holds a public key:
@@ -265,7 +265,7 @@ attacker holds a public key:
 
 attacker holds a private key:
   can impersonate that endpoint until the key is revoked
-  -> endpoint compromise, not Elastik compromise
+  -> endpoint compromise, not AuditeDB compromise
   -> remove or rotate the trusted public key and investigate the machine
 ```
 

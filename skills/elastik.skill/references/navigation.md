@@ -10,7 +10,7 @@ sizing.
 ## Setup
 
 ```bash
-BASE="${ELASTIK_BASE:-http://127.0.0.1:3105}"
+BASE="${AUDITEDB_BASE:-http://127.0.0.1:3105}"
 ```
 
 ## List All Worlds
@@ -85,7 +85,7 @@ curl -sS "$BASE/proc/worlds" |
 
 ```bash
 curl -sS -i -X PUT "$BASE/home/path" \
-  -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
+  -H "Authorization: Bearer $AUDITEDB_WRITE_TOKEN" \
   -H "Content-Type: text/plain; charset=utf-8" \
   --data-binary @file.txt
 ```
@@ -98,7 +98,7 @@ namespace table.
 
 ```bash
 curl -sS -i -X DELETE "$BASE/home/path" \
-  -H "Authorization: Bearer $ELASTIK_APPROVE_TOKEN"
+  -H "Authorization: Bearer $AUDITEDB_APPROVE_TOKEN"
 ```
 
 DELETE always requires the approve token, regardless of namespace.
@@ -140,7 +140,7 @@ Then use browser find.
 
 ## Related
 
-- `../SKILL.md` -- deploy and use Elastik.
+- `../SKILL.md` -- deploy and use AuditeDB.
 - `flexible-deployment.md` -- token tiers across deployment shapes.
 - `http-worlds.md` -- HTTP methods, namespace policy, ETags, ranges, audit,
   and listen.

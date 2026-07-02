@@ -1,15 +1,15 @@
 param(
     [string]$Case = "help",
-    [string]$Base = $env:ELASTIK_BASE,
-    [string]$World = $env:ELASTIK_WORLD
+    [string]$Base = $env:AUDITEDB_BASE,
+    [string]$World = $env:AUDITEDB_WORLD
 )
 
 if (-not $Base) { $Base = "http://127.0.0.1:3105" }
-if (-not $World) { $World = "/home/elastik-skill-demo" }
+if (-not $World) { $World = "/home/AuditeDB-skill-demo" }
 
-$WriteToken = $env:ELASTIK_WRITE_TOKEN
-$ApproveToken = $env:ELASTIK_APPROVE_TOKEN
-$ReadToken = $env:ELASTIK_READ_TOKEN
+$WriteToken = $env:AUDITEDB_WRITE_TOKEN
+$ApproveToken = $env:AUDITEDB_APPROVE_TOKEN
+$ReadToken = $env:AUDITEDB_READ_TOKEN
 if (-not $ReadToken) { $ReadToken = $WriteToken }
 if (-not $ReadToken) { $ReadToken = $ApproveToken }
 
@@ -20,7 +20,7 @@ function Get-ReadAuthArgs {
 
 function Get-WriteAuthArgs {
     if (-not $WriteToken) {
-        Write-Error "missing ELASTIK_WRITE_TOKEN"
+        Write-Error "missing AUDITEDB_WRITE_TOKEN"
         exit 2
     }
     return @("-H", "Authorization: Bearer $WriteToken")
@@ -47,7 +47,7 @@ function Invoke-Worlds {
 function Invoke-Put {
     Write-Title "PUT world bytes"
     $auth = Get-WriteAuthArgs
-    "hello from elastik skill`n" | & curl.exe -sS -i -X PUT @auth `
+    "hello from AuditeDB skill`n" | & curl.exe -sS -i -X PUT @auth `
         -H "Content-Type: text/plain; charset=utf-8" `
         --data-binary "@-" `
         "$Base$World"
@@ -55,13 +55,13 @@ function Invoke-Put {
 
 function Invoke-PutMetadata {
     Write-Title "PUT with representation metadata"
-    Write-Output "Note: X-Meta-Summary persists only when ELASTIK_PERSIST_HEADERS includes x-meta-*."
+    Write-Output "Note: X-Meta-Summary persists only when AUDITEDB_PERSIST_HEADERS includes x-meta-*."
     $auth = Get-WriteAuthArgs
-    "<!doctype html><title>Elastik</title><p>Hello.</p>`n" | & curl.exe -sS -i -X PUT @auth `
+    "<!doctype html><title>AuditeDB</title><p>Hello.</p>`n" | & curl.exe -sS -i -X PUT @auth `
         -H "Content-Type: text/html; charset=utf-8" `
         -H "Content-Language: en" `
         -H "Cache-Control: no-cache" `
-        -H "X-Meta-Summary: Generic Elastik curl example page." `
+        -H "X-Meta-Summary: Generic AuditeDB curl example page." `
         --data-binary "@-" `
         "$Base$World"
 }
@@ -138,7 +138,7 @@ switch ($Case) {
     }
     default {
 @"
-Elastik curl cases:
+AuditeDB curl cases:
   .\scripts\curl-cases.ps1 version
   .\scripts\curl-cases.ps1 worlds
   .\scripts\curl-cases.ps1 put

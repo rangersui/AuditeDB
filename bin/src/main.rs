@@ -13,7 +13,7 @@ pub(crate) use core_bridge::*;
 #[cfg(not(test))]
 async fn main() {
     if let Err(err) = server::run_from_env().await {
-        eprintln!("elastik-core: {err}");
+        eprintln!("auditedb: {err}");
         std::process::exit(1);
     }
 }

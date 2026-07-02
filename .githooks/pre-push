@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-if [ "${ELASTIK_SKIP_HOOK:-}" = "1" ]; then
-    echo "pre-push: skipped because ELASTIK_SKIP_HOOK=1"
+if [ "${AUDITEDB_SKIP_HOOK:-}" = "1" ]; then
+    echo "pre-push: skipped because AUDITEDB_SKIP_HOOK=1"
     exit 0
 fi
 
@@ -14,5 +14,5 @@ if command -v powershell.exe >/dev/null 2>&1; then
     exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/pre-push.ps1
 fi
 
-echo "pre-push: PowerShell is required to run Elastik's local gate" >&2
+echo "pre-push: PowerShell is required to run AuditeDB's local gate" >&2
 exit 1

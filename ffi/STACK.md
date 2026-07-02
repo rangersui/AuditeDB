@@ -6,7 +6,7 @@ HTTP server, routes, status codes, or `/proc/*` paths.
 ## Layers
 
 1. **Scaffold** (`feat/ffi-uniffi-scaffold`)
-   - Add isolated `elastik-ffi` crate.
+   - Add isolated `l5-ffi` crate.
    - Compile as `lib` + `cdylib`.
    - Add UniFFI scaffolding and smoke exports only.
 
@@ -46,7 +46,7 @@ HTTP server, routes, status codes, or `/proc/*` paths.
      - macOS ARM64 (`.dylib`)
      - Windows x64 (`.dll`)
    - Upload zipped CI artifacts containing the native library, generated
-     `elastik_ffi.py`, and a manifest with the native library hash.
+     `l5_ffi.py`, and a manifest with the native library hash.
 
 6. **Release Integration**
    - Attach FFI artifacts to tagged releases once the CI artifact shape is

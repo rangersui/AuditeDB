@@ -16,12 +16,12 @@ function Run([string]$Exe, [Parameter(ValueFromRemainingArguments = $true)][stri
 
 $repoRoot = git rev-parse --show-toplevel
 Set-Location $repoRoot
-$strict = $env:ELASTIK_HOOK_STRICT -eq "1"
+$strict = $env:AUDITEDB_HOOK_STRICT -eq "1"
 
 if ($strict) {
-    Write-Host "pre-push: strict mode enabled (ELASTIK_HOOK_STRICT=1)" -ForegroundColor Yellow
+    Write-Host "pre-push: strict mode enabled (AUDITEDB_HOOK_STRICT=1)" -ForegroundColor Yellow
 } else {
-    Write-Host "pre-push: fast mode. Set ELASTIK_HOOK_STRICT=1 for release tests + strict supply-chain." -ForegroundColor Yellow
+    Write-Host "pre-push: fast mode. Set AUDITEDB_HOOK_STRICT=1 for release tests + strict supply-chain." -ForegroundColor Yellow
 }
 
 Step "Rust format" {
@@ -65,20 +65,27 @@ if ($strict) {
 }
 
 Step "Python SDK smoke" {
-    Run python sdk/tests/test_tools.py
-}
-
-Step "Header policy scanner" {
-    Run python tools/header_policy_scan.py --self-test
-    Run python tools/header_policy_scan.py --offline
-}
-
-Step "Header policy missing-baseline negative test" {
-    & python tools/header_policy_scan.py --offline --baseline missing-baseline.txt
-    if ($LASTEXITCODE -eq 0) {
-        throw "missing baseline unexpectedly passed"
+    Run cargo build --release --manifest-path ffi/Cargo.toml
+    New-Item -ItemType Directory -Force sdk/src/l5/_ffi | Out-Null
+    $native = Get-ChildItem -LiteralPath ffi/target/release -File |
+        Where-Object { $_.Name -in @("l5_ffi.dll", "libl5_ffi.so", "libl5_ffi.dylib") } |
+        Select-Object -First 1
+    if ($null -eq $native) {
+        throw "no L5 FFI native library found under ffi/target/release"
     }
-    Write-Host "missing baseline rejected as expected"
+    Copy-Item -LiteralPath $native.FullName -Destination (Join-Path "sdk/src/l5/_ffi" $native.Name) -Force
+    Run python -m compileall -q sdk/src
+    $oldPythonPath = $env:PYTHONPATH
+    try {
+        $env:PYTHONPATH = "sdk/src"
+        Run python tools/l5_python_smoke.py
+    } finally {
+        if ($null -eq $oldPythonPath) {
+            Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue
+        } else {
+            $env:PYTHONPATH = $oldPythonPath
+        }
+    }
 }
 
 if ($strict) {
@@ -92,4 +99,4 @@ Step "Whitespace check" {
 }
 
 Write-Host ""
-Write-Host "pre-push: all Elastik local gates passed" -ForegroundColor Green
+Write-Host "pre-push: all AuditeDB local gates passed" -ForegroundColor Green

@@ -3,14 +3,13 @@ requires = ["setuptools>=70.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "elastik"
+name = "l5"
 version = "8.3.0"
-description = "AuditeDB: the db that listens. Python client for the Elastik L5 Engine."
-readme = "README.md"
+description = "L5 Engine: embedded audited storage for Python."
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Ranger Chen" }]
-keywords = ["http", "pastebin", "local-first", "ai", "web-os", "rust"]
+keywords = ["embedded", "sqlite", "audit", "storage", "rust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,12 +18,9 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
-    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Database",
 ]
-dependencies = []                  # stdlib only; no httpx, no requests
-
-[project.scripts]
-elastik = "elastik.__main__:main"
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/rangersui/AuditeDB"
@@ -38,5 +34,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-elastik = ["_bin/*", "_bin/**/*", "py.typed"]
-l5 = ["_ffi/*", "_ffi/**/*"]
+l5 = ["_ffi/*.py", "_ffi/*.dll", "_ffi/*.so", "_ffi/*.dylib"]

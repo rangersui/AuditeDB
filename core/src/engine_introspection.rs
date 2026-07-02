@@ -966,7 +966,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "elastik-engine-introspection-{name}-{}-{nonce}",
+            "auditedb-engine-introspection-{name}-{}-{nonce}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);

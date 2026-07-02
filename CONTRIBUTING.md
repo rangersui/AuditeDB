@@ -1,6 +1,6 @@
 # Contributing
 
-AuditeDB is the db that listens — powered by the Elastik L5 Engine, with HTTP,
+AuditeDB is the db that listens — powered by the L5 Engine, with HTTP,
 CoAP, MQTT, SDK, and FFI adapters. The contribution model is intentionally
 small: one coherent change, one pull request.
 
@@ -62,12 +62,11 @@ cargo clippy --manifest-path bin/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path bin/Cargo.toml
 ```
 
-For SDK or header-policy work, also run the matching smoke checks:
+For Python SDK work, also run the matching smoke checks:
 
 ```
-python sdk/tests/test_tools.py
-python tools/header_policy_scan.py --self-test
-python tools/header_policy_scan.py --offline
+python -m compileall -q sdk/src
+$env:PYTHONPATH='sdk/src'; python -c "import l5; print(l5.__version__)"
 git diff --check
 ```
 
@@ -94,8 +93,7 @@ A version bump touches `core/Cargo.toml`, `core/Cargo.lock`,
 `bin/Cargo.toml`, `bin/Cargo.lock`, `ffi/Cargo.toml`, `ffi/Cargo.lock`,
 `sdk/pyproject.toml` in one commit. Current-facing README and SDK docs must
 agree with the version and product wording. Tag `vX.Y.Z` only after every
-manifest agrees, `RELEASE-NOTES-vX.Y.Z.md` exists, and package dry-runs report
-the same version.
+manifest agrees and package dry-runs report the same version.
 
 The release workflow publishes the Rust crate, PyPI wheels, and GitHub Release
 assets from the tag. It requires `CARGO_REGISTRY_TOKEN` for crates.io and PyPI

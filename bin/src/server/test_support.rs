@@ -157,7 +157,7 @@ pub(crate) fn test_engine_for_server_with_listen_slots(
 
 fn test_data_root(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
-        "elastik-bin-{label}-{}-{}",
+        "auditedb-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

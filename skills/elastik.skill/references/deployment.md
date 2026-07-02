@@ -8,29 +8,23 @@ explaining the minimum environment a user needs.
 AuditeDB needs one HMAC key. Tokens are optional gates.
 
 ```bash
-export ELASTIK_HOST=127.0.0.1
-export ELASTIK_PORT=3105
-export ELASTIK_BASE="http://${ELASTIK_HOST}:${ELASTIK_PORT}"
-export ELASTIK_DATA=./data
-export ELASTIK_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-export ELASTIK_WRITE_TOKEN="write-token"
-export ELASTIK_APPROVE_TOKEN="approve-token"
+export AUDITEDB_HOST=127.0.0.1
+export AUDITEDB_PORT=3105
+export AUDITEDB_BASE="http://${AUDITEDB_HOST}:${AUDITEDB_PORT}"
+export AUDITEDB_DATA=./data
+export AUDITEDB_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export AUDITEDB_WRITE_TOKEN="write-token"
+export AUDITEDB_APPROVE_TOKEN="approve-token"
 ```
 
-Then run one of the available entrypoints:
+Then run one of the available server entrypoints:
 
 ```bash
 # From a source checkout
-cargo run --manifest-path bin/Cargo.toml --bin elastik-core
+cargo run --manifest-path bin/Cargo.toml --bin auditedb
 
 # If the Rust binary is installed or built
-elastik-core
-
-# If the Python package is installed
-python -m elastik run \
-  --key "$ELASTIK_KEY" \
-  --write-token "$ELASTIK_WRITE_TOKEN" \
-  --approve-token "$ELASTIK_APPROVE_TOKEN"
+auditedb
 ```
 
 Use whichever entrypoint exists on the user's machine. The HTTP contract is the
@@ -39,13 +33,13 @@ same after the instance is running.
 ## Verify the instance
 
 ```bash
-curl -i "$ELASTIK_BASE/proc/version"
-curl -i "$ELASTIK_BASE/proc/worlds"
-curl -i "$ELASTIK_BASE/proc/df"
+curl -i "$AUDITEDB_BASE/proc/version"
+curl -i "$AUDITEDB_BASE/proc/worlds"
+curl -i "$AUDITEDB_BASE/proc/df"
 ```
 
 `/proc/version` is public and works without any token. `/proc/worlds` and
-`/proc/df` are read-gated when `ELASTIK_READ_TOKEN` is set; otherwise they are
+`/proc/df` are read-gated when `AUDITEDB_READ_TOKEN` is set; otherwise they are
 public too.
 
 `/proc/worlds` is plain text, one world per line. It is not JSON.
@@ -58,7 +52,7 @@ before retrying the boot.
 The bare root `GET /` returns a short hint:
 
 ```text
-elastik-core <version> (rust)
+auditedb <version> (rust)
 try: curl /proc/worlds
 ```
 
@@ -67,41 +61,41 @@ try: curl /proc/worlds
 Core address and data:
 
 ```text
-ELASTIK_HOST=127.0.0.1
-ELASTIK_PORT=3105
-ELASTIK_BASE=http://127.0.0.1:3105
-ELASTIK_DATA=./data
-ELASTIK_KEY=<secret hmac key>
+AUDITEDB_HOST=127.0.0.1
+AUDITEDB_PORT=3105
+AUDITEDB_BASE=http://127.0.0.1:3105
+AUDITEDB_DATA=./data
+AUDITEDB_KEY=<secret hmac key>
 ```
 
 Auth gates:
 
 ```text
-ELASTIK_READ_TOKEN=<optional read token>
-ELASTIK_WRITE_TOKEN=<write token for PUT/POST on ordinary namespaces>
-ELASTIK_APPROVE_TOKEN=<approve token for protected writes and all DELETEs>
+AUDITEDB_READ_TOKEN=<optional read token>
+AUDITEDB_WRITE_TOKEN=<write token for PUT/POST on ordinary namespaces>
+AUDITEDB_APPROVE_TOKEN=<approve token for protected writes and all DELETEs>
 ```
 
 Header policy:
 
 ```text
-ELASTIK_PERSIST_HEADERS=x-meta-*
-ELASTIK_DENY_HEADERS=cache-control
+AUDITEDB_PERSIST_HEADERS=x-meta-*
+AUDITEDB_DENY_HEADERS=cache-control
 ```
 
 Resource caps:
 
 ```text
-ELASTIK_MAX_WORLD_BYTES=67108864
-ELASTIK_MAX_STORAGE_BYTES=
-ELASTIK_MAX_MEMORY_BYTES=268435456
-ELASTIK_MAX_LISTEN_CONNECTIONS=1024
+AUDITEDB_MAX_WORLD_BYTES=67108864
+AUDITEDB_MAX_STORAGE_BYTES=
+AUDITEDB_MAX_MEMORY_BYTES=268435456
+AUDITEDB_MAX_LISTEN_CONNECTIONS=1024
 ```
 
 Trace:
 
 ```text
-ELASTIK_TRACE_PIPELINE=1
+AUDITEDB_TRACE_PIPELINE=1
 ```
 
 ## Token gates by namespace
@@ -143,7 +137,7 @@ are intentional.
 ## One writer per data directory
 
 AuditeDB holds a SQLite-backed writer lock on
-`ELASTIK_DATA/.elastik-writer-lock.sqlite3` for the lifetime of the process. A
+`AUDITEDB_DATA/.AuditeDB-writer-lock.sqlite3` for the lifetime of the process. A
 second AuditeDB process pointed at the same data directory fails to start with a
 lock error instead of silently corrupting state. The error includes a
 best-effort holder PID when the previous owner committed one before taking the
@@ -151,18 +145,18 @@ lock.
 
 This assumes a local filesystem. SQLite file locks are not a distributed
 coordination protocol, and NFS or other network filesystems with weak locking
-or caching semantics can break that assumption. Put `ELASTIK_DATA` on local
+or caching semantics can break that assumption. Put `AUDITEDB_DATA` on local
 storage, or use an external coordinator that is designed for distributed
 ownership.
 
-To serve a different universe, change `ELASTIK_DATA`.
+To serve a different universe, change `AUDITEDB_DATA`.
 
 ## Storage layout
 
-The core lays out one SQLite file per durable world under `ELASTIK_DATA`:
+The core lays out one SQLite file per durable world under `AUDITEDB_DATA`:
 
 ```text
-ELASTIK_DATA/
+AUDITEDB_DATA/
   <disk_name(world)>/
     universe.db
 ```
@@ -173,8 +167,8 @@ HTTP surface treats a world as a single key with a body and metadata.
 
 ## Deployment checklist
 
-1. Pick `ELASTIK_DATA`.
-2. Generate `ELASTIK_KEY`.
+1. Pick `AUDITEDB_DATA`.
+2. Generate `AUDITEDB_KEY`.
 3. Decide read/write/approve tokens.
 4. Start the instance.
 5. Verify `/proc/version`.

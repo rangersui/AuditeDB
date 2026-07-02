@@ -30,9 +30,8 @@ programmers find this annoying; AI co-authors thrive on it.
   reviewer scans them top-to-bottom rather than holding the whole
   module in working memory. A 200-line production module with 600
   lines of tests is one self-contained reviewable unit, not a budget
-  violation. (Reference precedent in this codebase:
-  `sdk/tests/e2e_blackbox.py` is several thousand lines and reviewed
-  one assertion at a time without trouble.)
+  violation. Large scenario tests remain acceptable when each assertion is
+  independently legible and production code stays reviewable.
 - **Slight overage of the production budget is acceptable when the
   maintainer has read the change in full and explicitly signed off.**
   The budget is "AI working memory", not arithmetic — 510-550 lines
@@ -56,103 +55,17 @@ paste it into the PR description so reviewers don't have to
 re-derive it. For files with both inline `#[cfg(test)]` snippets
 and a bottom `mod tests`, sum the production code by reading.
 
-### Diff-only review
+### Commit-level review
 
-Reviewers see only the diff, never the surrounding file. This is the
-optimal use of an AI context window: don't reload context that didn't
-change.
+Review the smallest coherent change that can stand on its own. A commit should
+have one reason to exist, a clear revert boundary, and validation evidence that
+matches its risk. When a mechanical rename, generated binding refresh, or
+archive cleanup exceeds the normal diff budget, say that explicitly in the
+commit message or review note so reviewers know to verify mechanics rather than
+read it as new logic.
 
-Concrete consequence: **cascading PRs are the natural form, not a
-workaround**. PR N's base branch is PR N-1, not master. Each PR's diff
-is one self-contained increment. The reviewer never sees PR 0's lock
-change while reviewing PR 4's pipeline extraction; only the pipeline
-extraction.
-
-```
-master
-└─ PR 0 (10 lines)
-    └─ PR 1 (300 lines, base = PR 0)
-        └─ PR 2 (150 lines, base = PR 1)
-            └─ PR 3 (300 lines, base = PR 2)
-                └─ PR 4 (500 lines, base = PR 3)
-```
-
-Without cascading, PR 4's diff = PR 0 + 1 + 2 + 3 + 4 = 1260 lines = AI
-loses the thread. With cascading each PR is an independent 500-line
-review.
-
-### Cascade stack depth: 3-4 levels max
-
-Cascading is not free. To review PR N a reviewer (human or AI) has
-to first mentally accept PR 0 → PR 1 → ... → PR N-1, then read PR N's
-diff against that imagined state. **Each level adds one item to the
-mental stack.** Past 3-4 levels the stack overflows for the same
-reason a single 1500-line PR overflows: working memory runs out.
-
-The cascade form does not eliminate the budget; it changes what the
-budget is spent on. Per-PR diff stays at 500 lines, but cumulative
-stack-depth context is bounded too.
-
-**The rule**:
-
-- **Soft cap: 3 levels**. Comfortable.
-- **Hard cap: 4 levels**. Acceptable when the bottom levels are
-  small or trivial (e.g., one-line `chore/visibility-fix`).
-- **Above 4: stop adding new PRs. Drain the stack first.**
-
-**Draining**:
-
-1. Merge the **bottom** of the stack (the level closest to master,
-   typically the first-written PR) into master.
-2. The level above it now has its base auto-redirected to master and
-   becomes depth 1.
-3. Keep merging upward until the stack is shallow enough.
-4. Then resume opening new PRs.
-
-```
-Before drain:
-  master → PR 0 → PR 1 → PR 2 → PR 3 → PR 4 → PR 5
-                                              (depth 6, blown)
-
-After merging PR 0, 1, 2:
-  master(includes 0/1/2) → PR 3 → PR 4 → PR 5
-                                              (depth 3, fits)
-```
-
-This is why the merge order matches the cascade order: oldest /
-deepest-base first. Trying to merge a higher-up PR while a lower-down
-PR is still open creates a divergent base that GitHub will not
-auto-redirect cleanly.
-
-### Stack repair exception
-
-The 3-4 level cap is a default law for new feature work, not a reason
-to drop safety fixes during stack recovery. A deeper merge cascade is
-allowed only when all of these are true:
-
-- the user explicitly authorizes the exception in the current work;
-- the work is repairing, draining, or reconciling an already-existing
-  stack, or landing a base process/AGENTS change required before the
-  rest of the stack can be evaluated;
-- no new feature scope is added while the exception is open;
-- the repair lands each fix at the lowest affected layer and propagates
-  upward by merge cascade, never by squash;
-- a durable repair ledger records the exact branches, validation
-  commands, scientist-lens reviewers, QA/enforcement reviewer, and the
-  fresh round that cleared P0-P2.
-
-The exception waives stack depth only. It does not waive type seals,
-per-layer reviewability, validation evidence, or Fleet Review
-Convergence.
-
-### Pure-mv PRs
-
-A PR that mechanically moves N lines from one file to another counts
-cognitive surface as **insertions**, not total churn. Deletions are
-byte-identical to insertions and verifiable by comparison; reviewers do
-not re-read them as new logic. PR description must declare "pure mv"
-explicitly so reviewers prioritize structural verification over
-line-count arithmetic.
+Do not use history shape as a substitute for correctness. Linear commits are
+preferred for solo maintenance; split only when it helps review or rollback.
 
 ## Architecture Invariants
 
@@ -219,10 +132,10 @@ These are not preferences. They are the contract every change must keep.
   dance hits a double failure (commit append fails AND the
   subsequent failure-event append also fails — e.g. persistent
   DiskFull), trace must surface BOTH failures via aux lines, not
-  elide the second. PR 0's `delete_commit_failed` event closed the
-  chain ambiguity *when the event itself can be written*; the trace
-  closes the remaining ambiguity *when even the event-of-failure
-  cannot be written*. `eprintln!` warnings stay (PR 0 contract) so
+  elide the second. The `delete_commit_failed` event closes the chain
+  ambiguity *when the event itself can be written*; the trace closes
+  the remaining ambiguity *when even the event-of-failure cannot be
+  written*. `eprintln!` warnings stay as an operator contract so
   operators reading stderr without trace enabled still see both
   failures.
 
@@ -299,7 +212,7 @@ Industrial safety has run this exact play for decades: Lockout /
 Tagout (LOTO).
 
 ```
-LOTO                    elastik
+LOTO                    auditedb
 ---------------------------------------------
 high-voltage line   =   the world's .db file
 energizing the line =   DELETE removing the file
@@ -347,7 +260,7 @@ sqlite-connection-pool v6 Bug 42. A cache cap fell back to
 the v1 fd race that five rounds of review had closed. Seven
 rounds to learn: safety mechanisms don't have off switches.
 
-LOTO took the industry decades and a body count. elastik took seven
+LOTO took the industry decades and a body count. auditedb took seven
 review rounds and 47 bugs. Same lesson, smaller blast radius, but the
 same reason this rule has its own section in the agent manual: every
 "just this once, fall back" is the bug that re-energizes the line.
@@ -664,66 +577,38 @@ then the frame is poured concrete.
 Design review exists to catch frame errors before implementation. Keep
 those fights in the plan while the code is still cheap to change.
 
-## Implementation Stack Discipline
+## Implementation Change Discipline
 
-Behavior-level implementation follows the reviewed plan as tiny stacked
-PRs. Each implementation PR is based on the previous layer, not on
-master, until the stack is drained. A layer must have one concern, a
-small reviewable diff, and a base that already passed review. If the
-next change would make the stack deeper than the cascade limits above,
-drain from the bottom before adding more layers.
+Behavior-level implementation follows the reviewed plan as small,
+revertible commits. A commit has one concern, a clear rollback boundary,
+and a validation command that matches its risk. If a change is too large
+to review in one pass, split by behaviour, boundary, or generated-vs-hand
+written work. Do not split merely to make history look tidy.
 
-Implementation PR bodies record:
+Commit messages or review notes record:
 
-- base branch / prior layer;
-- exact plan section implemented;
-- production-line diff size;
+- exact plan section implemented, when a plan exists;
+- production-line diff size when it is near or over the normal budget;
 - tests or checks run;
-- review round ledger: scientist lenses used, QA/enforcement reviewer,
-  confirmed P0–P2 findings, and the fresh round that cleared them.
+- review ledger for substantive changes: reviewer lenses used,
+  QA/enforcement pass, confirmed blocker findings, and the fresh pass
+  that cleared them.
 
-No implementation PR may skip the prior layer's unresolved P0–P2
-findings by changing base or batching the next layer on top.
+Do not use a new commit to bury unresolved blocker findings from the
+previous one. Fix them, record the validation, then continue.
 
-## Fleet Review Convergence Gate
+## Review Gate
 
-From this rule onward, every substantive PR and every substantive
-design-document change goes through multi-agent Monte Carlo review
-rounds: independent blind scientist-lens reviewers (different
-failure-mode assignments, no shared context, no author reasoning) plus
-a separate QA/enforcement reviewer that checks the process itself
-against this file and the active skills. Behavior-level plans and
-semantic PRs include at least one Popper/Precondition reviewer whose job
-is to falsify the frame before implementation. For purely mechanical
-changes, the QA reviewer records why that precondition pass is not
-needed. P0–P2 findings get two
-adversarial verifiers. The merge/freeze gate is a **full fresh round
-with zero confirmed P0–P2**. P3 notes are fixed on the spot with the
-reviewer's prescribed wording or explicitly ledgered.
+Substantive behavior, security, storage, FFI, release, or architecture changes
+need independent review before being called ready. Use subagents when they add
+real independence: one reviewer for the change semantics, one for naming/docs or
+release drift when relevant, and one QA/enforcement pass against this file and
+active skills. Mechanical generated changes may use a narrower QA pass, but the
+verification command must still be recorded.
 
-Every gated PR or design freeze records its review evidence in the PR
-body, tracked design note, or another durable review artifact. The
-ledger names the scientist lenses used, the QA/enforcement reviewer,
-the active skills checked, confirmed P0–P2 findings, verifier evidence
-for those findings, fixes applied, and the fresh round that cleared
-them.
-
-Round hygiene, non-negotiable:
-
-- Fresh agents every round — reviewers never see prior judgments
-  (independence is the entry ticket; correlated reviewers are an echo).
-- Briefs carry facts (file coordinates, neutral intent statements, a
-  minimal known-accepted list only when needed to avoid re-litigating
-  closed P3/spec-noise) — never the author's self-assessment. This is
-  a deliberate independence tradeoff, not pure blindness.
-- Conflicting verdicts between verifiers are adjudicated by reading the
-  source, never by averaging agents.
-- Each round's repair text is the next round's primary target — docs and
-  claims get ground down until they are exactly true.
-
-The purpose is mechanical: narrower artifacts plus fresh lenses make
-review evidence auditable, and the same loop at design stage makes
-Design First enforceable rather than aspirational.
+Confirmed blocker findings stop the change. Fix them, then run a fresh pass
+over the current tree. Minor notes can be fixed immediately or recorded as
+follow-up.
 
 ## Endpoint Change Checklist
 
@@ -787,14 +672,12 @@ looking for style issues:
   used to prove integrity should use `auth::ct_eq` or equivalent constant-time
   comparison. Empty or whitespace-only integrity keys must fail at startup.
 - Header semantics: persisted headers are checked on input and checked again
-  before replay. Any Rust denylist change must keep Python SDK exact entries
-  and prefix rules in parity.
+  before replay. Any Rust denylist change must keep adapter and SDK behaviour in parity.
 - Path semantics: if core rejects a path form, SDK clients should reject it
   before network I/O too. Include encoded dot segments, empty segments,
   namespace roots, and reserved `/proc/*` exceptions in tests.
 - Cross-surface parity: when a status or limit changes in HTTP, check CoAP
-  mappings, Python SDK path/proc allowlists, JS SDK assumptions, README, and
-  `.env.example`.
+  mappings, Python SDK behaviour, README, and `.env.example`.
 - Resource caps: every new long-lived connection, queue, replay ring, datagram
   in-flight set, or management scan needs a configured cap, an explicit
   overload response, and a regression test for the saturated path.
@@ -808,6 +691,4 @@ looking for style issues:
   `cargo test --manifest-path core/Cargo.toml`. For binary-adapter changes,
   add `cargo fmt --manifest-path bin/Cargo.toml -- --check`,
   `cargo clippy --manifest-path bin/Cargo.toml --all-targets -- -D warnings`,
-  and `cargo test --manifest-path bin/Cargo.toml`. Also run the SDK smoke tests
-  touched by the change, `python tools/header_policy_scan.py --offline` when
-  header policy is involved, and `git diff --check`.
+  and `cargo test --manifest-path bin/Cargo.toml`. Also run the Python L5 smoke test when SDK/FFI packaging is involved and `git diff --check`.

@@ -88,7 +88,7 @@ pub(crate) fn mqtt_max_packet_default(max_world_bytes: usize) -> usize {
 
 #[cfg(feature = "coap")]
 pub(crate) fn coap_bind_from_env() -> Option<(String, u16)> {
-    let raw = std::env::var("ELASTIK_COAP_PORT").ok()?;
+    let raw = std::env::var("AUDITEDB_COAP_PORT").ok()?;
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
@@ -96,18 +96,18 @@ pub(crate) fn coap_bind_from_env() -> Option<(String, u16)> {
     let port: u16 = match raw.parse() {
         Ok(port) => port,
         Err(_) => {
-            eprintln!("  warning: invalid ELASTIK_COAP_PORT={raw:?}; SCoAP/UDP surface disabled.");
+            eprintln!("  warning: invalid AUDITEDB_COAP_PORT={raw:?}; SCoAP/UDP surface disabled.");
             return None;
         }
     };
-    let host = std::env::var("ELASTIK_COAP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let host = std::env::var("AUDITEDB_COAP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     Some((host, port))
 }
 
 #[cfg(feature = "mqtt")]
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn mqtt_bind_from_env(default_host: &str) -> Option<(String, u16)> {
-    let raw = std::env::var("ELASTIK_MQTT_PORT").unwrap_or_else(|_| "1883".into());
+    let raw = std::env::var("AUDITEDB_MQTT_PORT").unwrap_or_else(|_| "1883".into());
     let raw = raw.trim();
     if raw.is_empty() || raw == "0" {
         return None;
@@ -115,11 +115,11 @@ pub(crate) fn mqtt_bind_from_env(default_host: &str) -> Option<(String, u16)> {
     let port: u16 = match raw.parse() {
         Ok(port) => port,
         Err(_) => {
-            eprintln!("  warning: invalid ELASTIK_MQTT_PORT={raw:?}; MQTT surface disabled.");
+            eprintln!("  warning: invalid AUDITEDB_MQTT_PORT={raw:?}; MQTT surface disabled.");
             return None;
         }
     };
-    let host = std::env::var("ELASTIK_MQTT_HOST").unwrap_or_else(|_| default_host.to_owned());
+    let host = std::env::var("AUDITEDB_MQTT_HOST").unwrap_or_else(|_| default_host.to_owned());
     Some((host, port))
 }
 
@@ -165,8 +165,8 @@ mod tests {
     impl CoapEnvGuard {
         fn capture() -> Self {
             Self {
-                host: std::env::var("ELASTIK_COAP_HOST").ok(),
-                port: std::env::var("ELASTIK_COAP_PORT").ok(),
+                host: std::env::var("AUDITEDB_COAP_HOST").ok(),
+                port: std::env::var("AUDITEDB_COAP_PORT").ok(),
             }
         }
     }
@@ -175,12 +175,12 @@ mod tests {
     impl Drop for CoapEnvGuard {
         fn drop(&mut self) {
             match &self.host {
-                Some(v) => std::env::set_var("ELASTIK_COAP_HOST", v),
-                None => std::env::remove_var("ELASTIK_COAP_HOST"),
+                Some(v) => std::env::set_var("AUDITEDB_COAP_HOST", v),
+                None => std::env::remove_var("AUDITEDB_COAP_HOST"),
             }
             match &self.port {
-                Some(v) => std::env::set_var("ELASTIK_COAP_PORT", v),
-                None => std::env::remove_var("ELASTIK_COAP_PORT"),
+                Some(v) => std::env::set_var("AUDITEDB_COAP_PORT", v),
+                None => std::env::remove_var("AUDITEDB_COAP_PORT"),
             }
         }
     }
@@ -189,8 +189,8 @@ mod tests {
     impl MqttEnvGuard {
         fn capture() -> Self {
             Self {
-                host: std::env::var("ELASTIK_MQTT_HOST").ok(),
-                port: std::env::var("ELASTIK_MQTT_PORT").ok(),
+                host: std::env::var("AUDITEDB_MQTT_HOST").ok(),
+                port: std::env::var("AUDITEDB_MQTT_PORT").ok(),
             }
         }
     }
@@ -199,12 +199,12 @@ mod tests {
     impl Drop for MqttEnvGuard {
         fn drop(&mut self) {
             match &self.host {
-                Some(v) => std::env::set_var("ELASTIK_MQTT_HOST", v),
-                None => std::env::remove_var("ELASTIK_MQTT_HOST"),
+                Some(v) => std::env::set_var("AUDITEDB_MQTT_HOST", v),
+                None => std::env::remove_var("AUDITEDB_MQTT_HOST"),
             }
             match &self.port {
-                Some(v) => std::env::set_var("ELASTIK_MQTT_PORT", v),
-                None => std::env::remove_var("ELASTIK_MQTT_PORT"),
+                Some(v) => std::env::set_var("AUDITEDB_MQTT_PORT", v),
+                None => std::env::remove_var("AUDITEDB_MQTT_PORT"),
             }
         }
     }
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn resource_cap_env_zero_falls_back_to_default() {
         let _guard = env_lock().lock().unwrap();
-        let key = format!("ELASTIK_TEST_ZERO_CAP_{}", std::process::id());
+        let key = format!("AUDITEDB_TEST_ZERO_CAP_{}", std::process::id());
         std::env::set_var(&key, "0");
         assert_eq!(env_nonzero_usize(&key, 7), Ok(7));
         std::env::set_var(&key, "9");
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn resource_cap_env_invalid_values_fail_loud() {
         let _guard = env_lock().lock().unwrap();
-        let key = format!("ELASTIK_TEST_INVALID_CAP_{}", std::process::id());
+        let key = format!("AUDITEDB_TEST_INVALID_CAP_{}", std::process::id());
         std::env::remove_var(&key);
         assert_eq!(env_usize(&key, 7), Ok(7));
         std::env::set_var(&key, "11");
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn optional_storage_quota_zero_is_unlimited() {
         let _guard = env_lock().lock().unwrap();
-        let key = format!("ELASTIK_TEST_STORAGE_CAP_{}", std::process::id());
+        let key = format!("AUDITEDB_TEST_STORAGE_CAP_{}", std::process::id());
         std::env::remove_var(&key);
         assert_eq!(env_optional_usize(&key), Ok(None));
         std::env::set_var(&key, "");
@@ -307,22 +307,22 @@ mod tests {
     fn coap_bind_is_opt_in_by_port_env() {
         let _lock = env_lock().lock().unwrap();
         let _guard = CoapEnvGuard::capture();
-        std::env::remove_var("ELASTIK_COAP_HOST");
-        std::env::remove_var("ELASTIK_COAP_PORT");
+        std::env::remove_var("AUDITEDB_COAP_HOST");
+        std::env::remove_var("AUDITEDB_COAP_PORT");
 
         assert_eq!(coap_bind_from_env(), None);
 
-        std::env::set_var("ELASTIK_COAP_HOST", "0.0.0.0");
+        std::env::set_var("AUDITEDB_COAP_HOST", "0.0.0.0");
         assert_eq!(coap_bind_from_env(), None);
 
-        std::env::set_var("ELASTIK_COAP_PORT", "5683");
+        std::env::set_var("AUDITEDB_COAP_PORT", "5683");
         assert_eq!(coap_bind_from_env(), Some(("0.0.0.0".to_owned(), 5683)));
 
-        std::env::set_var("ELASTIK_COAP_HOST", "127.0.0.1");
-        std::env::set_var("ELASTIK_COAP_PORT", " ");
+        std::env::set_var("AUDITEDB_COAP_HOST", "127.0.0.1");
+        std::env::set_var("AUDITEDB_COAP_PORT", " ");
         assert_eq!(coap_bind_from_env(), None);
 
-        std::env::set_var("ELASTIK_COAP_PORT", "not-a-port");
+        std::env::set_var("AUDITEDB_COAP_PORT", "not-a-port");
         assert_eq!(coap_bind_from_env(), None);
     }
 
@@ -331,25 +331,25 @@ mod tests {
     fn mqtt_bind_defaults_to_port_1883_and_can_be_disabled() {
         let _lock = env_lock().lock().unwrap();
         let _guard = MqttEnvGuard::capture();
-        std::env::remove_var("ELASTIK_MQTT_HOST");
-        std::env::remove_var("ELASTIK_MQTT_PORT");
+        std::env::remove_var("AUDITEDB_MQTT_HOST");
+        std::env::remove_var("AUDITEDB_MQTT_PORT");
 
         assert_eq!(
             mqtt_bind_from_env("127.0.0.1"),
             Some(("127.0.0.1".to_owned(), 1883))
         );
 
-        std::env::set_var("ELASTIK_MQTT_HOST", "0.0.0.0");
-        std::env::set_var("ELASTIK_MQTT_PORT", "1884");
+        std::env::set_var("AUDITEDB_MQTT_HOST", "0.0.0.0");
+        std::env::set_var("AUDITEDB_MQTT_PORT", "1884");
         assert_eq!(
             mqtt_bind_from_env("127.0.0.1"),
             Some(("0.0.0.0".to_owned(), 1884))
         );
 
-        std::env::set_var("ELASTIK_MQTT_PORT", "0");
+        std::env::set_var("AUDITEDB_MQTT_PORT", "0");
         assert_eq!(mqtt_bind_from_env("127.0.0.1"), None);
 
-        std::env::set_var("ELASTIK_MQTT_PORT", "not-a-port");
+        std::env::set_var("AUDITEDB_MQTT_PORT", "not-a-port");
         assert_eq!(mqtt_bind_from_env("127.0.0.1"), None);
     }
 

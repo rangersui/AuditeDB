@@ -8,14 +8,14 @@ use std::{
 
 pub(super) fn info(args: fmt::Arguments<'_>) {
     #[cfg(feature = "unstable-engine")]
-    tracing::info!(target: "elastik_core::mqtt", "{}", args);
+    tracing::info!(target: "l5::mqtt", "{}", args);
     #[cfg(not(feature = "unstable-engine"))]
     eprintln!("{}", args);
 }
 
 pub(super) fn warn(args: fmt::Arguments<'_>) {
     #[cfg(feature = "unstable-engine")]
-    tracing::warn!(target: "elastik_core::mqtt", "{}", args);
+    tracing::warn!(target: "l5::mqtt", "{}", args);
     #[cfg(not(feature = "unstable-engine"))]
     eprintln!("{}", args);
 }

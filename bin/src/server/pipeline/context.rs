@@ -7,7 +7,7 @@ use axum::{
     http::{StatusCode, Uri},
     response::Response,
 };
-use elastik_core::ValidatedWorldPath;
+use l5::ValidatedWorldPath;
 
 use super::{phase_summary, ErrorReason, Phase};
 
@@ -50,19 +50,19 @@ impl RawQuery {
 
 static PIPELINE_TRACE: AtomicBool = AtomicBool::new(false);
 
-/// Read `ELASTIK_TRACE_PIPELINE` once and freeze the result for the
+/// Read `AUDITEDB_TRACE_PIPELINE` once and freeze the result for the
 /// process lifetime. Called from `main()` after env is loaded. The
 /// flag is process-global because per-request trace state would add
 /// overhead even when the feature is off, and the use case here is
 /// "running the binary with trace on for a debug session".
 pub(crate) fn init_trace_from_env() {
     let enabled = matches!(
-        std::env::var("ELASTIK_TRACE_PIPELINE").as_deref(),
+        std::env::var("AUDITEDB_TRACE_PIPELINE").as_deref(),
         Ok("1") | Ok("true") | Ok("yes") | Ok("on")
     );
     PIPELINE_TRACE.store(enabled, Ordering::Relaxed);
     if enabled {
-        eprintln!("elastik-core: pipeline trace ENABLED via ELASTIK_TRACE_PIPELINE");
+        eprintln!("auditedb: pipeline trace ENABLED via AUDITEDB_TRACE_PIPELINE");
     }
 }
 

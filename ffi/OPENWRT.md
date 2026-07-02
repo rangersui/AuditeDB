@@ -3,10 +3,10 @@
 The hosted FFI artifact matrix builds the targets GitHub can actually run and
 smoke today:
 
-- Linux x64: `libelastik_ffi.so`
-- Linux ARM64: `libelastik_ffi.so`
-- macOS ARM64: `libelastik_ffi.dylib`
-- Windows x64: `elastik_ffi.dll`
+- Linux x64: `libl5_ffi.so`
+- Linux ARM64: `libl5_ffi.so`
+- macOS ARM64: `libl5_ffi.dylib`
+- Windows x64: `l5_ffi.dll`
 
 OpenWrt/MIPS is a cross-toolchain target, not another hosted runner row. The
 stable Rust toolchain recognises MIPS target triples such as
@@ -23,7 +23,7 @@ An OpenWrt/MIPS FFI artifact needs its own stack layer with these proofs:
 2. Build Rust standard library support for that target, or use a toolchain that
    provides it.
 3. Provide the matching OpenWrt SDK C compiler and linker for bundled SQLite.
-4. Build `elastik-ffi` as a `cdylib` for that target.
+4. Build `l5-ffi` as a `cdylib` for that target.
 5. Generate host-side UniFFI language bindings from the resulting library.
 6. Smoke the library under QEMU or on real hardware before attaching it to a
    release.

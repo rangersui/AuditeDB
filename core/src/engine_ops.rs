@@ -809,7 +809,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "elastik-engine-ops-{name}-{}-{nonce}",
+            "auditedb-engine-ops-{name}-{}-{nonce}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);

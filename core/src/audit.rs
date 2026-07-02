@@ -1857,7 +1857,7 @@ mod tests {
     #[test]
     fn startup_verification_rejects_tampered_world() {
         let root =
-            std::env::temp_dir().join(format!("elastik-audit-startup-{}", std::process::id()));
+            std::env::temp_dir().join(format!("auditedb-audit-startup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let key = test_key();
         world::write_with_audit(&root, &validated("home/a"), b"abc", "text/plain", &[], &key)

@@ -1,25 +1,25 @@
 ---
-name: elastik
-description: "Deploy and use AuditeDB, powered by the Elastik L5 Engine and shipped as a Rust library + binary on SQLite. Use this skill whenever the user mentions AuditeDB or elastik, wants to start a local or network instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), embed the protocol-neutral `Engine` library directly in a Rust project, or evaluate whether an HTTP subsystem should reuse AuditeDB instead of reinventing health/metrics/version/auth/audit/static serving."
+name: AuditeDB
+description: "Deploy and use AuditeDB, powered by the L5 Engine and shipped as a Rust library + binary on SQLite. Use this skill whenever the user mentions AuditeDB or AuditeDB, wants to start a local or network instance, configure keys/tokens/data paths/header policy, inspect /proc/* introspection endpoints, PUT/GET/HEAD/POST/DELETE worlds or LISTEN to /listen/* SSE streams with curl, publish static HTML worlds, use ETags/CAS/audit chains, route by namespace (home/etc/lib/boot/usr/var durable + tmp/dev/sys transient + proc generated), embed the protocol-neutral `Engine` library directly in a Rust project, or evaluate whether an HTTP subsystem should reuse AuditeDB instead of reinventing health/metrics/version/auth/audit/static serving."
 ---
 
 # AuditeDB
 
-**the db that listens.** Powered by the Elastik L5 Engine. Bytes at paths + versions + HMAC audit chain
+**the db that listens.** Powered by the L5 Engine. Bytes at paths + versions + HMAC audit chain
 + four-tier auth + change subscriptions. Five verbs (read · replace · append ·
 delete · subscribe), one SQLite store.
 
 Two ways to use it:
 
-- **Binary** (`elastik-core`): HTTP + CoAP server with `curl` as the control
+- **Binary** (`auditedb`): HTTP + CoAP server with `curl` as the control
   surface. This skill covers this mode.
-- **Library** (`elastik_core` crate, `unstable-engine` feature): embed the
+- **Library** (`l5` crate, `unstable-engine` feature): embed the
   protocol-neutral `Engine` directly in a Rust process; bring your own wire
   shape. In minimal library-only builds it has no HTTP, no CoAP, no env vars,
   no sockets — see the crate-level rustdoc and `core/src/engine.rs` for the
   public surface.
 
-AuditeDB (the `elastik-core` binary) is a flat HTTP key-value store with an introspection
+AuditeDB (the `auditedb` binary) is a flat HTTP key-value store with an introspection
 plane. The key prefix is policy.
 
 ```text
@@ -55,9 +55,9 @@ are version clocks. `/proc/*` is the status surface.
 1. If no AuditeDB instance is running, deploy one first. Startup verifies all
    durable audit chains before the process listens; see `references/deployment.md`
    if boot fails with a chain-broken error.
-2. Set `ELASTIK_BASE`, usually `http://127.0.0.1:3105`.
-3. Probe with `curl -i "$ELASTIK_BASE/proc/version"`. No read token needed.
-4. The bare root `GET /` returns a hint, e.g. `elastik-core <version> (rust)\ntry: curl /proc/worlds\n`.
+2. Set `AUDITEDB_BASE`, usually `http://127.0.0.1:3105`.
+3. Probe with `curl -i "$AUDITEDB_BASE/proc/version"`. No read token needed.
+4. The bare root `GET /` returns a hint, e.g. `auditedb <version> (rust)\ntry: curl /proc/worlds\n`.
 5. Use HTTP primitives directly: method, path, headers, body, status.
 6. Do not invent JSON envelopes for core world operations.
 7. When serving UI, PUT HTML/CSS/JS as worlds.
@@ -125,10 +125,10 @@ Load only the reference needed for the task:
 
 ## Deploy workflow
 
-1. Pick a data directory with `ELASTIK_DATA`.
-2. Generate `ELASTIK_KEY`.
+1. Pick a data directory with `AUDITEDB_DATA`.
+2. Generate `AUDITEDB_KEY`.
 3. Decide tokens: read, write, approve.
-4. Start the `elastik-core` process from source, installed binary, or Python package.
+4. Start the `auditedb` process from source or an installed binary.
 5. Verify `/proc/version`.
 6. PUT a small test world and HEAD it.
 
@@ -141,7 +141,7 @@ When publishing a file into AuditeDB:
 2. Pick an accurate `Content-Type`.
 3. Add `Content-Language` for human-readable pages.
 4. Add `X-Meta-Summary` only when custom metadata is enabled with
-   `ELASTIK_PERSIST_HEADERS=x-meta-*`.
+   `AUDITEDB_PERSIST_HEADERS=x-meta-*`.
 5. Use `Cache-Control: no-cache` for mutable HTML pages.
 6. PUT with the write token from the environment, never hardcode tokens.
 7. Verify with `HEAD` (or `curl -I`).
@@ -156,16 +156,16 @@ public         /proc/version, root /
 ```
 
 The PUT below illustrates the typical write shape. `X-Meta-Summary` only
-round-trips when the instance is started with `ELASTIK_PERSIST_HEADERS=x-meta-*`;
+round-trips when the instance is started with `AUDITEDB_PERSIST_HEADERS=x-meta-*`;
 otherwise omit it or treat it as non-persistent write-time advice.
 
 ```bash
-export ELASTIK_BASE="http://127.0.0.1:3105"
-export ELASTIK_WORLD="/home/report.html"
-export ELASTIK_WRITE_TOKEN="$TOKEN"
+export AUDITEDB_BASE="http://127.0.0.1:3105"
+export AUDITEDB_WORLD="/home/report.html"
+export AUDITEDB_WRITE_TOKEN="$TOKEN"
 
-curl -i -X PUT "$ELASTIK_BASE$ELASTIK_WORLD" \
-  -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
+curl -i -X PUT "$AUDITEDB_BASE$AUDITEDB_WORLD" \
+  -H "Authorization: Bearer $AUDITEDB_WRITE_TOKEN" \
   -H "Content-Type: text/html; charset=utf-8" \
   -H "Content-Language: en" \
   -H "Cache-Control: no-cache" \
@@ -180,7 +180,7 @@ curl -i -X PUT "$ELASTIK_BASE$ELASTIK_WORLD" \
 403  token tier too low for this namespace
 404  world missing or wrong namespace
 412  stale If-Match ETag (CAS lost a race); re-read then retry
-413  body exceeds ELASTIK_MAX_WORLD_BYTES (64 MiB default)
+413  body exceeds AUDITEDB_MAX_WORLD_BYTES (64 MiB default)
 416  Range starts past EOF
 503  transient listen/SQLite busy condition; respect Retry-After when present
 507  durable quota, memory quota, or filesystem full

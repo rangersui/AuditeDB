@@ -66,7 +66,7 @@ pub(crate) async fn world_handler(
     // `pipeline::run`. PR 4c retired the GET/HEAD short-circuit and
     // the legacy `handle_*` write handlers; all five real verbs now
     // share the FSM driver and produce trace output under
-    // `ELASTIK_TRACE_PIPELINE=1`.
+    // `AUDITEDB_TRACE_PIPELINE=1`.
     //
     // `req_id` comes from `add_server_response_headers` middleware via
     // request extensions -- same id stamped on `x-request-id` so
@@ -416,9 +416,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(proc_version.status(), StatusCode::OK);
-        assert!(response_text(proc_version)
-            .await
-            .starts_with("elastik-core "));
+        assert!(response_text(proc_version).await.starts_with("auditedb "));
 
         let proc_reserved_options = app
             .clone()

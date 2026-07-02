@@ -1,8 +1,8 @@
 ---
-name: elastik-architecture
+name: AuditeDB-architecture
 description: >
   Use this skill when making architectural decisions about AuditeDB: whether a
-  capability belongs in the Elastik engine library, in the HTTP/CoAP/MQTT
+  capability belongs in the L5 engine library, in the HTTP/CoAP/MQTT
   adapter binary, in a worker, in a client, or in an HTTP world. Trigger when the user
   asks whether AuditeDB should execute code, validate formats, proxy or rewrite
   content, add RPC, become synchronous, add a control-plane endpoint, absorb a
@@ -10,10 +10,10 @@ description: >
   listen surfaces, expose new public Engine API on the library side, add HTTP
   semantics to the library, or push storage primitives into the adapter. This
   is the mental-model skill, not the operational cookbook; for commands,
-  deployment, curl examples, tokens, paths, and headers, use the elastik skill.
+  deployment, curl examples, tokens, paths, and headers, use the AuditeDB skill.
 ---
 
-# AuditeDB Architecture: Design Principles for the Elastik L5 Engine
+# AuditeDB Architecture: Design Principles for the L5 Engine
 
 ## Why This Skill Exists
 
@@ -21,7 +21,7 @@ AuditeDB ships as two Cargo packages:
 
 ```text
 core/                       bin/
-elastik_core (library)      elastik-core (binary)
+l5 (library)      auditedb (binary)
 ─────────────────────       ─────────────────────
 Engine + storage + audit    HTTP + CoAP + MQTT + SSE + env
 + subscription stream       + tokio runtime + signals
@@ -52,7 +52,7 @@ When the answer is "something else," the capability belongs in a separate
 process, client, browser, worker, adapter, or — if the question is about the
 binary — *outside the engine library*.
 
-Use this skill to prevent architectural drift. Use the regular `elastik` skill
+Use this skill to prevent architectural drift. Use the regular `AuditeDB` skill
 for hands-on operation: deployment, curl, /proc, /listen, auth tokens, headers,
 world navigation, and Rust library embedding.
 
@@ -424,7 +424,7 @@ Two tests, one per layer.
 
 ### Test 1 — Adapter integrity
 
-Remove the worker. Remove all clients. Leave only the `elastik-core` binary
+Remove the worker. Remove all clients. Leave only the `auditedb` binary
 running.
 
 ```text

@@ -111,22 +111,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "elastik-core"
-version = "8.3.0"
-dependencies = [
- "bytes",
- "dashmap",
- "getrandom",
- "hex",
- "hmac",
- "percent-encoding",
- "rusqlite",
- "sha2",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,6 +167,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
 dependencies = [
  "typenum",
+]
+
+[[package]]
+name = "l5"
+version = "8.3.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "getrandom",
+ "hex",
+ "hmac",
+ "percent-encoding",
+ "rusqlite",
+ "sha2",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

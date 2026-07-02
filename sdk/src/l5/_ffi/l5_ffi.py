@@ -46,14 +46,14 @@ class _UniffiRustBuffer(ctypes.Structure):
 
     @staticmethod
     def alloc(size):
-        return _uniffi_rust_call(_UniffiLib.ffi_elastik_ffi_rustbuffer_alloc, size)
+        return _uniffi_rust_call(_UniffiLib.ffi_l5_ffi_rustbuffer_alloc, size)
 
     @staticmethod
     def reserve(rbuf, additional):
-        return _uniffi_rust_call(_UniffiLib.ffi_elastik_ffi_rustbuffer_reserve, rbuf, additional)
+        return _uniffi_rust_call(_UniffiLib.ffi_l5_ffi_rustbuffer_reserve, rbuf, additional)
 
     def free(self):
-        return _uniffi_rust_call(_UniffiLib.ffi_elastik_ffi_rustbuffer_free, self)
+        return _uniffi_rust_call(_UniffiLib.ffi_l5_ffi_rustbuffer_free, self)
 
     def __str__(self):
         return "_UniffiRustBuffer(capacity={}, len={}, data={})".format(
@@ -473,79 +473,79 @@ def _uniffi_check_contract_api_version(lib):
     # Get the bindings contract version from our ComponentInterface
     bindings_contract_version = 30
     # Get the scaffolding contract version by calling the into the dylib
-    scaffolding_contract_version = lib.ffi_elastik_ffi_uniffi_contract_version()
+    scaffolding_contract_version = lib.ffi_l5_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version:
         raise InternalError("UniFFI contract version mismatch: try cleaning and rebuilding your project")
 
 def _uniffi_check_api_checksums(lib):
-    if lib.uniffi_elastik_ffi_checksum_func_ffi_engine_boundary() != 34428:
+    if lib.uniffi_l5_ffi_checksum_func_ffi_engine_boundary() != 53005:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_func_ffi_version() != 33033:
+    if lib.uniffi_l5_ffi_checksum_func_ffi_version() != 52695:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_constructor_ffiengine_open() != 9564:
+    if lib.uniffi_l5_ffi_checksum_constructor_ffiengine_open() != 11411:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_append() != 9758:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_append() != 22632:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_audit_verify() != 18008:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_audit_verify() != 2741:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_config_summary() != 15512:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_config_summary() != 2126:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_delete() != 50884:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_delete() != 37036:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_delete_with_metadata() != 15038:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_delete_with_metadata() != 2276:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_dereference_timeline_coordinate() != 15618:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_dereference_timeline_coordinate() != 14170:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_df() != 56279:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_df() != 36991:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_du() != 41296:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_du() != 17358:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_pool() != 20486:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_pool() != 20144:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_read() != 18496:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_read() != 41478:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_replace() != 38461:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_replace() != 13576:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_runtime_model() != 26576:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_runtime_model() != 16934:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_shutdown() != 39400:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_shutdown() != 17948:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_subscribe() != 49989:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_subscribe() != 30206:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_verify_token() != 3924:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_verify_token() != 32701:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffiengine_worlds() != 473:
+    if lib.uniffi_l5_ffi_checksum_method_ffiengine_worlds() != 45778:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffisubscription_close() != 26607:
+    if lib.uniffi_l5_ffi_checksum_method_ffisubscription_close() != 60403:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_elastik_ffi_checksum_method_ffisubscription_next() != 28087:
+    if lib.uniffi_l5_ffi_checksum_method_ffisubscription_next() != 49676:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
 
 # A ctypes library to expose the extern-C FFI definitions.
 # This is an implementation detail which will be called internally by the public API.
 
 _UniffiLib = _uniffi_load_indirect()
-_UniffiLib.ffi_elastik_ffi_rustbuffer_alloc.argtypes = (
+_UniffiLib.ffi_l5_ffi_rustbuffer_alloc.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rustbuffer_alloc.restype = _UniffiRustBuffer
-_UniffiLib.ffi_elastik_ffi_rustbuffer_from_bytes.argtypes = (
+_UniffiLib.ffi_l5_ffi_rustbuffer_alloc.restype = _UniffiRustBuffer
+_UniffiLib.ffi_l5_ffi_rustbuffer_from_bytes.argtypes = (
     _UniffiForeignBytes,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rustbuffer_from_bytes.restype = _UniffiRustBuffer
-_UniffiLib.ffi_elastik_ffi_rustbuffer_free.argtypes = (
+_UniffiLib.ffi_l5_ffi_rustbuffer_from_bytes.restype = _UniffiRustBuffer
+_UniffiLib.ffi_l5_ffi_rustbuffer_free.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rustbuffer_free.restype = None
-_UniffiLib.ffi_elastik_ffi_rustbuffer_reserve.argtypes = (
+_UniffiLib.ffi_l5_ffi_rustbuffer_free.restype = None
+_UniffiLib.ffi_l5_ffi_rustbuffer_reserve.argtypes = (
     _UniffiRustBuffer,
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rustbuffer_reserve.restype = _UniffiRustBuffer
+_UniffiLib.ffi_l5_ffi_rustbuffer_reserve.restype = _UniffiRustBuffer
 _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK = ctypes.CFUNCTYPE(None,ctypes.c_uint64,ctypes.c_int8,
 )
 _UNIFFI_FOREIGN_FUTURE_DROPPED_CALLBACK = ctypes.CFUNCTYPE(None,ctypes.c_uint64,
@@ -555,297 +555,268 @@ class _UniffiForeignFutureDroppedCallbackStruct(ctypes.Structure):
         ("handle", ctypes.c_uint64),
         ("free", _UNIFFI_FOREIGN_FUTURE_DROPPED_CALLBACK),
     ]
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u8.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u8.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u8.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u8.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u8.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u8.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u8.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u8.restype = ctypes.c_uint8
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u8.restype = ctypes.c_uint8
+_UniffiLib.ffi_l5_ffi_rust_future_free_u8.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u8.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_u8.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i8.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i8.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i8.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i8.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i8.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i8.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i8.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i8.restype = ctypes.c_int8
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i8.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i8.restype = ctypes.c_int8
+_UniffiLib.ffi_l5_ffi_rust_future_free_i8.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i8.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_i8.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u16.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u16.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u16.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u16.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u16.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u16.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u16.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u16.restype = ctypes.c_uint16
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u16.restype = ctypes.c_uint16
+_UniffiLib.ffi_l5_ffi_rust_future_free_u16.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u16.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_u16.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i16.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i16.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i16.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i16.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i16.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i16.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i16.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i16.restype = ctypes.c_int16
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i16.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i16.restype = ctypes.c_int16
+_UniffiLib.ffi_l5_ffi_rust_future_free_i16.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i16.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_i16.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u32.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u32.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u32.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u32.restype = ctypes.c_uint32
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u32.restype = ctypes.c_uint32
+_UniffiLib.ffi_l5_ffi_rust_future_free_u32.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_u32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i32.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i32.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i32.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i32.restype = ctypes.c_int32
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i32.restype = ctypes.c_int32
+_UniffiLib.ffi_l5_ffi_rust_future_free_i32.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_i32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u64.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_u64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_u64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u64.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_u64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_u64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u64.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_u64.restype = ctypes.c_uint64
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_u64.restype = ctypes.c_uint64
+_UniffiLib.ffi_l5_ffi_rust_future_free_u64.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_u64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_u64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i64.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_i64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_i64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i64.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_i64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_i64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i64.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_i64.restype = ctypes.c_int64
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_i64.restype = ctypes.c_int64
+_UniffiLib.ffi_l5_ffi_rust_future_free_i64.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_i64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_f32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_i64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_f32.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_f32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_f32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_f32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_f32.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_f32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_f32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_f32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_f32.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_f32.restype = ctypes.c_float
-_UniffiLib.ffi_elastik_ffi_rust_future_free_f32.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_f32.restype = ctypes.c_float
+_UniffiLib.ffi_l5_ffi_rust_future_free_f32.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_f32.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_f64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_f32.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_f64.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_f64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_f64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_f64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_f64.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_f64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_f64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_f64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_f64.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_f64.restype = ctypes.c_double
-_UniffiLib.ffi_elastik_ffi_rust_future_free_f64.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_f64.restype = ctypes.c_double
+_UniffiLib.ffi_l5_ffi_rust_future_free_f64.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_f64.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_rust_buffer.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_f64.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_rust_buffer.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_rust_buffer.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_rust_buffer.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_rust_buffer.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_rust_buffer.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_rust_buffer.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_rust_buffer.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_rust_buffer.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_rust_buffer.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_rust_buffer.restype = _UniffiRustBuffer
-_UniffiLib.ffi_elastik_ffi_rust_future_free_rust_buffer.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_rust_buffer.restype = _UniffiRustBuffer
+_UniffiLib.ffi_l5_ffi_rust_future_free_rust_buffer.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_free_rust_buffer.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_void.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_free_rust_buffer.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_poll_void.argtypes = (
     ctypes.c_uint64,
     _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_poll_void.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_void.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_poll_void.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_void.argtypes = (
     ctypes.c_uint64,
 )
-_UniffiLib.ffi_elastik_ffi_rust_future_cancel_void.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_void.argtypes = (
-    ctypes.c_uint64,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.ffi_elastik_ffi_rust_future_complete_void.restype = None
-_UniffiLib.ffi_elastik_ffi_rust_future_free_void.argtypes = (
-    ctypes.c_uint64,
-)
-_UniffiLib.ffi_elastik_ffi_rust_future_free_void.restype = None
-_UniffiLib.uniffi_elastik_ffi_fn_clone_ffiengine.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_cancel_void.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_complete_void.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_clone_ffiengine.restype = ctypes.c_uint64
-_UniffiLib.uniffi_elastik_ffi_fn_free_ffiengine.argtypes = (
+_UniffiLib.ffi_l5_ffi_rust_future_complete_void.restype = None
+_UniffiLib.ffi_l5_ffi_rust_future_free_void.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_l5_ffi_rust_future_free_void.restype = None
+_UniffiLib.uniffi_l5_ffi_fn_clone_ffiengine.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_free_ffiengine.restype = None
-_UniffiLib.uniffi_elastik_ffi_fn_clone_ffisubscription.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_clone_ffiengine.restype = ctypes.c_uint64
+_UniffiLib.uniffi_l5_ffi_fn_free_ffiengine.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_clone_ffisubscription.restype = ctypes.c_uint64
-_UniffiLib.uniffi_elastik_ffi_fn_free_ffisubscription.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_free_ffiengine.restype = None
+_UniffiLib.uniffi_l5_ffi_fn_clone_ffisubscription.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_free_ffisubscription.restype = None
-_UniffiLib.uniffi_elastik_ffi_fn_func_ffi_engine_boundary.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_clone_ffisubscription.restype = ctypes.c_uint64
+_UniffiLib.uniffi_l5_ffi_fn_free_ffisubscription.argtypes = (
+    ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_func_ffi_engine_boundary.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_func_ffi_version.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_free_ffisubscription.restype = None
+_UniffiLib.uniffi_l5_ffi_fn_func_ffi_engine_boundary.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_func_ffi_version.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_constructor_ffiengine_open.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_func_ffi_engine_boundary.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_func_ffi_version.argtypes = (
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_l5_ffi_fn_func_ffi_version.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_constructor_ffiengine_open.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_constructor_ffiengine_open.restype = ctypes.c_uint64
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_append.argtypes = (
-    ctypes.c_uint64,
-    _UniffiRustBuffer,
-    _UniffiRustBuffer,
-    _UniffiRustBuffer,
-    _UniffiRustBuffer,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_append.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_audit_verify.argtypes = (
-    ctypes.c_uint64,
-    _UniffiRustBuffer,
-    _UniffiRustBuffer,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_audit_verify.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_config_summary.argtypes = (
-    ctypes.c_uint64,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_config_summary.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_delete.argtypes = (
-    ctypes.c_uint64,
-    _UniffiRustBuffer,
-    _UniffiRustBuffer,
-    _UniffiRustBuffer,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_delete.restype = None
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_delete_with_metadata.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_constructor_ffiengine_open.restype = ctypes.c_uint64
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_append.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     _UniffiRustBuffer,
@@ -853,40 +824,28 @@ _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_delete_with_metadata.argtypes 
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_delete_with_metadata.restype = None
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_dereference_timeline_coordinate.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_append.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_audit_verify.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_dereference_timeline_coordinate.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_df.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_audit_verify.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_config_summary.argtypes = (
     ctypes.c_uint64,
-    _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_df.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_du.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_config_summary.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_delete.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_du.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_pool.argtypes = (
-    ctypes.c_uint64,
-    _UniffiRustBuffer,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_pool.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_read.argtypes = (
-    ctypes.c_uint64,
     _UniffiRustBuffer,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_read.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_replace.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_delete.restype = None
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_delete_with_metadata.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     _UniffiRustBuffer,
@@ -894,114 +853,155 @@ _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_replace.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_replace.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_runtime_model.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_delete_with_metadata.restype = None
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_dereference_timeline_coordinate.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_dereference_timeline_coordinate.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_df.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_df.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_du.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_du.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_pool.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_pool.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_read.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_read.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_replace.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_replace.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_runtime_model.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_runtime_model.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_shutdown.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_runtime_model.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_shutdown.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_shutdown.restype = None
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_subscribe.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_shutdown.restype = None
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_subscribe.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     _UniffiRustBuffer,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_subscribe.restype = ctypes.c_uint64
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_verify_token.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_subscribe.restype = ctypes.c_uint64
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_verify_token.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_verify_token.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_worlds.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_verify_token.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_worlds.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_worlds.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffisubscription_close.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_worlds.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_l5_ffi_fn_method_ffisubscription_close.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffisubscription_close.restype = None
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffisubscription_next.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffisubscription_close.restype = None
+_UniffiLib.uniffi_l5_ffi_fn_method_ffisubscription_next.argtypes = (
     ctypes.c_uint64,
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
-_UniffiLib.uniffi_elastik_ffi_fn_method_ffisubscription_next.restype = _UniffiRustBuffer
-_UniffiLib.ffi_elastik_ffi_uniffi_contract_version.argtypes = (
+_UniffiLib.uniffi_l5_ffi_fn_method_ffisubscription_next.restype = _UniffiRustBuffer
+_UniffiLib.ffi_l5_ffi_uniffi_contract_version.argtypes = (
 )
-_UniffiLib.ffi_elastik_ffi_uniffi_contract_version.restype = ctypes.c_uint32
-_UniffiLib.uniffi_elastik_ffi_checksum_func_ffi_engine_boundary.argtypes = (
+_UniffiLib.ffi_l5_ffi_uniffi_contract_version.restype = ctypes.c_uint32
+_UniffiLib.uniffi_l5_ffi_checksum_func_ffi_engine_boundary.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_func_ffi_engine_boundary.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_func_ffi_version.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_func_ffi_engine_boundary.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_func_ffi_version.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_func_ffi_version.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_constructor_ffiengine_open.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_func_ffi_version.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_constructor_ffiengine_open.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_constructor_ffiengine_open.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_append.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_constructor_ffiengine_open.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_append.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_append.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_audit_verify.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_append.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_audit_verify.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_audit_verify.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_config_summary.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_audit_verify.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_config_summary.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_config_summary.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_delete.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_config_summary.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_delete.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_delete.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_delete_with_metadata.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_delete.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_delete_with_metadata.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_delete_with_metadata.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_dereference_timeline_coordinate.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_delete_with_metadata.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_dereference_timeline_coordinate.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_dereference_timeline_coordinate.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_df.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_dereference_timeline_coordinate.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_df.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_df.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_du.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_df.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_du.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_du.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_pool.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_du.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_pool.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_pool.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_read.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_pool.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_read.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_read.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_replace.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_read.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_replace.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_replace.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_runtime_model.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_replace.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_runtime_model.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_runtime_model.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_shutdown.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_runtime_model.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_shutdown.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_shutdown.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_subscribe.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_shutdown.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_subscribe.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_subscribe.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_verify_token.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_subscribe.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_verify_token.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_verify_token.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_worlds.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_verify_token.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_worlds.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffiengine_worlds.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffisubscription_close.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffiengine_worlds.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffisubscription_close.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffisubscription_close.restype = ctypes.c_uint16
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffisubscription_next.argtypes = (
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffisubscription_close.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffisubscription_next.argtypes = (
 )
-_UniffiLib.uniffi_elastik_ffi_checksum_method_ffisubscription_next.restype = ctypes.c_uint16
+_UniffiLib.uniffi_l5_ffi_checksum_method_ffisubscription_next.restype = ctypes.c_uint16
 
 _uniffi_check_contract_api_version(_UniffiLib)
 # _uniffi_check_api_checksums(_UniffiLib)
@@ -4072,10 +4072,10 @@ class FfiSubscription(FfiSubscriptionProtocol):
         # In case of partial initialization of instances.
         handle = getattr(self, "_handle", None)
         if handle is not None:
-            _uniffi_rust_call(_UniffiLib.uniffi_elastik_ffi_fn_free_ffisubscription, handle)
+            _uniffi_rust_call(_UniffiLib.uniffi_l5_ffi_fn_free_ffisubscription, handle)
 
     def _uniffi_clone_handle(self):
-        return _uniffi_rust_call(_UniffiLib.uniffi_elastik_ffi_fn_clone_ffisubscription, self._handle)
+        return _uniffi_rust_call(_UniffiLib.uniffi_l5_ffi_fn_clone_ffisubscription, self._handle)
 
     # Used by alternative constructors or any methods which return this type.
     @classmethod
@@ -4099,7 +4099,7 @@ class FfiSubscription(FfiSubscriptionProtocol):
         _uniffi_error_converter = None
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffisubscription_close,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffisubscription_close,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4123,7 +4123,7 @@ class FfiSubscription(FfiSubscriptionProtocol):
         _uniffi_error_converter = None
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffisubscription_next,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffisubscription_next,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4183,7 +4183,7 @@ class _UniffiFfiConverterSequenceString(_UniffiConverterRustBuffer):
 
 class FfiEngineProtocol(typing.Protocol):
     """
-    UniFFI-owned handle around Elastik's protocol-neutral Engine.
+    UniFFI-owned handle around the protocol-neutral L5 Engine.
 """
 
     def append(self, world: str,body: bytes,preconditions: FfiPreconditions,tier: FfiAccessTier) -> FfiWriteResult:
@@ -4280,7 +4280,7 @@ class FfiEngineProtocol(typing.Protocol):
 
 class FfiEngine(FfiEngineProtocol):
     """
-    UniFFI-owned handle around Elastik's protocol-neutral Engine.
+    UniFFI-owned handle around the protocol-neutral L5 Engine.
 """
 
     _handle: ctypes.c_uint64
@@ -4298,7 +4298,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_constructor_ffiengine_open,
+            _UniffiLib.uniffi_l5_ffi_fn_constructor_ffiengine_open,
             *_uniffi_lowered_args,
         )
         return cls._uniffi_make_instance(_uniffi_ffi_result)
@@ -4310,10 +4310,10 @@ class FfiEngine(FfiEngineProtocol):
         # In case of partial initialization of instances.
         handle = getattr(self, "_handle", None)
         if handle is not None:
-            _uniffi_rust_call(_UniffiLib.uniffi_elastik_ffi_fn_free_ffiengine, handle)
+            _uniffi_rust_call(_UniffiLib.uniffi_l5_ffi_fn_free_ffiengine, handle)
 
     def _uniffi_clone_handle(self):
-        return _uniffi_rust_call(_UniffiLib.uniffi_elastik_ffi_fn_clone_ffiengine, self._handle)
+        return _uniffi_rust_call(_UniffiLib.uniffi_l5_ffi_fn_clone_ffiengine, self._handle)
 
     # Used by alternative constructors or any methods which return this type.
     @classmethod
@@ -4346,7 +4346,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_append,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_append,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4367,7 +4367,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_audit_verify,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_audit_verify,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4382,7 +4382,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = None
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_config_summary,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_config_summary,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4406,7 +4406,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_delete,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_delete,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4433,7 +4433,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_delete_with_metadata,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_delete_with_metadata,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4458,7 +4458,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_dereference_timeline_coordinate,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_dereference_timeline_coordinate,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4476,7 +4476,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_df,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_df,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4494,7 +4494,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_du,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_du,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4512,7 +4512,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_pool,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_pool,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4533,7 +4533,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_read,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_read,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4560,7 +4560,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_replace,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_replace,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4575,7 +4575,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = None
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_runtime_model,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_runtime_model,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4590,7 +4590,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = None
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_shutdown,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_shutdown,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4617,7 +4617,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_subscribe,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_subscribe,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4635,7 +4635,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = None
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_verify_token,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_verify_token,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4657,7 +4657,7 @@ class FfiEngine(FfiEngineProtocol):
         _uniffi_error_converter = _UniffiFfiConverterTypeFfiError
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
-            _UniffiLib.uniffi_elastik_ffi_fn_method_ffiengine_worlds,
+            _UniffiLib.uniffi_l5_ffi_fn_method_ffiengine_worlds,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4716,7 +4716,7 @@ def ffi_engine_boundary() -> str:
     _uniffi_error_converter = None
     _uniffi_ffi_result = _uniffi_rust_call_with_error(
         _uniffi_error_converter,
-        _UniffiLib.uniffi_elastik_ffi_fn_func_ffi_engine_boundary,
+        _UniffiLib.uniffi_l5_ffi_fn_func_ffi_engine_boundary,
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
@@ -4730,7 +4730,7 @@ def ffi_version() -> str:
     _uniffi_error_converter = None
     _uniffi_ffi_result = _uniffi_rust_call_with_error(
         _uniffi_error_converter,
-        _UniffiLib.uniffi_elastik_ffi_fn_func_ffi_version,
+        _UniffiLib.uniffi_l5_ffi_fn_func_ffi_version,
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)

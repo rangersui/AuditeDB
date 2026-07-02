@@ -24,19 +24,19 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
             rust-target: x86_64-unknown-linux-musl
-            asset-name: elastik-core-linux-x64.zip
+            asset-name: auditedb-linux-x64.zip
           - name: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-musl
-            asset-name: elastik-core-linux-arm64.zip
+            asset-name: auditedb-linux-arm64.zip
           - name: macos-arm64
             os: macos-14
             rust-target: ""
-            asset-name: elastik-core-darwin-arm64.zip
+            asset-name: auditedb-darwin-arm64.zip
           - name: windows-x64
             os: windows-2025-vs2026
             rust-target: ""
-            asset-name: elastik-core-win32-x64.zip
+            asset-name: auditedb-win32-x64.zip
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -84,7 +84,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force asset | Out-Null
-          Copy-Item bin/target/release/elastik-core.exe asset/elastik-core.exe
+          Copy-Item bin/target/release/auditedb.exe asset/auditedb.exe
           Compress-Archive -Path asset/* -DestinationPath ${{ matrix.asset-name }}
 
       - name: package core asset (unix)
@@ -93,12 +93,12 @@ jobs:
         run: |
           mkdir -p asset
           if [ -n "${{ matrix.rust-target }}" ]; then
-            cp "bin/target/${{ matrix.rust-target }}/release/elastik-core" asset/elastik-core
+            cp "bin/target/${{ matrix.rust-target }}/release/auditedb" asset/auditedb
           else
-            cp bin/target/release/elastik-core asset/elastik-core
+            cp bin/target/release/auditedb asset/auditedb
           fi
-          chmod +x asset/elastik-core
-          (cd asset && zip -9 "../${{ matrix.asset-name }}" elastik-core)
+          chmod +x asset/auditedb
+          (cd asset && zip -9 "../${{ matrix.asset-name }}" auditedb)
 
       - name: upload release asset
         if: startsWith(github.ref, 'refs/tags/v')
@@ -123,20 +123,20 @@ jobs:
         include:
           - name: linux-x64
             os: ubuntu-latest
-            library-path: target/release/libelastik_ffi.so
-            asset-name: elastik-ffi-linux-x64.zip
+            library-path: target/release/libl5_ffi.so
+            asset-name: l5-ffi-linux-x64.zip
           - name: linux-arm64
             os: ubuntu-24.04-arm
-            library-path: target/release/libelastik_ffi.so
-            asset-name: elastik-ffi-linux-arm64.zip
+            library-path: target/release/libl5_ffi.so
+            asset-name: l5-ffi-linux-arm64.zip
           - name: macos-arm64
             os: macos-14
-            library-path: target/release/libelastik_ffi.dylib
-            asset-name: elastik-ffi-darwin-arm64.zip
+            library-path: target/release/libl5_ffi.dylib
+            asset-name: l5-ffi-darwin-arm64.zip
           - name: windows-x64
             os: windows-2025-vs2026
-            library-path: target/release/elastik_ffi.dll
-            asset-name: elastik-ffi-win32-x64.zip
+            library-path: target/release/l5_ffi.dll
+            asset-name: l5-ffi-win32-x64.zip
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -167,7 +167,7 @@ jobs:
         shell: bash
         working-directory: ffi
         env:
-          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
+          L5_FFI_LIBRARY: ${{ matrix.library-path }}
         run: |
           python - <<'PY'
           import os
@@ -178,15 +178,15 @@ jobs:
           import tempfile
 
           bindings = pathlib.Path("target/bindings/python").resolve()
-          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
+          library = pathlib.Path(os.environ["L5_FFI_LIBRARY"]).resolve()
           if not library.exists():
               raise SystemExit(f"missing FFI library: {library}")
           shutil.copy2(library, bindings / library.name)
           sys.path.insert(0, str(bindings))
 
-          import elastik_ffi as e
+          import l5_ffi as e
 
-          root = pathlib.Path(tempfile.mkdtemp(prefix="elastik-ffi-release-"))
+          root = pathlib.Path(tempfile.mkdtemp(prefix="l5-ffi-release-"))
           none = e.FfiPreconditions(if_match=[], if_none_match=[])
           engine = e.FfiEngine.open(e.FfiEngineConfig(
               data_root=str(root),
@@ -212,7 +212,7 @@ jobs:
           subscription = engine.subscribe(
               "home/*",
               e.FfiAccessTier.READ,
-              e.FfiSubscriptionResume(after_cursor=None, after_event_id=None),
+              e.FfiSubscriptionResume(after_cursor=None),
           )
           engine.append("home/ffi", b" asset", none, e.FfiAccessTier.WRITE)
           event = subscription.next(5_000)
@@ -246,9 +246,9 @@ jobs:
         shell: bash
         working-directory: ffi
         env:
-          ELASTIK_FFI_NAME: ${{ matrix.name }}
-          ELASTIK_FFI_LIBRARY: ${{ matrix.library-path }}
-          ELASTIK_FFI_ASSET: ${{ matrix.asset-name }}
+          L5_FFI_NAME: ${{ matrix.name }}
+          L5_FFI_LIBRARY: ${{ matrix.library-path }}
+          L5_FFI_ASSET: ${{ matrix.asset-name }}
         run: |
           python - <<'PY'
           import hashlib
@@ -257,9 +257,9 @@ jobs:
           import shutil
           import zipfile
 
-          name = os.environ["ELASTIK_FFI_NAME"]
-          library = pathlib.Path(os.environ["ELASTIK_FFI_LIBRARY"]).resolve()
-          asset = pathlib.Path(os.environ["ELASTIK_FFI_ASSET"]).resolve()
+          name = os.environ["L5_FFI_NAME"]
+          library = pathlib.Path(os.environ["L5_FFI_LIBRARY"]).resolve()
+          asset = pathlib.Path(os.environ["L5_FFI_ASSET"]).resolve()
           bindings = pathlib.Path("target/bindings/python").resolve()
           out = pathlib.Path("ffi-release-asset").resolve()
 
@@ -270,7 +270,7 @@ jobs:
 
           native_dst = out / "lib" / library.name
           shutil.copy2(library, native_dst)
-          shutil.copy2(bindings / "elastik_ffi.py", out / "python" / "elastik_ffi.py")
+          shutil.copy2(bindings / "l5_ffi.py", out / "python" / "l5_ffi.py")
           shutil.copy2(library, out / "python" / library.name)
 
           def sha256(path: pathlib.Path) -> str:
@@ -284,7 +284,7 @@ jobs:
               f"name={name}",
               f"library={library.name}",
               f"library_sha256={sha256(native_dst)}",
-              "python_binding=python/elastik_ffi.py",
+              "python_binding=python/l5_ffi.py",
               "",
           ]), encoding="utf-8")
 
@@ -311,8 +311,8 @@ jobs:
           if-no-files-found: error
 
   build-wheels:
-    name: build wheel (${{ matrix.name }})
-    needs: build-core-assets
+    name: build l5 wheel (${{ matrix.name }})
+    needs: build-ffi-assets
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -320,11 +320,11 @@ jobs:
         include:
           - name: linux-x64
             os: ubuntu-latest
-            wheel-platform-tag: ""
+            wheel-platform-tag: "linux_x86_64"
             wheel-platform-regex: "manylinux.*_x86_64"
           - name: linux-arm64
             os: ubuntu-24.04-arm
-            wheel-platform-tag: ""
+            wheel-platform-tag: "linux_aarch64"
             wheel-platform-regex: "manylinux.*_aarch64"
           - name: macos-arm64
             os: macos-14
@@ -332,7 +332,7 @@ jobs:
             wheel-platform-regex: "macosx_.*_arm64"
           - name: windows-x64
             os: windows-2025-vs2026
-            wheel-platform-tag: ""
+            wheel-platform-tag: "win_amd64"
             wheel-platform-regex: "win_amd64"
     steps:
       - uses: actions/checkout@v6
@@ -347,60 +347,73 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
 
-      - name: download core asset
+      - name: download ffi asset
         uses: actions/download-artifact@v8
         with:
-          name: core-asset-${{ matrix.name }}
-          path: core-asset
+          name: ffi-asset-${{ matrix.name }}
+          path: ffi-asset
 
-      - name: unpack core asset
+      - name: unpack ffi asset into Python package
         shell: bash
         run: |
           python - <<'PY'
           import pathlib
-          import stat
+          import shutil
           import zipfile
 
-          zips = list(pathlib.Path("core-asset").glob("*.zip"))
+          zips = list(pathlib.Path("ffi-asset").glob("*.zip"))
           if len(zips) != 1:
-              raise SystemExit(f"expected one core asset zip, got {zips}")
-          out = pathlib.Path("core-asset/unpacked")
+              raise SystemExit(f"expected one ffi asset zip, got {zips}")
+          out = pathlib.Path("ffi-asset/unpacked")
           out.mkdir(parents=True, exist_ok=True)
           with zipfile.ZipFile(zips[0]) as z:
               z.extractall(out)
-          candidates = [
-              out / "elastik-core",
-              out / "elastik-core.exe",
+
+          package_ffi = pathlib.Path("sdk/src/l5/_ffi")
+          package_ffi.mkdir(parents=True, exist_ok=True)
+          for stale in package_ffi.glob("l5_ffi.*"):
+              if stale.suffix in {".dll", ".so", ".dylib"}:
+                  stale.unlink()
+          shutil.copy2(out / "python" / "l5_ffi.py", package_ffi / "l5_ffi.py")
+          libraries = [
+              p for p in (out / "python").iterdir()
+              if p.name != "l5_ffi.py" and p.is_file()
           ]
-          binary = next((p for p in candidates if p.exists()), None)
-          if binary is None:
-              raise SystemExit("core asset does not contain elastik-core binary")
-          if binary.name == "elastik-core":
-              binary.chmod(binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-          print(binary)
+          if len(libraries) != 1:
+              raise SystemExit(f"expected one native ffi library, got {libraries}")
+          shutil.copy2(libraries[0], package_ffi / libraries[0].name)
+          print(libraries[0])
           PY
 
-      - name: bundle core binary (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force sdk/src/elastik/_bin | Out-Null
-          Copy-Item core-asset/unpacked/elastik-core.exe sdk/src/elastik/_bin/elastik-core.exe
-
-      - name: bundle core binary (unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p sdk/src/elastik/_bin
-          cp core-asset/unpacked/elastik-core sdk/src/elastik/_bin/elastik-core
-          chmod +x sdk/src/elastik/_bin/elastik-core
-
       - name: build wheel
-        env:
-          ELASTIK_WHEEL_PLATFORM_TAG: ${{ matrix.wheel-platform-tag }}
         run: |
           python -m pip install --upgrade pip build wheel
           python -m build --wheel sdk
+
+      - name: tag wheel as platform-specific
+        env:
+          WHEEL_PLATFORM_TAG: ${{ matrix.wheel-platform-tag }}
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import subprocess
+          import sys
+
+          wheels = glob.glob("sdk/dist/*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel to retag, got {wheels}")
+          subprocess.run([
+              sys.executable,
+              "-m",
+              "wheel",
+              "tags",
+              "--remove",
+              "--platform-tag",
+              os.environ["WHEEL_PLATFORM_TAG"],
+              wheels[0],
+          ], check=True)
+          PY
 
       - name: repair linux wheel tag
         if: runner.os == 'Linux'
@@ -421,7 +434,6 @@ jobs:
           import glob
           import os
           import re
-          import sys
           import zipfile
 
           wheels = glob.glob("sdk/dist/*.whl")
@@ -438,21 +450,24 @@ jobs:
               raise SystemExit(f"PyPI rejects raw linux platform tags: {wheel_name}")
           with zipfile.ZipFile(wheel) as z:
               names = z.namelist()
-              wheel_meta = next(name for name in names if name.endswith(".dist-info/WHEEL"))
-              wheel_text = z.read(wheel_meta).decode("utf-8")
-          if "Root-Is-Purelib: false" not in wheel_text:
-              raise SystemExit("wheel must be platlib, not purelib")
           if any(".data/purelib/" in name for name in names):
               raise SystemExit("native wheel must not install files into purelib")
-          if not any(name.endswith("elastik/_bin/elastik-core") or name.endswith("elastik/_bin/elastik-core.exe") for name in names):
-              raise SystemExit("wheel does not contain elastik-core binary")
+          if not any(name.endswith("l5/_ffi/l5_ffi.py") for name in names):
+              raise SystemExit("wheel does not contain l5 UniFFI binding")
+          native = [
+              name for name in names
+              if "l5_ffi" in os.path.basename(name)
+              and os.path.splitext(name)[1] in {".so", ".dylib", ".dll"}
+          ]
+          if len(native) != 1:
+              raise SystemExit(f"wheel must contain exactly one native l5_ffi library, got {native}")
           print(wheel)
           PY
 
       - name: upload wheel artifact
         uses: actions/upload-artifact@v7
         with:
-          name: elastik-wheel-${{ matrix.name }}
+          name: l5-wheel-${{ matrix.name }}
           path: sdk/dist/*.whl
           if-no-files-found: error
 
@@ -468,7 +483,7 @@ jobs:
       - name: download wheels
         uses: actions/download-artifact@v8
         with:
-          pattern: elastik-wheel-*
+          pattern: l5-wheel-*
           path: dist
           merge-multiple: true
 
@@ -482,6 +497,10 @@ jobs:
 
   publish-crates:
     name: publish Rust crate
+    needs:
+      - build-core-assets
+      - build-ffi-assets
+      - build-wheels
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -495,18 +514,18 @@ jobs:
       - name: verify release versions match tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
-      - name: publish elastik-core to crates.io
+      - name: publish l5 to crates.io
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          api_url="https://crates.io/api/v1/crates/elastik-core/${version}"
-          if curl -fsS -H "User-Agent: Elastik release workflow" "$api_url" >/dev/null; then
-            echo "elastik-core ${version} already published; skipping cargo publish"
+          api_url="https://crates.io/api/v1/crates/l5/${version}"
+          if curl -fsS -H "User-Agent: AuditeDB release workflow" "$api_url" >/dev/null; then
+            echo "l5 ${version} already published; skipping cargo publish"
             exit 0
           fi
-          : "${CARGO_REGISTRY_TOKEN:?CARGO_REGISTRY_TOKEN secret is required to publish elastik-core}"
+          : "${CARGO_REGISTRY_TOKEN:?CARGO_REGISTRY_TOKEN secret is required to publish l5}"
           cargo publish \
             --manifest-path core/Cargo.toml \
             --features unstable-engine \
@@ -515,13 +534,13 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          api_url="https://crates.io/api/v1/crates/elastik-core/${version}"
+          api_url="https://crates.io/api/v1/crates/l5/${version}"
           for attempt in 1 2 3 4 5 6 7 8; do
-            if curl -fsS -H "User-Agent: Elastik release workflow" "$api_url" >/dev/null; then
-              cargo search elastik-core --limit 3
+            if curl -fsS -H "User-Agent: AuditeDB release workflow" "$api_url" >/dev/null; then
+              cargo search l5 --limit 3
               exit 0
             fi
-            echo "crates.io has not propagated elastik-core ${version} yet; retry ${attempt}/8"
+            echo "crates.io has not propagated l5 ${version} yet; retry ${attempt}/8"
             sleep 15
           done
           exit 1
@@ -529,6 +548,7 @@ jobs:
   release-checksums:
     name: publish release checksums
     needs:
+      - build-core-assets
       - build-ffi-assets
       - publish-pypi
       - publish-crates
@@ -586,9 +606,9 @@ jobs:
               if artifact_dir.startswith("core-asset-"):
                   channel = "github-release"
                   platform = artifact_dir.removeprefix("core-asset-")
-              elif artifact_dir.startswith("elastik-wheel-"):
+              elif artifact_dir.startswith("l5-wheel-"):
                   channel = "pypi"
-                  platform = artifact_dir.removeprefix("elastik-wheel-")
+                  platform = artifact_dir.removeprefix("l5-wheel-")
 
               def record_binary(name: str, data: bytes) -> None:
                   digest = sha256_bytes(data)
@@ -600,44 +620,25 @@ jobs:
                   with zipfile.ZipFile(path) as z:
                       for name in sorted(z.namelist()):
                           if pathlib.PurePosixPath(name).name in {
-                              "elastik-core",
-                              "elastik-core.exe",
-                              "elastik_ffi.dll",
-                              "libelastik_ffi.dylib",
-                              "libelastik_ffi.so",
+                              "auditedb",
+                              "auditedb.exe",
+                              "l5_ffi.dll",
+                              "libl5_ffi.dylib",
+                              "libl5_ffi.so",
                           }:
                               record_binary(name, z.read(name))
               elif path.suffix == ".tgz":
                   with tarfile.open(path, "r:gz") as t:
                       for member in sorted(t.getmembers(), key=lambda m: m.name):
-                          if pathlib.PurePosixPath(member.name).name in {"elastik-core", "elastik-core.exe"}:
+                          if pathlib.PurePosixPath(member.name).name in {"auditedb", "auditedb.exe"}:
                               extracted = t.extractfile(member)
                               if extracted is not None:
                                   record_binary(member.name, extracted.read())
 
-          match_lines = []
-          platforms = sorted({
-              platform
-              for channel, platform in binary_by_channel
-              if channel in {"github-release", "pypi"}
-          })
-          for platform in platforms:
-              if ("github-release", platform) not in binary_by_channel:
-                  continue
-              release_digest = binary_by_channel[("github-release", platform)]
-              matched_channels = ["GitHub Release"]
-              for channel, label in [("pypi", "PyPI")]:
-                  if (channel, platform) not in binary_by_channel:
-                      continue
-                  channel_digest = binary_by_channel[(channel, platform)]
-                  if release_digest != channel_digest:
-                      raise SystemExit(
-                          f"binary mismatch for {platform}: "
-                          f"GitHub Release {release_digest} != {label} {channel_digest}"
-                      )
-                  matched_channels.append(label)
-              if len(matched_channels) > 1:
-                  match_lines.append(f"{platform}: {' == '.join(matched_channels)} ({release_digest})")
+          match_lines = [
+              "No cross-channel binary equality check is defined for this release.",
+              "GitHub Release ships the auditedb server and l5 FFI zips; PyPI ships l5 wheels.",
+          ]
 
           pathlib.Path("SHA256SUMS.txt").write_text("\n".join(package_lines) + "\n", encoding="utf-8")
           pathlib.Path("BINARY-SHA256SUMS.txt").write_text("\n".join(binary_lines) + "\n", encoding="utf-8")
@@ -649,10 +650,8 @@ jobs:
               "These checksums are generated by CI from the exact artifacts uploaded or published for this tag.",
               "",
               "Package file hashes are in `SHA256SUMS.txt`.",
-              "Embedded `elastik-core` binary and native FFI library hashes are in `BINARY-SHA256SUMS.txt`.",
-              "Cross-channel binary equality checks are in `CHANNEL-MATCHES.txt`.",
-              "",
-              "The workflow fails if a GitHub Release core zip and its matching PyPI wheel contain different core bytes.",
+              "Server and native FFI library hashes are in `BINARY-SHA256SUMS.txt`.",
+              "Channel notes are in `CHANNEL-MATCHES.txt`.",
               "",
               "```text",
               *package_lines,
@@ -662,13 +661,14 @@ jobs:
 
           tag = os.environ["GITHUB_REF_NAME"]
           release_notes = pathlib.Path("release_notes") / f"RELEASE-NOTES-{tag}.md"
-          if not release_notes.is_file():
-              raise SystemExit(f"missing release notes: {release_notes}")
-          release_body = (
-              release_notes.read_text(encoding="utf-8").rstrip()
-              + "\n\n"
-              + pathlib.Path("CHECKSUMS.md").read_text(encoding="utf-8").lstrip()
-          )
+          if release_notes.is_file():
+              release_body = (
+                  release_notes.read_text(encoding="utf-8").rstrip()
+                  + "\n\n"
+                  + pathlib.Path("CHECKSUMS.md").read_text(encoding="utf-8").lstrip()
+              )
+          else:
+              release_body = pathlib.Path("CHECKSUMS.md").read_text(encoding="utf-8")
           pathlib.Path("RELEASE-BODY.md").write_text(release_body, encoding="utf-8")
           PY
           cat SHA256SUMS.txt

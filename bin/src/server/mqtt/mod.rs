@@ -1,6 +1,6 @@
-//! Native MQTT surface for elastik-core.
+//! Native MQTT surface for auditedb.
 //!
-//! This adapter deliberately keeps the broker state machine in Elastik instead
+//! This adapter deliberately keeps the broker state machine in AuditeDB instead
 //! of handing authorization to rumqttd's router. rumqttd provides the MQTT
 //! packet grammar; every accepted PUBLISH and SUBSCRIBE goes through the same
 //! protocol-neutral Engine as HTTP and CoAP.
@@ -75,7 +75,7 @@ pub(crate) async fn serve(
         }
     };
     mqtt_info(format_args!("mqtt: listening on mqtt://{bind}/"));
-    mqtt_info(format_args!("mqtt: CONNECT password maps to elastik token tier; username-only token auth is legacy fallback"));
+    mqtt_info(format_args!("mqtt: CONNECT password maps to AuditeDB token tier; username-only token auth is legacy fallback"));
     let permits = Arc::new(Semaphore::new(config.max_connections));
     let runtime = MqttRuntime::new(
         config.max_packet_bytes,
@@ -2119,7 +2119,7 @@ mod tests {
     fn build_test_engine(label: &str, read_token: bool) -> (Engine, std::path::PathBuf) {
         let mut dir = std::env::temp_dir();
         dir.push(format!(
-            "elastik-mqtt-test-{label}-{}-{}",
+            "auditedb-mqtt-test-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -23,7 +23,7 @@ without changing the HTTP world model.
 ## Core idea
 
 There is no fixed client/server split. There is data and there is an
-entrypoint. They can be in the same place, or not. The `elastik-core` binary is just
+entrypoint. They can be in the same place, or not. The `auditedb` binary is just
 the process that happens to expose an HTTP entrypoint and point at some bytes.
 
 AuditeDB sees a data directory. That directory can be local disk, SMB, NFS, a
@@ -31,12 +31,12 @@ FUSE mount, or a synced/overlay filesystem, as long as the operating system
 presents normal file semantics.
 
 ```text
-HTTP caller -> entrypoint -> elastik process -> filesystem path -> SQLite world
+HTTP caller -> entrypoint -> AuditeDB process -> filesystem path -> SQLite world
 ```
 
 The transport below the filesystem is intentionally hidden from the HTTP layer.
 `PUT /home/report.html` should mean the same thing whether the backing path is
-`./data`, `\\NAS\elastik\data`, or `/mnt/nas/elastik/data`.
+`./data`, `\\NAS\AuditeDB\data`, or `/mnt/nas/AuditeDB/data`.
 
 ## Deployment modes
 
@@ -58,10 +58,10 @@ Start with these four before adding overlays, reverse proxies, or public edges.
 Use this first unless the user has a concrete reason not to.
 
 ```bash
-export ELASTIK_HOST=127.0.0.1
-export ELASTIK_PORT=3105
-export ELASTIK_DATA=./data
-export ELASTIK_BASE="http://${ELASTIK_HOST}:${ELASTIK_PORT}"
+export AUDITEDB_HOST=127.0.0.1
+export AUDITEDB_PORT=3105
+export AUDITEDB_DATA=./data
+export AUDITEDB_BASE="http://${AUDITEDB_HOST}:${AUDITEDB_PORT}"
 ```
 
 Properties:
@@ -82,10 +82,10 @@ Use this when an AuditeDB entrypoint should be visible to other machines on the
 same LAN, but the durable data still lives beside that AuditeDB process.
 
 ```bash
-export ELASTIK_HOST=0.0.0.0
-export ELASTIK_PORT=3105
-export ELASTIK_DATA=./data
-export ELASTIK_BASE="http://LAN_IP:3105"
+export AUDITEDB_HOST=0.0.0.0
+export AUDITEDB_PORT=3105
+export AUDITEDB_DATA=./data
+export AUDITEDB_BASE="http://LAN_IP:3105"
 ```
 
 Properties:
@@ -108,10 +108,10 @@ Use this when one user wants a local AuditeDB storage endpoint backed by a NAS
 or shared disk.
 
 ```bash
-export ELASTIK_HOST=127.0.0.1
-export ELASTIK_PORT=3105
-export ELASTIK_DATA='\\NAS\elastik\data'
-export ELASTIK_BASE="http://${ELASTIK_HOST}:${ELASTIK_PORT}"
+export AUDITEDB_HOST=127.0.0.1
+export AUDITEDB_PORT=3105
+export AUDITEDB_DATA='\\NAS\AuditeDB\data'
+export AUDITEDB_BASE="http://${AUDITEDB_HOST}:${AUDITEDB_PORT}"
 ```
 
 Properties:
@@ -126,10 +126,10 @@ Properties:
 Use this when another machine on the same LAN needs short-lived access.
 
 ```bash
-export ELASTIK_HOST=0.0.0.0
-export ELASTIK_PORT=3105
-export ELASTIK_DATA='\\NAS\elastik\data'
-export ELASTIK_BASE="http://LAN_IP:3105"
+export AUDITEDB_HOST=0.0.0.0
+export AUDITEDB_PORT=3105
+export AUDITEDB_DATA='\\NAS\AuditeDB\data'
+export AUDITEDB_BASE="http://LAN_IP:3105"
 ```
 
 Properties:
@@ -145,10 +145,10 @@ Use this when machines are far apart physically but share a private overlay
 such as Tailscale, WireGuard, or ZeroTier.
 
 ```bash
-export ELASTIK_HOST=0.0.0.0
-export ELASTIK_PORT=3105
-export ELASTIK_DATA=/mnt/nas/elastik/data
-export ELASTIK_BASE="http://100.x.y.z:3105"
+export AUDITEDB_HOST=0.0.0.0
+export AUDITEDB_PORT=3105
+export AUDITEDB_DATA=/mnt/nas/AuditeDB/data
+export AUDITEDB_BASE="http://100.x.y.z:3105"
 ```
 
 Properties:
@@ -167,7 +167,7 @@ Use this only when the endpoint must be reachable from the public internet.
 browser/curl
   -> Cloudflare or equivalent edge
   -> reverse proxy with TLS and login
-  -> elastik-core on 127.0.0.1:3105
+  -> auditedb on 127.0.0.1:3105
   -> data root
 ```
 
@@ -230,7 +230,7 @@ Possible cache layers:
 browser cache
 edge cache
 reverse-proxy cache
-elastik read cache
+AuditeDB read cache
 SQLite page cache
 OS buffer cache
 SMB/NFS mount cache
@@ -265,7 +265,7 @@ Properties:
 
 - One AuditeDB process owns the read, write, and approve tokens.
 - HTTP callers do not need filesystem access.
-- HTTP callers do not run their own AuditeDB cores.
+- HTTP callers do not run their own `auditedb` processes.
 - Rotating a token happens once at the entrypoint, then callers update their env.
 - If per-user identity is needed, put login or identity at the reverse proxy
   layer and keep AuditeDB tokens as capability gates.
@@ -275,7 +275,7 @@ data root private to the AuditeDB process, and let callers use curl or browsers.
 
 ### Distributed token model
 
-Different users can run separate AuditeDB cores pointed at the same shared data
+Different users can run separate `auditedb` processes pointed at the same shared data
 root, but this should be treated carefully.
 
 ```text
@@ -284,7 +284,7 @@ user B: own AuditeDB process, own tokens, shared data root
 ```
 
 Use this only when the filesystem and SQLite locking semantics are known to be
-safe for the workload. For ordinary deployments, prefer one AuditeDB core as the
+safe for the workload. For ordinary deployments, prefer one AuditeDB entrypoint as the
 writer for a shared data root.
 
 ## AuditeDB as a protocol gateway
@@ -306,20 +306,20 @@ headers, tokens, audit, proc, and static serving.
 Probe the HTTP layer first:
 
 ```bash
-curl -i "$ELASTIK_BASE/proc/version"
-curl -i -X PUT "$ELASTIK_BASE/home/deploy-test" \
-  -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
+curl -i "$AUDITEDB_BASE/proc/version"
+curl -i -X PUT "$AUDITEDB_BASE/home/deploy-test" \
+  -H "Authorization: Bearer $AUDITEDB_WRITE_TOKEN" \
   -H "Content-Type: text/plain; charset=utf-8" \
   --data-binary 'hello'
-curl -i "$ELASTIK_BASE/home/deploy-test"
+curl -i "$AUDITEDB_BASE/home/deploy-test"
 ```
 
 Then measure remote-data behaviour:
 
 ```bash
-time curl -sI "$ELASTIK_BASE/home/deploy-test" >/dev/null
-time curl -sI "$ELASTIK_BASE/home/deploy-test" >/dev/null
-curl -s "$ELASTIK_BASE/proc/pool"
+time curl -sI "$AUDITEDB_BASE/home/deploy-test" >/dev/null
+time curl -sI "$AUDITEDB_BASE/home/deploy-test" >/dev/null
+curl -s "$AUDITEDB_BASE/proc/pool"
 ```
 
 If the first request is slow and the second is fast, the stack is warming as

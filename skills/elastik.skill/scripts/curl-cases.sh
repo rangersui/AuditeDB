@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Elastik curl cookbook.
+# AuditeDB curl cookbook.
 #
 # Environment:
-#   ELASTIK_BASE          default: http://127.0.0.1:3105
-#   ELASTIK_WORLD         default: /home/elastik-skill-demo
-#   ELASTIK_WRITE_TOKEN   required for PUT/POST/DELETE examples
-#   ELASTIK_READ_TOKEN    optional; write/approve tokens also satisfy reads
+#   AUDITEDB_BASE          default: http://127.0.0.1:3105
+#   AUDITEDB_WORLD         default: /home/AuditeDB-skill-demo
+#   AUDITEDB_WRITE_TOKEN   required for PUT/POST/DELETE examples
+#   AUDITEDB_READ_TOKEN    optional; write/approve tokens also satisfy reads
 #
 # Usage:
 #   bash scripts/curl-cases.sh version
@@ -15,11 +15,11 @@ set -euo pipefail
 #   bash scripts/curl-cases.sh cas
 #   bash scripts/curl-cases.sh all
 
-BASE="${ELASTIK_BASE:-http://127.0.0.1:3105}"
-WORLD="${ELASTIK_WORLD:-/home/elastik-skill-demo}"
-WRITE_TOKEN="${ELASTIK_WRITE_TOKEN:-}"
-APPROVE_TOKEN="${ELASTIK_APPROVE_TOKEN:-}"
-READ_TOKEN="${ELASTIK_READ_TOKEN:-${ELASTIK_WRITE_TOKEN:-${ELASTIK_APPROVE_TOKEN:-}}}"
+BASE="${AUDITEDB_BASE:-http://127.0.0.1:3105}"
+WORLD="${AUDITEDB_WORLD:-/home/AuditeDB-skill-demo}"
+WRITE_TOKEN="${AUDITEDB_WRITE_TOKEN:-}"
+APPROVE_TOKEN="${AUDITEDB_APPROVE_TOKEN:-}"
+READ_TOKEN="${AUDITEDB_READ_TOKEN:-${AUDITEDB_WRITE_TOKEN:-${AUDITEDB_APPROVE_TOKEN:-}}}"
 
 read_auth=()
 write_auth=()
@@ -32,7 +32,7 @@ fi
 
 need_write_token() {
   if [ -z "$WRITE_TOKEN" ]; then
-    echo "missing ELASTIK_WRITE_TOKEN" >&2
+    echo "missing AUDITEDB_WRITE_TOKEN" >&2
     exit 2
   fi
 }
@@ -54,7 +54,7 @@ case_worlds() {
 case_put() {
   need_write_token
   title "PUT world bytes"
-  printf 'hello from elastik skill\n' |
+  printf 'hello from AuditeDB skill\n' |
     curl -sS -i -X PUT "${write_auth[@]}" \
       -H "Content-Type: text/plain; charset=utf-8" \
       --data-binary @- \
@@ -64,7 +64,7 @@ case_put() {
 case_put_metadata() {
   need_write_token
   title "PUT with representation metadata"
-  echo "Note: X-Meta-Summary persists only when ELASTIK_PERSIST_HEADERS includes x-meta-*." >&2
+  echo "Note: X-Meta-Summary persists only when AUDITEDB_PERSIST_HEADERS includes x-meta-*." >&2
   printf '<!doctype html><title>AuditeDB</title><p>Hello.</p>\n' |
     curl -sS -i -X PUT "${write_auth[@]}" \
       -H "Content-Type: text/html; charset=utf-8" \
@@ -145,17 +145,17 @@ case "${1:-help}" in
     ;;
   *)
     cat <<'USAGE'
-Elastik curl cases:
+AuditeDB curl cases:
   version       GET /proc/version
   worlds        GET /proc/worlds as plain text
-  put           PUT bytes into $ELASTIK_WORLD
+  put           PUT bytes into $AUDITEDB_WORLD
   put-metadata  PUT HTML with Content-Type, language, cache, X-Meta-Summary
-  head          HEAD $ELASTIK_WORLD
-  get           GET $ELASTIK_WORLD
+  head          HEAD $AUDITEDB_WORLD
+  get           GET $AUDITEDB_WORLD
   range         GET byte range
   cas           HEAD ETag, then PUT with If-Match
-  audit-verify  HEAD /proc/audit$ELASTIK_WORLD/verify
-  listen        GET /listen$ELASTIK_WORLD as event stream
+  audit-verify  HEAD /proc/audit$AUDITEDB_WORLD/verify
+  listen        GET /listen$AUDITEDB_WORLD as event stream
   all           run non-streaming examples
 USAGE
     ;;

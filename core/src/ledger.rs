@@ -258,7 +258,8 @@ mod tests {
 
     #[test]
     fn append_uses_genesis_for_existing_empty_ledger() {
-        let dir = std::env::temp_dir().join(format!("elastik-ledger-empty-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("auditedb-ledger-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         drop(world::open(&dir, "var/log/deletes").unwrap());
 

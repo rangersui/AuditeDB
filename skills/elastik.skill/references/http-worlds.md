@@ -143,7 +143,7 @@ Common status-code triage:
 403          token tier too low for the namespace
 404          world not found
 412          If-Match failed; re-read ETag and retry if appropriate
-413          request body exceeded ELASTIK_MAX_WORLD_BYTES
+413          request body exceeded AUDITEDB_MAX_WORLD_BYTES
 416          Range starts past EOF
 503          transient busy/locked/listen-cap condition; retry when safe
 507          durable quota, memory quota, or filesystem full
@@ -225,18 +225,18 @@ AuditeDB uses a layered header policy:
 
 1. **Hard deny.** Hop-by-hop, request-control, probe, proxy, and core-owned
    headers never persist.
-2. **User deny.** `ELASTIK_DENY_HEADERS` subtracts from allow layers for future
+2. **User deny.** `AUDITEDB_DENY_HEADERS` subtracts from allow layers for future
    writes only.
 3. **Default allow.** Standard representation, browser-policy, and
    body-identity headers persist.
-4. **User allow.** `ELASTIK_PERSIST_HEADERS` opts in custom headers such as
+4. **User allow.** `AUDITEDB_PERSIST_HEADERS` opts in custom headers such as
    `x-meta-*`.
 
 `X-Meta-*` is a user metadata convention. It is not persisted by default. To
 round-trip custom metadata, set:
 
 ```text
-ELASTIK_PERSIST_HEADERS=x-meta-*
+AUDITEDB_PERSIST_HEADERS=x-meta-*
 ```
 
 `Content-Type` has a dedicated media-type slot; it is not ordinary persisted
@@ -321,13 +321,11 @@ browser EventSource + Bearer token          no      native EventSource cannot
                                                     set Authorization
 browser fetch + ReadableStream              yes     parse SSE manually
 Python requests(..., stream=True)           yes     parse SSE lines manually
-JS SDK listen()                              yes     wraps fetch + parser
 ```
 
 The summary for client code: `/listen/*` is Server-Sent Events. Use
 `EventSource` only when no `Authorization` header is required. Use
-`fetch` + `ReadableStream` or the SDK's `listen()` when read tokens are
-enabled.
+`fetch` + `ReadableStream` when read tokens are enabled.
 
 ## Curl patterns
 
@@ -335,8 +333,8 @@ Bare PUT:
 
 ```bash
 printf 'hello\n' |
-  curl -i -X PUT "$ELASTIK_BASE/home/note" \
-    -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
+  curl -i -X PUT "$AUDITEDB_BASE/home/note" \
+    -H "Authorization: Bearer $AUDITEDB_WRITE_TOKEN" \
     -H "Content-Type: text/plain; charset=utf-8" \
     --data-binary @-
 ```
@@ -345,13 +343,13 @@ CAS update:
 
 ```bash
 etag="$(
-  curl -fsSI "$ELASTIK_BASE/home/note" |
+  curl -fsSI "$AUDITEDB_BASE/home/note" |
     awk 'BEGIN{IGNORECASE=1} /^etag:/ { sub(/\r$/, ""); print substr($0, index($0, ":") + 2); exit }'
 )"
 
 printf 'new\n' |
-  curl -i -X PUT "$ELASTIK_BASE/home/note" \
-    -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
+  curl -i -X PUT "$AUDITEDB_BASE/home/note" \
+    -H "Authorization: Bearer $AUDITEDB_WRITE_TOKEN" \
     -H "If-Match: $etag" \
     --data-binary @-
 ```
@@ -360,4 +358,4 @@ printf 'new\n' |
 
 Use curl or Firefox when testing `If-None-Match` and `304`. Brave may strip
 `If-None-Match` as an ETag fingerprinting defence, so it can return 200 even
-when Elastik would correctly return 304 to a bare HTTP client.
+when AuditeDB would correctly return 304 to a bare HTTP client.

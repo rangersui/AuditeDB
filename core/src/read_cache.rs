@@ -105,7 +105,7 @@ fn log_read_cache_retry_budget_exhausted(world: &ValidatedWorldPath, mode: &str)
 
     #[cfg(not(feature = "unstable-engine"))]
     eprintln!(
-        "elastik-core internal read cache {mode} retry budget exhausted for {}",
+        "l5 internal read cache {mode} retry budget exhausted for {}",
         world.as_str()
     );
 }
@@ -442,7 +442,7 @@ mod tests {
     fn scratch_dir(label: &str) -> PathBuf {
         let mut d = std::env::temp_dir();
         d.push(format!(
-            "elastik-readcache-test-{label}-{}-{}",
+            "auditedb-readcache-test-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

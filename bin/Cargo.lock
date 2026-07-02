@@ -109,6 +109,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "auditedb"
+version = "8.3.0"
+dependencies = [
+ "axum 0.8.9",
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "hex",
+ "hmac",
+ "l5",
+ "percent-encoding",
+ "rumqttd",
+ "rusqlite",
+ "sha2 0.11.0",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "axum"
 version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -506,42 +526,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "442039f5147480ba31067cb00ada1adae6892028e40e45fc5de7b7df6dcc1b5f"
 dependencies = [
  "const-random",
-]
-
-[[package]]
-name = "elastik-bin"
-version = "8.3.0"
-dependencies = [
- "axum 0.8.9",
- "base64 0.22.1",
- "bytes",
- "elastik-core",
- "futures-util",
- "hex",
- "hmac",
- "percent-encoding",
- "rumqttd",
- "rusqlite",
- "sha2 0.11.0",
- "tokio",
- "tower",
- "tracing",
-]
-
-[[package]]
-name = "elastik-core"
-version = "8.3.0"
-dependencies = [
- "bytes",
- "dashmap",
- "getrandom 0.2.17",
- "hex",
- "hmac",
- "percent-encoding",
- "rusqlite",
- "sha2 0.11.0",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -957,6 +941,22 @@ dependencies = [
  "pest",
  "pest_derive",
  "serde",
+]
+
+[[package]]
+name = "l5"
+version = "8.3.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "getrandom 0.2.17",
+ "hex",
+ "hmac",
+ "percent-encoding",
+ "rusqlite",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

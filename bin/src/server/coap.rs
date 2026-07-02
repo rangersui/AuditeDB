@@ -1,4 +1,4 @@
-//! Native SCoAP/UDP surface for elastik-core.
+//! Native SCoAP/UDP surface for auditedb.
 //!
 //! This is not a general CoAP stack. It is "UDP curl": parse method, path,
 //! payload, content type, and auth token, then call the protocol-neutral Engine
@@ -20,13 +20,13 @@ use crate::{
 
 const MAX_DATAGRAM: usize = 1152;
 const RECV_BUF: usize = MAX_DATAGRAM + 1;
-/// Experimental critical CoAP option carrying the raw elastik token bytes.
+/// Experimental critical CoAP option carrying the raw AuditeDB token bytes.
 ///
 /// This is not encryption and not a CoAPS replacement. It is the UDP equivalent
 /// of the HTTP bearer-token auth header for the playground adapter: absent means Anon,
 /// matching a configured token yields Read/Write/Approve. Use CoAPS/DTLS-PSK at
 /// the edge if the token should not be visible on the wire.
-const ELASTIK_AUTH_OPTION: u16 = 65001;
+const AUDITEDB_AUTH_OPTION: u16 = 65001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MsgType {
@@ -93,7 +93,7 @@ pub(crate) async fn serve(
     let socket = std::sync::Arc::new(socket);
     let permits = std::sync::Arc::new(Semaphore::new(max_in_flight));
     eprintln!("scoap: listening on coap://{bind}/");
-    eprintln!("scoap: UDP curl surface; auth option {ELASTIK_AUTH_OPTION} maps to token tier");
+    eprintln!("scoap: UDP curl surface; auth option {AUDITEDB_AUTH_OPTION} maps to token tier");
     let mut buf = [0_u8; RECV_BUF];
     loop {
         tokio::select! {
@@ -320,7 +320,7 @@ fn parse_packet(data: &[u8]) -> Result<Packet<'_>, String> {
                 path.push(segment.to_owned());
             }
             12 => content_format = Some(parse_uint(value)?),
-            ELASTIK_AUTH_OPTION => auth_token = Some(value),
+            AUDITEDB_AUTH_OPTION => auth_token = Some(value),
             _ => {}
         }
     }
@@ -594,7 +594,7 @@ mod tests {
         }
         write_option(&mut out, &mut prev, 12, &[]);
         if let Some(token) = token {
-            write_option(&mut out, &mut prev, ELASTIK_AUTH_OPTION, token);
+            write_option(&mut out, &mut prev, AUDITEDB_AUTH_OPTION, token);
         }
         out.push(0xff);
         out.extend_from_slice(payload);
@@ -608,7 +608,7 @@ mod tests {
             write_option(&mut out, &mut prev, 11, segment);
         }
         if let Some(token) = token {
-            write_option(&mut out, &mut prev, ELASTIK_AUTH_OPTION, token);
+            write_option(&mut out, &mut prev, AUDITEDB_AUTH_OPTION, token);
         }
         out
     }

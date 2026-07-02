@@ -57,17 +57,17 @@ impl HeaderAllowlist {
     }
 }
 
-/// Parse `ELASTIK_PERSIST_HEADERS` into the user-configured allowlist.
+/// Parse `AUDITEDB_PERSIST_HEADERS` into the user-configured allowlist.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn header_allowlist_from_env() -> HeaderAllowlist {
-    let raw = std::env::var("ELASTIK_PERSIST_HEADERS").unwrap_or_default();
+    let raw = std::env::var("AUDITEDB_PERSIST_HEADERS").unwrap_or_default();
     HeaderAllowlist::parse(&raw)
 }
 
-/// Parse `ELASTIK_DENY_HEADERS` into the user-configured deny set.
+/// Parse `AUDITEDB_DENY_HEADERS` into the user-configured deny set.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn header_user_deny_from_env() -> HeaderAllowlist {
-    let raw = std::env::var("ELASTIK_DENY_HEADERS").unwrap_or_default();
+    let raw = std::env::var("AUDITEDB_DENY_HEADERS").unwrap_or_default();
     HeaderAllowlist::parse(&raw)
 }
 
@@ -78,14 +78,14 @@ pub(crate) fn header_user_deny_from_env() -> HeaderAllowlist {
 /// Closed list, hardcoded. Update only when a header is reviewed
 /// as "describes the body, not the request or transport." Operators
 /// who want to drop one for their deployment use
-/// `ELASTIK_DENY_HEADERS` (Layer 1.5).
+/// `AUDITEDB_DENY_HEADERS` (Layer 1.5).
 const DEFAULT_PERSIST_HEADERS: &[&str] = &[
     // Body representation: how the body is encoded/displayed/labeled.
     "content-disposition",
     "content-encoding",
     "content-language",
     "content-md5",
-    // `last-modified` is intentionally NOT here. Elastik uses the
+    // `last-modified` is intentionally NOT here. AuditeDB uses the
     // HMAC-chained `ETag` as the canonical version identifier;
     // adding `Last-Modified` would invite clients to send
     // `If-Modified-Since` and bypass the audit-chained
@@ -128,7 +128,7 @@ fn is_default_persisted_header(name_lower: &str) -> bool {
 ///
 ///   L1   (hard deny, hardcoded): security / transport / tracing /
 ///        cloud / IP-leak / pseudo-header pollutants. Always wins.
-///   L1.5 (user deny, env-configured): operator's `ELASTIK_DENY_HEADERS`
+///   L1.5 (user deny, env-configured): operator's `AUDITEDB_DENY_HEADERS`
 ///        list. Lets an operator subtract from L2 defaults (e.g.
 ///        "I don't want `cache-control` round-tripping for my
 ///        deployment"). Same matcher shape as L3 (exact + `*`
@@ -136,7 +136,7 @@ fn is_default_persisted_header(name_lower: &str) -> bool {
 ///   L2   (default allow, hardcoded): standard representation
 ///        headers that travel with the body. Persisted unless L1
 ///        or L1.5 blocks them.
-///   L3   (user allow, env-configured): operator's `ELASTIK_PERSIST_HEADERS`
+///   L3   (user allow, env-configured): operator's `AUDITEDB_PERSIST_HEADERS`
 ///        allowlist. Adds custom headers (`x-author`, `x-my-*`)
 ///        on top of L2.
 ///
@@ -169,8 +169,8 @@ pub(crate) fn apply_meta_headers(
     // SQLite (already filtered by `request_meta_headers` at write
     // time), so the L1 hard deny is the only check that matters
     // here. We don't re-apply L1.5 / L2 / L3 on read -- if the
-    // operator changes either `ELASTIK_PERSIST_HEADERS` (L3) or
-    // `ELASTIK_DENY_HEADERS` (L1.5) after data is already written,
+    // operator changes either `AUDITEDB_PERSIST_HEADERS` (L3) or
+    // `AUDITEDB_DENY_HEADERS` (L1.5) after data is already written,
     // the persisted bytes still round-trip. Operators wanting to
     // scrub stored headers re-PUT the affected worlds. The hard
     // deny (L1) stays in force so a write-time policy bug or a
@@ -576,7 +576,7 @@ mod tests {
         // configuring anything. Custom headers (x-author,
         // x-future-http-thing, x-meta-*) are NOT persisted under the
         // empty allowlist -- the operator must opt in via
-        // ELASTIK_PERSIST_HEADERS. Layer 1 hard-deny stays in force
+        // AUDITEDB_PERSIST_HEADERS. Layer 1 hard-deny stays in force
         // either way.
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
@@ -760,7 +760,7 @@ mod tests {
         // x-meta-*) MUST NOT persist under the empty allowlist.
         assert!(
             !has("x-meta-author"),
-            "x-meta-* is opt-in via ELASTIK_PERSIST_HEADERS"
+            "x-meta-* is opt-in via AUDITEDB_PERSIST_HEADERS"
         );
         assert!(
             !has("x-future-http-thing"),
@@ -1001,7 +1001,7 @@ mod tests {
 
     #[test]
     fn request_meta_headers_user_deny_subtracts_from_default_allow() {
-        // Layer 1.5 (user deny / ELASTIK_DENY_HEADERS) lets an
+        // Layer 1.5 (user deny / AUDITEDB_DENY_HEADERS) lets an
         // operator subtract a header from the built-in
         // DEFAULT_PERSIST_HEADERS without recompiling. Order:
         //   L1 hard deny > L1.5 user deny > L2 default > L3 user allow.
@@ -1055,7 +1055,7 @@ mod tests {
         headers.insert("Traceparent", HeaderValue::from_static("00-...-01"));
         headers.insert("X-Forwarded-For", HeaderValue::from_static("203.0.113.7"));
 
-        // Operator wrote ELASTIK_PERSIST_HEADERS with mixed case --
+        // Operator wrote AUDITEDB_PERSIST_HEADERS with mixed case --
         // parser lowercases.
         let allowlist = HeaderAllowlist::parse("X-AUTHOR, X-Version");
         let user_deny = HeaderAllowlist::empty();

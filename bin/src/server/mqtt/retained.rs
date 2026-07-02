@@ -446,7 +446,7 @@ mod tests {
     fn test_engine_with_read_token(label: &str) -> (Engine, std::path::PathBuf) {
         let mut dir = std::env::temp_dir();
         dir.push(format!(
-            "elastik-mqtt-retained-test-{label}-{}-{}",
+            "auditedb-mqtt-retained-test-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

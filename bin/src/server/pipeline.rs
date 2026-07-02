@@ -27,7 +27,7 @@
 //!
 //! ## Trace
 //!
-//! `ELASTIK_TRACE_PIPELINE=1` enables stderr trace, one line per phase
+//! `AUDITEDB_TRACE_PIPELINE=1` enables stderr trace, one line per phase
 //! transition, with elapsed time and a `req-N` tag. Default off; one
 //! atomic-bool load + branch per emit call when off (~1 ns). Verb
 //! handlers can also call `TraceCtx::emit_aux(...)` for indented
@@ -1044,13 +1044,13 @@ mod tests {
     #[test]
     fn init_trace_from_env_off_by_default() {
         // Snapshot whatever the test runner has, then clear.
-        let prior = std::env::var("ELASTIK_TRACE_PIPELINE").ok();
-        std::env::remove_var("ELASTIK_TRACE_PIPELINE");
+        let prior = std::env::var("AUDITEDB_TRACE_PIPELINE").ok();
+        std::env::remove_var("AUDITEDB_TRACE_PIPELINE");
         init_trace_from_env();
         assert!(!trace_enabled_for_tests());
         // Restore.
         if let Some(v) = prior {
-            std::env::set_var("ELASTIK_TRACE_PIPELINE", v);
+            std::env::set_var("AUDITEDB_TRACE_PIPELINE", v);
         }
         // Re-init so subsequent tests see the original state.
         init_trace_from_env();

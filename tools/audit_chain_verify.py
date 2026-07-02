@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independently verify Elastik per-world SQLite audit chains.
+"""Independently verify L5 per-world SQLite audit chains.
 
 The verifier mirrors the Engine audit frame. Event HMAC fields and
 ``meta_sha256`` metadata fields are length-framed as
@@ -827,7 +827,7 @@ def self_test() -> int:
     assert vector_b == DOMAIN_VECTOR_B
     assert vector_a != vector_b
 
-    with tempfile.TemporaryDirectory(prefix="elastik-audit-verify-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="auditedb-audit-verify-") as tmp:
         root = Path(tmp)
         db = world_db(root, "home/a")
         db.parent.mkdir(parents=True)
@@ -1182,11 +1182,11 @@ def self_test() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("data_root", nargs="?", help="Elastik data root to verify")
+    parser.add_argument("data_root", nargs="?", help="AuditeDB data root to verify")
     parser.add_argument("--world", action="append", help="Canonical world path to verify")
     parser.add_argument("--key", help="Audit HMAC key as UTF-8 text")
     parser.add_argument("--key-file", help="File containing audit HMAC key bytes")
-    parser.add_argument("--key-env", default="ELASTIK_KEY", help="Environment variable for key")
+    parser.add_argument("--key-env", default="AUDITEDB_KEY", help="Environment variable for key")
     parser.add_argument("--allow-empty", action="store_true", help="Accept empty audit chains")
     parser.add_argument(
         "--require-worlds",

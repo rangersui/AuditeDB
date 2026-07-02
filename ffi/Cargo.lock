@@ -251,32 +251,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "elastik-core"
-version = "8.3.0"
-dependencies = [
- "bytes",
- "dashmap",
- "getrandom 0.2.17",
- "hex",
- "hmac",
- "percent-encoding",
- "rusqlite",
- "sha2",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "elastik-ffi"
-version = "8.3.0"
-dependencies = [
- "elastik-core",
- "rusqlite",
- "tokio",
- "uniffi",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -446,6 +420,32 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "l5"
+version = "8.3.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "getrandom 0.2.17",
+ "hex",
+ "hmac",
+ "percent-encoding",
+ "rusqlite",
+ "sha2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "l5-ffi"
+version = "8.3.0"
+dependencies = [
+ "l5",
+ "rusqlite",
+ "tokio",
+ "uniffi",
+]
 
 [[package]]
 name = "leb128fmt"

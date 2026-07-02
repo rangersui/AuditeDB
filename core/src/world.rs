@@ -950,7 +950,7 @@ mod tests {
     }
 
     fn test_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("elastik-world-test-{name}-{}", std::process::id()))
+        std::env::temp_dir().join(format!("auditedb-world-test-{name}-{}", std::process::id()))
     }
 
     fn validated(world: &str) -> ValidatedWorldPath {
@@ -1760,7 +1760,7 @@ mod tests {
         fn scratch_dir(label: &str) -> PathBuf {
             let mut d = std::env::temp_dir();
             d.push(format!(
-                "elastik-bench-{label}-{}-{}",
+                "auditedb-bench-{label}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

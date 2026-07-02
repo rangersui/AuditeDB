@@ -74,9 +74,10 @@ INSIGHTS.md
 core/README.md
 sdk-rs/README.md
 
-# Python SDK embedded binaries are local build artifacts for now.
-sdk/src/elastik/_bin/
 **/build/
+sdk/src/l5/_ffi/*.dll
+sdk/src/l5/_ffi/*.so
+sdk/src/l5/_ffi/*.dylib
 
 # CurlBench run artifacts. Harness writes raw per-model JSON via
 # --out cb-*.json. The prompt YAML, design doc, results tables, and

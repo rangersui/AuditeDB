@@ -33,10 +33,7 @@ pub(crate) fn test_core_with_read_cache_max(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    dir.push(format!(
-        "elastik-core-{label}-{}-{nanos}",
-        std::process::id()
-    ));
+    dir.push(format!("l5-{label}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     (
         {

@@ -2,14 +2,14 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-//! # AuditeDB — powered by the Elastik L5 Engine
+//! # L5 Engine
 //!
-//! `elastik-core` is a protocol-neutral storage engine: canonical paths, opaque
+//! `l5` is a protocol-neutral storage engine: canonical paths, opaque
 //! bytes, content-addressed versioning, an HMAC-chained audit log, and a
 //! four-tier access model. **SQLite for files.**
 //!
-//! As a Rust library, AuditeDB is an embedded flat key-value engine. One key
-//! stores one byte value plus metadata and audit history. There is no HTTP
+//! As a Rust library, L5 is an embedded flat key-value engine. One key stores
+//! one byte value plus metadata and audit history. There is no HTTP
 //! server, no environment-variable loader, and no socket listener in this
 //! crate; adapters add those surfaces on top.
 //!
@@ -47,7 +47,7 @@
 //! ```no_run
 //! # #[cfg(feature = "unstable-engine")]
 //! # async fn run() {
-//! use elastik_core::{
+//! use l5::{
 //!     AccessTier, AuditHmacKey, Engine, Preconditions, Representation, ValidatedWorldPath,
 //! };
 //! use bytes::Bytes;
@@ -84,8 +84,8 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "unstable-engine")]
-//! # async fn run(engine: elastik_core::Engine, world: elastik_core::ValidatedWorldPath) {
-//! use elastik_core::{
+//! # async fn run(engine: l5::Engine, world: l5::ValidatedWorldPath) {
+//! use l5::{
 //!     AccessTier, EtagMatcher, Preconditions, Representation,
 //! };
 //! use bytes::Bytes;
@@ -114,8 +114,8 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "unstable-engine")]
-//! # async fn run(engine: elastik_core::Engine) {
-//! use elastik_core::{AccessTier, SubscribePattern, SubscriptionResume};
+//! # async fn run(engine: l5::Engine) {
+//! use l5::{AccessTier, SubscribePattern, SubscriptionResume};
 //!
 //! let pattern = SubscribePattern::new("/home/tasks/*");
 //! let mut sub = engine
@@ -144,8 +144,8 @@
 //!
 //! ## What the library does *not* do
 //!
-//! No protocol adapters and no server runtime. Those live in the `elastik-bin`
-//! package's `elastik-core` binary and consume this library through the
+//! No protocol adapters and no server runtime. Those live in the `auditedb`
+//! package's `auditedb` binary and consume this library through the
 //! unstable public [`Engine`] API. In a minimal library-only build, the library
 //! does not read environment variables, does not bind sockets, and does not
 //! depend on protocol-adapter transport crates.

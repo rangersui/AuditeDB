@@ -28,13 +28,13 @@ const BODY_SHA256_HEX_LEN: usize = 64;
 /// [`TimelineCoordinate`] instead.
 ///
 /// ```compile_fail
-/// fn recombine(address: elastik_core::TimelineAddress) -> elastik_core::TimelineAddress {
+/// fn recombine(address: l5::TimelineAddress) -> l5::TimelineAddress {
 ///     let world = address.world().clone();
 ///     let generation = address.generation().clone();
 ///     let seq = address.seq();
 ///     let body_sha256 = address.body_sha256().clone();
 ///
-///     elastik_core::TimelineAddress::new(world, generation, seq, body_sha256)
+///     l5::TimelineAddress::new(world, generation, seq, body_sha256)
 /// }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,7 +54,7 @@ pub struct TimelineAddress {
 /// ```
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// use elastik_core::TimelineCoordinate;
+/// use l5::TimelineCoordinate;
 ///
 /// let coord = TimelineCoordinate::from_wire_parts(
 ///     "home/task/a",
@@ -71,8 +71,8 @@ pub struct TimelineAddress {
 ///
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
-/// # fn run(engine: &elastik_core::Engine) {
-/// let coord = elastik_core::TimelineCoordinate::from_wire_parts(
+/// # fn run(engine: &l5::Engine) {
+/// let coord = l5::TimelineCoordinate::from_wire_parts(
 ///     "home/task/a",
 ///     "0123456789abcdef0123456789abcdef",
 ///     42,
@@ -80,7 +80,7 @@ pub struct TimelineAddress {
 /// )
 /// .unwrap();
 ///
-/// engine.read_timeline_body(&coord, elastik_core::AccessTier::Read);
+/// engine.read_timeline_body(&coord, l5::AccessTier::Read);
 /// # }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]

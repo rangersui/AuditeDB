@@ -700,7 +700,7 @@ mod tests {
                 .headers()
                 .get(header::WWW_AUTHENTICATE)
                 .unwrap(),
-            "Bearer realm=\"elastik\""
+            "Bearer realm=\"auditedb\""
         );
         assert_eq!(
             ledger_delete.headers().get(header::CONTENT_TYPE).unwrap(),

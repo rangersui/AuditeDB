@@ -33,7 +33,7 @@ use crate::{
     storage_class, store, world,
 };
 
-/// Public handle for the protocol-neutral Elastik engine.
+/// Public handle for the protocol-neutral L5 engine.
 ///
 /// `Engine` is cloneable and owns the startup writer lock for the data root.
 /// Dropping the last clone releases the lock.
@@ -617,7 +617,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "elastik-engine-{name}-{}-{nonce}",
+            "auditedb-engine-{name}-{}-{nonce}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);

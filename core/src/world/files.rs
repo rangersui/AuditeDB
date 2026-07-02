@@ -137,7 +137,7 @@ fn log_wal_release_error(world: &str, phase: &str, err: &rusqlite::Error) {
     );
 
     #[cfg(not(feature = "unstable-engine"))]
-    eprintln!("elastik-core internal delete wal checkpoint {phase} failed for {world}: {err}");
+    eprintln!("l5 internal delete wal checkpoint {phase} failed for {world}: {err}");
 }
 
 fn list_matching(

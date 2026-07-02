@@ -58,7 +58,7 @@ pub(crate) fn unauthorized(msg: &str) -> Response {
         StatusCode::UNAUTHORIZED,
         [
             (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
-            (header::WWW_AUTHENTICATE, "Bearer realm=\"elastik\""),
+            (header::WWW_AUTHENTICATE, "Bearer realm=\"auditedb\""),
         ],
         format!("auth required: {msg}\n"),
     )
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            "Bearer realm=\"elastik\""
+            "Bearer realm=\"auditedb\""
         );
         assert_eq!(
             resp.headers().get(header::CONTENT_TYPE).unwrap(),

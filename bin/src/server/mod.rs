@@ -69,14 +69,14 @@ use http::semantics::{header_allowlist_from_env, header_user_deny_from_env};
 pub(crate) async fn run_from_env() -> Result<(), String> {
     pipeline::init_trace_from_env();
 
-    let host = std::env::var("ELASTIK_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = match std::env::var("ELASTIK_PORT") {
+    let host = std::env::var("AUDITEDB_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let port: u16 = match std::env::var("AUDITEDB_PORT") {
         Ok(raw) => raw
             .parse()
-            .map_err(|_| format!("ELASTIK_PORT must be a TCP port number; got {raw:?}"))?,
+            .map_err(|_| format!("AUDITEDB_PORT must be a TCP port number; got {raw:?}"))?,
         Err(std::env::VarError::NotPresent) => 3105,
         Err(std::env::VarError::NotUnicode(_)) => {
-            return Err("ELASTIK_PORT must be valid Unicode".into());
+            return Err("AUDITEDB_PORT must be valid Unicode".into());
         }
     };
     #[cfg(feature = "coap")]
@@ -85,61 +85,63 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
     let mqtt_bind = mqtt_bind_from_env(&host);
     #[cfg(feature = "mqtt")]
     let mqtt_metrics = mqtt_bind.as_ref().map(|_| mqtt::MqttMetrics::shared());
-    let data = PathBuf::from(std::env::var("ELASTIK_DATA").unwrap_or_else(|_| "./data".into()));
-    let max_world_bytes = env_usize("ELASTIK_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES)?;
-    let max_memory_bytes = env_usize("ELASTIK_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES)?;
-    let max_storage_bytes = env_optional_usize("ELASTIK_MAX_STORAGE_BYTES")?;
+    let data = PathBuf::from(std::env::var("AUDITEDB_DATA").unwrap_or_else(|_| "./data".into()));
+    let max_world_bytes = env_usize("AUDITEDB_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES)?;
+    let max_memory_bytes = env_usize("AUDITEDB_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES)?;
+    let max_storage_bytes = env_optional_usize("AUDITEDB_MAX_STORAGE_BYTES")?;
     let max_listen_connections = env_nonzero_usize(
-        "ELASTIK_MAX_LISTEN_CONNECTIONS",
+        "AUDITEDB_MAX_LISTEN_CONNECTIONS",
         DEFAULT_MAX_LISTEN_CONNECTIONS,
     )?;
     let listen_replay_max =
-        env_nonzero_usize("ELASTIK_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX)?;
+        env_nonzero_usize("AUDITEDB_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX)?;
     #[cfg(feature = "coap")]
     let coap_max_in_flight =
-        env_nonzero_usize("ELASTIK_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT)?;
+        env_nonzero_usize("AUDITEDB_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT)?;
     #[cfg(feature = "mqtt")]
     let mqtt_max_packet_bytes = env_nonzero_usize(
-        "ELASTIK_MQTT_MAX_PACKET_BYTES",
+        "AUDITEDB_MQTT_MAX_PACKET_BYTES",
         mqtt_max_packet_default(max_world_bytes),
     )?;
     #[cfg(feature = "mqtt")]
-    let mqtt_max_connections =
-        env_nonzero_usize("ELASTIK_MQTT_MAX_CONNECTIONS", DEFAULT_MQTT_MAX_CONNECTIONS)?;
+    let mqtt_max_connections = env_nonzero_usize(
+        "AUDITEDB_MQTT_MAX_CONNECTIONS",
+        DEFAULT_MQTT_MAX_CONNECTIONS,
+    )?;
     #[cfg(feature = "mqtt")]
     let mqtt_max_pending_qos2_bytes = env_nonzero_usize(
-        "ELASTIK_MQTT_MAX_PENDING_QOS2_BYTES",
+        "AUDITEDB_MQTT_MAX_PENDING_QOS2_BYTES",
         DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
     )?;
     #[cfg(feature = "mqtt")]
     let mqtt_connect_timeout_ms = env_nonzero_usize(
-        "ELASTIK_MQTT_CONNECT_TIMEOUT_MS",
+        "AUDITEDB_MQTT_CONNECT_TIMEOUT_MS",
         DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
     )?;
     #[cfg(feature = "mqtt")]
     let mqtt_max_preauth_per_ip = env_nonzero_usize(
-        "ELASTIK_MQTT_MAX_PREAUTH_PER_IP",
+        "AUDITEDB_MQTT_MAX_PREAUTH_PER_IP",
         DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
     )?;
     let read_cache_max_entries = env_nonzero_usize(
-        "ELASTIK_READ_CACHE_MAX_ENTRIES",
+        "AUDITEDB_READ_CACHE_MAX_ENTRIES",
         DEFAULT_READ_CACHE_MAX_ENTRIES,
     )?;
-    let raw_hmac_key = match std::env::var("ELASTIK_KEY") {
+    let raw_hmac_key = match std::env::var("AUDITEDB_KEY") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
         Err(std::env::VarError::NotUnicode(_)) => {
-            return Err("ELASTIK_KEY is invalid: value is not valid Unicode".into());
+            return Err("AUDITEDB_KEY is invalid: value is not valid Unicode".into());
         }
     };
     let hmac_key = match hmac_key_from_env_value(raw_hmac_key) {
         Ok(Some(key)) => key,
         Ok(None) => {
             return Err(
-                "ELASTIK_KEY is required; the audit chain has no meaning without it".into(),
+                "AUDITEDB_KEY is required; the audit chain has no meaning without it".into(),
             );
         }
-        Err(err) => return Err(format!("ELASTIK_KEY is invalid: {err}")),
+        Err(err) => return Err(format!("AUDITEDB_KEY is invalid: {err}")),
     };
     let tokens = ServerTokens::from_env();
     let persist_header_allowlist = header_allowlist_from_env();
@@ -178,7 +180,7 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
         .local_addr()
         .map(|addr| addr.ip())
         .unwrap_or_else(|_| IpAddr::from([127, 0, 0, 1]));
-    eprintln!("elastik-core v{VERSION} on http://{addr}/");
+    eprintln!("auditedb v{VERSION} on http://{addr}/");
     print_auth_summary(&tokens, bind_ip);
     #[cfg(feature = "coap")]
     if let Some((coap_host, coap_port)) = coap_bind {
@@ -256,9 +258,9 @@ struct ServerTokens {
 impl ServerTokens {
     fn from_env() -> Self {
         Self {
-            read: nonempty_env("ELASTIK_READ_TOKEN"),
-            write: nonempty_env("ELASTIK_WRITE_TOKEN").or_else(|| nonempty_env("ELASTIK_TOKEN")),
-            approve: nonempty_env("ELASTIK_APPROVE_TOKEN"),
+            read: nonempty_env("AUDITEDB_READ_TOKEN"),
+            write: nonempty_env("AUDITEDB_WRITE_TOKEN"),
+            approve: nonempty_env("AUDITEDB_APPROVE_TOKEN"),
         }
     }
 
@@ -310,7 +312,7 @@ fn print_auth_summary(tokens: &ServerTokens, bind_ip: IpAddr) {
         if tokens.read_required() {
             "token required"
         } else {
-            "public (ELASTIK_READ_TOKEN not set)"
+            "public (AUDITEDB_READ_TOKEN not set)"
         }
     );
     eprintln!(
@@ -318,7 +320,7 @@ fn print_auth_summary(tokens: &ServerTokens, bind_ip: IpAddr) {
         if tokens.write.is_some() {
             "token required"
         } else {
-            "disabled (ELASTIK_WRITE_TOKEN not set)"
+            "disabled (AUDITEDB_WRITE_TOKEN not set)"
         }
     );
     eprintln!(
@@ -326,34 +328,31 @@ fn print_auth_summary(tokens: &ServerTokens, bind_ip: IpAddr) {
         if tokens.approve.is_some() {
             "token required"
         } else {
-            "disabled (ELASTIK_APPROVE_TOKEN not set)"
+            "disabled (AUDITEDB_APPROVE_TOKEN not set)"
         }
     );
-    if env_set_but_empty("ELASTIK_READ_TOKEN") {
-        eprintln!("  warning: empty ELASTIK_READ_TOKEN treated as unset (reads public)");
+    if env_set_but_empty("AUDITEDB_READ_TOKEN") {
+        eprintln!("  warning: empty AUDITEDB_READ_TOKEN treated as unset (reads public)");
     }
     if should_warn_public_read(bind_ip, tokens.read_required()) {
         eprintln!(
-            "  WARNING: reads are public on non-loopback interface {bind_ip}; set ELASTIK_READ_TOKEN to gate reads."
+            "  WARNING: reads are public on non-loopback interface {bind_ip}; set AUDITEDB_READ_TOKEN to gate reads."
         );
     }
-    if env_set_but_empty("ELASTIK_WRITE_TOKEN") {
-        eprintln!("  warning: empty ELASTIK_WRITE_TOKEN treated as unset (PUT/POST disabled)");
+    if env_set_but_empty("AUDITEDB_WRITE_TOKEN") {
+        eprintln!("  warning: empty AUDITEDB_WRITE_TOKEN treated as unset (PUT/POST disabled)");
     }
-    if std::env::var("ELASTIK_TOKEN").is_ok() {
-        eprintln!("  warning: ELASTIK_TOKEN is deprecated; rename it to ELASTIK_WRITE_TOKEN.");
-    }
-    if env_set_but_empty("ELASTIK_APPROVE_TOKEN") {
+    if env_set_but_empty("AUDITEDB_APPROVE_TOKEN") {
         eprintln!(
-            "  warning: empty ELASTIK_APPROVE_TOKEN treated as unset (DELETE/system writes disabled)"
+            "  warning: empty AUDITEDB_APPROVE_TOKEN treated as unset (DELETE/system writes disabled)"
         );
     }
     if tokens.write.is_none() {
-        eprintln!("  warning: ELASTIK_WRITE_TOKEN not set; ordinary PUT/POST are disabled.");
+        eprintln!("  warning: AUDITEDB_WRITE_TOKEN not set; ordinary PUT/POST are disabled.");
     }
     if tokens.approve.is_none() {
         eprintln!(
-            "  warning: ELASTIK_APPROVE_TOKEN not set; DELETE and system writes are disabled."
+            "  warning: AUDITEDB_APPROVE_TOKEN not set; DELETE and system writes are disabled."
         );
     }
 }
@@ -377,7 +376,7 @@ fn env_set_but_empty(name: &str) -> bool {
 #[cfg(not(test))]
 async fn shutdown_signal(engine: Engine) {
     wait_for_shutdown_signal().await;
-    eprintln!("elastik-core: shutdown signal received");
+    eprintln!("auditedb: shutdown signal received");
     engine.shutdown();
 }
 
@@ -388,7 +387,7 @@ async fn wait_for_shutdown_signal() {
     let mut sigterm = match signal(SignalKind::terminate()) {
         Ok(sigterm) => sigterm,
         Err(e) => {
-            eprintln!("elastik-core: failed to install SIGTERM handler: {e}; waiting for Ctrl-C");
+            eprintln!("auditedb: failed to install SIGTERM handler: {e}; waiting for Ctrl-C");
             let _ = tokio::signal::ctrl_c().await;
             return;
         }

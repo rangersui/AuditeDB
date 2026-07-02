@@ -1,20 +1,20 @@
 [package]
-name = "elastik-ffi"
+name = "l5-ffi"
 version = "8.3.0"
 edition = "2021"
-description = "AuditeDB FFI — UniFFI binding for the Elastik L5 Engine."
+description = "L5 Engine FFI — UniFFI binding for AuditeDB embedders."
 license = "MIT"
 repository = "https://github.com/rangersui/AuditeDB"
 homepage = "https://github.com/rangersui/AuditeDB"
 publish = false
 
 [lib]
-name = "elastik_ffi"
+name = "l5_ffi"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-elastik-core = { path = "../core", default-features = false, features = ["bundled-sqlite", "unstable-engine"] }
+l5 = { path = "../core", default-features = false, features = ["bundled-sqlite", "unstable-engine"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 uniffi = { version = "0.31.1", features = ["cli"] }
 

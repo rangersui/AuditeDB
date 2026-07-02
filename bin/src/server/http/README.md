@@ -1,6 +1,6 @@
 # AuditeDB HTTP Adapter
 
-The HTTP adapter is the default `elastik-core` binary surface. It maps HTTP
+The HTTP adapter is the default `auditedb` binary surface. It maps HTTP
 methods, headers, and status codes onto the protocol-neutral Engine.
 
 Engine rules live in the top-level [`README.md`](../../../../README.md). This
@@ -10,13 +10,13 @@ file documents the binary wire surface: startup, HTTP worlds, `/proc/*`,
 ## Quick Start
 
 ```bash
-export ELASTIK_KEY=0123456789abcdef0123456789abcdef
-export ELASTIK_WRITE_TOKEN=secret
-cargo run --manifest-path bin/Cargo.toml --bin elastik-core
-# elastik-core v8.3.0 on http://127.0.0.1:3105/
+export AUDITEDB_KEY=0123456789abcdef0123456789abcdef
+export AUDITEDB_WRITE_TOKEN=secret
+cargo run --manifest-path bin/Cargo.toml --bin auditedb
+# auditedb v8.3.0 on http://127.0.0.1:3105/
 
 curl                  http://127.0.0.1:3105/proc/version
-curl -X PUT -H "Authorization: Bearer $ELASTIK_WRITE_TOKEN" \
+curl -X PUT -H "Authorization: Bearer $AUDITEDB_WRITE_TOKEN" \
   -d 'hi'          http://127.0.0.1:3105/home/hello
 curl              http://127.0.0.1:3105/home/hello
 curl              http://127.0.0.1:3105/proc/worlds
@@ -32,23 +32,22 @@ Common binary environment variables:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ELASTIK_KEY` | required | HMAC audit-chain key; startup refuses missing, empty, all-whitespace, or shorter-than-32-byte keys. |
-| `ELASTIK_READ_TOKEN` | unset | Gates reads, `/proc/*`, and `/listen/*`; unset means public reads. |
-| `ELASTIK_WRITE_TOKEN` | unset | Enables ordinary PUT/POST writes in user namespaces such as `home/`. |
-| `ELASTIK_APPROVE_TOKEN` | unset | Enables DELETE and writes in protected namespaces such as `etc/` and `var/log/`. |
-| `ELASTIK_TOKEN` | unset | Deprecated alias for `ELASTIK_WRITE_TOKEN`. |
-| `ELASTIK_DATA` | `./data` | SQLite data root. |
-| `ELASTIK_HOST` | `127.0.0.1` | HTTP bind host. |
-| `ELASTIK_PORT` | `3105` | HTTP bind port. |
-| `ELASTIK_PERSIST_HEADERS` | unset | Comma-separated custom response headers to preserve, e.g. `x-author,x-meta-*`. |
-| `ELASTIK_DENY_HEADERS` | unset | Subtracts headers from the persist allowlist. |
-| `ELASTIK_MAX_WORLD_BYTES` | `67108864` | Maximum body size for one world. |
-| `ELASTIK_MAX_MEMORY_BYTES` | `268435456` | Total in-memory quota for `tmp/`, `dev/`, and `sys/` worlds. |
-| `ELASTIK_MAX_STORAGE_BYTES` | unset | Optional durable SQLite-backed storage quota. |
-| `ELASTIK_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE subscriptions. |
-| `ELASTIK_LISTEN_REPLAY_MAX` | `1024` | Replay ring size for reconnecting SSE clients. |
-| `ELASTIK_READ_CACHE_MAX_ENTRIES` | `5000` | Read-cache entry cap. |
-| `ELASTIK_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set to `1`, `true`, `yes`, or `on`. |
+| `AUDITEDB_KEY` | required | HMAC audit-chain key; startup refuses missing, empty, all-whitespace, or shorter-than-32-byte keys. |
+| `AUDITEDB_READ_TOKEN` | unset | Gates reads, `/proc/*`, and `/listen/*`; unset means public reads. |
+| `AUDITEDB_WRITE_TOKEN` | unset | Enables ordinary PUT/POST writes in user namespaces such as `home/`. |
+| `AUDITEDB_APPROVE_TOKEN` | unset | Enables DELETE and writes in protected namespaces such as `etc/` and `var/log/`. |
+| `AUDITEDB_DATA` | `./data` | SQLite data root. |
+| `AUDITEDB_HOST` | `127.0.0.1` | HTTP bind host. |
+| `AUDITEDB_PORT` | `3105` | HTTP bind port. |
+| `AUDITEDB_PERSIST_HEADERS` | unset | Comma-separated custom response headers to preserve, e.g. `x-author,x-meta-*`. |
+| `AUDITEDB_DENY_HEADERS` | unset | Subtracts headers from the persist allowlist. |
+| `AUDITEDB_MAX_WORLD_BYTES` | `67108864` | Maximum body size for one world. |
+| `AUDITEDB_MAX_MEMORY_BYTES` | `268435456` | Total in-memory quota for `tmp/`, `dev/`, and `sys/` worlds. |
+| `AUDITEDB_MAX_STORAGE_BYTES` | unset | Optional durable SQLite-backed storage quota. |
+| `AUDITEDB_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE subscriptions. |
+| `AUDITEDB_LISTEN_REPLAY_MAX` | `1024` | Replay ring size for reconnecting SSE clients. |
+| `AUDITEDB_READ_CACHE_MAX_ENTRIES` | `5000` | Read-cache entry cap. |
+| `AUDITEDB_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set to `1`, `true`, `yes`, or `on`. |
 
 MQTT and CoAP options live in their adapter READMEs:
 [`mqtt/README.md`](../mqtt/README.md) and [`coap/README.md`](../coap/README.md).
@@ -174,14 +173,14 @@ header persistence, read-cache, and storage settings listed above.
 The binary exposes text-shaped `/proc/*` endpoints over HTTP. These are adapter
 renderings of Engine snapshots, not storage worlds. `/proc/version` is public
 and is the quickest liveness probe. The other read-only `/proc/*` endpoints
-require `ELASTIK_READ_TOKEN` for `GET` and `HEAD` when a read token is
+require `AUDITEDB_READ_TOKEN` for `GET` and `HEAD` when a read token is
 configured. `OPTIONS` is always policy-free capability discovery: it returns
 `Allow` without validating the resource-specific `<world>` or proving that the
 resource exists.
 
 | Endpoint | Methods | Auth | Purpose |
 |----------|---------|------|---------|
-| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `elastik-core 8.3.0 (rust)`. |
+| `/proc/version` | `GET`, `HEAD`, `OPTIONS` | public | Binary version string, e.g. `auditedb 8.3.0 (rust)`. |
 | `/proc/worlds` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Canonical world list, one `home/foo`-style key per line. |
 | `/proc/du` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Per-world byte usage. This is an unpaginated management view. |
 | `/proc/df` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Storage and memory quota snapshot plus world count. |

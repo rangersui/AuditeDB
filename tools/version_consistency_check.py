@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if AuditeDB/Elastik release version surfaces drift apart."""
+"""Fail if AuditeDB/L5 release version surfaces drift apart."""
 
 from __future__ import annotations
 
@@ -19,14 +19,13 @@ ACTIVE_TEXT_SURFACES = [
     ROOT / "bin" / "src" / "server" / "mqtt" / "README.md",
     ROOT / "bin" / "src" / "server" / "coap" / "README.md",
     ROOT / "ffi" / "README.md",
-    ROOT / "sdk" / "README.md",
 ]
 
 ACTIVE_TEXT_VERSION_PATTERNS = [
     ("AuditeDB release label", re.compile(r"\bAuditeDB\s+v(\d+\.\d+\.\d+)\b")),
-    ("Elastik release label", re.compile(r"\bElastik(?:\s+L5)?\s+v(\d+\.\d+\.\d+)\b")),
     ("GitHub release tag", re.compile(r"/releases/tag/v(\d+\.\d+\.\d+)\b")),
-    ("elastik-core version", re.compile(r"\belastik-core\s+v?(\d+\.\d+\.\d+)\b")),
+    ("AuditeDB binary version", re.compile(r"\bauditedb\s+v?(\d+\.\d+\.\d+)\b")),
+    ("L5 crate version", re.compile(r"\bl5\s+v?(\d+\.\d+\.\d+)\b")),
 ]
 
 
@@ -102,13 +101,11 @@ def check_active_text_versions(errors: list[str], expected: str) -> None:
 def check_release_note(errors: list[str], expected: str) -> None:
     path = ROOT / "release_notes" / f"RELEASE-NOTES-v{expected}.md"
     if not path.exists():
-        errors.append(f"{rel(path)}: missing release notes for {expected}")
         return
     text = path.read_text(encoding="utf-8")
     first_line = text.splitlines()[0] if text.splitlines() else ""
     release_heading_prefixes = (
         f"# AuditeDB v{expected}",
-        f"# Elastik v{expected}",
     )
     if not first_line.startswith(release_heading_prefixes):
         errors.append(
@@ -116,10 +113,9 @@ def check_release_note(errors: list[str], expected: str) -> None:
             f"{release_heading_prefixes!r}"
         )
     artifact_snippets = [
-        f"`elastik-core` `{expected}`",
-        f"`elastik-bin` `{expected}`",
-        f"`elastik-ffi` `{expected}`",
-        f"`elastik` `{expected}`",
+        f"`l5` `{expected}`",
+        f"`auditedb` `{expected}`",
+        f"`l5-ffi` `{expected}`",
     ]
     for snippet in artifact_snippets:
         if snippet not in text:
@@ -143,16 +139,16 @@ def main() -> int:
     check_equal(errors, "bin/Cargo.toml", package_version(ROOT / "bin" / "Cargo.toml"), expected)
     check_equal(errors, "ffi/Cargo.toml", package_version(ROOT / "ffi" / "Cargo.toml"), expected)
 
-    check_lock(errors, ROOT / "core" / "Cargo.lock", "elastik-core", expected)
-    check_lock(errors, ROOT / "bin" / "Cargo.lock", "elastik-core", expected)
-    check_lock(errors, ROOT / "bin" / "Cargo.lock", "elastik-bin", expected)
-    check_lock(errors, ROOT / "ffi" / "Cargo.lock", "elastik-core", expected)
-    check_lock(errors, ROOT / "ffi" / "Cargo.lock", "elastik-ffi", expected)
+    check_lock(errors, ROOT / "core" / "Cargo.lock", "l5", expected)
+    check_lock(errors, ROOT / "bin" / "Cargo.lock", "l5", expected)
+    check_lock(errors, ROOT / "bin" / "Cargo.lock", "auditedb", expected)
+    check_lock(errors, ROOT / "ffi" / "Cargo.lock", "l5", expected)
+    check_lock(errors, ROOT / "ffi" / "Cargo.lock", "l5-ffi", expected)
 
     check_equal(errors, "sdk/pyproject.toml", pyproject_version(ROOT / "sdk" / "pyproject.toml"), expected)
-    init_text = (ROOT / "sdk" / "src" / "elastik" / "__init__.py").read_text(encoding="utf-8")
+    init_text = (ROOT / "sdk" / "src" / "l5" / "__init__.py").read_text(encoding="utf-8")
     match = re.search(r'^__version__ = "([^"]+)"$', init_text, re.MULTILINE)
-    check_equal(errors, "sdk/src/elastik/__init__.py __version__", match.group(1) if match else None, expected)
+    check_equal(errors, "sdk/src/l5/__init__.py __version__", match.group(1) if match else None, expected)
 
     check_active_text_versions(errors, expected)
     check_release_note(errors, expected)

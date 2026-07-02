@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Supply-chain gates for Elastik's split Rust crates.
+"""Supply-chain gates for L5's split Rust crates.
 
 Cargo audit catches RustSec advisories for Rust crates, but bundled native
 SQLite lives inside libsqlite3-sys and needs an explicit native-version check.

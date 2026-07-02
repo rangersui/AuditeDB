@@ -1,9 +1,9 @@
-# AuditeDB FFI
+# L5 FFI
 
-`elastik-ffi` is the UniFFI adapter for the Elastik L5 Engine.
+`l5-ffi` is the UniFFI adapter for the L5 Engine.
 
 This crate is deliberately not an HTTP binding. Its upstream is the Rust
-`Engine` facade from `elastik-core`; HTTP, CoAP, SDK wire clients, and this FFI
+`Engine` facade from `l5`; HTTP, CoAP, SDK wire clients, and this FFI
 crate are sibling adapters.
 
 ## Current Surface
@@ -45,7 +45,7 @@ Cargo workspace):
 
 ```powershell
 cargo build
-cargo run --bin uniffi-bindgen -- generate target\debug\elastik_ffi.dll --language python --out-dir target\bindings\python
+cargo run --bin uniffi-bindgen -- generate target\debug\l5_ffi.dll --language python --out-dir target\bindings\python
 ```
 
 ## Python-Shaped Usage
@@ -54,14 +54,14 @@ Names can vary slightly by generated binding language. All examples assume an
 open Engine:
 
 ```python
-from elastik_ffi import (
+from l5_ffi import (
     FfiAccessTier, FfiEngine, FfiEngineConfig, FfiError,
     FfiDeleteMetadata, FfiHeader, FfiPreconditions, FfiRepresentation,
     FfiSubscriptionNextKind, FfiSubscriptionResume,
 )
 
 engine = FfiEngine.open(FfiEngineConfig(
-    data_root="/var/lib/elastik",
+    data_root="/var/lib/auditedb",
     hmac_key=b"0123456789abcdef0123456789abcdef",
     read_token=b"reader",
     write_token=b"writer",
@@ -193,10 +193,10 @@ except FfiError.BuildDataRootLockHeld as e:
 The artifact CI workflow builds and smokes native libraries plus generated
 Python bindings for:
 
-- Linux x64 (`libelastik_ffi.so`)
-- Linux ARM64 (`libelastik_ffi.so`)
-- macOS ARM64 (`libelastik_ffi.dylib`)
-- Windows x64 (`elastik_ffi.dll`)
+- Linux x64 (`libl5_ffi.so`)
+- Linux ARM64 (`libl5_ffi.so`)
+- macOS ARM64 (`libl5_ffi.dylib`)
+- Windows x64 (`l5_ffi.dll`)
 
 Tagged-release attachment and checksum integration live in the release workflow
 stack layer after the CI artifact shape is validated.

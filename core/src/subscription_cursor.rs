@@ -122,7 +122,7 @@ impl SubscribePattern {
     /// ```
     /// # #[cfg(feature = "unstable-engine")]
     /// # fn run() {
-    /// use elastik_core::SubscribePattern;
+    /// use l5::SubscribePattern;
     ///
     /// assert_eq!(SubscribePattern::new("").as_str(), "*");
     /// assert_eq!(SubscribePattern::new("/").as_str(), "*");

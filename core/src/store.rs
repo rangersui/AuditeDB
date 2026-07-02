@@ -7,7 +7,7 @@
 //! ```
 //!
 //! `MemoryStore` is a small Redis-shaped substrate that keeps the
-//! elastik shape: the path prefix selects the backend without changing
+//! L5 shape: the path prefix selects the backend without changing
 //! the higher-level storage model. Useful for agent scratchpads, transient queues,
 //! latest-state caches, and framebuffers. `/listen/*` reports changes
 //! as control-plane events, but the memory backend itself only stores

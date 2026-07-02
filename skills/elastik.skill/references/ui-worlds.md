@@ -1,6 +1,6 @@
 # UI worlds
 
-Use this reference when building or repairing browser pages stored as Elastik
+Use this reference when building or repairing browser pages stored as AuditeDB
 worlds. Keep it generic: discover the target world set at runtime.
 
 ## Flat page topology

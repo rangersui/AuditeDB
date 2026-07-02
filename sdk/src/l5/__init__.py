@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 HeaderInput = Mapping[str, str] | Sequence[tuple[str, str]] | None
 T = TypeVar("T")
+__version__ = "8.3.0"
 
 
 class L5Error(Exception):

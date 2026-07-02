@@ -114,7 +114,7 @@ across reconnects.
 | Limit | Value |
 |-------|-------|
 | pending QoS 2 publishes per session | `64` |
-| pending QoS 2 payload bytes per session | `ELASTIK_MQTT_MAX_PENDING_QOS2_BYTES`, default `1048576` |
+| pending QoS 2 payload bytes per session | `AUDITEDB_MQTT_MAX_PENDING_QOS2_BYTES`, default `1048576` |
 | outbound queue | `128` packets |
 | MQTT filters per session | `64` |
 
@@ -126,9 +126,9 @@ token auth is kept only as a legacy fallback.
 | Token | Tier |
 |-------|------|
 | none | `Anon` |
-| `ELASTIK_READ_TOKEN` | `Read` |
-| `ELASTIK_WRITE_TOKEN` | `Write` |
-| `ELASTIK_APPROVE_TOKEN` | `Approve` |
+| `AUDITEDB_READ_TOKEN` | `Read` |
+| `AUDITEDB_WRITE_TOKEN` | `Write` |
+| `AUDITEDB_APPROVE_TOKEN` | `Approve` |
 
 Bad credentials fail at CONNECT with a CONNACK failure code.
 
@@ -141,13 +141,13 @@ until their PUBREL commit has completed.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ELASTIK_MQTT_HOST` | `ELASTIK_HOST` | MQTT bind host when the `mqtt` feature is enabled. |
-| `ELASTIK_MQTT_PORT` | `1883` | MQTT bind port when the `mqtt` feature is enabled; set `0` to disable. |
-| `ELASTIK_MQTT_MAX_PACKET_BYTES` | parsed `ELASTIK_MAX_WORLD_BYTES + 1024` | Maximum MQTT packet size accepted by the adapter. |
-| `ELASTIK_MQTT_MAX_CONNECTIONS` | `1024` | Maximum concurrent MQTT TCP sessions. |
-| `ELASTIK_MQTT_MAX_PENDING_QOS2_BYTES` | `1048576` | Maximum buffered, uncommitted QoS 2 payload bytes per MQTT session. |
-| `ELASTIK_MQTT_CONNECT_TIMEOUT_MS` | `3000` | Maximum time an accepted TCP socket may spend waiting to send its first CONNECT packet. Increase for high-latency cellular or satellite links. |
-| `ELASTIK_MQTT_MAX_PREAUTH_PER_IP` | `32` | Maximum concurrent pre-auth MQTT sockets from one source IP. Tune for NAT-heavy factory networks. |
+| `AUDITEDB_MQTT_HOST` | `AUDITEDB_HOST` | MQTT bind host when the `mqtt` feature is enabled. |
+| `AUDITEDB_MQTT_PORT` | `1883` | MQTT bind port when the `mqtt` feature is enabled; set `0` to disable. |
+| `AUDITEDB_MQTT_MAX_PACKET_BYTES` | parsed `AUDITEDB_MAX_WORLD_BYTES + 1024` | Maximum MQTT packet size accepted by the adapter. |
+| `AUDITEDB_MQTT_MAX_CONNECTIONS` | `1024` | Maximum concurrent MQTT TCP sessions. |
+| `AUDITEDB_MQTT_MAX_PENDING_QOS2_BYTES` | `1048576` | Maximum buffered, uncommitted QoS 2 payload bytes per MQTT session. |
+| `AUDITEDB_MQTT_CONNECT_TIMEOUT_MS` | `3000` | Maximum time an accepted TCP socket may spend waiting to send its first CONNECT packet. Increase for high-latency cellular or satellite links. |
+| `AUDITEDB_MQTT_MAX_PREAUTH_PER_IP` | `32` | Maximum concurrent pre-auth MQTT sockets from one source IP. Tune for NAT-heavy factory networks. |
 
 ## Metrics
 

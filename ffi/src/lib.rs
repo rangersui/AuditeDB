@@ -1,6 +1,6 @@
-//! UniFFI adapter for Elastik's protocol-neutral Engine.
+//! UniFFI adapter for the protocol-neutral L5 Engine.
 //!
-//! This crate is intentionally separate from `elastik-core`: it is an adapter
+//! This crate is intentionally separate from `l5`: it is an adapter
 //! peer of HTTP and CoAP, not a new core surface. This stack binds Engine
 //! methods directly and keeps HTTP route/status vocabulary out of the ABI.
 
@@ -12,7 +12,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use elastik_core::{
+use l5::{
     AuditHmacKey, ChangeEvent, Engine, EngineDeleteTraceHooks, SubscribePattern,
     SubscriptionRecvError, SubscriptionResume, ValidatedWorldPath,
 };
@@ -29,7 +29,7 @@ pub use types::*;
 
 uniffi::setup_scaffolding!();
 
-/// UniFFI-owned handle around Elastik's protocol-neutral Engine.
+/// UniFFI-owned handle around the protocol-neutral L5 Engine.
 #[derive(uniffi::Object)]
 pub struct FfiEngine {
     engine: Engine,
@@ -101,7 +101,7 @@ impl FfiEngine {
         let runtime = Arc::new(
             RuntimeBuilder::new_multi_thread()
                 .enable_all()
-                .thread_name("elastik-ffi")
+                .thread_name("l5-ffi")
                 .build()
                 .map_err(|err| FfiError::RuntimeInitFailed {
                     message: err.to_string(),
@@ -478,7 +478,7 @@ fn subscription_next_from_recv(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use elastik_core::{AuditVerify, EngineBuildError, EngineError, SubscriptionEventId};
+    use l5::{AuditVerify, EngineBuildError, EngineError, SubscriptionEventId};
     use std::{
         path::{Path, PathBuf},
         sync::mpsc as std_mpsc,
@@ -1532,7 +1532,7 @@ mod tests {
 
     #[test]
     fn auth_gate_crosses_ffi_with_structured_variant() {
-        use elastik_core::AuthGate;
+        use l5::AuthGate;
 
         for (core_gate, ffi_gate) in [
             (AuthGate::Read, FfiAuthGate::Read),
@@ -1599,7 +1599,7 @@ mod tests {
             .expect("clock after epoch")
             .as_nanos();
         std::env::temp_dir()
-            .join(format!("elastik-ffi-{label}-{nanos}"))
+            .join(format!("l5-ffi-{label}-{nanos}"))
             .to_string_lossy()
             .into_owned()
     }

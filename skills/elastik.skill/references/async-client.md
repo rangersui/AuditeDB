@@ -2,9 +2,9 @@
 
 ## One line
 
-Elastik storage is synchronous (key-value read/write), but workflows are
+AuditeDB storage is synchronous (key-value read/write), but workflows are
 naturally asynchronous (computation happens elsewhere). JavaScript is the most
-natural business client for Elastik; Python is the most natural script client.
+natural business client for AuditeDB; Python is the most natural script client.
 
 ## Two operating modes
 
@@ -54,12 +54,11 @@ EventSource + Bearer token        does NOT work; native EventSource cannot
                                   set the Authorization header
 fetch + ReadableStream            works; parse SSE manually
 requests(stream=True)             works; parse SSE lines manually
-JS SDK listen()                   works; wraps fetch + parser
 ```
 
 Use `EventSource` only when no `Authorization` header is required. Use
-`fetch` + `ReadableStream` or the SDK's `listen()` when read tokens are
-enabled. See `http-worlds.md` for the SSE frame shape.
+`fetch` + `ReadableStream` when read tokens are enabled. See `http-worlds.md`
+for the SSE frame shape.
 
 ## JavaScript client (browser / Node.js)
 

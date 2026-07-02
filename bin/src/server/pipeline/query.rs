@@ -1,6 +1,6 @@
 use std::num::IntErrorKind;
 
-use elastik_core::{InvalidTimelineCoordinate, TimelineCoordinate, ValidatedWorldPath};
+use l5::{InvalidTimelineCoordinate, TimelineCoordinate, ValidatedWorldPath};
 
 pub(crate) const MAX_RAW_QUERY_BYTES: usize = 8192;
 const TIMELINE_NAMESPACE_PAIR_LIMIT: usize = 8;

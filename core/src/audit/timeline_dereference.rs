@@ -240,47 +240,47 @@ pub struct VerifiedMissingRow {
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
-/// let actual_generation: elastik_core::WorldGeneration = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
+/// let actual_generation: l5::WorldGeneration = todo!();
 ///
-/// let _ = elastik_core::VerifiedGenerationMismatch::new(requested, actual_generation);
+/// let _ = l5::VerifiedGenerationMismatch::new(requested, actual_generation);
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
-/// let actual_hash: elastik_core::BodySha256 = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
+/// let actual_hash: l5::BodySha256 = todo!();
 ///
-/// let _ = elastik_core::VerifiedBodyHashMismatch::new(requested, actual_hash);
+/// let _ = l5::VerifiedBodyHashMismatch::new(requested, actual_hash);
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
 ///
-/// let _ = elastik_core::VerifiedNonBodyEvent::new(requested.clone());
+/// let _ = l5::VerifiedNonBodyEvent::new(requested.clone());
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
 ///
-/// let _ = elastik_core::VerifiedExpiredBody::new(requested.clone());
+/// let _ = l5::VerifiedExpiredBody::new(requested.clone());
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
 ///
-/// let _ = elastik_core::VerifiedMissingRow::new(requested);
+/// let _ = l5::VerifiedMissingRow::new(requested);
 /// # }
 /// ```
 ///
@@ -289,10 +289,10 @@ pub struct VerifiedMissingRow {
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
-/// let actual_generation: elastik_core::WorldGeneration = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
+/// let actual_generation: l5::WorldGeneration = todo!();
 ///
-/// let _ = elastik_core::VerifiedGenerationMismatch {
+/// let _ = l5::VerifiedGenerationMismatch {
 ///     requested,
 ///     actual: actual_generation,
 /// };
@@ -302,10 +302,10 @@ pub struct VerifiedMissingRow {
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
-/// let actual_hash: elastik_core::BodySha256 = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
+/// let actual_hash: l5::BodySha256 = todo!();
 ///
-/// let _ = elastik_core::VerifiedBodyHashMismatch {
+/// let _ = l5::VerifiedBodyHashMismatch {
 ///     requested,
 ///     actual_body_sha256: actual_hash,
 /// };
@@ -315,27 +315,27 @@ pub struct VerifiedMissingRow {
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
 ///
-/// let _ = elastik_core::VerifiedNonBodyEvent { requested };
+/// let _ = l5::VerifiedNonBodyEvent { requested };
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
 ///
-/// let _ = elastik_core::VerifiedExpiredBody { requested: requested.clone() };
+/// let _ = l5::VerifiedExpiredBody { requested: requested.clone() };
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
 ///
-/// let _ = elastik_core::VerifiedMissingRow { requested };
+/// let _ = l5::VerifiedMissingRow { requested };
 /// # }
 /// ```
 ///
@@ -344,10 +344,10 @@ pub struct VerifiedMissingRow {
 /// ```compile_fail
 /// # #[cfg(feature = "unstable-engine")]
 /// # fn run() {
-/// let requested: elastik_core::TimelineCoordinate = todo!();
+/// let requested: l5::TimelineCoordinate = todo!();
 ///
-/// let _ = elastik_core::TimelineDereference::Expired(requested.clone());
-/// let _ = elastik_core::TimelineDereference::MissingRow(requested);
+/// let _ = l5::TimelineDereference::Expired(requested.clone());
+/// let _ = l5::TimelineDereference::MissingRow(requested);
 /// # }
 /// ```
 #[non_exhaustive]
@@ -577,7 +577,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "elastik-audit-timeline-deref-{name}-{}-{nonce}",
+            "auditedb-audit-timeline-deref-{name}-{}-{nonce}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);

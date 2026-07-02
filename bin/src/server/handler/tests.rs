@@ -869,7 +869,7 @@ async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
     // for memory worlds. Per-world locks let writes to /tmp/a and
     // /tmp/b run concurrently; before this fix each one would read
     // total_bytes() as a snapshot, both pass the budget check, and
-    // both commit -- overshooting ELASTIK_MAX_MEMORY_BYTES. With the
+    // both commit -- overshooting AUDITEDB_MAX_MEMORY_BYTES. With the
     // check + write fused under the MemoryStore HashMap mutex inside
     // write_with_quota, only the writes whose accept order keeps the
     // running total under the cap can commit.

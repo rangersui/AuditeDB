@@ -789,7 +789,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "elastik-audit-timeline-address-{name}-{}-{nonce}",
+            "auditedb-audit-timeline-address-{name}-{}-{nonce}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);

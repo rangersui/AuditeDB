@@ -1,27 +1,23 @@
-# elastik — three commands, three workflows + cross-compile
+# AuditeDB — local Rust workflows + cross-compile
 #
-# dev    : edit-iterate-restart loop (cargo run + python in two terminals)
-# test   : build + bundle + smoke (verifies the whole chain)
-# build  : produce shippable artifacts (release binary + wheel for HOST)
+# dev    : edit-iterate-restart loop (cargo run)
+# test   : Rust core/bin/ffi tests + Python FFI smoke
+# build  : release server binary + FFI library
 # cross  : cross-compile to multiple Linux/Mac targets via cargo-zigbuild
-# wheels : retag wheels per-platform (mostly for CI; locally use 'cross')
 #
 # 显式 > 隐式. No auto-cargo-build, no implicit fallbacks. If a step
 # is missing, the next step refuses with a clear error, not magic.
 #
-# CI is the canonical source of release wheels — see
-# .github/workflows/wheel-ci.yml and .github/workflows/release.yml.
-# Local cross-compile (`make cross`) is a
-# convenience for testing one target at a time.
+# CI is the canonical source of release artifacts. Local cross-compile
+# (`make cross`) is a convenience for testing one target at a time.
 
-.PHONY: dev test build wheel cross install clean help info
+.PHONY: dev test build cross install clean help info
 
 PY        ?= python
 CARGO     ?= cargo
 HOST_OS    = $(shell uname -s 2>/dev/null || echo Windows)
-BIN_NAME   = elastik-core$(if $(filter Windows%,$(HOST_OS)),.exe,)
+BIN_NAME   = auditedb$(if $(filter Windows%,$(HOST_OS)),.exe,)
 RUST_TGT   = bin/target/release/$(BIN_NAME)
-SDK_BIN    = sdk/src/elastik/_bin/$(BIN_NAME)
 
 # Cross-compile target list. zigbuild handles all of these without Docker.
 # This is a local convenience surface, not the current release artifact matrix.
@@ -37,14 +33,13 @@ CROSS_TARGETS = \
 
 help:
 	@echo "  make dev                 run rust core in foreground (cargo run)"
-	@echo "  make test                build release + bundle + python smoke"
-	@echo "  make build               release binary + wheel (HOST platform)"
+	@echo "  make test                run core, bin, and ffi tests"
+	@echo "  make build               release server binary + FFI library"
 	@echo "  make cross               cross-compile to all supported targets via zigbuild"
 	@echo "  make cross-TARGET        cross-compile one target, e.g."
 	@echo "                             make cross-aarch64-unknown-linux-gnu"
-	@echo "  make wheels              retag per-platform wheels for ALL existing binaries"
 	@echo "  make install             pip install -e ./sdk (editable)"
-	@echo "  make clean               cargo clean + rm wheels + rm bundled binaries"
+	@echo "  make clean               cargo clean + rm Python build artifacts"
 	@echo "  make info                show host info + which targets are installed"
 
 info:
@@ -59,22 +54,26 @@ info:
 dev:
 	cd bin && $(CARGO) run
 
-# ── workflow 2: test (HOST only) ───────────────────────────────────
-test: $(SDK_BIN)
-	$(PY) sdk/tests/e2e_blackbox.py --no-build
+# ── workflow 2: test ───────────────────────────────────────────────
+test:
+	cd core && $(CARGO) test --locked
+	cd bin && $(CARGO) test --locked
+	cd ffi && $(CARGO) test --locked
+	cd ffi && $(CARGO) build --release
+	mkdir -p sdk/src/l5/_ffi
+	cp ffi/target/release/libl5_ffi.* sdk/src/l5/_ffi/ 2>/dev/null || cp ffi/target/release/l5_ffi.dll sdk/src/l5/_ffi/
+	PYTHONPATH=sdk/src $(PY) tools/l5_python_smoke.py
 
 # ── workflow 3: build (HOST only) ──────────────────────────────────
-build: $(SDK_BIN) wheel
-
-wheel:
-	cd sdk && $(PY) -m pip install --quiet build && $(PY) -m build --wheel
+build: $(RUST_TGT)
+	cd ffi && $(CARGO) build --release
 
 # ── workflow 4: cross-compile via cargo-zigbuild (no Docker) ──────
 # Per-target invocation lets you build just one without rebuilding all.
 cross: $(addprefix cross-,$(CROSS_TARGETS))
 	@echo
 	@echo "  ✓ all $$(echo $(CROSS_TARGETS) | wc -w) cross targets built"
-	@echo "  binaries at bin/target/<TARGET>/release/elastik-core[.exe]"
+	@echo "  binaries at bin/target/<TARGET>/release/auditedb[.exe]"
 
 cross-%:
 	@echo
@@ -87,39 +86,7 @@ cross-%:
 	@cd bin && PATH="$$($(PY) -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))'):$$PATH" \
 	    cargo zigbuild --release --target $*
 
-# ── workflow 5: re-tag wheels for each cross-built binary ─────────
-# Produces N wheels, one per platform, in sdk/dist/.
-wheels: $(addprefix wheel-,$(CROSS_TARGETS))
-
-# Map target triple → wheel platform tag (PEP 600 / 425 / 656)
-PLAT_x86_64-unknown-linux-gnu    = manylinux_2_17_x86_64.manylinux2014_x86_64
-PLAT_aarch64-unknown-linux-gnu   = manylinux_2_17_aarch64.manylinux2014_aarch64
-PLAT_x86_64-unknown-linux-musl   = musllinux_1_2_x86_64
-PLAT_aarch64-unknown-linux-musl  = musllinux_1_2_aarch64
-PLAT_x86_64-apple-darwin         = macosx_10_12_x86_64
-PLAT_aarch64-apple-darwin        = macosx_11_0_arm64
-PLAT_x86_64-pc-windows-msvc      = win_amd64
-PLAT_aarch64-pc-windows-msvc     = win_arm64
-
-wheel-%:
-	@target_bin="bin/target/$*/release/elastik-core"; \
-	[ "$*" = "x86_64-pc-windows-msvc" ] || [ "$*" = "aarch64-pc-windows-msvc" ] && target_bin="$$target_bin.exe"; \
-	if [ ! -f "$$target_bin" ]; then \
-	    echo "  ERROR: $$target_bin not built — run 'make cross-$*' first"; exit 1; \
-	fi; \
-	echo "═══ wheel for $* ═══"; \
-	mkdir -p sdk/src/elastik/_bin; \
-	cp "$$target_bin" sdk/src/elastik/_bin/; \
-	cd sdk && $(PY) -m build --wheel --quiet; \
-	$(PY) -m wheel tags --remove --platform-tag $(PLAT_$*) --abi-tag none --python-tag py3 dist/*-py3-none-any.whl; \
-	echo "  ✓ sdk/dist/*-$(PLAT_$*).whl"
-
 # ── helpers ────────────────────────────────────────────────────────
-$(SDK_BIN): $(RUST_TGT)
-	@mkdir -p sdk/src/elastik/_bin
-	cp $(RUST_TGT) $(SDK_BIN)
-	@echo "  bundled: $(SDK_BIN)"
-
 $(RUST_TGT):
 	cd bin && $(CARGO) build --release
 
@@ -129,13 +96,11 @@ install:
 clean:
 	cd bin && $(CARGO) clean
 	cd core && $(CARGO) clean
-	rm -f sdk/src/elastik/_bin/elastik-core*
-	rm -rf sdk/dist sdk/build sdk/src/elastik.egg-info
+	cd ffi && $(CARGO) clean
+	rm -rf sdk/dist sdk/build sdk/src/*.egg-info
+	rm -f sdk/src/l5/_ffi/*.dll sdk/src/l5/_ffi/*.so sdk/src/l5/_ffi/*.dylib
 
 # ── notes ──────────────────────────────────────────────────────────
-# - cibuildwheel-equivalent for Rust+Python: maturin. We skip maturin
-#   because we ship a STANDALONE BINARY (subprocess), not a PyO3 ext
-#   module. cargo zigbuild + setup.py shim is enough.
 # - Why zigbuild, not cross? cross needs Docker; zig ships a 60 MB
 #   binary that compiles for ~all the targets we care about, no
 #   container runtime. Tradeoff: a tiny chance zig's libc emulation

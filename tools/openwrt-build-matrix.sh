@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build Elastik core against several OpenWrt SDK Docker images.
+# Build the AuditeDB server against several OpenWrt SDK Docker images.
 #
 # Output:
 #   target/openwrt-matrix/results.csv
 #   target/openwrt-matrix/results.md
-#   target/openwrt-matrix/<platform>/elastik-core
+#   target/openwrt-matrix/<platform>/auditedb
 #
 # This script intentionally uses bundled SQLite. It tests the portable
 # "one binary in /tmp" path; dynamic system-sqlite linking is a separate track.
@@ -60,8 +60,8 @@ run_one() {
   set +e
   docker run --rm --user root \
     -v "$ROOT:/src" \
-    -v "elastik-openwrt-cargo:/root/.cargo" \
-    -v "elastik-openwrt-rustup:/root/.rustup" \
+    -v "auditedb-openwrt-cargo:/root/.cargo" \
+    -v "auditedb-openwrt-rustup:/root/.rustup" \
     -e "HOME=/root" \
     -e "PLATFORM=$platform" \
     -e "RUST_TARGET=$rust_target" \
@@ -97,7 +97,7 @@ if [ ! -d "$SDK_ROOT/staging_dir" ] && [ -d "/builder/staging_dir" ]; then
 fi
 TOOLCHAIN_DIR="$(find "$SDK_ROOT/staging_dir" -maxdepth 1 -type d -name 'toolchain-*musl' | head -n 1)"
 GCC_LIB_DIR="$(dirname "$(find "$TOOLCHAIN_DIR/lib/gcc" -name 'crtbegin*.o' | head -n 1)")"
-UNWIND_SHIM="/tmp/elastik-libunwind-shim"
+UNWIND_SHIM="/tmp/auditedb-libunwind-shim"
 mkdir -p "$UNWIND_SHIM"
 # OpenWrt SDKs provide libgcc_eh rather than libunwind. Rust's build-std path
 # may still ask for -lunwind, so the shim keeps the link inside SDK artifacts.
@@ -123,7 +123,7 @@ cargo +"$RUST_NIGHTLY" build \
   --no-default-features \
   --features "$OPENWRT_CARGO_FEATURES"
 
-out="$CARGO_TARGET_DIR/$RUST_TARGET/rut241/elastik-core"
+out="$CARGO_TARGET_DIR/$RUST_TARGET/rut241/auditedb"
 ls -lh "$out"
 file "$out" || true
 if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ]; then
@@ -133,8 +133,8 @@ EOF
   local code=$?
   set -e
 
-  local src="$platform_out/cargo-target/$rust_target/rut241/elastik-core"
-  local dst="$platform_out/elastik-core"
+  local src="$platform_out/cargo-target/$rust_target/rut241/auditedb"
+  local dst="$platform_out/auditedb"
   if [ "$code" -eq 0 ] && [ -f "$src" ]; then
     cp "$src" "$dst"
     local bytes
