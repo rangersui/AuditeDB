@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>AuditeDB Engine — Storage Internals</title>
+<title>L5 Engine — Storage Internals</title>
 <style>
   body { font-family: serif; max-width: 680px; margin: 2em auto; padding: 0 1em; line-height: 1.6; }
   h1 { font-size: 1.6em; }
@@ -59,7 +59,7 @@
 </head>
 <body>
 
-<h1>AuditeDB Engine — Storage Internals</h1>
+<h1>L5 Engine — Storage Internals</h1>
 <p class="subtitle">Per-world SQLite. HMAC chain. CAS. Five verbs. Format v2.</p>
 
 <div class="toc">
@@ -88,7 +88,7 @@
 <!-- ============================================================ -->
 <h2 id="s1">1. Overview</h2>
 
-<p>AuditeDB is an embedded audit-trail storage engine. Each key (called a
+<p>L5 is an embedded audit-trail storage engine. Each key (called a
 <em>world</em>) is a separate SQLite database containing an append-only HMAC
 chain and a content-addressable body store. The engine exposes five verbs:
 read, replace, append, delete, subscribe. Protocol adapters (HTTP, CoAP, MQTT,
@@ -254,7 +254,7 @@ hmac = HMAC-SHA256(key,
 </pre>
 
 <p>Each field uses length-prefix framing (see next section). The key is the
-HMAC secret, typically from <code>ELASTIK_HMAC_KEY</code> environment variable.
+HMAC secret, typically from <code>AUDITEDB_HMAC_KEY</code> environment variable.
 It never touches disk.</p>
 
 <!-- ============================================================ -->
@@ -694,9 +694,9 @@ large bodies from flooding the SSE stream.</p>
 <table>
 <tr><th>Tier</th><th>Token env var</th><th>Can do</th></tr>
 <tr><td><code>anon</code></td><td>(none)</td><td>nothing</td></tr>
-<tr><td><code>read</code></td><td><code>ELASTIK_READ_TOKEN</code></td><td>read, subscribe, introspect</td></tr>
-<tr><td><code>write</code></td><td><code>ELASTIK_WRITE_TOKEN</code></td><td>read + replace, append</td></tr>
-<tr><td><code>approve</code></td><td><code>ELASTIK_APPROVE_TOKEN</code></td><td>read + write + delete</td></tr>
+<tr><td><code>read</code></td><td><code>AUDITEDB_READ_TOKEN</code></td><td>read, subscribe, introspect</td></tr>
+<tr><td><code>write</code></td><td><code>AUDITEDB_WRITE_TOKEN</code></td><td>read + replace, append</td></tr>
+<tr><td><code>approve</code></td><td><code>AUDITEDB_APPROVE_TOKEN</code></td><td>read + write + delete</td></tr>
 </table>
 
 <pre>
@@ -714,7 +714,7 @@ $ curl -X DELETE -H "Authorization: Bearer $WRITE" http://localhost:7777/home/no
 </pre>
 
 <p>Tokens are compared in constant time. The HMAC key
-(<code>ELASTIK_HMAC_KEY</code>) is separate from auth tokens and never
+(<code>AUDITEDB_HMAC_KEY</code>) is separate from auth tokens and never
 leaves memory. On process exit, the key is overwritten with zeros (volatile
 wipe).</p>
 
@@ -883,14 +883,14 @@ GET/HEAD /proc/audit/{world}/stamp/{n} read verified HMAC at chain ordinal n
 <h2 id="s20">20. On-disk layout</h2>
 
 <pre>
-data/                                <span class="cmt">← data root (ELASTIK_DATA or ./data)</span>
+data/                                <span class="cmt">← data root (AUDITEDB_DATA or ./data)</span>
   home%2Fnote/                       <span class="cmt">← world "home/note" (percent-encoded)</span>
     universe.db                      <span class="cmt">← SQLite: events + cas_bodies + stage_meta + ...</span>
   home%2Ftask%2F123/                 <span class="cmt">← world "home/task/123"</span>
     universe.db
   var%2Flog%2Fdeletes/               <span class="cmt">← delete ledger (engine-private)</span>
     universe.db
-  .elastik-writer-lock.sqlite3       <span class="cmt">← single-writer SQLite lock (local FS only)</span>
+  .auditedb-writer-lock.sqlite3      <span class="cmt">← single-writer SQLite lock (local FS only)</span>
 </pre>
 
 <p>Each world is one directory with one SQLite file. <code>cp -r
@@ -901,13 +901,13 @@ percent-encoded. Control characters, backslashes, empty segments, and dot
 segments are rejected before the path reaches disk. The engine rejects paths
 whose encoded name exceeds 200 bytes.</p>
 
-<p><code>.elastik-writer-lock.sqlite3</code> is a SQLite database held open
+<p><code>.auditedb-writer-lock.sqlite3</code> is a SQLite database held open
 with an uncommitted <code>BEGIN IMMEDIATE</code> transaction. It ensures
 single-writer semantics within one host. It does not protect against NFS;
 network-FS deployments need external fencing.</p>
 
 <div style="margin-top:3em;padding-top:1em;border-top:1px solid #ccc;color:#888;font-size:0.85em">
-  AuditeDB Engine &middot; format v2 &middot; 2026-06-30
+  L5 Engine &middot; format v2 &middot; 2026-06-30
 </div>
 
 </body>
