@@ -168,6 +168,7 @@ impl LedgerWriter {
     /// fd-lifetime gate so shutdown can wait for the cached ledger fd.
     pub(crate) fn append(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         data: &Path,
         job: AuditAppendJob,
         _file_op: &FileOpPermit,
@@ -177,7 +178,7 @@ impl LedgerWriter {
         if guard.is_none() {
             // Lazy init. `world::open_validated` creates the schema; safe to
             // call whether or not the ledger DB exists on disk.
-            let conn = world::open_validated(data, &ledger_world, _file_op)
+            let conn = world::open_validated(proof, data, &ledger_world, _file_op)
                 .map_err(BlockingSqliteError::Sqlite)?;
             *guard = Some(conn);
             self.inits.fetch_add(1, Ordering::Relaxed);
@@ -274,6 +275,7 @@ mod tests {
         let file_op = gate.begin().unwrap();
         let event = ledger
             .append(
+                &mut crate::blocking_sqlite::test_only_mint(),
                 &dir,
                 AuditAppendJob {
                     event_type: EventMetadataKind::DELETE_INTENT,

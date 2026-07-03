@@ -311,12 +311,12 @@ pub fn accounted_storage_usage(
 }
 
 fn storage_usage_inner(
-    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<StorageUsageSnapshot>> {
-    let Some(c) = open_existing_validated(data_root, world, file_op)? else {
+    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(None);
     };
     let current_len: i64 = c.query_row(
@@ -341,40 +341,40 @@ fn storage_usage_inner(
 }
 
 pub fn body_len_if_missing(
-    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     body: &[u8],
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<usize> {
-    let Some(c) = open_existing_validated(data_root, world, file_op)? else {
+    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(body.len());
     };
     missing_body_len(&c, body)
 }
 
 pub fn prunable_body_len_after_next_write(
-    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     body: &[u8],
     retained: RetainedBodyCount,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<usize> {
-    let Some(c) = open_existing_validated(data_root, world, file_op)? else {
+    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(0);
     };
     prunable_body_len_after_next_body(&c, body, retained)
 }
 
 pub fn append_body_len_if_missing(
-    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     append_body: &[u8],
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<usize>> {
-    let Some(c) = open_existing_validated(data_root, world, file_op)? else {
+    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(None);
     };
     let mut body: Vec<u8> =
@@ -384,14 +384,14 @@ pub fn append_body_len_if_missing(
 }
 
 pub fn append_prunable_body_len_after_next_write(
-    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     append_body: &[u8],
     retained: RetainedBodyCount,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<usize>> {
-    let Some(c) = open_existing_validated(data_root, world, file_op)? else {
+    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(None);
     };
     let mut body: Vec<u8> =

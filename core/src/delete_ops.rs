@@ -316,7 +316,8 @@ fn append_ledger_event_and_notify(
     job: AuditAppendJob,
     file_op: &crate::state::FileOpPermit,
 ) -> Result<crate::ledger::AppendedLedgerEvent, BlockingSqliteError> {
-    let event = core.append_to_ledger_blocking(job, file_op)?;
+    let event =
+        blocking_sqlite::run_scoped(|proof| core.append_to_ledger_blocking(proof, job, file_op))?;
     core.note_audit_events_appended(1 + usize::from(event.format_event().is_some()));
     notify_ledger_event(core, &event);
     Ok(event)

@@ -116,6 +116,7 @@ pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
 }
 
 pub fn open_validated(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,
@@ -273,6 +274,7 @@ pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<C
 }
 
 pub fn open_existing_validated(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,
@@ -473,12 +475,12 @@ impl From<audit::AuditError> for WriteAuditError {
 }
 
 pub fn metadata(
-    _proof: &mut BlockingSqlite,
+    proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<WorldMetadata>> {
-    let Some(c) = open_existing_validated(data_root, world, file_op)? else {
+    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(None);
     };
     let (body_len, content_type) = c.query_row(
@@ -500,12 +502,12 @@ pub fn metadata(
 }
 
 pub fn body_len(
-    _proof: &mut BlockingSqlite,
+    proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<usize>> {
-    let Some(c) = open_existing_validated(data_root, world, file_op)? else {
+    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(None);
     };
     c.query_row(

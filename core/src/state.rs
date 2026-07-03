@@ -540,10 +540,11 @@ impl Core {
 
     pub(crate) fn append_to_ledger_blocking(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         job: AuditAppendJob,
         _file_op: &FileOpPermit,
     ) -> Result<AppendedLedgerEvent, BlockingSqliteError> {
-        self.ledger.append(&self.data, job, _file_op)
+        self.ledger.append(proof, &self.data, job, _file_op)
     }
 
     pub(crate) fn install_tombstone_blocking(

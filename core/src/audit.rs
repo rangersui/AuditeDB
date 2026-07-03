@@ -143,7 +143,9 @@ pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()
         .begin()
         .ok_or_else(|| AuditError::Storage(file_op_gate_closed_error()))?;
     for world in world::list(data_root)? {
-        verify_world_with_file_op(data_root, &world, key, &file_op)?;
+        crate::blocking_sqlite::run_scoped(|proof| {
+            verify_world_with_file_op(proof, data_root, &world, key, &file_op)
+        })?;
     }
     Ok(())
 }
@@ -158,16 +160,19 @@ pub fn verify_world(
     let file_op = gate
         .begin()
         .ok_or_else(|| AuditError::Storage(file_op_gate_closed_error()))?;
-    verify_world_with_file_op(data_root, world, key, &file_op)
+    crate::blocking_sqlite::run_scoped(|proof| {
+        verify_world_with_file_op(proof, data_root, world, key, &file_op)
+    })
 }
 
 pub(crate) fn verify_world_with_file_op(
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     key: &AuditHmacKey,
     file_op: &crate::state::FileOpPermit,
 ) -> AuditResult<()> {
-    let Some(mut c) = world::open_existing_validated(data_root, world, file_op)? else {
+    let Some(mut c) = world::open_existing_validated(proof, data_root, world, file_op)? else {
         return Ok(());
     };
     let tx = c.transaction()?;

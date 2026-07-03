@@ -367,7 +367,9 @@ impl EngineBuilder {
                     detail: "startup file operation gate unexpectedly closed".to_owned(),
                 })?;
 
-        verify_all_worlds_with_names(&self.data_root, &hmac_key, &startup_file_op)?;
+        blocking_sqlite::run_scoped(|proof| {
+            verify_all_worlds_with_names(proof, &self.data_root, &hmac_key, &startup_file_op)
+        })?;
         let durable_usages = blocking_sqlite::run_scoped(|proof| {
             world::usages(proof, &self.data_root, &startup_file_op)
         })
@@ -564,6 +566,7 @@ fn map_writer_lock_error(
 }
 
 fn verify_all_worlds_with_names(
+    proof: &mut blocking_sqlite::BlockingSqlite,
     data_root: &std::path::Path,
     key: &AuditHmacKey,
     file_op: &crate::state::FileOpPermit,
@@ -574,8 +577,8 @@ fn verify_all_worlds_with_names(
     })?;
     for world_path in worlds {
         let world_name = world_path.as_str().to_owned();
-        audit::verify_world_with_file_op(data_root, &world_path, key, file_op).map_err(|err| {
-            match err {
+        audit::verify_world_with_file_op(proof, data_root, &world_path, key, file_op).map_err(
+            |err| match err {
                 audit::AuditError::ChainBroken(break_report) => {
                     EngineBuildError::AuditChainCorrupted {
                         world: world_name.clone(),
@@ -597,8 +600,8 @@ fn verify_all_worlds_with_names(
                         },
                     }
                 }
-            }
-        })?;
+            },
+        )?;
     }
     Ok(())
 }
