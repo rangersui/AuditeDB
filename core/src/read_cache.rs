@@ -1021,9 +1021,13 @@ mod tests {
         cache
             .read_conns
             .insert(v(opening_world), opening_slot.clone());
-        let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
-            panic!("Opening must be a retry signal, not a readable slot")
-        });
+        let mut f = Some(
+            |_: &mut crate::blocking_sqlite::BlockingSqlite,
+             _: &mut TrackedReadConnection|
+             -> rusqlite::Result<()> {
+                panic!("Opening must be a retry signal, not a readable slot")
+            },
+        );
         let opening = cache
             .invoke_via_slot(&mut proof(), opening_slot, &mut f)
             .unwrap();

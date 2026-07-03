@@ -9,6 +9,7 @@
 use rusqlite::{params, OptionalExtension};
 
 use crate::{
+    blocking_sqlite::BlockingSqlite,
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     read_cache::TrackedReadConnection,
     timeline::{
@@ -53,11 +54,12 @@ impl VerifiedCoordinateBodyEvent {
 }
 
 pub(crate) fn dereference_timeline_coordinate_via_conn(
+    proof: &mut BlockingSqlite,
     tracked: &mut TrackedReadConnection,
     coordinate: &TimelineCoordinate,
     key: &AuditHmacKey,
 ) -> super::AuditResult<TimelineDereference> {
-    let conn = tracked.as_mut_conn();
+    let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
     let actual_gen = world_schema::generation(&tx)?;
     super::require_intact(super::verify_world_tx(&tx, coordinate.world(), key)?)?;
@@ -612,8 +614,13 @@ mod tests {
         ))
         .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
-        dereference_timeline_coordinate_via_conn(&mut tracked, coordinate, &engine.core().hmac_key)
-            .unwrap()
+        dereference_timeline_coordinate_via_conn(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &mut tracked,
+            coordinate,
+            &engine.core().hmac_key,
+        )
+        .unwrap()
     }
 
     fn single_metadata_event_conn(
@@ -983,7 +990,14 @@ mod tests {
         .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
-        match dereference_timeline_coordinate_via_conn(&mut tracked, &coordinate, &key).unwrap() {
+        match dereference_timeline_coordinate_via_conn(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &mut tracked,
+            &coordinate,
+            &key,
+        )
+        .unwrap()
+        {
             TimelineDereference::NonBodyEvent(proof) => {
                 assert_eq!(proof.requested(), &coordinate);
                 assert_eq!(proof.event_type(), "delete_intent");
@@ -1025,7 +1039,14 @@ mod tests {
         .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
-        match dereference_timeline_coordinate_via_conn(&mut tracked, &coordinate, &key).unwrap() {
+        match dereference_timeline_coordinate_via_conn(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &mut tracked,
+            &coordinate,
+            &key,
+        )
+        .unwrap()
+        {
             TimelineDereference::NonBodyEvent(proof) => {
                 assert_eq!(proof.requested(), &coordinate);
                 assert_eq!(proof.event_target().as_str(), "home/other");

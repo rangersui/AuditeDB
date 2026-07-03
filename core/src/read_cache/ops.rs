@@ -24,8 +24,10 @@ impl ReadCache {
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<CurrentReadResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, world_path, move |conn| {
-            Ok(world::read_with_hmac_via_conn(conn, world_path, &key))
+        self.with_tracked_conn(proof, data, world_path, move |proof, conn| {
+            Ok(world::read_with_hmac_via_conn(
+                proof, conn, world_path, &key,
+            ))
         })
     }
 
@@ -42,8 +44,8 @@ impl ReadCache {
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<ChainHeadResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, world, move |conn| {
-            Ok(crate::audit::chain_head_via_conn(conn, world, &key))
+        self.with_tracked_conn(proof, data, world, move |proof, conn| {
+            Ok(crate::audit::chain_head_via_conn(proof, conn, world, &key))
         })
     }
 
@@ -59,8 +61,10 @@ impl ReadCache {
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<ChainStampResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, world, move |conn| {
-            Ok(crate::audit::chain_stamp_via_conn(conn, world, seq, &key))
+        self.with_tracked_conn(proof, data, world, move |proof, conn| {
+            Ok(crate::audit::chain_stamp_via_conn(
+                proof, conn, world, seq, &key,
+            ))
         })
     }
 
@@ -77,8 +81,8 @@ impl ReadCache {
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<crate::audit::VerifyReport>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, world, move |conn| {
-            crate::audit::verify_chain_via_conn(conn, world, &key)
+        self.with_tracked_conn(proof, data, world, move |proof, conn| {
+            crate::audit::verify_chain_via_conn(proof, conn, world, &key)
         })
     }
 
@@ -96,9 +100,9 @@ impl ReadCache {
     ) -> rusqlite::Result<Option<TimelineReadResult>> {
         let world = address.world();
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, world, move |conn| {
+        self.with_tracked_conn(proof, data, world, move |proof, conn| {
             Ok(crate::audit::read_timeline_body_via_conn(
-                conn, address, &key,
+                proof, conn, address, &key,
             ))
         })
     }
@@ -121,10 +125,10 @@ impl ReadCache {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, coordinate.world(), move |conn| {
+        self.with_tracked_conn(proof, data, coordinate.world(), move |proof, conn| {
             Ok(
                 crate::audit::timeline_dereference::dereference_timeline_coordinate_via_conn(
-                    conn, coordinate, &key,
+                    proof, conn, coordinate, &key,
                 ),
             )
         })
@@ -142,9 +146,9 @@ impl ReadCache {
     ) -> rusqlite::Result<Option<crate::audit::AuditResult<Option<crate::audit::VerifiedBodyHead>>>>
     {
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, world, move |conn| {
+        self.with_tracked_conn(proof, data, world, move |proof, conn| {
             Ok(crate::audit::verified_latest_body_head_via_conn(
-                conn, world, &key,
+                proof, conn, world, &key,
             ))
         })
     }
@@ -162,8 +166,9 @@ impl ReadCache {
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<TimelineReplayAfterResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(proof, data, event_id.world(), move |conn| {
+        self.with_tracked_conn(proof, data, event_id.world(), move |proof, conn| {
             Ok(crate::audit::verified_replay_events_after_via_conn(
+                proof,
                 conn,
                 event_id.world(),
                 event_id.generation(),

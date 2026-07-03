@@ -13,7 +13,10 @@ use super::{
     SlotRead, SlotState, READ_CACHE_RETRY_BUDGET, READ_CONN_BUSY_TIMEOUT_MS,
 };
 
-fn open_verified_read_conn(path: &std::path::Path) -> rusqlite::Result<Connection> {
+fn open_verified_read_conn(
+    _proof: &mut BlockingSqlite,
+    path: &std::path::Path,
+) -> rusqlite::Result<Connection> {
     let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
     c.pragma_update(None, "cache_size", -200)?;
@@ -40,7 +43,7 @@ impl TrackedReadConnection {
     /// `world::read_with_hmac_via_conn`. `pub(crate)` -- callers must
     /// already hold a `&mut TrackedReadConnection`, and the only
     /// production path to that is through the SlotState protocol.
-    pub(crate) fn as_mut_conn(&mut self) -> &mut Connection {
+    pub(crate) fn as_mut_conn(&mut self, _proof: &mut BlockingSqlite) -> &mut Connection {
         &mut self.0
     }
 
@@ -127,7 +130,7 @@ impl ReadCache {
         f: F,
     ) -> rusqlite::Result<Option<R>>
     where
-        F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
+        F: FnOnce(&mut BlockingSqlite, &mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
         let path = world::validated_world_db(data, world);
         let mut f = Some(f);
@@ -209,7 +212,7 @@ impl ReadCache {
                 let mut g = new_guard;
                 if matches!(&*g, SlotState::Opening) {
                     let transition = OpeningTransition::new(&mut g);
-                    let init = open_verified_read_conn(&path);
+                    let init = open_verified_read_conn(proof, &path);
                     match init {
                         Ok(c) => transition.promote(c),
                         Err(e) => {
@@ -269,7 +272,7 @@ impl ReadCache {
         f: F,
     ) -> rusqlite::Result<Option<R>>
     where
-        F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
+        F: FnOnce(&mut BlockingSqlite, &mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
         let mut f = Some(f);
         for _ in 0..READ_CACHE_RETRY_BUDGET {
@@ -316,7 +319,7 @@ impl ReadCache {
                 let mut g = new_guard;
                 if matches!(&*g, SlotState::Opening) {
                     let transition = OpeningTransition::new(&mut g);
-                    let init = open_verified_read_conn(path);
+                    let init = open_verified_read_conn(proof, path);
                     match init {
                         Ok(c) => transition.promote(c),
                         Err(e) => {
@@ -375,12 +378,12 @@ impl ReadCache {
 
     pub(super) fn invoke_via_slot<F, R>(
         &self,
-        _proof: &mut BlockingSqlite,
+        proof: &mut BlockingSqlite,
         arc: Arc<ReadSlot>,
         f: &mut Option<F>,
     ) -> rusqlite::Result<SlotRead<R>>
     where
-        F: FnOnce(&mut TrackedReadConnection) -> rusqlite::Result<R>,
+        F: FnOnce(&mut BlockingSqlite, &mut TrackedReadConnection) -> rusqlite::Result<R>,
     {
         let read_guard = arc.inner.read().unwrap_or_else(|p| p.into_inner());
         match &*read_guard {
@@ -395,7 +398,7 @@ impl ReadCache {
                      and SlotRead::Evicted may re-enter with the closure intact, \
                      and SlotRead::Done must return immediately",
                 );
-                f(&mut tracked).map(|value| SlotRead::Done(Some(value)))
+                f(proof, &mut tracked).map(|value| SlotRead::Done(Some(value)))
             }
             SlotState::Tombstone => Ok(SlotRead::Done(None)),
             SlotState::Opening => Ok(SlotRead::Opening),
@@ -435,9 +438,11 @@ mod tests {
             OpeningTransition::new(&mut g).fail();
         }
 
-        let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
-            panic!("failed Opening must retry, not run the read closure")
-        });
+        let mut f = Some(
+            |_: &mut BlockingSqlite, _: &mut TrackedReadConnection| -> rusqlite::Result<()> {
+                panic!("failed Opening must retry, not run the read closure")
+            },
+        );
         let read = cache
             .invoke_via_slot(&mut crate::blocking_sqlite::test_only_mint(), slot, &mut f)
             .unwrap();

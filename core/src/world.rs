@@ -546,11 +546,12 @@ pub(crate) fn usages(
 /// Read operations never pair an old body with a newer ETag when a write
 /// lands between independent reads.
 pub fn read_with_hmac_via_conn(
+    proof: &mut BlockingSqlite,
     tracked: &mut crate::read_cache::TrackedReadConnection,
     world: &crate::engine_types::ValidatedWorldPath,
     key: &crate::engine_types::AuditHmacKey,
 ) -> crate::audit::AuditResult<(Stage, Option<String>)> {
-    let conn = tracked.as_mut_conn();
+    let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
     crate::audit::require_current_world_intact_tx(&tx, world, key)?;
     let (body, content_type) = {
@@ -1588,7 +1589,13 @@ mod tests {
         {
             let conn = open(&root, "home/plain").unwrap();
             let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
-            assert!(read_with_hmac_via_conn(&mut tracked, &world, &test_key()).is_err());
+            assert!(read_with_hmac_via_conn(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &mut tracked,
+                &world,
+                &test_key()
+            )
+            .is_err());
         }
         assert!(test_only_append_without_audit(&root, "home/plain", b"!").is_err());
 

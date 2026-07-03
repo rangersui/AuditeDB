@@ -267,9 +267,10 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
             .lock()
             .map_err(|_| WriteError::Internal("writer connection lock poisoned"))?;
         match blocking_sqlite::run_scoped(|proof| {
+            let conn = write_conn.as_mut_conn(proof);
             world::write_with_audit_checked_retaining_on_conn(
                 proof,
-                &mut write_conn,
+                conn,
                 opened,
                 &permit.world,
                 &req.body,
@@ -507,9 +508,10 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
             .lock()
             .map_err(|_| WriteError::Internal("writer connection lock poisoned"))?;
         match blocking_sqlite::run_scoped(|proof| {
+            let conn = write_conn.as_mut_conn(proof);
             world::append_with_audit_retaining_on_conn(
                 proof,
-                &mut write_conn,
+                conn,
                 &permit.world,
                 &req.body,
                 &content_type,

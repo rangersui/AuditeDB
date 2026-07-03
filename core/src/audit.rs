@@ -5,6 +5,7 @@ use rusqlite::{OptionalExtension, Statement, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    blocking_sqlite::BlockingSqlite,
     chain_stamp::{ChainSeq, ChainStamp, ChainStampRead},
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     event::AuditEventKind,
@@ -447,11 +448,12 @@ impl AuditTimestamp {
 /// chain verifies in the same SQLite transaction; a malformed or broken latest
 /// HMAC never becomes a proof-bearing head stamp.
 pub fn chain_head_via_conn(
+    proof: &mut BlockingSqlite,
     tracked: &mut crate::read_cache::TrackedReadConnection,
     world: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> AuditResult<Option<VerifiedChainHead>> {
-    let conn = tracked.as_mut_conn();
+    let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
     let generation = crate::world_schema::generation(&tx)?;
     let retention = retention::load(&tx)?;
@@ -474,12 +476,13 @@ pub fn chain_head_via_conn(
 /// The requested ordinal is resolved by the verifier walk itself; this function
 /// never looks up a stamp with `WHERE id = ?`.
 pub fn chain_stamp_via_conn(
+    proof: &mut BlockingSqlite,
     tracked: &mut crate::read_cache::TrackedReadConnection,
     world: &ValidatedWorldPath,
     seq: ChainSeq,
     key: &AuditHmacKey,
 ) -> AuditResult<ChainStampRead> {
-    let conn = tracked.as_mut_conn();
+    let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
     let generation = crate::world_schema::generation(&tx)?;
     let retention = retention::load(&tx)?;
@@ -515,11 +518,12 @@ pub fn chain_stamp_via_conn(
 /// per-operation verify path, so delete drains in-flight verifies through the
 /// same guard as ordinary cached reads.
 pub fn verify_chain_via_conn(
+    proof: &mut BlockingSqlite,
     tracked: &mut crate::read_cache::TrackedReadConnection,
     world_path: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
-    let conn = tracked.as_mut_conn();
+    let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
     let report = verify_world_tx(&tx, world_path, key)?;
     if matches!(report, VerifyReport::Broken(_)) {
@@ -1327,7 +1331,13 @@ mod tests {
             .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
-        let report = verify_chain_via_conn(&mut tracked, &world_path, &core.hmac_key).unwrap();
+        let report = verify_chain_via_conn(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &mut tracked,
+            &world_path,
+            &core.hmac_key,
+        )
+        .unwrap();
 
         assert_eq!(
             report,
