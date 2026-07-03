@@ -960,6 +960,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .unwrap();
         let (outbound, mut rx) = mpsc::channel(OUTBOUND_QUEUE);
         let mut session =
@@ -1467,6 +1468,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .unwrap();
         let world = ValidatedWorldPath::new("home/sensor/temp").unwrap();
         engine
@@ -1542,6 +1544,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .unwrap();
         let world = ValidatedWorldPath::new("home/sensor/temp").unwrap();
         engine
