@@ -172,6 +172,7 @@ fn open_validated_for_audit(
 }
 
 pub(crate) fn open_cached_writer(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,
@@ -284,11 +285,12 @@ pub fn open_existing_validated(
 }
 
 pub(crate) fn delete(
+    proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,
 ) -> bool {
-    files::delete(data_root, world)
+    files::delete(proof, data_root, world)
 }
 
 fn open_existing_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
@@ -318,6 +320,7 @@ fn open_existing_validated_for_write(
 }
 
 pub(crate) fn open_existing_cached_writer(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,

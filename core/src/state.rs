@@ -560,19 +560,20 @@ impl Core {
 
     pub(crate) fn delete_world_now(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> bool {
         if let Some(memory_world) = store::MemoryWorldPath::new(world) {
             self.mem.delete(memory_world)
         } else {
-            world::delete(&self.data, world, _file_op)
+            world::delete(proof, &self.data, world, _file_op)
         }
     }
 
     pub(crate) fn cached_write_conn(
         &self,
-        _proof: &mut crate::blocking_sqlite::BlockingSqlite,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> rusqlite::Result<(Arc<StdMutex<rusqlite::Connection>>, world::OpenedWorldKind)> {
@@ -581,7 +582,7 @@ impl Core {
             verify_cached_writer_shape(&conn)?;
             return Ok((conn, world::OpenedWorldKind::Existing));
         }
-        let (conn, opened) = world::open_cached_writer(&self.data, world, _file_op)?;
+        let (conn, opened) = world::open_cached_writer(proof, &self.data, world, _file_op)?;
         let conn = Arc::new(StdMutex::new(conn));
         let entry = self
             .write_conns
@@ -594,7 +595,7 @@ impl Core {
 
     pub(crate) fn cached_existing_write_conn(
         &self,
-        _proof: &mut crate::blocking_sqlite::BlockingSqlite,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> rusqlite::Result<Option<Arc<StdMutex<rusqlite::Connection>>>> {
@@ -603,7 +604,8 @@ impl Core {
             verify_cached_writer_shape(&conn)?;
             return Ok(Some(conn));
         }
-        let Some(conn) = world::open_existing_cached_writer(&self.data, world, _file_op)? else {
+        let Some(conn) = world::open_existing_cached_writer(proof, &self.data, world, _file_op)?
+        else {
             return Ok(None);
         };
         let conn = Arc::new(StdMutex::new(conn));

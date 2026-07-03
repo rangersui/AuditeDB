@@ -222,7 +222,8 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     core.install_tombstone_blocking(&permit.world, &file_op);
     hooks.read_cache_drained();
 
-    let ok = core.delete_world_now(&permit.world, &file_op);
+    let ok =
+        blocking_sqlite::run_scoped(|proof| core.delete_world_now(proof, &permit.world, &file_op));
     core.clear_tombstone(&permit.world);
     if !ok {
         return Err(DeleteError::DeleteFailedAfterIntent);

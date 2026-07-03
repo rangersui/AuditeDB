@@ -13,7 +13,11 @@ use crate::{
 
 use super::{create_dir_error, disk_name, validated_world_db, validated_world_dir};
 
-pub(crate) fn delete(data_root: &Path, world: &ValidatedWorldPath) -> bool {
+pub(crate) fn delete(
+    proof: &mut BlockingSqlite,
+    data_root: &Path,
+    world: &ValidatedWorldPath,
+) -> bool {
     let dir = validated_world_dir(data_root, world);
     if !dir.exists() {
         return false;
@@ -23,7 +27,7 @@ pub(crate) fn delete(data_root: &Path, world: &ValidatedWorldPath) -> bool {
     // the connection drops. Naive remove_dir_all may return Ok while
     // leaving stragglers, or fail outright. Flush WAL via checkpoint,
     // then retry the remove.
-    release_wal_files(data_root, world);
+    release_wal_files(proof, data_root, world);
 
     let mut delay = Duration::from_millis(30);
     for attempt in 0..20 {
@@ -80,8 +84,8 @@ pub fn list_with_prefix_bounded(
     )
 }
 
-fn release_wal_files(data_root: &Path, world: &ValidatedWorldPath) {
-    match open_checkpoint_conn_validated(data_root, world) {
+fn release_wal_files(proof: &mut BlockingSqlite, data_root: &Path, world: &ValidatedWorldPath) {
+    match open_checkpoint_conn_validated(proof, data_root, world) {
         Ok(Some(c)) => {
             if let Err(err) = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
                 log_wal_release_error(world.as_str(), "checkpoint", &err);
@@ -108,6 +112,7 @@ pub(super) fn open_checkpoint_conn(
 }
 
 fn open_checkpoint_conn_validated(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
 ) -> rusqlite::Result<Option<Connection>> {
