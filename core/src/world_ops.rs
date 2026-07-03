@@ -217,24 +217,28 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
 
     let (existed, etag, target, format_notice, aux) = if store::is_persistent(world_path) {
         let reservation = if let Some(quota) = core.max_storage_bytes {
-            let prev_len_opt =
-                world::body_len(&core.data, world_path, &file_op).map_err(|err| {
-                    classify_write_storage_error("storage metadata", err, StorageOp::Read)
-                })?;
+            let prev_len_opt = blocking_sqlite::run_scoped(|proof| {
+                world::body_len(proof, &core.data, world_path, &file_op)
+            })
+            .map_err(|err| {
+                classify_write_storage_error("storage metadata", err, StorageOp::Read)
+            })?;
             let prev_len = prev_len_opt.unwrap_or(0);
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
-            let cas_candidate_len =
-                world::cas_body_len_if_missing(&core.data, world_path, &req.body, &file_op)
-                    .map_err(|err| {
-                        classify_write_storage_error("storage/cas", err, StorageOp::Read)
-                    })?;
-            let prunable_cas_len = world::prunable_cas_body_len_after_next_write(
-                &core.data,
-                world_path,
-                &req.body,
-                core.retained_body_count,
-                &file_op,
-            )
+            let cas_candidate_len = blocking_sqlite::run_scoped(|proof| {
+                world::cas_body_len_if_missing(proof, &core.data, world_path, &req.body, &file_op)
+            })
+            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?;
+            let prunable_cas_len = blocking_sqlite::run_scoped(|proof| {
+                world::prunable_cas_body_len_after_next_write(
+                    proof,
+                    &core.data,
+                    world_path,
+                    &req.body,
+                    core.retained_body_count,
+                    &file_op,
+                )
+            })
             .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?;
             let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
             if let Err(quota) =
@@ -435,8 +439,10 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     let Some((body_len, content_type, stored_headers)) = (if let Some(memory_world) = memory_world {
         core.mem.metadata(memory_world)
     } else {
-        world::metadata(&core.data, world_path, &file_op)
-            .map_err(|err| classify_write_storage_error("storage metadata", err, StorageOp::Read))?
+        blocking_sqlite::run_scoped(|proof| {
+            world::metadata(proof, &core.data, world_path, &file_op)
+        })
+        .map_err(|err| classify_write_storage_error("storage metadata", err, StorageOp::Read))?
     }) else {
         return Err(WriteError::NotFound);
     };
@@ -454,19 +460,23 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     let (etag, target, format_notice, aux) = if store::is_persistent(world_path) {
         let reservation = if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
-            let cas_candidate_len =
-                world::append_cas_body_len_if_missing(&core.data, world_path, &req.body, &file_op)
-                    .map_err(|err| {
-                        classify_write_storage_error("storage/cas", err, StorageOp::Read)
-                    })?
-                    .ok_or(WriteError::NotFound)?;
-            let prunable_cas_len = world::append_prunable_cas_body_len_after_next_write(
-                &core.data,
-                world_path,
-                &req.body,
-                core.retained_body_count,
-                &file_op,
-            )
+            let cas_candidate_len = blocking_sqlite::run_scoped(|proof| {
+                world::append_cas_body_len_if_missing(
+                    proof, &core.data, world_path, &req.body, &file_op,
+                )
+            })
+            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
+            .ok_or(WriteError::NotFound)?;
+            let prunable_cas_len = blocking_sqlite::run_scoped(|proof| {
+                world::append_prunable_cas_body_len_after_next_write(
+                    proof,
+                    &core.data,
+                    world_path,
+                    &req.body,
+                    core.retained_body_count,
+                    &file_op,
+                )
+            })
             .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
             .ok_or(WriteError::NotFound)?;
             let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);

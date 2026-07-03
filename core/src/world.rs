@@ -473,6 +473,7 @@ impl From<audit::AuditError> for WriteAuditError {
 }
 
 pub fn metadata(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
@@ -499,6 +500,7 @@ pub fn metadata(
 }
 
 pub fn body_len(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
@@ -1551,8 +1553,20 @@ mod tests {
         let world = ValidatedWorldPath::new("home/plain").unwrap();
         let gate = std::sync::Arc::new(crate::state::FileOpGate::new());
         let file_op = gate.begin().unwrap();
-        assert!(body_len(&root, &world, &file_op).is_err());
-        assert!(metadata(&root, &world, &file_op).is_err());
+        assert!(body_len(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &root,
+            &world,
+            &file_op
+        )
+        .is_err());
+        assert!(metadata(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &root,
+            &world,
+            &file_op
+        )
+        .is_err());
         assert!(usages(&root, &file_op).is_err());
         // Read path goes through ReadCache now. Wrap the bare
         // Connection via the test-only helper exported from

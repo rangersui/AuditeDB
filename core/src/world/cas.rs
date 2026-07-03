@@ -332,6 +332,7 @@ fn storage_usage_inner(
 }
 
 pub fn body_len_if_missing(
+    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     body: &[u8],
@@ -344,6 +345,7 @@ pub fn body_len_if_missing(
 }
 
 pub fn prunable_body_len_after_next_write(
+    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     body: &[u8],
@@ -357,6 +359,7 @@ pub fn prunable_body_len_after_next_write(
 }
 
 pub fn append_body_len_if_missing(
+    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     append_body: &[u8],
@@ -372,6 +375,7 @@ pub fn append_body_len_if_missing(
 }
 
 pub fn append_prunable_body_len_after_next_write(
+    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     append_body: &[u8],
