@@ -71,7 +71,7 @@ async fn main() {
         AccessTier::Write,
     ).await.unwrap();
 
-    let read = engine.read(&world, AccessTier::Read).unwrap();
+    let read = engine.read(&world, AccessTier::Read).await.unwrap();
     assert!(read.is_some());
 }
 ```
@@ -106,11 +106,12 @@ curl http://localhost:3105/home/hello
 | `delete`    | Remove the world; durable deletes advance audit. |
 | `subscribe` | Stream change events.                   |
 
-In Rust, `read` is synchronous. `replace`, `append`, and `delete` are
-async. `subscribe` returns a synchronous handle whose `recv()` is
-awaitable.
+In Rust, storage verbs that touch durable state are async: `read`,
+`replace`, `append`, and `delete` must be awaited. `subscribe` opens a
+synchronous handle; receiving from that handle is async.
 
-In Python, all calls are synchronous, and the FFI boundary runs the async runtime internally.
+In Python, the SDK surface is synchronous. The FFI boundary owns the Tokio
+runtime and blocks on async Engine verbs internally.
 
 ## Namespaces
 

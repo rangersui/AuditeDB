@@ -615,7 +615,9 @@ follow-up.
 Every new binary-adapter route should pass the same small checklist before review:
 
 - Blocking: filesystem or SQLite work that can outlive a quick metadata read
-  runs through `spawn_blocking`, not directly on a Tokio worker.
+  must cross an explicit blocking boundary. Production SQLite execution
+  helpers require `&mut BlockingSqlite`; raw `spawn_blocking` is a scheduler
+  tool, not the safety seal.
 - Explicit errors: expected failures use `?` or explicit mapping into HTTP
   status codes; helpers must not silently turn storage errors into empty data.
 - Phoenix schema: do not add legacy or forward-compatibility fallbacks for old
@@ -644,9 +646,11 @@ When reviewing Rust core changes, look for recurring boundary mistakes before
 looking for style issues:
 
 - Async boundary: any filesystem walk, SQLite open/query loop, retry sleep, or
-  quota scan on a request path must either be tiny and documented or run through
-  `spawn_blocking`. This applies to helpers called by handlers, not just the
-  handler body.
+  quota scan on a request path must either be tiny and documented or cross an
+  explicit blocking boundary. SQLite helpers that execute production SQL require
+  `&mut BlockingSqlite`; adapters should await Engine methods instead of
+  calling raw SQLite helpers. This applies to helpers called by handlers, not
+  just the handler body.
 - Error propagation: storage helpers must return `Result` and use `?`; never
   turn `prepare` / `query_map` / row iteration failures into empty metadata,
   empty headers, or default values that later enter the audit chain.

@@ -4287,7 +4287,7 @@ class FfiEngine(FfiEngineProtocol):
     @classmethod
     def open(cls, config: FfiEngineConfig) -> FfiEngine:
         """
-        Opens an Engine and embeds a Tokio runtime for future async verbs.
+        Opens an Engine and embeds a Tokio runtime for async Engine verbs.
 """
 
         _UniffiFfiConverterTypeFfiEngineConfig.check_lower(config)

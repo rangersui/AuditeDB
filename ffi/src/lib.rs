@@ -54,7 +54,7 @@ impl EngineDeleteTraceHooks for NoopDeleteTrace {}
 
 #[uniffi::export]
 impl FfiEngine {
-    /// Opens an Engine and embeds a Tokio runtime for future async verbs.
+    /// Opens an Engine and embeds a Tokio runtime for async Engine verbs.
     #[uniffi::constructor]
     pub fn open(config: FfiEngineConfig) -> Result<Arc<Self>, FfiError> {
         let summary = config.summary();
