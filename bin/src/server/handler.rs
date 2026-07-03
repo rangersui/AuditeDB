@@ -92,7 +92,7 @@ pub(crate) async fn execute_get(
     trace: &TraceCtx,
 ) -> Phase {
     let tier = tier.into();
-    let result = match state.engine().read(&world, tier) {
+    let result = match state.engine().read(&world, tier).await {
         Ok(Some(result)) => result,
         Ok(None) => {
             return Phase::Error {
@@ -169,7 +169,7 @@ pub(crate) async fn execute_head(
     trace: &TraceCtx,
 ) -> Phase {
     let tier = tier.into();
-    let result = match state.engine().read(&world, tier) {
+    let result = match state.engine().read(&world, tier).await {
         Ok(Some(result)) => result,
         Ok(None) => {
             return Phase::Error {

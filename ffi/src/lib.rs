@@ -145,7 +145,10 @@ impl FfiEngine {
         tier: FfiAccessTier,
     ) -> Result<Option<FfiReadResult>, FfiError> {
         let world = validated_world(world)?;
-        Ok(self.engine.read(&world, tier.try_into()?)?.map(Into::into))
+        Ok(self
+            .runtime
+            .block_on(self.engine.read(&world, tier.try_into()?))?
+            .map(Into::into))
     }
 
     /// Dereferences an exact historical timeline coordinate.
@@ -160,8 +163,11 @@ impl FfiEngine {
     ) -> Result<FfiTimelineDereference, FfiError> {
         let coordinate = coordinate.try_into_core()?;
         Ok(self
-            .engine
-            .dereference_timeline_coordinate(&coordinate, tier.try_into()?)?
+            .runtime
+            .block_on(
+                self.engine
+                    .dereference_timeline_coordinate(&coordinate, tier.try_into()?),
+            )?
             .into())
     }
 

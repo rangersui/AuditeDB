@@ -11,7 +11,7 @@ use bytes::Bytes;
 
 use crate::{
     audit::timeline_dereference::TimelineDereference,
-    auth,
+    auth, blocking_sqlite,
     delete_ops::{self, DeleteRequest, DeleteTraceHooks},
     engine::{Engine, EngineError},
     engine_error::{read_error_to_engine, write_error_to_engine},
@@ -32,6 +32,16 @@ use crate::{
 };
 
 pub(crate) use crate::engine_error::{log_blocking_storage_error, log_storage_error};
+
+fn blocking_join_to_engine(err: blocking_sqlite::BlockingJoinError) -> EngineError {
+    #[cfg(feature = "unstable-engine")]
+    tracing::error!(error = %err, "engine blocking SQLite worker failed");
+
+    #[cfg(not(feature = "unstable-engine"))]
+    eprintln!("l5 internal blocking SQLite worker failed: {err}");
+
+    EngineError::InternalInvariant("blocking sqlite worker failed")
+}
 
 pub(crate) struct EngineOps<'a> {
     core: &'a Core,
@@ -230,10 +240,9 @@ impl<'a> EngineOps<'a> {
 impl Engine {
     /// Reads a world's full representation.
     ///
-    /// This is a synchronous API. It may open or reuse a SQLite connection and
-    /// read from storage on the caller thread. Async adapters that cannot block
-    /// an executor worker should call it from their own blocking-worker
-    /// boundary.
+    /// This is an async API. Awaiting it runs SQLite-backed storage work on
+    /// the Engine's blocking-worker boundary rather than on the caller's async
+    /// executor worker.
     ///
     /// # Returns
     /// - `Ok(Some(ReadResult))` if the world exists.
@@ -245,20 +254,23 @@ impl Engine {
     /// - [`EngineError::TransientStorage`] for SQLite `BUSY`/`LOCKED`.
     /// - [`EngineError::InsufficientStorage`] for full-disk failures.
     /// - [`EngineError::Storage`] for other storage errors.
-    pub fn read(
+    pub async fn read(
         &self,
         world: &ValidatedWorldPath,
         tier: AccessTier,
     ) -> Result<Option<ReadResult>, EngineError> {
-        EngineOps::new(self.core()).read(world, tier.into())
+        let engine = self.clone();
+        let world = world.clone();
+        blocking_sqlite::run(move |_| EngineOps::new(engine.core()).read(&world, tier.into()))
+            .await
+            .map_err(blocking_join_to_engine)?
     }
 
     /// Reads the body snapshot addressed by an audited timeline address.
     ///
-    /// This is a synchronous API with the same blocking profile as
+    /// This is an async API with the same blocking-worker profile as
     /// [`Engine::read`]. It may reuse a cached SQLite connection and verify the
-    /// audit chain on the caller thread. Async adapters that cannot block an
-    /// executor worker should call it from their blocking-worker boundary.
+    /// audit chain inside the Engine's blocking-worker boundary.
     ///
     /// Unlike [`Engine::read`], this method does not return `Option`: a
     /// timeline address names a historical fact. Missing local storage becomes
@@ -269,12 +281,18 @@ impl Engine {
     /// # Errors
     /// Returns [`EngineError::Auth`] for insufficient read tier, and the normal
     /// storage-classified [`EngineError`] variants for SQLite/audit failures.
-    pub fn read_timeline_body(
+    pub async fn read_timeline_body(
         &self,
         address: &TimelineAddress,
         tier: AccessTier,
     ) -> Result<TimelineRead, EngineError> {
-        EngineOps::new(self.core()).read_timeline_body(address, tier.into())
+        let engine = self.clone();
+        let address = address.clone();
+        blocking_sqlite::run(move |_| {
+            EngineOps::new(engine.core()).read_timeline_body(&address, tier.into())
+        })
+        .await
+        .map_err(blocking_join_to_engine)?
     }
 
     /// Dereferences untrusted timeline wire syntax into a historical outcome.
@@ -282,9 +300,9 @@ impl Engine {
     /// The coordinate's world is read-authorized first; the core resolver then
     /// verifies the subject audit row before minting an internal
     /// [`TimelineAddress`](crate::TimelineAddress). Missing proof remains
-    /// [`TimelineDereference::UnprovenCoordinate`]. This synchronous API has the
-    /// same blocking profile as [`Engine::read`] and never falls back to the
-    /// current live body.
+    /// [`TimelineDereference::UnprovenCoordinate`]. This async API has the
+    /// same blocking-worker profile as [`Engine::read`] and never falls back to
+    /// the current live body.
     ///
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below `Read`.
@@ -292,12 +310,18 @@ impl Engine {
     /// - [`EngineError::InsufficientStorage`] for full-disk failures.
     /// - [`EngineError::Storage`] for audit-chain corruption or other storage
     ///   failures.
-    pub fn dereference_timeline_coordinate(
+    pub async fn dereference_timeline_coordinate(
         &self,
         coordinate: &TimelineCoordinate,
         tier: AccessTier,
     ) -> Result<TimelineDereference, EngineError> {
-        EngineOps::new(self.core()).dereference_timeline_coordinate(coordinate, tier.into())
+        let engine = self.clone();
+        let coordinate = coordinate.clone();
+        blocking_sqlite::run(move |_| {
+            EngineOps::new(engine.core()).dereference_timeline_coordinate(&coordinate, tier.into())
+        })
+        .await
+        .map_err(blocking_join_to_engine)?
     }
 
     /// Replaces a world with the provided representation.
@@ -1066,7 +1090,11 @@ mod tests {
             .delete(&world, Preconditions::none(), AccessTier::Approve)
             .await
             .unwrap();
-        assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
+        assert!(engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
@@ -1138,7 +1166,11 @@ mod tests {
                 .await,
             Err(EngineError::AppendOnly)
         ));
-        assert!(engine.read(&ledger, AccessTier::Read).unwrap().is_none());
+        assert!(engine
+            .read(&ledger, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1237,6 +1269,7 @@ mod tests {
 
         match engine
             .read_timeline_body(&address, AccessTier::Read)
+            .await
             .expect("timeline read succeeds")
         {
             TimelineRead::Body(body) => {
@@ -1294,6 +1327,7 @@ mod tests {
 
         match engine
             .read_timeline_body(&old_address, AccessTier::Read)
+            .await
             .expect("expired timeline read succeeds")
         {
             TimelineRead::Expired(expired) => {
@@ -1306,6 +1340,7 @@ mod tests {
         }
         match engine
             .read_timeline_body(&new_address, AccessTier::Read)
+            .await
             .expect("new timeline read succeeds")
         {
             TimelineRead::Body(body) => {
@@ -1385,6 +1420,7 @@ mod tests {
         assert_eq!(
             engine
                 .read(&world, AccessTier::Read)
+                .await
                 .unwrap()
                 .unwrap()
                 .representation
@@ -1408,6 +1444,7 @@ mod tests {
         assert_eq!(
             engine
                 .read(&world, AccessTier::Read)
+                .await
                 .unwrap()
                 .unwrap()
                 .representation
@@ -1448,7 +1485,9 @@ mod tests {
 
         let third_address = timeline_address_for_body(&engine, &world, 4, b"tre");
         assert!(matches!(
-            engine.read_timeline_body(&third_address, AccessTier::Read),
+            engine
+                .read_timeline_body(&third_address, AccessTier::Read)
+                .await,
             Ok(TimelineRead::Body(_))
         ));
 
@@ -1542,7 +1581,9 @@ mod tests {
         assert_eq!(df.storage_retained_cas_body_bytes, 3);
         assert_eq!(df.storage_audit_chain_events, 3);
         assert!(matches!(
-            engine.read_timeline_body(&first_address, AccessTier::Read),
+            engine
+                .read_timeline_body(&first_address, AccessTier::Read)
+                .await,
             Ok(TimelineRead::Body(_))
         ));
 
@@ -1567,7 +1608,9 @@ mod tests {
         assert_eq!(df.storage_retained_cas_body_bytes, 3);
         assert_eq!(df.storage_audit_chain_events, 4);
         assert!(matches!(
-            engine.read_timeline_body(&first_address, AccessTier::Read),
+            engine
+                .read_timeline_body(&first_address, AccessTier::Read)
+                .await,
             Ok(TimelineRead::Expired(_))
         ));
 
@@ -1610,11 +1653,13 @@ mod tests {
         assert!(matches!(
             engine
                 .read_timeline_body(&old_address, AccessTier::Read)
+                .await
                 .unwrap(),
             TimelineRead::Expired(_)
         ));
         match engine
             .read_timeline_body(&appended_address, AccessTier::Read)
+            .await
             .unwrap()
         {
             TimelineRead::Body(body) => {
@@ -1678,7 +1723,9 @@ mod tests {
 
         let third_address = timeline_address_for_body(&engine, &world, 4, b"abc");
         assert!(matches!(
-            engine.read_timeline_body(&third_address, AccessTier::Read),
+            engine
+                .read_timeline_body(&third_address, AccessTier::Read)
+                .await,
             Ok(TimelineRead::Body(_))
         ));
 
@@ -1728,8 +1775,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn engine_read_timeline_body_requires_read_tier() {
+    #[tokio::test]
+    async fn engine_read_timeline_body_requires_read_tier() {
         let root = temp_root("timeline-public-auth");
         let engine = Engine::builder()
             .data_root(root.clone())
@@ -1747,7 +1794,7 @@ mod tests {
         );
 
         assert!(matches!(
-            engine.read_timeline_body(&address, AccessTier::Anon),
+            engine.read_timeline_body(&address, AccessTier::Anon).await,
             Err(EngineError::Auth(AuthGate::Read))
         ));
 
@@ -1777,6 +1824,7 @@ mod tests {
 
         match engine
             .read_timeline_body(&address, AccessTier::Read)
+            .await
             .expect("missing durable world is a typed read outcome")
         {
             TimelineRead::Unproven { address: got } => assert_eq!(got, address),
@@ -1830,6 +1878,7 @@ mod tests {
             .expect("durable body write event carries timeline address");
         match engine
             .read_timeline_body(address, AccessTier::Read)
+            .await
             .expect("event address resolves")
         {
             TimelineRead::Body(body) => {
@@ -1880,11 +1929,13 @@ mod tests {
 
         let current = engine
             .read(&world, AccessTier::Anon)
+            .await
             .unwrap()
             .expect("current body exists");
         assert_eq!(current.representation.body, Bytes::from_static(b"C"));
         match engine
             .read_timeline_body(&address_b, AccessTier::Anon)
+            .await
             .expect("event B address resolves after overwrite")
         {
             TimelineRead::Body(body) => {
@@ -1976,6 +2027,7 @@ mod tests {
             .expect("replayed body event carries timeline address");
         match engine
             .read_timeline_body(address, AccessTier::Anon)
+            .await
             .expect("replayed address resolves")
         {
             TimelineRead::Body(body) => {
@@ -2670,6 +2722,7 @@ mod tests {
         assert_eq!(event.content_type(), Some("text/plain"));
         match engine
             .read_timeline_body(address, AccessTier::Anon)
+            .await
             .expect("append event address resolves")
         {
             TimelineRead::Body(body) => {

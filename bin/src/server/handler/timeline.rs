@@ -24,26 +24,13 @@ pub(crate) async fn execute_timeline(
     trace: &TraceCtx,
     head: bool,
 ) -> Phase {
-    let engine = state.engine().clone();
-    let worker_coordinate = coordinate.clone();
-    // Timeline dereference verifies SQLite audit rows and reads retained CAS
-    // bytes; keep that filesystem/read-cache work off Tokio worker threads.
-    let joined = tokio::task::spawn_blocking(move || {
-        engine.dereference_timeline_coordinate(&worker_coordinate, tier)
-    })
-    .await;
-
-    let result = match joined {
-        Ok(Ok(result)) => result,
-        Ok(Err(err)) => return timeline_engine_error_phase(err, head),
-        Err(_) => {
-            return timeline_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "timeline worker failed",
-                head,
-                ErrorReason::TimelineStorageRead,
-            )
-        }
+    let result = match state
+        .engine()
+        .dereference_timeline_coordinate(&coordinate, tier)
+        .await
+    {
+        Ok(result) => result,
+        Err(err) => return timeline_engine_error_phase(err, head),
     };
 
     trace.emit_aux_kv("timeline_world", coordinate.world().as_str());

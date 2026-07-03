@@ -80,7 +80,7 @@ pub struct TimelineAddress {
 /// )
 /// .unwrap();
 ///
-/// engine.read_timeline_body(&coord, l5::AccessTier::Read);
+/// engine.read_timeline_body(&coord, l5::AccessTier::Read).await;
 /// # }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]

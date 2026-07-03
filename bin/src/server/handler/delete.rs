@@ -442,7 +442,11 @@ mod tests {
             .await,
         );
         assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
-        assert!(engine.read(&world, AccessTier::Read).unwrap().is_some());
+        assert!(engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_some());
 
         let mut good = HeaderMap::new();
         good.insert(
@@ -460,10 +464,15 @@ mod tests {
             .await,
         );
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
+        assert!(engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
         let delete_ledger = world_path("var/log/deletes");
         assert!(engine
             .read(&delete_ledger, AccessTier::Read)
+            .await
             .unwrap()
             .is_some());
         assert!(matches!(
@@ -528,7 +537,11 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(matches!(reason, ErrorReason::PathInvalid(_)));
         assert_eq!(body, "bad request: reserved-delete-subject-header\n");
-        assert!(engine.read(&world, AccessTier::Read).unwrap().is_some());
+        assert!(engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_some());
         assert!(!world_db_path_for_server_tests(&dir, "var/log/deletes").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -558,7 +571,11 @@ mod tests {
             .await,
         );
         assert_eq!(warmup_resp.status(), StatusCode::NO_CONTENT);
-        assert!(engine.read(&warmup, AccessTier::Read).unwrap().is_none());
+        assert!(engine
+            .read(&warmup, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
 
         let world = world_path("home/delete-degraded");
         engine
@@ -599,7 +616,11 @@ mod tests {
         );
 
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
+        assert!(engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
         let ledger =
             rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "var/log/deletes"))
                 .unwrap();
@@ -681,6 +702,7 @@ mod tests {
         assert_eq!(auth_delete.status(), StatusCode::UNAUTHORIZED);
         assert!(engine
             .read(&protected_world, AccessTier::Read)
+            .await
             .unwrap()
             .is_some());
 
@@ -712,6 +734,7 @@ mod tests {
         );
         assert!(engine
             .read(&delete_ledger, AccessTier::Read)
+            .await
             .unwrap()
             .is_some());
 
@@ -736,6 +759,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert!(engine
             .read(&world_path("var/log/deletes"), AccessTier::Read)
+            .await
             .unwrap()
             .is_none());
 
@@ -769,6 +793,7 @@ mod tests {
         assert_eq!(engine.df(AccessTier::Read).unwrap().worlds, 3);
         assert!(engine
             .read(&world_path("var/log/deletes"), AccessTier::Read)
+            .await
             .unwrap()
             .is_none());
 
@@ -793,6 +818,7 @@ mod tests {
         let delete_ledger = world_path("var/log/deletes");
         assert!(engine
             .read(&delete_ledger, AccessTier::Read)
+            .await
             .unwrap()
             .is_some());
         assert!(matches!(
@@ -824,6 +850,7 @@ mod tests {
         for w in ["home/a", "home/b", "home/c"] {
             assert!(engine
                 .read(&world_path(w), AccessTier::Read)
+                .await
                 .unwrap()
                 .is_none());
         }

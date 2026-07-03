@@ -772,6 +772,7 @@ async fn durable_storage_quota_returns_507_without_writing() {
     assert_eq!(over.headers().get("x-storage-needed").unwrap(), "2");
     assert!(engine
         .read(&world_path("home/b"), AccessTier::Read)
+        .await
         .unwrap()
         .is_none());
 
@@ -793,6 +794,7 @@ async fn durable_storage_quota_returns_507_without_writing() {
     assert_eq!(
         engine
             .read(&world_path("home/a"), AccessTier::Read)
+            .await
             .unwrap()
             .unwrap()
             .representation

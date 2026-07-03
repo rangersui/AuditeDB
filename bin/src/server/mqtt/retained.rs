@@ -99,26 +99,15 @@ pub(super) async fn collect_retained_replay(
     route: &MqttSubscribeRoute,
     metrics: &MqttMetrics,
 ) -> Option<RetainedReplay> {
-    let engine = engine.clone();
-    let route = route.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        collect_retained_replay_blocking(&engine, tier, &route)
-    })
-    .await;
-    match result {
-        Ok(Ok(replay)) => {
+    match collect_retained_replay_with_limits(engine, tier, route, RetainedReplayLimits::DEFAULT)
+        .await
+    {
+        Ok(replay) => {
             metrics.retained_replay_scanned(replay.scanned);
             Some(replay)
         }
-        Ok(Err(err)) => {
-            log_replay_error(metrics, err);
-            None
-        }
         Err(err) => {
-            let total = metrics.retained_replay_failed();
-            mqtt_warn(format_args!(
-                "mqtt: retained replay worker failed; failures={total}; err={err:?}"
-            ));
+            log_replay_error(metrics, err);
             None
         }
     }
@@ -143,15 +132,7 @@ pub(super) fn should_skip_replayed_live(
     }
 }
 
-fn collect_retained_replay_blocking(
-    engine: &Engine,
-    tier: AccessTier,
-    route: &MqttSubscribeRoute,
-) -> Result<RetainedReplay, RetainedReplayError> {
-    collect_retained_replay_blocking_with_limits(engine, tier, route, RetainedReplayLimits::DEFAULT)
-}
-
-fn collect_retained_replay_blocking_with_limits(
+async fn collect_retained_replay_with_limits(
     engine: &Engine,
     tier: AccessTier,
     route: &MqttSubscribeRoute,
@@ -160,7 +141,7 @@ fn collect_retained_replay_blocking_with_limits(
     let mut replay = RetainedReplay::empty();
     if let Some(world) = route.retained_exact() {
         add_scanned(&mut replay, 1, limits)?;
-        collect_retained_world(engine, tier, route, world, &mut replay, limits)?;
+        collect_retained_world(engine, tier, route, world, &mut replay, limits).await?;
     }
 
     if let Some(prefix) = route.retained_prefix() {
@@ -178,7 +159,7 @@ fn collect_retained_replay_blocking_with_limits(
         add_scanned(&mut replay, worlds.len(), limits)?;
         for world in worlds {
             if route.matches_retained_world(&world) {
-                collect_retained_world(engine, tier, route, &world, &mut replay, limits)?;
+                collect_retained_world(engine, tier, route, &world, &mut replay, limits).await?;
             }
         }
     }
@@ -206,7 +187,7 @@ fn add_scanned(
     Ok(())
 }
 
-fn collect_retained_world(
+async fn collect_retained_world(
     engine: &Engine,
     tier: AccessTier,
     route: &MqttSubscribeRoute,
@@ -217,7 +198,7 @@ fn collect_retained_world(
     if replay.etags.contains_key(world) {
         return Ok(());
     }
-    let read = match engine.read(world, tier) {
+    let read = match engine.read(world, tier).await {
         Ok(Some(read)) if !read.representation.body.is_empty() => read,
         Ok(_) => return Ok(()),
         Err(err) => {
@@ -299,12 +280,19 @@ mod tests {
         assert_eq!(metrics.snapshot().retained_replay_failures, 1);
     }
 
-    #[test]
-    fn collect_retained_replay_blocking_reports_read_errors() {
+    #[tokio::test]
+    async fn collect_retained_replay_reports_read_errors() {
         let (engine, dir) = test_engine_with_read_token("retained-read-error");
         let route = mqtt_filter_to_route("sensor/temp").unwrap();
 
-        match collect_retained_replay_blocking(&engine, AccessTier::Anon, &route) {
+        match collect_retained_replay_with_limits(
+            &engine,
+            AccessTier::Anon,
+            &route,
+            RetainedReplayLimits::DEFAULT,
+        )
+        .await
+        {
             Err(RetainedReplayError::Read {
                 world,
                 err: EngineError::Auth(_),
@@ -316,12 +304,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_retained_replay_blocking_reports_read_errors_for_wildcard_parent() {
+    async fn collect_retained_replay_reports_read_errors_for_wildcard_parent() {
         let (engine, dir) = test_engine_with_read_token("retained-wildcard-parent-read-error");
         write_world(&engine, "home/sensor", b"x").await;
         let route = mqtt_filter_to_route("sensor/#").unwrap();
 
-        match collect_retained_replay_blocking(&engine, AccessTier::Anon, &route) {
+        match collect_retained_replay_with_limits(
+            &engine,
+            AccessTier::Anon,
+            &route,
+            RetainedReplayLimits::DEFAULT,
+        )
+        .await
+        {
             Err(RetainedReplayError::Read {
                 world,
                 err: EngineError::Auth(_),
@@ -333,7 +328,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_retained_replay_blocking_enforces_message_limit() {
+    async fn collect_retained_replay_enforces_message_limit() {
         let (engine, dir) = test_engine_with_read_token("retained-message-limit");
         write_world(&engine, "home/sensor/a", b"a").await;
         write_world(&engine, "home/sensor/b", b"b").await;
@@ -344,12 +339,7 @@ mod tests {
             scanned: 8,
         };
 
-        match collect_retained_replay_blocking_with_limits(
-            &engine,
-            AccessTier::Read,
-            &route,
-            limits,
-        ) {
+        match collect_retained_replay_with_limits(&engine, AccessTier::Read, &route, limits).await {
             Err(RetainedReplayError::Limit {
                 limit: "messages",
                 max: 1,
@@ -361,7 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_retained_replay_blocking_counts_parent_and_child_toward_message_limit() {
+    async fn collect_retained_replay_counts_parent_and_child_toward_message_limit() {
         let (engine, dir) = test_engine_with_read_token("retained-parent-child-message-limit");
         write_world(&engine, "home/sensor", b"parent").await;
         write_world(&engine, "home/sensor/a", b"child").await;
@@ -372,12 +362,7 @@ mod tests {
             scanned: 8,
         };
 
-        match collect_retained_replay_blocking_with_limits(
-            &engine,
-            AccessTier::Read,
-            &route,
-            limits,
-        ) {
+        match collect_retained_replay_with_limits(&engine, AccessTier::Read, &route, limits).await {
             Err(RetainedReplayError::Limit {
                 limit: "messages",
                 max: 1,
@@ -389,7 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_retained_replay_blocking_enforces_scanned_limit_before_payload_limits() {
+    async fn collect_retained_replay_enforces_scanned_limit_before_payload_limits() {
         let (engine, dir) = test_engine_with_read_token("retained-scanned-limit");
         write_world(&engine, "home/sensor/a", b"").await;
         write_world(&engine, "home/sensor/b", b"").await;
@@ -400,12 +385,7 @@ mod tests {
             scanned: 2,
         };
 
-        match collect_retained_replay_blocking_with_limits(
-            &engine,
-            AccessTier::Read,
-            &route,
-            limits,
-        ) {
+        match collect_retained_replay_with_limits(&engine, AccessTier::Read, &route, limits).await {
             Err(RetainedReplayError::Limit {
                 limit: "scanned_worlds",
                 max: 2,
@@ -417,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_retained_replay_blocking_enforces_byte_limit() {
+    async fn collect_retained_replay_enforces_byte_limit() {
         let (engine, dir) = test_engine_with_read_token("retained-byte-limit");
         write_world(&engine, "home/sensor/a", b"abcd").await;
         let route = mqtt_filter_to_route("sensor/#").unwrap();
@@ -427,12 +407,7 @@ mod tests {
             scanned: 8,
         };
 
-        match collect_retained_replay_blocking_with_limits(
-            &engine,
-            AccessTier::Read,
-            &route,
-            limits,
-        ) {
+        match collect_retained_replay_with_limits(&engine, AccessTier::Read, &route, limits).await {
             Err(RetainedReplayError::Limit {
                 limit: "bytes",
                 max: 3,

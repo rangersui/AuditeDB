@@ -171,7 +171,7 @@ async fn handle(engine: &Engine, request: &Packet<'_>) -> Vec<u8> {
         .map(|token| engine.verify_token(token))
         .unwrap_or(AccessTier::Anon);
     match method {
-        Method::Get => match engine.read(&world_name, tier) {
+        Method::Get => match engine.read(&world_name, tier).await {
             Ok(Some(result)) => {
                 let stage = result.representation;
                 if encoded_len(
@@ -623,7 +623,11 @@ mod tests {
 
         assert_eq!(response[1], 129); // 4.01 Unauthorized
         let world = ValidatedWorldPath::new("home/sensor/kitchen/temp").unwrap();
-        assert!(engine.read(&world, AccessTier::Read).unwrap().is_none());
+        assert!(engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -731,6 +735,7 @@ mod tests {
         let world = ValidatedWorldPath::new("home/sensor/kitchen/temp").unwrap();
         let stage = engine
             .read(&world, AccessTier::Read)
+            .await
             .unwrap()
             .unwrap()
             .representation;
@@ -804,8 +809,16 @@ mod tests {
 
         let http_world = ValidatedWorldPath::new("home/http-temp").unwrap();
         let coap_world = ValidatedWorldPath::new("home/coap/temp").unwrap();
-        let http_read = engine.read(&http_world, AccessTier::Read).unwrap().unwrap();
-        let coap_read = engine.read(&coap_world, AccessTier::Read).unwrap().unwrap();
+        let http_read = engine
+            .read(&http_world, AccessTier::Read)
+            .await
+            .unwrap()
+            .unwrap();
+        let coap_read = engine
+            .read(&coap_world, AccessTier::Read)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(http_read.representation.body, coap_read.representation.body);
         assert_eq!(
             http_read.representation.content_type,

@@ -1205,6 +1205,7 @@ mod tests {
         assert_eq!(
             engine
                 .read(&world, AccessTier::Read)
+                .await
                 .unwrap()
                 .unwrap()
                 .representation

@@ -918,6 +918,7 @@ mod tests {
         let world = ValidatedWorldPath::new("home/cas").unwrap();
         let etag = engine
             .read(&world, AccessTier::Read)
+            .await
             .unwrap()
             .expect("test world should exist")
             .etag;

@@ -742,9 +742,10 @@ mod tests {
         timeline_query(&address)
     }
 
-    fn assert_current_body(engine: &crate::engine::Engine, world: &str, expected: &[u8]) {
+    async fn assert_current_body(engine: &crate::engine::Engine, world: &str, expected: &[u8]) {
         let current = engine
             .read(&world_path(world), AccessTier::Read)
+            .await
             .unwrap()
             .expect("current body should exist");
         assert_eq!(current.representation.body.as_ref(), expected);
@@ -1464,6 +1465,7 @@ mod tests {
 
         let current = engine
             .read(&world_path("home/timeline/http"), AccessTier::Read)
+            .await
             .unwrap()
             .expect("current body should exist");
         assert_eq!(current.representation.body.as_ref(), b"new");
@@ -1601,7 +1603,7 @@ mod tests {
 
             assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
             assert_eq!(resp.headers().get(header::ALLOW).unwrap(), TIMELINE_ALLOW);
-            assert_current_body(&engine, "home/timeline/wall", b"new");
+            assert_current_body(&engine, "home/timeline/wall", b"new").await;
         }
 
         let _ = std::fs::remove_dir_all(dir);

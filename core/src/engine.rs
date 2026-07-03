@@ -784,7 +784,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let _ = engine.read(&world, AccessTier::Read).unwrap().unwrap();
+        let _ = engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .unwrap();
         let deleted = ValidatedWorldPath::new("home/shutdown-delete-fd").unwrap();
         engine
             .replace(

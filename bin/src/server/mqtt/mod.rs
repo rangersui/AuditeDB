@@ -827,7 +827,11 @@ mod tests {
         );
         assert!(session.handle_publish(publish).await.unwrap());
         let world = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
-        let read = engine.read(&world, AccessTier::Write).unwrap().unwrap();
+        let read = engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(read.representation.body, Bytes::from_static(b"21.5"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -869,7 +873,11 @@ mod tests {
         assert!(session.handle_publish(publish).await.unwrap());
         assert!(rx.try_recv().is_err());
         let world = ValidatedWorldPath::new("home/sensor/temp").unwrap();
-        let read = engine.read(&world, AccessTier::Write).unwrap().unwrap();
+        let read = engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(read.representation.body, Bytes::from_static(b"21.5"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -886,7 +894,11 @@ mod tests {
         );
         assert!(!session.handle_publish(publish).await.unwrap());
         let world = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
-        assert!(engine.read(&world, AccessTier::Write).unwrap().is_none());
+        assert!(engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -903,7 +915,11 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert_eq!(session.qos2_pending_count(), 1);
         let world = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
-        assert!(engine.read(&world, AccessTier::Write).unwrap().is_none());
+        assert!(engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -918,11 +934,19 @@ mod tests {
         expect_pubrec(&mut rx, 42).await;
 
         let world = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
-        assert!(engine.read(&world, AccessTier::Write).unwrap().is_none());
+        assert!(engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .is_none());
 
         assert!(session.handle_pubrel(42).await.unwrap());
         expect_pubcomp(&mut rx, 42).await;
-        let read = engine.read(&world, AccessTier::Write).unwrap().unwrap();
+        let read = engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(read.representation.body, Bytes::from_static(b"21.5"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -962,7 +986,11 @@ mod tests {
             "duplicate PUBREL must not produce a second Engine write"
         );
         let world = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
-        let read = engine.read(&world, AccessTier::Write).unwrap().unwrap();
+        let read = engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(read.representation.body, Bytes::from_static(b"23.0"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1450,7 +1478,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let read = engine.read(&world, AccessTier::Read).unwrap().unwrap();
+        let read = engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .unwrap();
         let mut replayed = HashMap::new();
         replayed.insert(world.clone(), read.etag);
 
@@ -1704,7 +1736,11 @@ mod tests {
         assert!(!payload.contains("23.0"));
 
         let world = ValidatedWorldPath::new("tmp/sensor/temp").unwrap();
-        let read = engine.read(&world, AccessTier::Write).unwrap().unwrap();
+        let read = engine
+            .read(&world, AccessTier::Write)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(read.representation.body, Bytes::from_static(b"23.0"));
 
         drop(client);

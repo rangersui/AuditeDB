@@ -16,13 +16,14 @@
 //! ## Public API shape
 //!
 //! The public facade is intentionally small. The call shape is mixed:
-//! synchronous methods return immediately on the caller thread, while async
-//! methods must be awaited by the caller's runtime.
+//! metadata-only methods return immediately on the caller thread, while
+//! storage-touching methods are async and must be awaited by the caller's
+//! runtime.
 //!
 //! | Operation | Method | Call shape |
 //! | --- | --- | --- |
 //! | Build engine | [`Engine::builder`] -> [`EngineBuilder::build`] | sync |
-//! | Read value | [`Engine::read`] | sync |
+//! | Read value | [`Engine::read`] | async |
 //! | Replace value | [`Engine::replace`] | async |
 //! | Append bytes | [`Engine::append`] | async |
 //! | Delete value | [`Engine::delete`] | async |
@@ -33,11 +34,9 @@
 //! | Auth helpers | [`Engine::verify_token`], [`Engine::allows_read`] | sync |
 //! | Shutdown signal | [`Engine::shutdown`] | sync |
 //!
-//! The sync methods can perform storage work on the caller thread. If an
-//! adapter is running inside an async executor and must not block that worker,
-//! call sync storage methods from that adapter's blocking-worker boundary.
-//! Mutating methods are async because durable writes, appends, deletes, audit
-//! updates, and subscriber notifications are ordered engine transitions.
+//! Storage-touching methods are async because durable reads, writes, appends,
+//! deletes, audit updates, and subscriber notifications cross the Engine's
+//! blocking-worker boundary and ordered transition points.
 //!
 //! [`Engine::subscribe`] only opens the subscription and reserves a slot. The
 //! stream itself is consumed with async [`EngineSubscription::recv`].
@@ -71,8 +70,8 @@
 //!     .await
 //!     .expect("write succeeds");
 //!
-//! // Retrieve bytes by path. Reads are sync.
-//! let read = engine.read(&world, AccessTier::Read).expect("read succeeds");
+//! // Retrieve bytes by path. Reads are async.
+//! let read = engine.read(&world, AccessTier::Read).await.expect("read succeeds");
 //! assert!(read.is_some());
 //! # }
 //! ```
@@ -92,6 +91,7 @@
 //!
 //! let current = engine
 //!     .read(&world, AccessTier::Read)
+//!     .await
 //!     .expect("read")
 //!     .expect("world exists");
 //!
