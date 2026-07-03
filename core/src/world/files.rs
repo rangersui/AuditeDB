@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::{
+    blocking_sqlite::BlockingSqlite,
     engine_types::{ValidatedWorldPath, ValidatedWorldPrefix},
     world_schema,
 };
@@ -46,12 +47,16 @@ pub(crate) fn delete(data_root: &Path, world: &ValidatedWorldPath) -> bool {
 
 /// List all sqlite-backed world keys by scanning the data dir.
 /// Returns decoded names as validated world-path proofs.
-pub fn list(data_root: &Path) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
+pub fn list(
+    _proof: &mut BlockingSqlite,
+    data_root: &Path,
+) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
     list_matching(data_root, |_| true)
 }
 
 /// List sqlite-backed world keys with a canonical prefix.
 pub fn list_with_prefix(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     prefix: &ValidatedWorldPrefix,
 ) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
@@ -63,6 +68,7 @@ pub fn list_with_prefix(
 /// List sqlite-backed world keys with a canonical prefix, returning `None`
 /// before materializing more than `max` matches.
 pub fn list_with_prefix_bounded(
+    _proof: &mut BlockingSqlite,
     data_root: &Path,
     prefix: &ValidatedWorldPrefix,
     max: usize,

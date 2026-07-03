@@ -524,7 +524,7 @@ pub(crate) fn usages(
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Vec<(ValidatedWorldPath, StorageUsageSnapshot)>> {
     let mut out = Vec::new();
-    for world_path in list(data_root)? {
+    for world_path in list(proof, data_root)? {
         if let Some(usage) = storage_usage(proof, data_root, &world_path, file_op)? {
             out.push((world_path, usage));
         }
@@ -1422,7 +1422,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::File::create(dir.join("universe.db")).unwrap();
 
-        let err = list(&root).unwrap_err();
+        let err = list(&mut crate::blocking_sqlite::test_only_mint(), &root).unwrap_err();
 
         assert!(err.to_string().contains("invalid percent UTF-8"));
         let _ = std::fs::remove_dir_all(root);
@@ -1436,7 +1436,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::File::create(dir.join("universe.db")).unwrap();
 
-        let err = list(&root).unwrap_err();
+        let err = list(&mut crate::blocking_sqlite::test_only_mint(), &root).unwrap_err();
 
         assert!(err.to_string().contains("non-canonical disk name"));
         let _ = std::fs::remove_dir_all(root);

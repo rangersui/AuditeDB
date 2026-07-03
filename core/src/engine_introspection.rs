@@ -389,7 +389,7 @@ impl EngineOps<'_> {
     ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
         let permit = self.authorize_introspection(path, tier)?;
         ensure_proc_endpoint(&permit, ProcEndpoint::Worlds)?;
-        let mut names = world::list(&self.core().data)
+        let mut names = blocking_sqlite::run_scoped(|proof| world::list(proof, &self.core().data))
             .map_err(|err| storage_error_to_engine("proc worlds", err, "list_worlds", None))?;
         names.extend(self.core().mem.list());
         sort_dedup_worlds(&mut names);
@@ -408,7 +408,10 @@ impl EngineOps<'_> {
             .core()
             .begin_file_op()
             .ok_or(EngineError::ShuttingDown)?;
-        let mut names = world::list_with_prefix(&self.core().data, prefix).map_err(|err| {
+        let mut names = blocking_sqlite::run_scoped(|proof| {
+            world::list_with_prefix(proof, &self.core().data, prefix)
+        })
+        .map_err(|err| {
             storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
         })?;
         names.extend(self.core().mem.list_with_prefix(prefix));
@@ -430,10 +433,12 @@ impl EngineOps<'_> {
             .begin_file_op()
             .ok_or(EngineError::ShuttingDown)?;
         let limit = max.saturating_add(1);
-        let Some(mut names) = world::list_with_prefix_bounded(&self.core().data, prefix, limit)
-            .map_err(|err| {
-                storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
-            })?
+        let Some(mut names) = blocking_sqlite::run_scoped(|proof| {
+            world::list_with_prefix_bounded(proof, &self.core().data, prefix, limit)
+        })
+        .map_err(|err| {
+            storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
+        })?
         else {
             return Ok(None);
         };
