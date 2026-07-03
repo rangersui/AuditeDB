@@ -131,13 +131,13 @@ impl EngineOps {
         .map_err(|err| read_error_to_engine(err, Some(coordinate.world().as_str())))
     }
 
-    pub(crate) async fn replace<H: world_ops::WriteTraceHooks + ?Sized>(
+    pub(crate) async fn replace(
         &self,
         world: &ValidatedWorldPath,
         representation: Representation,
         preconditions: Preconditions,
         tier: auth::Tier,
-        hooks: &H,
+        hooks: Arc<dyn world_ops::WriteTraceHooks>,
     ) -> Result<WriteResult, EngineError> {
         let permit = world_ops::authorize_write(world, tier)?;
         self.ensure_not_shutdown()?;
@@ -148,25 +148,25 @@ impl EngineOps {
             preconditions.into(),
         )
         .map_err(|message| EngineError::InvalidMetadata { message })?;
-        let outcome = world_ops::replace_write(self.core.as_ref(), &permit, req, hooks)
+        let outcome = world_ops::replace_write(Arc::clone(&self.core), permit, req, hooks)
             .await
             .map_err(|err| write_error_to_engine(err, Some(world.as_str())))?;
         Ok(outcome.into())
     }
 
-    pub(crate) async fn append<H: world_ops::WriteTraceHooks + ?Sized>(
+    pub(crate) async fn append(
         &self,
         world: &ValidatedWorldPath,
         body: Bytes,
         preconditions: Preconditions,
         tier: auth::Tier,
-        hooks: &H,
+        hooks: Arc<dyn world_ops::WriteTraceHooks>,
     ) -> Result<WriteResult, EngineError> {
         let permit = world_ops::authorize_write(world, tier)?;
         self.ensure_not_shutdown()?;
         let outcome = world_ops::append_write(
-            self.core.as_ref(),
-            &permit,
+            Arc::clone(&self.core),
+            permit,
             world_ops::AppendRequest {
                 body,
                 preconditions: preconditions.into(),
@@ -178,16 +178,16 @@ impl EngineOps {
         Ok(outcome.into())
     }
 
-    pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
+    pub(crate) async fn delete(
         &self,
         world: &ValidatedWorldPath,
         req: DeleteRequest,
         tier: auth::Tier,
-        hooks: &H,
+        hooks: Arc<dyn DeleteTraceHooks>,
     ) -> Result<(), delete_ops::DeleteError> {
         let permit = delete_ops::authorize_delete(world, tier)?;
         self.ensure_not_shutdown_for_delete()?;
-        delete_ops::delete(self.core.as_ref(), &permit, req, hooks).await
+        delete_ops::delete(Arc::clone(&self.core), permit, req, hooks).await
     }
 
     pub(crate) fn subscribe(
@@ -377,7 +377,7 @@ impl Engine {
                 representation,
                 preconditions,
                 tier.into(),
-                &NoopWriteTrace,
+                Arc::new(NoopWriteTrace),
             )
             .await
     }
@@ -407,7 +407,13 @@ impl Engine {
         tier: AccessTier,
     ) -> Result<WriteResult, EngineError> {
         EngineOps::new(self.core_arc())
-            .append(world, body, preconditions, tier.into(), &NoopWriteTrace)
+            .append(
+                world,
+                body,
+                preconditions,
+                tier.into(),
+                Arc::new(NoopWriteTrace),
+            )
             .await
     }
 
@@ -447,7 +453,7 @@ impl Engine {
                 world,
                 DeleteRequest::new(preconditions, String::new(), Vec::new()),
                 tier.into(),
-                &NoopDeleteTrace,
+                Arc::new(NoopDeleteTrace),
             )
             .await
             .map_err(Into::into)

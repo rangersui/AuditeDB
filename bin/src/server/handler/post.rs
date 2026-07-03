@@ -19,6 +19,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use std::sync::Arc;
 
 use super::{write_error_phase, HttpWriteTrace};
 use crate::{
@@ -42,7 +43,9 @@ pub(crate) async fn execute_post(
             body,
             hs::request_preconditions(&headers),
             tier,
-            &HttpWriteTrace { trace },
+            Arc::new(HttpWriteTrace {
+                trace: trace.clone(),
+            }),
         )
         .await
     {

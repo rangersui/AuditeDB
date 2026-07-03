@@ -5,7 +5,7 @@
 //! Keeping it here avoids turning `world_ops` into a grab bag while still
 //! letting adapters route through Engine-owned disk semantics.
 
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, Arc};
 
 use crate::{
     audit::{AuditHeaders, VerifiedDeleteSubject},
@@ -43,7 +43,7 @@ impl DeleteRequest {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DeletePermit {
     world: crate::engine_types::ValidatedWorldPath,
 }
@@ -101,7 +101,7 @@ pub(crate) enum DeleteError {
     AuditCommitFailed,
 }
 
-pub(crate) trait DeleteTraceHooks {
+pub(crate) trait DeleteTraceHooks: Send + Sync {
     fn lock_acquired(&self, _world: &str) {}
     fn audit_intent(&self) {}
     fn read_cache_drained(&self) {}
@@ -131,11 +131,30 @@ pub(crate) fn authorize_delete(
 }
 
 #[allow(clippy::result_large_err)]
-pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
-    core: &Core,
-    permit: &DeletePermit,
+pub(crate) async fn delete(
+    core: Arc<Core>,
+    permit: DeletePermit,
     req: DeleteRequest,
-    hooks: &H,
+    hooks: Arc<dyn DeleteTraceHooks>,
+) -> Result<(), DeleteError> {
+    let write_guard = core.acquire_world_lock(&permit.world).await;
+    hooks.lock_acquired(permit.world.as_str());
+    let stream_guard = core.delete_ledger_stream_lock.clone().lock_owned().await;
+    crate::blocking_sqlite::run(move |proof| {
+        delete_blocking(proof, core, permit, req, hooks, write_guard, stream_guard)
+    })
+    .await
+    .map_err(|_| DeleteError::InternalInvariant("blocking sqlite worker failed"))?
+}
+
+fn delete_blocking(
+    proof: &mut blocking_sqlite::BlockingSqlite,
+    core: Arc<Core>,
+    permit: DeletePermit,
+    req: DeleteRequest,
+    hooks: Arc<dyn DeleteTraceHooks>,
+    _write_guard: tokio::sync::OwnedMutexGuard<()>,
+    _stream_guard: tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<(), DeleteError> {
     let DeleteRequest {
         preconditions,
@@ -143,29 +162,28 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         headers,
     } = req;
     let world_name = permit.world.as_str();
-    let _write_guard = core.acquire_world_lock(&permit.world).await;
-    hooks.lock_acquired(world_name);
-    let _stream_guard = core.delete_ledger_stream_lock.lock().await;
     let file_op = core.begin_file_op().ok_or(DeleteError::ShuttingDown)?;
-    blocking_sqlite::run_scoped(|proof| {
-        check_preconditions(core, proof, &permit.world, &preconditions.into(), &file_op)
-    })?;
+    check_preconditions(
+        core.as_ref(),
+        proof,
+        &permit.world,
+        &preconditions.into(),
+        &file_op,
+    )?;
     let metadata = ValidatedRepresentationMetadata::new(content_type, headers)
         .map_err(|message| DeleteError::InvalidMetadata { message })?;
     let (content_type, headers) = metadata.into_parts();
     let user_headers =
         AuditHeaders::from_user(headers).map_err(|_| DeleteError::ReservedMetadataHeader)?;
 
-    let Some(stage) =
-        blocking_sqlite::run_scoped(|proof| core.read_world(proof, &permit.world, &file_op))
-            .map_err(|err| classify_audit_error("storage read", &permit.world, err))?
+    let Some(stage) = core
+        .read_world(proof, &permit.world, &file_op)
+        .map_err(|err| classify_audit_error("storage read", &permit.world, err))?
     else {
         return Err(DeleteError::NotFound);
     };
     let storage_usage_before = if store::is_persistent(&permit.world) {
-        match blocking_sqlite::run_scoped(|proof| {
-            world::accounted_storage_usage(proof, &core.data, &permit.world, &file_op)
-        })
+        match world::accounted_storage_usage(proof, &core.data, &permit.world, &file_op)
         .map_err(|err| classify_storage_error("storage size", &permit.world, err))?
         {
             Some(proof) => Some(proof),
@@ -180,7 +198,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     } else {
         None
     };
-    let subject = capture_delete_subject_proof(core, &permit.world, &file_op)?;
+    let subject = capture_delete_subject_proof(proof, core.as_ref(), &permit.world, &file_op)?;
     let body_sha256_before = subject
         .as_ref()
         .map(VerifiedDeleteSubject::body_sha256)
@@ -191,7 +209,8 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     };
 
     let intent_event = match append_ledger_event_and_notify(
-        core,
+        proof,
+        core.as_ref(),
         AuditAppendJob {
             event_type: EventMetadataKind::DELETE_INTENT,
             target: permit.world.clone(),
@@ -199,7 +218,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             size: 0,
             content_type: content_type.clone(),
             headers: ledger_headers.clone(),
-            key: ledger_hmac_key(core),
+            key: ledger_hmac_key(core.as_ref()),
         },
         &file_op,
     ) {
@@ -222,8 +241,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     core.install_tombstone_blocking(&permit.world, &file_op);
     hooks.read_cache_drained();
 
-    let ok =
-        blocking_sqlite::run_scoped(|proof| core.delete_world_now(proof, &permit.world, &file_op));
+    let ok = core.delete_world_now(proof, &permit.world, &file_op);
     core.clear_tombstone(&permit.world);
     if !ok {
         return Err(DeleteError::DeleteFailedAfterIntent);
@@ -257,7 +275,8 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     hooks.notify_sent();
 
     match append_ledger_event_and_notify(
-        core,
+        proof,
+        core.as_ref(),
         AuditAppendJob {
             event_type: EventMetadataKind::DELETE_COMMIT,
             target: permit.world.clone(),
@@ -265,7 +284,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             size: 0,
             content_type: content_type.clone(),
             headers: ledger_headers.clone(),
-            key: ledger_hmac_key(core),
+            key: ledger_hmac_key(core.as_ref()),
         },
         &file_op,
     ) {
@@ -282,7 +301,8 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
             );
             hooks.audit_commit_failed(&commit_err);
             match append_ledger_event_and_notify(
-                core,
+                proof,
+                core.as_ref(),
                 AuditAppendJob {
                     event_type: EventMetadataKind::DELETE_COMMIT_FAILED,
                     target: permit.world.clone(),
@@ -290,7 +310,7 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
                     size: 0,
                     content_type,
                     headers: ledger_headers,
-                    key: ledger_hmac_key(core),
+                    key: ledger_hmac_key(core.as_ref()),
                 },
                 &file_op,
             ) {
@@ -313,12 +333,12 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
 }
 
 fn append_ledger_event_and_notify(
+    proof: &mut blocking_sqlite::BlockingSqlite,
     core: &Core,
     job: AuditAppendJob,
     file_op: &crate::state::FileOpPermit,
 ) -> Result<crate::ledger::AppendedLedgerEvent, BlockingSqliteError> {
-    let event =
-        blocking_sqlite::run_scoped(|proof| core.append_to_ledger_blocking(proof, job, file_op))?;
+    let event = core.append_to_ledger_blocking(proof, job, file_op)?;
     core.note_audit_events_appended(1 + usize::from(event.format_event().is_some()));
     notify_ledger_event(core, &event);
     Ok(event)
@@ -358,6 +378,7 @@ fn ledger_hmac_key(core: &Core) -> crate::engine_types::AuditHmacKey {
 }
 
 fn capture_delete_subject_proof(
+    proof: &mut blocking_sqlite::BlockingSqlite,
     core: &Core,
     world: &ValidatedWorldPath,
     file_op: &crate::state::FileOpPermit,
@@ -365,13 +386,12 @@ fn capture_delete_subject_proof(
     if store::is_memory_world(world) {
         return Ok(None);
     }
-    let Some(head) =
-        blocking_sqlite::run_scoped(|proof| core.latest_body_head(proof, world, file_op)).map_err(
-            |err| DeleteError::SubjectAudit {
-                world: world.clone(),
-                err,
-            },
-        )?
+    let Some(head) = core.latest_body_head(proof, world, file_op).map_err(|err| {
+        DeleteError::SubjectAudit {
+            world: world.clone(),
+            err,
+        }
+    })?
     else {
         return Err(DeleteError::SubjectMissingHead {
             world: world.clone(),
@@ -574,6 +594,13 @@ mod tests {
     use crate::world_schema;
     use rusqlite::Connection;
 
+    struct NoopTrace;
+    impl DeleteTraceHooks for NoopTrace {}
+
+    fn test_hooks() -> Arc<dyn DeleteTraceHooks> {
+        Arc::new(NoopTrace)
+    }
+
     fn delete_req(content_type: &str, headers: Vec<(String, String)>) -> DeleteRequest {
         DeleteRequest::new(Preconditions::none(), content_type.to_owned(), headers)
     }
@@ -603,10 +630,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_ledger_metadata_events_do_not_retain_cas_bodies() {
-        struct NoopTrace;
-        impl DeleteTraceHooks for NoopTrace {}
-
         let (core, dir) = test_core("delete-ledger-no-cas");
+        let core = Arc::new(core);
         let subject = ValidatedWorldPath::new("home/delete-ledger-no-cas").unwrap();
         core.test_only_write_world(subject.as_str(), b"body", "text/plain", &[])
             .unwrap();
@@ -617,10 +642,10 @@ mod tests {
 
         let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
         delete(
-            &core,
-            &permit,
+            Arc::clone(&core),
+            permit,
             delete_req("application/octet-stream", Vec::new()),
-            &NoopTrace,
+            test_hooks(),
         )
         .await
         .unwrap();
@@ -646,10 +671,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_ledger_records_subject_final_address() {
-        struct NoopTrace;
-        impl DeleteTraceHooks for NoopTrace {}
-
         let (core, dir) = test_core("delete-ledger-subject-address");
+        let core = Arc::new(core);
         let subject = ValidatedWorldPath::new("home/delete-ledger-subject-address").unwrap();
         core.test_only_write_world(subject.as_str(), b"old", "text/plain", &[])
             .unwrap();
@@ -674,13 +697,13 @@ mod tests {
 
         let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
         delete(
-            &core,
-            &permit,
+            Arc::clone(&core),
+            permit,
             delete_req(
                 "text/plain",
                 vec![("x-meta-operator".to_owned(), "alice".to_owned())],
             ),
-            &NoopTrace,
+            test_hooks(),
         )
         .await
         .unwrap();
@@ -749,10 +772,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_rejects_reserved_subject_metadata_headers() {
-        struct NoopTrace;
-        impl DeleteTraceHooks for NoopTrace {}
-
         let (core, dir) = test_core("delete-ledger-reserved-subject-header");
+        let core = Arc::new(core);
         let subject =
             ValidatedWorldPath::new("home/delete-ledger-reserved-subject-header").unwrap();
         core.test_only_write_world(subject.as_str(), b"body", "text/plain", &[])
@@ -760,13 +781,13 @@ mod tests {
 
         let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
         let err = delete(
-            &core,
-            &permit,
+            Arc::clone(&core),
+            permit,
             delete_req(
                 "text/plain",
                 vec![("AuditeDB-Delete-Subject-Seq".to_owned(), "fake".to_owned())],
             ),
-            &NoopTrace,
+            test_hooks(),
         )
         .await
         .unwrap_err();
@@ -787,10 +808,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_ledger_subject_generation_distinguishes_recreated_world() {
-        struct NoopTrace;
-        impl DeleteTraceHooks for NoopTrace {}
-
         let (core, dir) = test_core("delete-ledger-recreate-generation");
+        let core = Arc::new(core);
         let subject = ValidatedWorldPath::new("home/delete-ledger-recreate-generation").unwrap();
         core.test_only_write_world(subject.as_str(), b"first", "text/plain", &[])
             .unwrap();
@@ -804,10 +823,10 @@ mod tests {
 
         let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
         delete(
-            &core,
-            &permit,
+            Arc::clone(&core),
+            permit,
             delete_req("text/plain", Vec::new()),
-            &NoopTrace,
+            test_hooks(),
         )
         .await
         .unwrap();

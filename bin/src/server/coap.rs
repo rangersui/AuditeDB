@@ -8,6 +8,7 @@
 //! DELETE deliberately return 4.05 Method Not Allowed stubs.
 
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Semaphore;
 
@@ -210,7 +211,7 @@ async fn handle(engine: &Engine, request: &Packet<'_>) -> Vec<u8> {
                     representation,
                     Preconditions::none(),
                     tier,
-                    &CoapNoopWriteTrace,
+                    Arc::new(CoapNoopWriteTrace),
                 )
                 .await
             {

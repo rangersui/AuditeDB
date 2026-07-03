@@ -236,7 +236,7 @@ impl FfiEngine {
             metadata.into(),
             preconditions.into(),
             tier.try_into()?,
-            &NoopDeleteTrace,
+            Arc::new(NoopDeleteTrace),
         ))?)
     }
 

@@ -50,6 +50,7 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
+use std::sync::Arc;
 
 use crate::{
     engine::EngineError,
@@ -255,7 +256,9 @@ pub(crate) async fn execute_put(
             representation,
             hs::request_preconditions(&headers),
             tier,
-            &HttpWriteTrace { trace },
+            Arc::new(HttpWriteTrace {
+                trace: trace.clone(),
+            }),
         )
         .await
     {
@@ -289,11 +292,11 @@ pub(crate) fn etag_preview(etag: &str) -> String {
     etag.chars().take(16).collect()
 }
 
-pub(crate) struct HttpWriteTrace<'a> {
-    pub(crate) trace: &'a TraceCtx,
+pub(crate) struct HttpWriteTrace {
+    pub(crate) trace: TraceCtx,
 }
 
-impl EngineWriteTraceHooks for HttpWriteTrace<'_> {
+impl EngineWriteTraceHooks for HttpWriteTrace {
     fn lock_acquired(&self) {
         self.trace.emit_aux("lock_acquired");
     }

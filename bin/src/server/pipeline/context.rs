@@ -77,6 +77,7 @@ pub(crate) fn trace_enabled_for_tests() -> bool {
 /// so a runtime toggle would only take effect for new requests
 /// (acceptable for env-var gating; PR 5 adds a runtime-toggleable
 /// `/etc/debug` world).
+#[derive(Clone)]
 pub(crate) struct TraceCtx {
     req_id: u64,
     started: Instant,

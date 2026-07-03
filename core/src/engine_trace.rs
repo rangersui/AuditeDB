@@ -5,6 +5,8 @@
 
 #![cfg_attr(not(feature = "unstable-engine"), allow(dead_code))]
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 
 use crate::{
@@ -24,7 +26,7 @@ use crate::{
 /// Successful durable writes fire hooks in this order:
 /// `lock_acquired` -> optional `quota_check` -> `sqlite_committed` ->
 /// `notify_sent`. Transient memory writes skip `quota_check`.
-pub trait EngineWriteTraceHooks {
+pub trait EngineWriteTraceHooks: Send + Sync {
     /// The per-world write lock was acquired.
     fn lock_acquired(&self) {}
     /// Quota was checked. `used` is the durable storage usage before this
@@ -45,7 +47,7 @@ pub trait EngineWriteTraceHooks {
 /// Successful deletes fire hooks in this order: `lock_acquired` ->
 /// `audit_intent` -> `read_cache_drained` -> `physical_deleted` ->
 /// `counter_decremented` -> `notify_sent` -> `audit_commit`.
-pub trait EngineDeleteTraceHooks {
+pub trait EngineDeleteTraceHooks: Send + Sync {
     /// The per-world write lock was acquired.
     fn lock_acquired(&self, _world: &str) {}
     /// The audit-intent ledger row was written successfully.
@@ -111,9 +113,9 @@ impl DeleteMetadata {
     }
 }
 
-struct PublicWriteTrace<'a, H: ?Sized>(&'a H);
+struct PublicWriteTrace<H: ?Sized>(Arc<H>);
 
-impl<H: EngineWriteTraceHooks + ?Sized> world_ops::WriteTraceHooks for PublicWriteTrace<'_, H> {
+impl<H: EngineWriteTraceHooks + ?Sized> world_ops::WriteTraceHooks for PublicWriteTrace<H> {
     fn lock_acquired(&self) {
         self.0.lock_acquired();
     }
@@ -131,9 +133,9 @@ impl<H: EngineWriteTraceHooks + ?Sized> world_ops::WriteTraceHooks for PublicWri
     }
 }
 
-struct PublicDeleteTrace<'a, H: ?Sized>(&'a H);
+struct PublicDeleteTrace<H: ?Sized>(Arc<H>);
 
-impl<H: EngineDeleteTraceHooks + ?Sized> delete_ops::DeleteTraceHooks for PublicDeleteTrace<'_, H> {
+impl<H: EngineDeleteTraceHooks + ?Sized> delete_ops::DeleteTraceHooks for PublicDeleteTrace<H> {
     fn lock_acquired(&self, world: &str) {
         self.0.lock_acquired(world);
     }
@@ -187,13 +189,13 @@ impl Engine {
     ///
     /// # Errors
     /// Same as [`crate::Engine::replace`].
-    pub async fn replace_traced<H: EngineWriteTraceHooks + ?Sized>(
+    pub async fn replace_traced<H: EngineWriteTraceHooks + ?Sized + 'static>(
         &self,
         world: &ValidatedWorldPath,
         representation: Representation,
         preconditions: Preconditions,
         tier: AccessTier,
-        hooks: &H,
+        hooks: Arc<H>,
     ) -> Result<WriteResult, EngineError> {
         EngineOps::new(self.core_arc())
             .replace(
@@ -201,7 +203,7 @@ impl Engine {
                 representation,
                 preconditions,
                 tier.into(),
-                &PublicWriteTrace(hooks),
+                Arc::new(PublicWriteTrace(hooks)),
             )
             .await
     }
@@ -214,13 +216,13 @@ impl Engine {
     ///
     /// # Errors
     /// Same as [`crate::Engine::append`].
-    pub async fn append_traced<H: EngineWriteTraceHooks + ?Sized>(
+    pub async fn append_traced<H: EngineWriteTraceHooks + ?Sized + 'static>(
         &self,
         world: &ValidatedWorldPath,
         body: Bytes,
         preconditions: Preconditions,
         tier: AccessTier,
-        hooks: &H,
+        hooks: Arc<H>,
     ) -> Result<WriteResult, EngineError> {
         EngineOps::new(self.core_arc())
             .append(
@@ -228,7 +230,7 @@ impl Engine {
                 body,
                 preconditions,
                 tier.into(),
-                &PublicWriteTrace(hooks),
+                Arc::new(PublicWriteTrace(hooks)),
             )
             .await
     }
@@ -252,20 +254,20 @@ impl Engine {
     /// result is returned when the audit-intent write itself fails. Returns
     /// [`EngineError::InvalidMetadata`] if `metadata.headers` uses a reserved
     /// delete-subject header name.
-    pub async fn delete_traced<H: EngineDeleteTraceHooks + ?Sized>(
+    pub async fn delete_traced<H: EngineDeleteTraceHooks + ?Sized + 'static>(
         &self,
         world: &ValidatedWorldPath,
         metadata: DeleteMetadata,
         preconditions: Preconditions,
         tier: AccessTier,
-        hooks: &H,
+        hooks: Arc<H>,
     ) -> Result<(), EngineError> {
         let result = EngineOps::new(self.core_arc())
             .delete(
                 world,
                 DeleteRequest::new(preconditions, metadata.content_type, metadata.headers),
                 tier.into(),
-                &PublicDeleteTrace(hooks),
+                Arc::new(PublicDeleteTrace(Arc::clone(&hooks))),
             )
             .await;
         if let Err(delete_ops::DeleteError::AuditIntent { err, .. }) = &result {
@@ -347,8 +349,8 @@ mod tests {
 
     #[test]
     fn public_write_trace_forwards_internal_hook_boundaries() {
-        let spy = Spy::new();
-        let trace = PublicWriteTrace(&spy);
+        let spy = Arc::new(Spy::new());
+        let trace = PublicWriteTrace(Arc::clone(&spy));
 
         world_ops::WriteTraceHooks::lock_acquired(&trace);
         world_ops::WriteTraceHooks::quota_check(&trace, 3, 5);
@@ -368,8 +370,8 @@ mod tests {
 
     #[test]
     fn public_delete_trace_forwards_without_exposing_internal_error_type() {
-        let spy = Spy::new();
-        let trace = PublicDeleteTrace(&spy);
+        let spy = Arc::new(Spy::new());
+        let trace = PublicDeleteTrace(Arc::clone(&spy));
 
         delete_ops::DeleteTraceHooks::lock_acquired(&trace, "home/task");
         delete_ops::DeleteTraceHooks::audit_commit_failed(
@@ -403,7 +405,7 @@ mod tests {
                 DeleteMetadata::new("text/plain\r\nx-bad: y", Vec::new()),
                 Preconditions::none(),
                 AccessTier::Write,
-                &Spy::new(),
+                Arc::new(Spy::new()),
             )
             .await
             .unwrap_err();

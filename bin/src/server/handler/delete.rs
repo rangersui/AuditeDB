@@ -16,7 +16,10 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc,
+};
 
 use crate::{
     engine::EngineError,
@@ -50,7 +53,7 @@ pub(crate) async fn execute_delete(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let hooks = HttpDeleteTrace::new(trace);
+    let hooks = Arc::new(HttpDeleteTrace::new(trace));
 
     match state
         .engine()
@@ -59,7 +62,7 @@ pub(crate) async fn execute_delete(
             DeleteMetadata::new(delete_content_type, delete_meta),
             hs::request_preconditions(&headers),
             tier,
-            &hooks,
+            Arc::clone(&hooks),
         )
         .await
     {
@@ -68,8 +71,8 @@ pub(crate) async fn execute_delete(
     }
 }
 
-struct HttpDeleteTrace<'a> {
-    trace: &'a TraceCtx,
+struct HttpDeleteTrace {
+    trace: TraceCtx,
     last_step: DeleteStepCell,
 }
 
@@ -129,10 +132,10 @@ impl DeleteStepCell {
     }
 }
 
-impl<'a> HttpDeleteTrace<'a> {
-    fn new(trace: &'a TraceCtx) -> Self {
+impl HttpDeleteTrace {
+    fn new(trace: &TraceCtx) -> Self {
         Self {
-            trace,
+            trace: trace.clone(),
             last_step: DeleteStepCell::new(DeleteStep::None),
         }
     }
@@ -142,7 +145,7 @@ impl<'a> HttpDeleteTrace<'a> {
     }
 }
 
-impl EngineDeleteTraceHooks for HttpDeleteTrace<'_> {
+impl EngineDeleteTraceHooks for HttpDeleteTrace {
     fn lock_acquired(&self, world: &str) {
         self.trace
             .emit_aux_kv("lock_acquired", &format!("target={world}"));
