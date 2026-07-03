@@ -122,7 +122,7 @@ pub(crate) fn authorize_delete(
     if !can_delete(tier) {
         return Err(DeleteError::Auth(AuthGate::Delete));
     }
-    if world.as_str() == "var/log/deletes" {
+    if crate::ledger::is_delete_ledger_world(world) {
         return Err(DeleteError::AppendOnlyLedger);
     }
     Ok(DeletePermit {

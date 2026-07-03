@@ -161,7 +161,7 @@ pub(crate) fn authorize_write(
 }
 
 fn is_append_only_world(world: &ValidatedWorldPath) -> bool {
-    world.as_str() == "var/log/deletes"
+    crate::ledger::is_delete_ledger_world(world)
 }
 
 fn can_write(world: &ValidatedWorldPath, tier: auth::Tier) -> bool {

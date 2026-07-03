@@ -399,7 +399,7 @@ impl EngineBuilder {
         let durable_world_count = durable_usages.len();
         let delete_ledger_created = durable_usages
             .iter()
-            .any(|(world_name, _)| world_name.as_str() == "var/log/deletes");
+            .any(|(world_name, _)| crate::ledger::is_delete_ledger_world(world_name));
 
         let (events, _) = broadcast::channel(self.listen_replay_max);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

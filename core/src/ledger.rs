@@ -32,6 +32,8 @@ use crate::subscription_event_id::SubscriptionEventId;
 use crate::timeline::{BodySha256, DeleteSubjectProof};
 use crate::world;
 
+const DELETE_LEDGER_WORLD_NAME: &str = "var/log/deletes";
+
 /// One audit append's input. Owns its strings/buffers so the delete
 /// ledger append can run after async request parsing has finished.
 pub(crate) struct AuditAppendJob {
@@ -239,8 +241,12 @@ fn ledger_is_empty(conn: &Connection) -> rusqlite::Result<bool> {
     })
 }
 
-fn delete_ledger_world() -> ValidatedWorldPath {
-    match ValidatedWorldPath::new("var/log/deletes") {
+pub(crate) fn is_delete_ledger_world(world: &ValidatedWorldPath) -> bool {
+    world.as_str() == DELETE_LEDGER_WORLD_NAME
+}
+
+pub(crate) fn delete_ledger_world() -> ValidatedWorldPath {
+    match ValidatedWorldPath::new(DELETE_LEDGER_WORLD_NAME) {
         Ok(world) => world,
         // Invariant: var/log/deletes is a constant canonical world path.
         Err(reason) => unreachable!("delete ledger world is a constant canonical path: {reason}"),
