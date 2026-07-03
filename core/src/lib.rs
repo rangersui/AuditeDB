@@ -164,6 +164,7 @@
 //! --features bundled-sqlite,unstable-engine`.
 mod audit;
 mod auth;
+mod blocking_sqlite;
 mod chain_stamp;
 mod data_lock;
 mod defaults;
