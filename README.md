@@ -6,8 +6,8 @@ AuditeDB is a flat key-value store that borrows the Unix filesystem
 hierarchy as its namespace. `home/` is user data, `etc/` is config,
 `tmp/` is scratch — not by analogy, by design. You `put` and `get`
 bytes at paths the same way you'd `fopen` a file, but durable writes
-are HMAC-audited, durable paths keep timeline history, and paths can be
-subscribed to for live change events.
+are HMAC-audited, durable paths keep verifiable timeline history, and
+paths can be subscribed to for live change events.
 
 Each durable path maps to a percent-encoded directory with one SQLite
 file inside. No cluster, no migration, `cp -r` is your backup.
@@ -143,8 +143,19 @@ Configure tokens via `AUDITEDB_READ_TOKEN`, `AUDITEDB_WRITE_TOKEN`,
 
 ## Audit chain
 
-Every durable write signs the previous HMAC, world path, timestamp, body
-hash, and metadata hash into a new event. The chain is verifiable:
+Every durable write appends to an HMAC chain — each event signs the
+previous HMAC, world path, timestamp, body hash, and metadata hash into
+a new HMAC. The chain is append-only and tamper-evident: modifying an
+event breaks that event's HMAC and, if later rows exist, the subsequent
+HMAC links.
+
+```
+event1.hmac = HMAC-SHA256(key, path + timestamp + body_hash + ...)
+event2.hmac = HMAC-SHA256(key, event1.hmac + path + timestamp + body_hash + ...)
+event3.hmac = HMAC-SHA256(key, event2.hmac + path + timestamp + body_hash + ...)
+```
+
+Verify the chain at any time:
 
 ```bash
 curl http://localhost:3105/proc/audit/home/hello/verify
@@ -155,6 +166,68 @@ db.verify("home/hello")  # True
 ```
 
 The HMAC key (`AUDITEDB_KEY`) stays in memory and never touches disk.
+When the in-process key object is dropped, its bytes are wiped on a
+best-effort basis.
+
+## Timeline coordinates
+
+Every body-bearing durable write produces a timeline address for that
+exact historical body:
+
+| Component      | What it is                                      |
+| -------------- | ----------------------------------------------- |
+| `world`        | Path that owns the timeline row                  |
+| `generation`   | Which "life" of the world (hex, changes on delete+recreate) |
+| `seq`          | Position in this generation's event array        |
+| `body_sha256`  | Content fingerprint of the body at that point    |
+
+The address is absolute — like TCP's `(ip, port, seq)` but content-bound.
+Use it to fetch any retained past body:
+
+```bash
+curl "http://localhost:3105/home/hello?timeline=1\
+&timeline-generation=a3f7...56\
+&timeline-seq=2\
+&timeline-body-sha256=ac1b...4b"
+```
+
+If any coordinate is wrong, you get a typed rejection — never wrong data:
+
+| Condition          | Response         |
+| ------------------ | ---------------- |
+| Wrong generation   | `409 Conflict`   |
+| Wrong body_sha256  | `409 Conflict`   |
+| seq out of range   | `404 Not Found`  |
+| Body pruned        | `410 Gone`       |
+
+## Compare-and-set (ETags)
+
+Reads, replaces, and appends expose an ETag. Pass it back to do
+conditional writes:
+
+```bash
+# Read current value and its ETag
+ETAG=$(curl -s -D- http://localhost:3105/home/hello | grep ETag)
+
+# Conditional write — succeeds only if no one else wrote since
+curl -X PUT -H "Authorization: Bearer $WRITE" \
+     -H "If-Match: $ETAG" \
+     -d 'updated' http://localhost:3105/home/hello
+# 200 if current, 412 Precondition Failed if stale
+```
+
+## Delete protocol
+
+Delete is two-phase with a separate audit ledger (`var/log/deletes`):
+
+1. **Intent** — `delete_intent` appended to ledger
+2. **Drain** — in-flight readers finish, read cache tombstoned
+3. **Physical delete** — world directory removed from disk
+4. **Commit** — `delete_commit` appended to ledger
+
+If commit fails after physical delete, a `delete_commit_failed` event
+is recorded. Failure is audited, never silent. Delete requires `Approve`
+tier — `Write` is not enough.
 
 ## Subscriptions
 
@@ -169,8 +242,38 @@ with db.subscribe("home/*") as sub:
 curl -N http://localhost:3105/listen/home/*
 ```
 
-Exact-world subscriptions can replay from a durable cursor. Wildcard
-subscriptions stream from the in-memory ring.
+Body-bearing durable events carry timeline coordinates — use them to fetch
+the exact retained body version that triggered the event. Exact-world
+subscriptions can replay from a durable cursor. Wildcard subscriptions stream
+from the in-memory ring.
+
+## Fail-loud behavior
+
+AuditeDB refuses to run damaged. There is no safe mode, no degraded
+operation, no "warning and continue":
+
+- **Corrupt audit chain at startup** → engine refuses to build
+- **HMAC key shorter than 32 bytes** → engine refuses to build
+- **Invalid path or namespace** → request rejected before touching storage
+- **Write-tier attempts delete** → rejected (requires Approve)
+- **Audit append fails during write** → transaction fails, gap never committed
+
+## Things to know
+
+- **Reads are public by default.** If `AUDITEDB_READ_TOKEN` is not set,
+  anyone can read. Set it explicitly for private instances.
+- **`tmp/`, `dev/`, `sys/` are memory-only.** Not audited, lost on
+  restart. Everything else is durable.
+- **Many server limits treat zero as default, not disabled.**
+  `AUDITEDB_MAX_LISTEN_CONNECTIONS=0` reverts to the default (1024), not zero.
+- **Percent encoding eats path length.** `home/a/b/c` encodes to
+  `home%2Fa%2Fb%2Fc` on disk — each `/` becomes 3 bytes toward the
+  200-byte limit.
+- **Process-local event IDs reset on restart.** Durable exact-world SSE
+  cursors can replay from the audit timeline; wildcard/ring cursors are
+  process-local.
+- **One writer per data root.** Enforced by a SQLite lock file. Two
+  processes cannot open the same data root.
 
 ## Project layout
 

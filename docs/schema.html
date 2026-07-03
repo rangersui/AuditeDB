@@ -83,6 +83,8 @@
 <a href="#s18">18. Format v2 marker</a>
 <a href="#s19">19. HTTP reference</a>
 <a href="#s20">20. On-disk layout</a>
+<a href="#s21">21. Fail-loud behavior</a>
+<a href="#s22">22. Things to know</a>
 </div>
 
 <!-- ============================================================ -->
@@ -435,9 +437,11 @@ practical workload.</p>
 <!-- ============================================================ -->
 <h2 id="s8">8. Timeline reads</h2>
 
-<p>Every body-bearing event produces a <em>timeline address</em>: the
-coordinates needed to read that exact historical body later. The address has
-four parts:</p>
+<p>Every body-bearing durable event produces a <em>timeline address</em>: an
+absolute coordinate that points to one exact historical body. Like TCP's
+<code>(ip, port, seq)</code>, but content-bound &mdash; if any component is
+wrong, the engine returns a typed rejection, never wrong data. The address
+has four parts:</p>
 
 <table>
 <tr><th>Parameter</th><th>Source</th></tr>
@@ -683,9 +687,9 @@ the marker has fallen out, the stream reports <code>reset</code> with
 <tr><td>reset (generation changed, lagged)</td><td>no</td><td>no</td></tr>
 </table>
 
-<p class="note">Subscriptions do not carry body bytes. The event includes a
-timeline address; use a timeline read to fetch the actual body. This prevents
-large bodies from flooding the SSE stream.</p>
+<p class="note">Subscriptions do not carry body bytes. Body-bearing durable
+events include a timeline address; use a timeline read to fetch the actual
+body. This prevents large bodies from flooding the SSE stream.</p>
 
 <p class="note">At the Engine layer, subscription open and receive are both
 async: <code>subscribe(...).await</code> opens the stream and
@@ -719,8 +723,8 @@ $ curl -X DELETE -H "Authorization: Bearer $WRITE" http://localhost:3105/home/no
 
 <p>Tokens are compared in constant time. The HMAC key
 (<code>AUDITEDB_KEY</code>) is separate from auth tokens and never
-leaves memory. On process exit, the key is overwritten with zeros (volatile
-wipe).</p>
+leaves memory. When the in-process key object is dropped, its bytes are
+wiped on a best-effort basis.</p>
 
 <!-- ============================================================ -->
 <h2 id="s15">15. Path validation</h2>
@@ -751,12 +755,13 @@ storage-layer 500 errors.</p>
 <h2 id="s16">16. Tamper detection</h2>
 
 <p>If someone modifies the SQLite file outside the engine (e.g. with
-<code>sqlite3</code> directly), the engine detects it and locks down:</p>
+<code>sqlite3</code> directly), verification detects the mismatch. The exact
+runtime effect depends on what was changed:</p>
 
 <table>
 <tr><th>What was tampered</th><th>Detection</th><th>Engine behavior</th></tr>
-<tr><td>CAS body bytes</td><td>SHA-256 mismatch on timeline read</td><td>500 "timeline storage failure"</td></tr>
-<tr><td>HMAC value</td><td>next row's prev_hmac doesn't match</td><td>500 on write (append verification fails)</td></tr>
+<tr><td>Historical CAS body bytes</td><td>SHA-256 mismatch on timeline read or verify</td><td>Timeline read / audit verify fail; current read/write hot path may continue</td></tr>
+<tr><td>HMAC value</td><td>next row's prev_hmac doesn't match</td><td>500 on read/write/delete (append/read verification fails)</td></tr>
 <tr><td>Any events field</td><td>HMAC recomputation fails</td><td>500 on verify</td></tr>
 <tr><td>Deleted a row</td><td>prev_hmac gap</td><td>chain broken on verify</td></tr>
 <tr><td>Inserted a row</td><td>HMAC doesn't match expected prev</td><td>chain broken on verify</td></tr>
@@ -765,28 +770,21 @@ storage-layer 500 errors.</p>
 <pre>
 <span class="cmt"># Tamper a CAS body</span>
 $ sqlite3 data/home%2Fnote/universe.db \
-    "UPDATE cas_bodies SET body=x'48414348454421' WHERE rowid=1;"
+    "UPDATE cas_bodies SET body=x'48414348454421'
+      WHERE body_sha256=(SELECT body_sha256 FROM cas_bodies LIMIT 1);"
 
-<span class="cmt"># Attempt to write → engine detects broken chain</span>
-$ curl -X PUT -H "Authorization: Bearer $WRITE" \
-    -d "test" http://localhost:3105/home/note
-<span class="err">500 Internal Server Error</span>
-<span class="err">internal error: storage failure</span>
-
-<span class="cmt"># Attempt to read → also rejected</span>
-$ curl http://localhost:3105/home/note
-<span class="err">500 Internal Server Error</span>
-
-<span class="cmt"># Attempt to delete → also rejected (can't append to broken chain)</span>
-$ curl -X DELETE -H "Authorization: Bearer $APPROVE" \
-    http://localhost:3105/home/note
+<span class="cmt"># Audit verification detects the mismatch</span>
+$ curl http://localhost:3105/proc/audit/home/note/verify
 <span class="err">500 Internal Server Error</span>
 </pre>
 
-<p>After tampering, the world is frozen: no reads, writes, or deletes.
-The corrupted file is preserved for forensic investigation. Recovery
-requires manual removal of the SQLite file and re-creation of the world
-(which gets a new generation).</p>
+<p>Audit-chain or live-body tampering freezes normal API use of that world:
+reads, writes, and deletes fail because the engine cannot prove the state it
+would build on. Historical CAS-body tampering is narrower: timeline reads and
+audit verification fail for the affected history, while current-body reads and
+new writes may still succeed. In all cases, the corrupted file is preserved
+for forensic investigation. Recovery requires manual repair or removal of the
+SQLite file and re-creation of the world (which gets a new generation).</p>
 
 <p class="note">Forging a valid chain requires the HMAC key. The key is in
 memory only (environment variable), never written to disk.</p>
@@ -823,7 +821,7 @@ $ rm -rf data/home%2Fnote/
 <tr><td>Token leaked (git commit .env)</td><td>high</td><td>separate read/write/approve tokens; rotate</td></tr>
 <tr><td>Plaintext HTTP (network sniff)</td><td>high</td><td>enable TLS for remote deployments</td></tr>
 <tr><td>SQLite copied (body is plaintext)</td><td>medium</td><td>per-world encryption (not yet implemented)</td></tr>
-<tr><td>HMAC key leaked</td><td>critical</td><td>env-only, volatile wipe on exit; no disk persistence</td></tr>
+<tr><td>HMAC key leaked</td><td>critical</td><td>env-only, best-effort wipe on drop; no disk persistence</td></tr>
 <tr><td>SQLite replaced with forged chain</td><td>critical (requires key)</td><td>external anchoring (out of scope)</td></tr>
 <tr><td>No rate limiting</td><td>low</td><td>not yet implemented</td></tr>
 <tr><td>Core dump leaks HMAC key</td><td>low</td><td><code>ulimit -c 0</code></td></tr>
@@ -906,8 +904,81 @@ with an uncommitted <code>BEGIN IMMEDIATE</code> transaction. It ensures
 single-writer semantics within one host. It does not protect against NFS;
 network-FS deployments need external fencing.</p>
 
+<!-- ============================================================ -->
+<h2 id="s21">21. Fail-loud behavior</h2>
+
+<p>The engine refuses to run damaged. There is no safe mode, no degraded
+operation, no "warning and continue".</p>
+
+<table>
+<tr><th>Condition</th><th>Engine behavior</th></tr>
+<tr><td>Audit chain HMAC mismatch at startup</td><td>Engine refuses to build. Lockdown.</td></tr>
+<tr><td>HMAC key shorter than 32 bytes</td><td>Engine refuses to build.</td></tr>
+<tr><td>Invalid namespace or path traversal</td><td>Request rejected before touching storage.</td></tr>
+<tr><td>Write-tier token attempts delete</td><td>Rejected. Delete requires Approve tier.</td></tr>
+<tr><td>Audit append fails during write</td><td>Transaction fails. Audit gap never committed.</td></tr>
+<tr><td>Audit chain or live body tampered externally</td><td>Frozen: reads, writes, and deletes fail until manual recovery.</td></tr>
+</table>
+
+<p class="note">Design principle: corrupt chain = stop and investigate,
+not limp along. An auditing database that silently skips audit is worse
+than no audit at all.</p>
+
+<!-- ============================================================ -->
+<h2 id="s22">22. Things to know</h2>
+
+<p>Implicit behaviors and configuration gotchas that can surprise new users.</p>
+
+<h3>Authentication defaults</h3>
+
+<table>
+<tr><th>Token env var</th><th>If not set</th></tr>
+<tr><td><code>AUDITEDB_READ_TOKEN</code></td><td>Reads are public &mdash; any client can read without a token</td></tr>
+<tr><td><code>AUDITEDB_WRITE_TOKEN</code></td><td>No dedicated write token &mdash; writes still possible via approve token if set</td></tr>
+<tr><td><code>AUDITEDB_APPROVE_TOKEN</code></td><td>Deletes are disabled &mdash; all delete requests return 401</td></tr>
+</table>
+
+<p>Read is the only tier that defaults to open. All others default to closed.</p>
+
+<h3>Zero means default, not disabled</h3>
+
+<p>Several server limits treat <code>0</code> as "use the Engine default",
+not literal zero. For example, <code>AUDITEDB_MAX_LISTEN_CONNECTIONS=0</code>
+uses the default (1024), not zero connections. <code>AUDITEDB_MAX_STORAGE_BYTES=0</code>
+means unlimited, not zero bytes. In the lower-level FFI config,
+<code>max_world_bytes</code> and <code>max_memory_bytes</code> keep literal
+zero caps.</p>
+
+<h3>Memory namespaces</h3>
+
+<p><code>tmp/</code>, <code>dev/</code>, and <code>sys/</code> are memory-only.
+They are not audited, not persisted to disk, and lost on restart. They share
+a single 256&nbsp;MiB memory pool (configurable). Everything under other
+prefixes is durable and audited.</p>
+
+<h3>Path length and percent encoding</h3>
+
+<p>Paths are percent-encoded on disk. A path like <code>home/a/b/c</code>
+becomes <code>home%2Fa%2Fb%2Fc</code> &mdash; each <code>/</code> expands from
+1&nbsp;byte to 3&nbsp;bytes. The engine rejects paths whose encoded disk name
+exceeds 200&nbsp;bytes. A path that looks short can be rejected if it contains
+many slashes, spaces, or non-ASCII characters.</p>
+
+<h3>Event IDs and restart</h3>
+
+<p>In-memory event IDs reset to zero on engine restart. Durable exact-world
+SSE cursors can resume from the audit timeline because they carry the world,
+generation, and timeline seq. Wildcard subscriptions use the current process's
+bounded live ring, so ring-only cursors from an old process cannot be replayed.</p>
+
+<h3>Single writer</h3>
+
+<p>Only one engine process can open a data root at a time, enforced by
+<code>.auditedb-writer-lock.sqlite3</code>. A second process attempting to
+open the same data root will fail immediately.</p>
+
 <div style="margin-top:3em;padding-top:1em;border-top:1px solid #ccc;color:#888;font-size:0.85em">
-  L5 Engine &middot; format v2 &middot; 2026-06-30
+  L5 Engine &middot; format v2 &middot; 2026-07-03
 </div>
 
 </body>
