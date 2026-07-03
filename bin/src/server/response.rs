@@ -119,6 +119,15 @@ pub(crate) fn server_error(msg: String) -> Response {
         .into_response()
 }
 
+pub(crate) fn internal_error() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "internal error\n",
+    )
+        .into_response()
+}
+
 pub(crate) fn method_not_allowed(allow: &'static str) -> Response {
     (
         StatusCode::METHOD_NOT_ALLOWED,
@@ -265,7 +274,8 @@ pub(crate) fn audit_not_applicable() -> Response {
 
 pub(crate) fn audit_head(stamp: HeadStamp) -> Response {
     if stamp.seq <= 0 {
-        return server_error("audit head internal invariant: non-positive seq".to_owned());
+        eprintln!("auditedb internal audit head: non-positive seq");
+        return internal_error();
     }
     (
         StatusCode::OK,
@@ -314,7 +324,8 @@ pub(crate) fn audit_stamp(result: ChainStampRead) -> Response {
             let seq = match u64::try_from(stamp.seq().get()) {
                 Ok(seq) => seq,
                 Err(_) => {
-                    return server_error("audit stamp internal invariant: negative seq".to_owned())
+                    eprintln!("auditedb internal audit stamp: negative seq");
+                    return internal_error();
                 }
             };
             (

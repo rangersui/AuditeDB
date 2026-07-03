@@ -26,11 +26,10 @@ use crate::{
     engine_trace::{DeleteMetadata, EngineDeleteTraceHooks},
     engine_types::{AccessTier, ValidatedWorldPath},
     server::{
-        bad_request, http::semantics as hs, insufficient_storage, not_found, precondition_failed,
-        server_error, storage_temporarily_unavailable, unauthorized, ErrorReason, Phase,
-        ServerState, TraceCtx,
+        bad_request, forbidden, http::semantics as hs, insufficient_storage, internal_error,
+        not_found, precondition_failed, server_error, storage_temporarily_unavailable,
+        unauthorized, ErrorReason, Phase, ServerState, TraceCtx,
     },
-    AuthGate,
 };
 
 pub(crate) async fn execute_delete(
@@ -202,8 +201,8 @@ impl EngineDeleteTraceHooks for HttpDeleteTrace {
 fn delete_error_phase(err: EngineError, last_step: DeleteStep) -> Phase {
     match err {
         EngineError::AppendOnly => Phase::Error {
-            resp: unauthorized("delete ledger is append-only"),
-            reason: ErrorReason::Auth(AuthGate::Delete),
+            resp: forbidden("delete ledger is append-only"),
+            reason: ErrorReason::AppendOnly,
         },
         EngineError::Auth(gate) => Phase::Error {
             resp: unauthorized("delete requires token; system worlds need approve token"),
@@ -222,7 +221,10 @@ fn delete_error_phase(err: EngineError, last_step: DeleteStep) -> Phase {
         }
         EngineError::InsufficientStorage => insufficient_delete_error_phase(last_step),
         EngineError::Storage => storage_delete_error_phase(last_step),
-        EngineError::InternalInvariant(message) => invariant_delete_error_phase(message, last_step),
+        EngineError::InternalInvariant(message) => {
+            super::log_http_internal_invariant("delete", message);
+            invariant_delete_error_phase(last_step)
+        }
         EngineError::InvalidMetadata { message } => Phase::Error {
             resp: bad_request(message),
             reason: ErrorReason::PathInvalid(message),
@@ -304,14 +306,14 @@ fn storage_delete_error_phase(last_step: DeleteStep) -> Phase {
     }
 }
 
-fn invariant_delete_error_phase(message: &'static str, last_step: DeleteStep) -> Phase {
+fn invariant_delete_error_phase(last_step: DeleteStep) -> Phase {
     match last_step {
         DeleteStep::AuditIntentFailed => Phase::Error {
-            resp: server_error(format!("delete audit intent {message}")),
+            resp: internal_error(),
             reason: ErrorReason::StorageWriteAudit,
         },
         DeleteStep::None => Phase::Error {
-            resp: server_error("storage failure".to_string()),
+            resp: internal_error(),
             reason: ErrorReason::StorageRead,
         },
         DeleteStep::Intent => Phase::Error {
@@ -384,10 +386,7 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(matches!(reason, ErrorReason::StorageWriteAudit));
-        assert_eq!(
-            body,
-            "internal error: delete audit intent sqlite worker failed\n"
-        );
+        assert_eq!(body, "internal error\n");
     }
 
     #[tokio::test]
@@ -408,9 +407,9 @@ mod tests {
         ))
         .await;
 
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-        assert!(matches!(reason, ErrorReason::Auth(AuthGate::Delete)));
-        assert_eq!(body, "auth required: delete ledger is append-only\n");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(matches!(reason, ErrorReason::AppendOnly));
+        assert_eq!(body, "forbidden: delete ledger is append-only\n");
     }
 
     #[tokio::test]
@@ -719,21 +718,18 @@ mod tests {
             )
             .await,
         );
-        assert_eq!(ledger_delete.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            ledger_delete
-                .headers()
-                .get(header::WWW_AUTHENTICATE)
-                .unwrap(),
-            "Bearer realm=\"auditedb\""
-        );
+        assert_eq!(ledger_delete.status(), StatusCode::FORBIDDEN);
+        assert!(ledger_delete
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .is_none());
         assert_eq!(
             ledger_delete.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/plain; charset=utf-8"
         );
         assert_eq!(
             response_text(ledger_delete).await,
-            "auth required: delete ledger is append-only\n"
+            "forbidden: delete ledger is append-only\n"
         );
         assert!(engine
             .read(&delete_ledger, AccessTier::Read)

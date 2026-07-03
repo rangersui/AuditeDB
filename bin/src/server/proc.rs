@@ -30,9 +30,10 @@ use crate::{
     server::{
         audit_broken, audit_head, audit_head_not_applicable, audit_not_applicable, audit_stamp,
         audit_stamp_not_applicable, audit_valid, bad_request, decimal_header_value, df_body,
-        du_body, insufficient_storage, method_not_allowed, not_found, options_response,
-        path::canonicalize_path, proc_text_response, server_error, storage_temporarily_unavailable,
-        to_header_map, unauthorized, world_list_body, DfBodySnapshot, ServerState, VERSION,
+        du_body, insufficient_storage, internal_error, method_not_allowed, not_found,
+        options_response, path::canonicalize_path, proc_text_response, server_error,
+        storage_temporarily_unavailable, to_header_map, unauthorized, world_list_body,
+        DfBodySnapshot, ServerState, VERSION,
     },
 };
 
@@ -408,7 +409,14 @@ where
     match tokio::task::spawn_blocking(move || f(&engine)).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(err)) => Err(Box::new(proc_engine_error(scope, err))),
-        Err(_) => Err(Box::new(server_error(format!("{scope} worker failed")))),
+        Err(err) if err.is_cancelled() => {
+            eprintln!("auditedb internal {scope}: introspection worker cancelled: {err}");
+            Err(Box::new(storage_temporarily_unavailable()))
+        }
+        Err(err) => {
+            eprintln!("auditedb internal {scope}: introspection worker failed: {err}");
+            Err(Box::new(internal_error()))
+        }
     }
 }
 
@@ -424,7 +432,8 @@ fn proc_engine_error(scope: &'static str, err: EngineError) -> Response {
         EngineError::InvalidWorldName => bad_request("invalid world path"),
         EngineError::InvalidMetadata { message } => bad_request(message),
         EngineError::InternalInvariant(message) => {
-            server_error(format!("{scope} internal invariant: {message}"))
+            eprintln!("auditedb internal {scope}: {message}");
+            internal_error()
         }
         EngineError::PayloadTooLarge { .. }
         | EngineError::AppendOnly

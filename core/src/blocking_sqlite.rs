@@ -49,6 +49,10 @@ impl BlockingJoinError {
     pub(crate) fn is_panic(&self) -> bool {
         self.source.is_panic()
     }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.source.is_cancelled()
+    }
 }
 
 impl fmt::Display for BlockingJoinError {

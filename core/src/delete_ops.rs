@@ -96,6 +96,7 @@ pub(crate) enum DeleteError {
         err: BlockingSqliteError,
     },
     InternalInvariant(&'static str),
+    BlockingWorker(blocking_sqlite::BlockingJoinError),
     ShuttingDown,
     DeleteFailedAfterIntent,
     AuditCommitFailed,
@@ -144,7 +145,7 @@ pub(crate) async fn delete(
         delete_blocking(proof, core, permit, req, hooks, write_guard, stream_guard)
     })
     .await
-    .map_err(|_| DeleteError::InternalInvariant("blocking sqlite worker failed"))?
+    .map_err(DeleteError::BlockingWorker)?
 }
 
 fn delete_blocking(
@@ -545,6 +546,7 @@ impl From<DeleteError> for EngineError {
             }
             DeleteError::AuditIntent { world, err } => blocking_error_to_engine(&world, err),
             DeleteError::InternalInvariant(message) => Self::InternalInvariant(message),
+            DeleteError::BlockingWorker(err) => crate::engine_error::blocking_join_to_engine(err),
             DeleteError::ShuttingDown => Self::ShuttingDown,
             DeleteError::DeleteFailedAfterIntent | DeleteError::AuditCommitFailed => Self::Storage,
         }

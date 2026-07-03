@@ -116,6 +116,7 @@ pub(crate) enum WriteError {
         break_report: audit::VerifyBreak,
     },
     ShuttingDown,
+    BlockingWorker(blocking_sqlite::BlockingJoinError),
     Internal(&'static str),
 }
 
@@ -213,7 +214,7 @@ pub(crate) async fn replace_write(
         replace_write_blocking(proof, core, permit, req, hooks, write_guard)
     })
     .await
-    .map_err(|_| WriteError::Internal("blocking sqlite worker failed"))?
+    .map_err(WriteError::BlockingWorker)?
 }
 
 fn replace_write_blocking(
@@ -455,7 +456,7 @@ pub(crate) async fn append_write(
         append_write_blocking(proof, core, permit, req, hooks, write_guard)
     })
     .await
-    .map_err(|_| WriteError::Internal("blocking sqlite worker failed"))?
+    .map_err(WriteError::BlockingWorker)?
 }
 
 fn append_write_blocking(

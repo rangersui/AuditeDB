@@ -1,6 +1,7 @@
 //! Engine error conversion and diagnostics.
 
 use crate::{
+    blocking_sqlite,
     engine::{self, EngineError},
     world_ops, world_read_ops, BlockingSqliteError,
 };
@@ -92,7 +93,22 @@ pub(crate) fn write_error_to_engine(
             EngineError::Storage
         }
         world_ops::WriteError::ShuttingDown => EngineError::ShuttingDown,
+        world_ops::WriteError::BlockingWorker(err) => blocking_join_to_engine(err),
         world_ops::WriteError::Internal(message) => EngineError::InternalInvariant(message),
+    }
+}
+
+pub(crate) fn blocking_join_to_engine(err: blocking_sqlite::BlockingJoinError) -> EngineError {
+    #[cfg(feature = "unstable-engine")]
+    tracing::error!(error = %err, panic = err.is_panic(), cancelled = err.is_cancelled(), "engine blocking SQLite worker failed");
+
+    #[cfg(not(feature = "unstable-engine"))]
+    eprintln!("l5 internal blocking SQLite worker failed: {err}");
+
+    if err.is_cancelled() {
+        EngineError::TransientStorage
+    } else {
+        EngineError::InternalInvariant("blocking sqlite worker failed")
     }
 }
 

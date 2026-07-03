@@ -31,17 +31,8 @@ use crate::{
     world_ops, world_read_ops, AuthGate, Core,
 };
 
+use crate::engine_error::blocking_join_to_engine;
 pub(crate) use crate::engine_error::{log_blocking_storage_error, log_storage_error};
-
-fn blocking_join_to_engine(err: blocking_sqlite::BlockingJoinError) -> EngineError {
-    #[cfg(feature = "unstable-engine")]
-    tracing::error!(error = %err, "engine blocking SQLite worker failed");
-
-    #[cfg(not(feature = "unstable-engine"))]
-    eprintln!("l5 internal blocking SQLite worker failed: {err}");
-
-    EngineError::InternalInvariant("blocking sqlite worker failed")
-}
 
 pub(crate) struct EngineOps {
     core: Arc<Core>,

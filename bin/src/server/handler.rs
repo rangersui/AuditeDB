@@ -58,9 +58,9 @@ use crate::{
     engine_types::{AccessTier, Representation, ValidatedWorldPath, WriteKind},
     server::{
         bad_request, content_range_value, decimal_header_value, forbidden, http::semantics as hs,
-        insufficient_storage, not_found, payload_too_large, precondition_failed, server_error,
-        storage_quota_exceeded, storage_temporarily_unavailable, to_header_map, unauthorized,
-        ErrorReason, Phase, ServerState, TraceCtx, Verb,
+        insufficient_storage, internal_error, not_found, payload_too_large, precondition_failed,
+        server_error, storage_quota_exceeded, storage_temporarily_unavailable, to_header_map,
+        unauthorized, ErrorReason, Phase, ServerState, TraceCtx, Verb,
     },
 };
 
@@ -400,10 +400,13 @@ pub(crate) fn write_error_phase(err: EngineError) -> Phase {
             resp: server_error("storage failure".to_string()),
             reason: ErrorReason::StorageRead,
         },
-        EngineError::InternalInvariant(message) => Phase::Error {
-            resp: server_error(message.to_string()),
-            reason: ErrorReason::StorageWriteAudit,
-        },
+        EngineError::InternalInvariant(message) => {
+            log_http_internal_invariant("write", message);
+            Phase::Error {
+                resp: internal_error(),
+                reason: ErrorReason::StorageWriteAudit,
+            }
+        }
         EngineError::InvalidMetadata { message } => Phase::Error {
             resp: bad_request(message),
             reason: ErrorReason::PathInvalid(message),
@@ -429,4 +432,12 @@ pub(crate) fn write_error_phase(err: EngineError) -> Phase {
             reason: ErrorReason::StorageWriteAudit,
         },
     }
+}
+
+pub(crate) fn log_http_internal_invariant(scope: &'static str, message: &'static str) {
+    #[cfg(feature = "unstable-engine")]
+    tracing::error!(scope, message, "HTTP adapter internal invariant");
+
+    #[cfg(not(feature = "unstable-engine"))]
+    eprintln!("auditedb internal {scope}: {message}");
 }
