@@ -14,14 +14,14 @@ use super::{
 };
 
 fn open_verified_read_conn(
-    _proof: &mut BlockingSqlite,
+    proof: &mut BlockingSqlite,
     path: &std::path::Path,
 ) -> rusqlite::Result<Connection> {
     let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     c.busy_timeout(Duration::from_millis(READ_CONN_BUSY_TIMEOUT_MS))?;
     c.pragma_update(None, "cache_size", -200)?;
     c.execute_batch("PRAGMA wal_autocheckpoint=0;")?;
-    world_schema::verify_open_shape(&c)?;
+    world_schema::verify_open_shape(proof, &c)?;
     Ok(c)
 }
 
@@ -47,8 +47,8 @@ impl TrackedReadConnection {
         &mut self.0
     }
 
-    fn verify_schema(&self) -> rusqlite::Result<()> {
-        world_schema::verify_open_shape(&self.0)
+    fn verify_schema(&self, proof: &mut BlockingSqlite) -> rusqlite::Result<()> {
+        world_schema::verify_open_shape(proof, &self.0)
     }
 }
 
@@ -389,7 +389,7 @@ impl ReadCache {
         match &*read_guard {
             SlotState::Ready(tracked_mutex) => {
                 let mut tracked = tracked_mutex.lock().unwrap_or_else(|p| p.into_inner());
-                tracked.verify_schema()?;
+                tracked.verify_schema(proof)?;
                 // Invariant: Ready is the only branch allowed to consume the
                 // FnOnce; Opening/Evicted/Tombstone return without taking it.
                 #[allow(clippy::expect_used)]

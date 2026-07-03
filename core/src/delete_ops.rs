@@ -658,7 +658,11 @@ mod tests {
 
         let subject_conn =
             Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
-        let subject_generation = world_schema::generation(&subject_conn).unwrap();
+        let subject_generation = world_schema::generation(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &subject_conn,
+        )
+        .unwrap();
         let (subject_seq, subject_hmac): (i64, String) = subject_conn
             .query_row(
                 "SELECT id, hmac FROM events ORDER BY id DESC LIMIT 1",
@@ -791,7 +795,11 @@ mod tests {
         core.test_only_write_world(subject.as_str(), b"first", "text/plain", &[])
             .unwrap();
         let first_conn = Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
-        let first_generation = world_schema::generation(&first_conn).unwrap();
+        let first_generation = world_schema::generation(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &first_conn,
+        )
+        .unwrap();
         drop(first_conn);
 
         let permit = authorize_delete(&subject, auth::Tier::Approve).unwrap();
@@ -807,7 +815,11 @@ mod tests {
         core.test_only_write_world(subject.as_str(), b"second", "text/plain", &[])
             .unwrap();
         let second_conn = Connection::open(crate::world::world_db(&dir, subject.as_str())).unwrap();
-        let second_generation = world_schema::generation(&second_conn).unwrap();
+        let second_generation = world_schema::generation(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &second_conn,
+        )
+        .unwrap();
         drop(second_conn);
         assert_ne!(first_generation, second_generation);
 

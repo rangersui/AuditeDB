@@ -465,6 +465,10 @@ impl Engine {
         self.inner.core.as_ref()
     }
 
+    pub(crate) fn core_arc(&self) -> Arc<Core> {
+        Arc::clone(&self.inner.core)
+    }
+
     /// Subscribes to the engine shutdown signal.
     ///
     /// Returned receiver yields `true` exactly once when [`Engine::shutdown`]

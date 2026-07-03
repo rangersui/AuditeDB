@@ -1,6 +1,9 @@
 //! SQLite schema helpers for one durable world database.
 
-use crate::world_generation::{MintedWorldGeneration, WorldGeneration};
+use crate::{
+    blocking_sqlite::BlockingSqlite,
+    world_generation::{MintedWorldGeneration, WorldGeneration},
+};
 use rusqlite::{ffi, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -46,7 +49,10 @@ pub(crate) struct NewWorldSchema<'c> {
     c: &'c Connection,
 }
 
-pub(crate) fn new_world(c: &Connection) -> rusqlite::Result<NewWorldSchema<'_>> {
+pub(crate) fn new_world<'c>(
+    _proof: &mut BlockingSqlite,
+    c: &'c Connection,
+) -> rusqlite::Result<NewWorldSchema<'c>> {
     let existing = c
         .query_row(
             "SELECT name FROM sqlite_master \
@@ -66,6 +72,7 @@ pub(crate) fn new_world(c: &Connection) -> rusqlite::Result<NewWorldSchema<'_>> 
 }
 
 pub(crate) fn create(
+    _proof: &mut BlockingSqlite,
     schema: NewWorldSchema<'_>,
     generation: MintedWorldGeneration,
 ) -> rusqlite::Result<()> {
@@ -123,17 +130,20 @@ pub(crate) fn create(
     )
 }
 
-pub(crate) fn verify(c: &Connection) -> rusqlite::Result<()> {
-    verify_open_shape(c)?;
+pub(crate) fn verify(_proof: &mut BlockingSqlite, c: &Connection) -> rusqlite::Result<()> {
+    verify_open_shape(_proof, c)?;
     verify_cas_body_rows(c)?;
     Ok(())
 }
 
-pub(crate) fn verify_open_shape(c: &Connection) -> rusqlite::Result<()> {
+pub(crate) fn verify_open_shape(
+    proof: &mut BlockingSqlite,
+    c: &Connection,
+) -> rusqlite::Result<()> {
     for table in ["stage_meta", "meta_headers", "events", "event_headers"] {
         require_table(c, table)?;
     }
-    let _ = generation(c)?;
+    let _ = generation(proof, c)?;
     verify_exact_table(c, "cas_bodies", CAS_BODIES_TABLE_SQL)?;
     verify_exact_table(c, "cas_state", CAS_STATE_TABLE_SQL)?;
     verify_exact_table(c, "world_format", WORLD_FORMAT_TABLE_SQL)?;
@@ -142,7 +152,10 @@ pub(crate) fn verify_open_shape(c: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub(crate) fn generation(c: &Connection) -> rusqlite::Result<WorldGeneration> {
+pub(crate) fn generation(
+    _proof: &mut BlockingSqlite,
+    c: &Connection,
+) -> rusqlite::Result<WorldGeneration> {
     let mut columns = c.prepare("PRAGMA table_info(stage_meta)")?;
     let rows = columns.query_map([], |r| r.get::<_, String>(1))?;
     let mut has_generation = false;
@@ -392,6 +405,29 @@ fn verify_world_format_row(c: &Connection) -> rusqlite::Result<()> {
 mod tests {
     use super::*;
     use crate::world_generation::MintedWorldGeneration;
+
+    fn test_only_proof() -> BlockingSqlite {
+        crate::blocking_sqlite::test_only_mint()
+    }
+
+    fn new_world(c: &Connection) -> rusqlite::Result<NewWorldSchema<'_>> {
+        super::new_world(&mut test_only_proof(), c)
+    }
+
+    fn create(
+        schema: NewWorldSchema<'_>,
+        generation: MintedWorldGeneration,
+    ) -> rusqlite::Result<()> {
+        super::create(&mut test_only_proof(), schema, generation)
+    }
+
+    fn verify(c: &Connection) -> rusqlite::Result<()> {
+        super::verify(&mut test_only_proof(), c)
+    }
+
+    fn generation(c: &Connection) -> rusqlite::Result<WorldGeneration> {
+        super::generation(&mut test_only_proof(), c)
+    }
 
     fn minted_generation() -> MintedWorldGeneration {
         MintedWorldGeneration::test_only_from_entropy_bytes([

@@ -80,6 +80,7 @@ pub struct VerifiedAuditTx<'tx, 'conn, 'key> {
     tx: &'tx Transaction<'conn>,
     key: &'key AuditHmacKey,
     world: ValidatedWorldPath,
+    generation: WorldGeneration,
 }
 
 pub type AuditResult<T> = Result<T, AuditError>;
@@ -179,7 +180,7 @@ pub(crate) fn verify_world_with_file_op(
         return Ok(());
     };
     let tx = c.transaction()?;
-    require_intact(verify_world_tx(&tx, world, key)?)?;
+    require_intact(verify_world_tx(proof, &tx, world, key)?)?;
     if let Some(break_report) = live_body::verify_tx(&tx)? {
         return Err(AuditError::ChainBroken(break_report));
     }
@@ -194,11 +195,12 @@ fn file_op_gate_closed_error() -> rusqlite::Error {
 }
 
 pub(crate) fn require_world_intact_tx(
+    proof: &mut BlockingSqlite,
     tx: &Transaction<'_>,
     world: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> AuditResult<()> {
-    require_intact(verify_world_tx(tx, world, key)?)?;
+    require_intact(verify_world_tx(proof, tx, world, key)?)?;
     if let Some(break_report) = live_body::verify_tx(tx)? {
         return Err(AuditError::ChainBroken(break_report));
     }
@@ -206,45 +208,50 @@ pub(crate) fn require_world_intact_tx(
 }
 
 pub(crate) fn require_current_world_intact_tx(
+    proof: &mut BlockingSqlite,
     tx: &Transaction<'_>,
     world: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> AuditResult<()> {
-    require_current_tail_intact_tx(tx, world, key)
+    require_current_tail_intact_tx(proof, tx, world, key)
 }
 
 pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
     world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
-    verify_appendable_tx_full(tx, world_name, key, EmptyChain::Reject)
+    verify_appendable_tx_full(proof, tx, world_name, key, EmptyChain::Reject)
 }
 
 pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
     world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
-    verify_appendable_tx(tx, world_name, key, EmptyChain::Allow)
+    verify_appendable_tx(proof, tx, world_name, key, EmptyChain::Allow)
 }
 
 fn verify_appendable_tx<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
     world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
-    verify_appendable_tx_full(tx, world_name, key, empty_chain)
+    verify_appendable_tx_full(proof, tx, world_name, key, empty_chain)
 }
 
 fn verify_appendable_tx_full<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
     world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
-    let generation = crate::world_schema::generation(tx)?;
+    let generation = crate::world_schema::generation(proof, tx)?;
     let retention = retention::load_for_append(tx)?;
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let allow_empty = matches!(empty_chain, EmptyChain::Allow);
@@ -266,6 +273,7 @@ fn verify_appendable_tx_full<'tx, 'conn, 'key>(
         tx,
         key,
         world: world_name.clone(),
+        generation,
     })
 }
 
@@ -278,11 +286,12 @@ fn verify_appendable_tx_full<'tx, 'conn, 'key>(
 /// the retained tail when applicable, and the live body pointer. This function
 /// intentionally does not mint `VerifiedAuditTx`.
 fn require_current_tail_intact_tx(
+    proof: &mut BlockingSqlite,
     tx: &Transaction<'_>,
     world_name: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> AuditResult<()> {
-    let generation = crate::world_schema::generation(tx)?;
+    let generation = crate::world_schema::generation(proof, tx)?;
     let event_count = event_count_tx(tx)?;
     let Some((tail, headers)) = latest_event_with_headers_tx(tx)? else {
         return Err(AuditError::ChainBroken(VerifyBreak {
@@ -380,6 +389,10 @@ impl VerifiedAuditTx<'_, '_, '_> {
     pub(crate) fn world(&self) -> &ValidatedWorldPath {
         &self.world
     }
+
+    pub(crate) fn generation(&self) -> &WorldGeneration {
+        &self.generation
+    }
 }
 
 struct EventRow {
@@ -457,7 +470,7 @@ pub fn chain_head_via_conn(
 ) -> AuditResult<Option<VerifiedChainHead>> {
     let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let generation = crate::world_schema::generation(&tx)?;
+    let generation = crate::world_schema::generation(proof, &tx)?;
     let retention = retention::load(&tx)?;
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let report =
@@ -486,7 +499,7 @@ pub fn chain_stamp_via_conn(
 ) -> AuditResult<ChainStampRead> {
     let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let generation = crate::world_schema::generation(&tx)?;
+    let generation = crate::world_schema::generation(proof, &tx)?;
     let retention = retention::load(&tx)?;
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     let report = verify_statement_capture(
@@ -527,7 +540,7 @@ pub fn verify_chain_via_conn(
 ) -> rusqlite::Result<VerifyReport> {
     let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let report = verify_world_tx(&tx, world_path, key)?;
+    let report = verify_world_tx(proof, &tx, world_path, key)?;
     if matches!(report, VerifyReport::Broken(_)) {
         return Ok(report);
     }
@@ -556,18 +569,19 @@ fn verify_connection_for(
     world: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
-    let generation = crate::world_schema::generation(c)?;
+    let generation = crate::world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), c)?;
     let retention = retention::load(c)?;
     let mut stmt = c.prepare(AUDIT_SELECT)?;
     verify_statement(&mut stmt, key, false, &retention, world, &generation)
 }
 
 fn verify_world_tx(
+    proof: &mut BlockingSqlite,
     tx: &Transaction<'_>,
     world_name: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
-    let generation = crate::world_schema::generation(tx)?;
+    let generation = crate::world_schema::generation(proof, tx)?;
     let retention = retention::load(tx)?;
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
     verify_statement(&mut stmt, key, false, &retention, world_name, &generation)
@@ -766,6 +780,34 @@ mod tests {
     use crate::timeline::BodySha256;
     use crate::{event::AuditEventKind, test_support::test_core, world};
     use rusqlite::Connection;
+
+    fn test_only_proof() -> BlockingSqlite {
+        crate::blocking_sqlite::test_only_mint()
+    }
+
+    fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
+        tx: &'tx Transaction<'conn>,
+        world_name: &ValidatedWorldPath,
+        key: &'key AuditHmacKey,
+    ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+        super::verify_appendable_tx_existing_checked(&mut test_only_proof(), tx, world_name, key)
+    }
+
+    fn verify_appendable_tx_genesis_checked<'tx, 'conn, 'key>(
+        tx: &'tx Transaction<'conn>,
+        world_name: &ValidatedWorldPath,
+        key: &'key AuditHmacKey,
+    ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+        super::verify_appendable_tx_genesis_checked(&mut test_only_proof(), tx, world_name, key)
+    }
+
+    fn verify_world_tx(
+        tx: &Transaction<'_>,
+        world_name: &ValidatedWorldPath,
+        key: &AuditHmacKey,
+    ) -> rusqlite::Result<VerifyReport> {
+        super::verify_world_tx(&mut test_only_proof(), tx, world_name, key)
+    }
 
     fn test_connection() -> Connection {
         let c = Connection::open_in_memory().unwrap();

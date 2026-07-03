@@ -195,7 +195,7 @@ impl Engine {
         tier: AccessTier,
         hooks: &H,
     ) -> Result<WriteResult, EngineError> {
-        EngineOps::new(self.core())
+        EngineOps::new(self.core_arc())
             .replace(
                 world,
                 representation,
@@ -222,7 +222,7 @@ impl Engine {
         tier: AccessTier,
         hooks: &H,
     ) -> Result<WriteResult, EngineError> {
-        EngineOps::new(self.core())
+        EngineOps::new(self.core_arc())
             .append(
                 world,
                 body,
@@ -260,7 +260,7 @@ impl Engine {
         tier: AccessTier,
         hooks: &H,
     ) -> Result<(), EngineError> {
-        let result = EngineOps::new(self.core())
+        let result = EngineOps::new(self.core_arc())
             .delete(
                 world,
                 DeleteRequest::new(preconditions, metadata.content_type, metadata.headers),

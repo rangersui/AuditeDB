@@ -110,9 +110,10 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// Open or create the world's universe.db with the v5.2 schema.
 #[cfg(test)]
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
+    let mut proof = crate::blocking_sqlite::test_only_mint();
     open_with_generation_minter(data_root, world, || {
         world_generation::WorldGeneration::mint().map_err(mint_generation_error)
-    })
+    }, &mut proof)
 }
 
 pub fn open_validated(
@@ -121,7 +122,7 @@ pub fn open_validated(
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,
 ) -> rusqlite::Result<Connection> {
-    open_validated_with_generation_minter(data_root, world, || {
+    open_validated_with_generation_minter(_proof, data_root, world, || {
         world_generation::WorldGeneration::mint().map_err(mint_generation_error)
     })
 }
@@ -142,8 +143,8 @@ impl OpenedWriteConnection {
         Self { conn, opened }
     }
 
-    pub(crate) fn verify_shape(&self) -> rusqlite::Result<()> {
-        world_schema::verify_open_shape(&self.conn)
+    pub(crate) fn verify_shape(&self, proof: &mut BlockingSqlite) -> rusqlite::Result<()> {
+        world_schema::verify_open_shape(proof, &self.conn)
     }
 
     fn as_mut_conn(&mut self, _proof: &mut BlockingSqlite) -> &mut Connection {
@@ -160,6 +161,7 @@ fn open_with_generation_minter<F>(
     data_root: &Path,
     world: &str,
     mint_generation: F,
+    proof: &mut BlockingSqlite,
 ) -> rusqlite::Result<Connection>
 where
     F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
@@ -168,11 +170,13 @@ where
         world_dir_raw(data_root, world),
         world_db_raw(data_root, world),
         mint_generation,
+        proof,
     )
     .map(|(conn, _)| conn)
 }
 
 fn open_validated_with_generation_minter<F>(
+    proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     mint_generation: F,
@@ -180,7 +184,7 @@ fn open_validated_with_generation_minter<F>(
 where
     F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
 {
-    open_validated_with_generation_minter_and_kind(data_root, world, mint_generation)
+    open_validated_with_generation_minter_and_kind(proof, data_root, world, mint_generation)
         .map(|(conn, _)| conn)
 }
 
@@ -189,7 +193,8 @@ fn open_validated_for_audit(
     data_root: &Path,
     world: &ValidatedWorldPath,
 ) -> rusqlite::Result<(Connection, OpenedWorldKind)> {
-    open_validated_with_generation_minter_and_kind(data_root, world, || {
+    let mut proof = crate::blocking_sqlite::test_only_mint();
+    open_validated_with_generation_minter_and_kind(&mut proof, data_root, world, || {
         world_generation::WorldGeneration::mint().map_err(mint_generation_error)
     })
 }
@@ -204,11 +209,13 @@ pub(crate) fn open_cached_writer(
         validated_world_dir(data_root, world),
         validated_world_db(data_root, world),
         || world_generation::WorldGeneration::mint().map_err(mint_generation_error),
+        _proof,
     )
     .map(|(conn, opened)| OpenedWriteConnection::new(conn, opened))
 }
 
 fn open_validated_with_generation_minter_and_kind<F>(
+    proof: &mut BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     mint_generation: F,
@@ -220,6 +227,7 @@ where
         validated_world_dir(data_root, world),
         validated_world_db(data_root, world),
         mint_generation,
+        proof,
     )
 }
 
@@ -227,6 +235,7 @@ fn open_world_paths_with_generation_minter_and_kind<F>(
     dir: PathBuf,
     db: PathBuf,
     mint_generation: F,
+    proof: &mut BlockingSqlite,
 ) -> rusqlite::Result<(Connection, OpenedWorldKind)>
 where
     F: FnOnce() -> rusqlite::Result<world_generation::MintedWorldGeneration>,
@@ -254,11 +263,11 @@ where
         "#,
     )?;
     if db_existed {
-        world_schema::verify_open_shape(&c)?;
+        world_schema::verify_open_shape(proof, &c)?;
     } else {
-        let schema = world_schema::new_world(&c)?;
+        let schema = world_schema::new_world(proof, &c)?;
         let generation = generation.ok_or_else(missing_minted_generation_error)?;
-        world_schema::create(schema, generation)?;
+        world_schema::create(proof, schema, generation)?;
     }
     Ok((c, opened))
 }
@@ -295,7 +304,7 @@ fn create_dir_error(err: std::io::Error) -> rusqlite::Error {
 #[cfg(test)]
 pub fn open_existing(data_root: &Path, world: &str) -> rusqlite::Result<Option<Connection>> {
     let path = world_db_raw(data_root, world);
-    open_existing_path(&path)
+    open_existing_path(&mut crate::blocking_sqlite::test_only_mint(), &path)
 }
 
 pub fn open_existing_validated(
@@ -305,7 +314,7 @@ pub fn open_existing_validated(
     _file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<Connection>> {
     let path = validated_world_db(data_root, world);
-    open_existing_path(&path)
+    open_existing_path(_proof, &path)
 }
 
 pub(crate) fn delete(
@@ -317,7 +326,10 @@ pub(crate) fn delete(
     files::delete(proof, data_root, world)
 }
 
-fn open_existing_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
+fn open_existing_path(
+    proof: &mut BlockingSqlite,
+    path: &Path,
+) -> rusqlite::Result<Option<Connection>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -331,7 +343,7 @@ fn open_existing_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
         }
     };
     c.busy_timeout(Duration::from_millis(5000))?;
-    world_schema::verify_open_shape(&c)?;
+    world_schema::verify_open_shape(proof, &c)?;
     Ok(Some(c))
 }
 
@@ -340,7 +352,10 @@ fn open_existing_validated_for_write(
     data_root: &Path,
     world: &ValidatedWorldPath,
 ) -> rusqlite::Result<Option<Connection>> {
-    open_existing_writer_path(&validated_world_db(data_root, world))
+    open_existing_writer_path(
+        &mut crate::blocking_sqlite::test_only_mint(),
+        &validated_world_db(data_root, world),
+    )
 }
 
 pub(crate) fn open_existing_cached_writer(
@@ -350,12 +365,15 @@ pub(crate) fn open_existing_cached_writer(
     _file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<OpenedWriteConnection>> {
     Ok(
-        open_existing_writer_path(&validated_world_db(data_root, world))?
+        open_existing_writer_path(_proof, &validated_world_db(data_root, world))?
             .map(|conn| OpenedWriteConnection::new(conn, OpenedWorldKind::Existing)),
     )
 }
 
-fn open_existing_writer_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
+fn open_existing_writer_path(
+    proof: &mut BlockingSqlite,
+    path: &Path,
+) -> rusqlite::Result<Option<Connection>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -376,7 +394,7 @@ fn open_existing_writer_path(path: &Path) -> rusqlite::Result<Option<Connection>
         PRAGMA wal_autocheckpoint=0;
         "#,
     )?;
-    world_schema::verify_open_shape(&c)?;
+    world_schema::verify_open_shape(proof, &c)?;
     Ok(Some(c))
 }
 
@@ -580,7 +598,7 @@ pub fn read_with_hmac_via_conn(
 ) -> crate::audit::AuditResult<(Stage, Option<String>)> {
     let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    crate::audit::require_current_world_intact_tx(&tx, world, key)?;
+    crate::audit::require_current_world_intact_tx(proof, &tx, world, key)?;
     let (body, content_type) = {
         let mut stmt = tx.prepare("SELECT body, content_type FROM stage_meta WHERE id=1")?;
         stmt.query_row([], |r| {
@@ -735,7 +753,7 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
         |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
     )?;
     let (format_event, hmac, cas_body_inserted, pruned_cas, body_event) = {
-        let (audit_tx, is_genesis) = verify_appendable_world_tx(&tx, world, key, opened)?;
+        let (audit_tx, is_genesis) = verify_appendable_world_tx(proof, &tx, world, key, opened)?;
         let format_event = if is_genesis {
             Some(audit::append_format_tx_row(&audit_tx)?)
         } else {
@@ -886,7 +904,7 @@ pub(crate) fn append_with_audit_retaining_on_conn(
     let tx = conn.transaction()?;
     let (cas_body_inserted, pruned_cas, format_event, body_event, hmac) = {
         let (audit_tx, is_genesis) =
-            verify_appendable_world_tx(&tx, world, key, OpenedWorldKind::Existing)?;
+            verify_appendable_world_tx(proof, &tx, world, key, OpenedWorldKind::Existing)?;
         let format_event = if is_genesis {
             Some(audit::append_format_tx_row(&audit_tx)?)
         } else {
@@ -929,6 +947,7 @@ pub(crate) fn append_with_audit_retaining_on_conn(
 }
 
 fn verify_appendable_world_tx<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
     world: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
@@ -936,11 +955,11 @@ fn verify_appendable_world_tx<'tx, 'conn, 'key>(
 ) -> Result<(audit::VerifiedAuditTx<'tx, 'conn, 'key>, bool), WriteAuditError> {
     match audit_chain_opening(tx, opened)? {
         AuditChainOpening::Genesis(_proof) => Ok((
-            audit::verify_appendable_tx_genesis_checked(tx, world, key)?,
+            audit::verify_appendable_tx_genesis_checked(proof, tx, world, key)?,
             true,
         )),
         AuditChainOpening::Existing => Ok((
-            audit::verify_appendable_tx_existing_checked(tx, world, key)?,
+            audit::verify_appendable_tx_existing_checked(proof, tx, world, key)?,
             false,
         )),
     }
@@ -1063,7 +1082,13 @@ mod tests {
         let tx1 = c1.transaction().unwrap();
         let tx2 = c2.transaction().unwrap();
         let retained = cas::retain_body_tx(&tx1, &world, b"retained elsewhere").unwrap();
-        let audit_tx = audit::verify_appendable_tx_genesis_checked(&tx2, &world, &key).unwrap();
+        let audit_tx = audit::verify_appendable_tx_genesis_checked(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &tx2,
+            &world,
+            &key,
+        )
+        .unwrap();
 
         let err = match audit::append_retained_body_tx_row(
             &audit_tx,
@@ -1506,7 +1531,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let stored = {
             let c = open(&root, "home/generated").unwrap();
-            let generation = crate::world_schema::generation(&c).unwrap();
+            let generation =
+                crate::world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &c)
+                    .unwrap();
             let raw: String = c
                 .query_row("SELECT generation FROM stage_meta WHERE id=1", [], |r| {
                     r.get(0)
@@ -1525,7 +1552,8 @@ mod tests {
 
         let c = open(&root, "home/generated").unwrap();
         assert_eq!(
-            crate::world_schema::generation(&c).unwrap(),
+            crate::world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &c)
+                .unwrap(),
             crate::world_generation::WorldGeneration::new(stored).unwrap()
         );
         let _ = std::fs::remove_dir_all(root);
@@ -1536,12 +1564,17 @@ mod tests {
         let root = test_root("world-generation-mint-failure");
         let _ = std::fs::remove_dir_all(&root);
 
-        let err = open_with_generation_minter(&root, "home/generated", || {
-            Err(rusqlite::Error::SqliteFailure(
-                ffi::Error::new(ffi::SQLITE_IOERR),
-                Some("forced mint failure".to_owned()),
-            ))
-        })
+        let err = open_with_generation_minter(
+            &root,
+            "home/generated",
+            || {
+                Err(rusqlite::Error::SqliteFailure(
+                    ffi::Error::new(ffi::SQLITE_IOERR),
+                    Some("forced mint failure".to_owned()),
+                ))
+            },
+            &mut crate::blocking_sqlite::test_only_mint(),
+        )
         .unwrap_err();
 
         assert!(err.to_string().contains("forced mint failure"));

@@ -61,8 +61,8 @@ pub(crate) fn dereference_timeline_coordinate_via_conn(
 ) -> super::AuditResult<TimelineDereference> {
     let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let actual_gen = world_schema::generation(&tx)?;
-    super::require_intact(super::verify_world_tx(&tx, coordinate.world(), key)?)?;
+    let actual_gen = world_schema::generation(proof, &tx)?;
+    super::require_intact(super::verify_world_tx(proof, &tx, coordinate.world(), key)?)?;
 
     let result = if &actual_gen != coordinate.generation() {
         match VerifiedGenerationMismatch::new(coordinate.clone(), actual_gen) {
@@ -597,7 +597,9 @@ mod tests {
     ) -> TimelineCoordinate {
         let conn =
             Connection::open(crate::world::world_db(&engine.core().data, world.as_str())).unwrap();
-        let generation = world_schema::generation(&conn).unwrap();
+        let generation =
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
+                .unwrap();
         let body_sha256: String = conn
             .query_row("SELECT body_sha256 FROM events WHERE id=?1", [id], |r| {
                 r.get(0)
@@ -689,7 +691,9 @@ mod tests {
             "#,
         )
         .unwrap();
-        let generation = world_schema::generation(&conn).unwrap();
+        let generation =
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
+                .unwrap();
         let body_sha256 = BodySha256::for_body(b"");
         let headers = if matches!(
             event_type,

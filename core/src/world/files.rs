@@ -112,7 +112,7 @@ pub(super) fn open_checkpoint_conn(
     world: &str,
 ) -> rusqlite::Result<Option<Connection>> {
     let path = super::world_db(data_root, world);
-    open_checkpoint_conn_path(&path)
+    open_checkpoint_conn_path(&mut crate::blocking_sqlite::test_only_mint(), &path)
 }
 
 fn open_checkpoint_conn_validated(
@@ -121,10 +121,13 @@ fn open_checkpoint_conn_validated(
     world: &ValidatedWorldPath,
 ) -> rusqlite::Result<Option<Connection>> {
     let path = validated_world_db(data_root, world);
-    open_checkpoint_conn_path(&path)
+    open_checkpoint_conn_path(_proof, &path)
 }
 
-fn open_checkpoint_conn_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
+fn open_checkpoint_conn_path(
+    proof: &mut BlockingSqlite,
+    path: &Path,
+) -> rusqlite::Result<Option<Connection>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -138,7 +141,7 @@ fn open_checkpoint_conn_path(path: &Path) -> rusqlite::Result<Option<Connection>
         }
     };
     c.busy_timeout(Duration::from_millis(5000))?;
-    world_schema::verify(&c)?;
+    world_schema::verify(proof, &c)?;
     Ok(Some(c))
 }
 

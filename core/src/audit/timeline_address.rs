@@ -432,9 +432,9 @@ pub(crate) fn verified_timeline_address_via_conn(
     // Verification and row extraction must share one SQLite snapshot; otherwise
     // a concurrent writer could append a row after verification but before the
     // address lookup.
-    super::require_world_intact_tx(&tx, world, key)?;
+    super::require_world_intact_tx(proof, &tx, world, key)?;
 
-    let gen = world_schema::generation(&tx)?;
+    let gen = world_schema::generation(proof, &tx)?;
     let Some(row) = load_event_identity(&tx, seq)? else {
         let proof = VerifiedMissingTimelineRow::new(world.clone(), gen, seq);
         return Ok(TimelineAddressLookup::MissingRow(proof));
@@ -467,7 +467,7 @@ pub(crate) fn verified_latest_body_head_via_conn(
     // The chain verification and "latest body row" lookup share one SQLite
     // snapshot. Otherwise delete could anchor the ledger to a row that was not
     // part of the verified chain it just observed.
-    super::require_intact(super::verify_world_tx(&tx, world, key)?)?;
+    super::require_intact(super::verify_world_tx(proof, &tx, world, key)?)?;
     if let Some(break_report) = super::live_body::verify_tx(&tx)? {
         return Err(super::AuditError::ChainBroken(break_report));
     }
@@ -486,7 +486,7 @@ pub(crate) fn verified_latest_body_head_via_conn(
         return Err(corrupt("events.target does not match requested world").into());
     }
     let body_sha256 = row.body_sha256_or_corrupt()?;
-    let gen = world_schema::generation(&tx)?;
+    let gen = world_schema::generation(proof, &tx)?;
     let event = VerifiedBodyEvent::new(world.clone(), gen, head.seq(), body_sha256);
     let address = TimelineAddress::from_verified_body_event(event);
     let head = VerifiedBodyHead::new(address, head.hmac_label().to_owned());
@@ -505,9 +505,9 @@ pub(crate) fn verified_replay_events_after_via_conn(
 ) -> super::AuditResult<VerifiedReplayAfter> {
     let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    super::require_world_intact_tx(&tx, world, key)?;
+    super::require_world_intact_tx(proof, &tx, world, key)?;
 
-    let actual_gen = world_schema::generation(&tx)?;
+    let actual_gen = world_schema::generation(proof, &tx)?;
     if &actual_gen != generation {
         tx.commit()?;
         return Ok(VerifiedReplayAfter::GenerationMismatch);
@@ -650,8 +650,8 @@ pub(crate) fn read_timeline_body_via_conn(
 ) -> super::AuditResult<TimelineRead> {
     let conn = tracked.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let actual_gen = world_schema::generation(&tx)?;
-    super::require_intact(super::verify_world_tx(&tx, address.world(), key)?)?;
+    let actual_gen = world_schema::generation(proof, &tx)?;
+    super::require_intact(super::verify_world_tx(proof, &tx, address.world(), key)?)?;
 
     let read = if &actual_gen != address.gen() {
         TimelineRead::GenMismatch {
@@ -805,6 +805,10 @@ mod tests {
         AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
     }
 
+    fn test_only_generation(conn: &rusqlite::Connection) -> crate::world_generation::WorldGeneration {
+        world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), conn).unwrap()
+    }
+
     fn resign_event(
         conn: &rusqlite::Connection,
         id: i64,
@@ -812,7 +816,7 @@ mod tests {
         body_sha256: &str,
         key: &AuditHmacKey,
     ) {
-        let generation = world_schema::generation(conn).unwrap();
+        let generation = test_only_generation(conn);
         let (timestamp, target, size, content_type, meta_sha256, prev_hmac): (
             String,
             String,
@@ -917,7 +921,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let generation = world_schema::generation(&conn).unwrap();
+        let generation = test_only_generation(&conn);
         let headers = if matches!(
             event_type,
             "delete_intent" | "delete_commit" | "delete_commit_failed"
@@ -1024,7 +1028,7 @@ mod tests {
         let conn =
             rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
                 .unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen = test_only_generation(&conn);
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
         let lookup = verified_timeline_address_via_conn(
@@ -1276,7 +1280,7 @@ mod tests {
         let conn =
             rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
                 .unwrap();
-        let original_gen = world_schema::generation(&conn).unwrap();
+        let original_gen = test_only_generation(&conn);
         conn.execute(
             "UPDATE stage_meta SET generation='fedcba9876543210fedcba9876543210' WHERE id=1",
             [],
@@ -1327,13 +1331,14 @@ mod tests {
         let mut conn =
             rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
                 .unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen = test_only_generation(&conn);
         let first_hmac: String = conn
             .query_row("SELECT hmac FROM events WHERE id=2", [], |r| r.get(0))
             .unwrap();
         {
             let tx = conn.transaction().unwrap();
             let audit_tx = super::super::verify_appendable_tx_existing_checked(
+                &mut crate::blocking_sqlite::test_only_mint(),
                 &tx,
                 &world,
                 &engine.core().hmac_key,
@@ -1409,7 +1414,7 @@ mod tests {
         );
         conn.execute("UPDATE cas_state SET first_retained_seq=1 WHERE id=1", [])
             .unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen = test_only_generation(&conn);
         let address = TimelineAddress::test_only_new(
             world,
             gen,
@@ -1437,7 +1442,7 @@ mod tests {
             single_event_conn(&world, "put", BodySha256::for_body(b"value").as_str(), &key);
         conn.execute("UPDATE cas_state SET first_retained_seq=2 WHERE id=1", [])
             .unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen = test_only_generation(&conn);
         let address = TimelineAddress::test_only_new(
             world,
             gen,
@@ -1467,7 +1472,7 @@ mod tests {
             single_event_conn(&world, "put", BodySha256::for_body(b"value").as_str(), &key);
         conn.execute("UPDATE cas_state SET first_retained_seq=1 WHERE id=1", [])
             .unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen = test_only_generation(&conn);
         let address = TimelineAddress::test_only_new(
             world,
             gen,
@@ -1542,7 +1547,7 @@ mod tests {
         let conn =
             rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
                 .unwrap();
-        let new_gen = world_schema::generation(&conn).unwrap();
+        let new_gen = test_only_generation(&conn);
         assert_ne!(&new_gen, address.gen());
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
         let read = read_timeline_body_via_conn(
@@ -1587,7 +1592,7 @@ mod tests {
         let conn =
             rusqlite::Connection::open(crate::world::world_db(&engine.core().data, world.as_str()))
                 .unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen = test_only_generation(&conn);
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
         let address = TimelineAddress::test_only_new(
             world.clone(),
@@ -1746,10 +1751,9 @@ mod tests {
                 .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
-        let gen = world_schema::generation(
+        let gen = test_only_generation(
             tracked.as_mut_conn(&mut crate::blocking_sqlite::test_only_mint()),
-        )
-        .unwrap();
+        );
         match verified_timeline_address_via_conn(
             &mut crate::blocking_sqlite::test_only_mint(),
             &mut tracked,
@@ -1802,10 +1806,9 @@ mod tests {
         .unwrap();
         let mut tracked = crate::read_cache::test_only_wrap_raw_connection(conn);
 
-        let gen = world_schema::generation(
+        let gen = test_only_generation(
             tracked.as_mut_conn(&mut crate::blocking_sqlite::test_only_mint()),
-        )
-        .unwrap();
+        );
         match verified_timeline_address_via_conn(
             &mut crate::blocking_sqlite::test_only_mint(),
             &mut tracked,

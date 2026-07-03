@@ -5,7 +5,7 @@
 
 #![cfg_attr(not(feature = "unstable-engine"), allow(dead_code))]
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use bytes::Bytes;
 
@@ -43,8 +43,8 @@ fn blocking_join_to_engine(err: blocking_sqlite::BlockingJoinError) -> EngineErr
     EngineError::InternalInvariant("blocking sqlite worker failed")
 }
 
-pub(crate) struct EngineOps<'a> {
-    core: &'a Core,
+pub(crate) struct EngineOps {
+    core: Arc<Core>,
 }
 
 struct SubscribePermit {
@@ -52,13 +52,13 @@ struct SubscribePermit {
     slot: tokio::sync::OwnedSemaphorePermit,
 }
 
-impl<'a> EngineOps<'a> {
-    pub(crate) fn new(core: &'a Core) -> Self {
+impl EngineOps {
+    pub(crate) fn new(core: Arc<Core>) -> Self {
         Self { core }
     }
 
-    pub(crate) fn core(&self) -> &'a Core {
-        self.core
+    pub(crate) fn core(&self) -> &Core {
+        self.core.as_ref()
     }
 
     fn ensure_not_shutdown(&self) -> Result<(), EngineError> {
@@ -87,9 +87,9 @@ impl<'a> EngineOps<'a> {
         world: &ValidatedWorldPath,
         tier: auth::Tier,
     ) -> Result<Option<ReadResult>, EngineError> {
-        let permit = world_read_ops::authorize_read(self.core, world, tier)?;
+        let permit = world_read_ops::authorize_read(self.core.as_ref(), world, tier)?;
         let _file_op = self.begin_file_op()?;
-        match world_read_ops::read_world(self.core, proof, &permit, &_file_op)
+        match world_read_ops::read_world(self.core.as_ref(), proof, &permit, &_file_op)
             .map_err(|err| read_error_to_engine(err, Some(world.as_str())))?
         {
             world_read_ops::ReadOutcome::Found { stage, etag } => Ok(Some(ReadResult::new(
@@ -106,9 +106,9 @@ impl<'a> EngineOps<'a> {
         address: &TimelineAddress,
         tier: auth::Tier,
     ) -> Result<TimelineRead, EngineError> {
-        let permit = world_read_ops::authorize_read(self.core, address.world(), tier)?;
+        let permit = world_read_ops::authorize_read(self.core.as_ref(), address.world(), tier)?;
         let _file_op = self.begin_file_op()?;
-        world_read_ops::read_timeline_body(self.core, proof, &permit, address, &_file_op)
+        world_read_ops::read_timeline_body(self.core.as_ref(), proof, &permit, address, &_file_op)
             .map_err(|err| read_error_to_engine(err, Some(address.world().as_str())))
     }
 
@@ -118,10 +118,15 @@ impl<'a> EngineOps<'a> {
         coordinate: &TimelineCoordinate,
         tier: auth::Tier,
     ) -> Result<TimelineDereference, EngineError> {
-        let permit = world_read_ops::authorize_read(self.core, coordinate.world(), tier)?;
+        let permit =
+            world_read_ops::authorize_read(self.core.as_ref(), coordinate.world(), tier)?;
         let _file_op = self.begin_file_op()?;
         world_read_ops::dereference_timeline_coordinate(
-            self.core, proof, &permit, coordinate, &_file_op,
+            self.core.as_ref(),
+            proof,
+            &permit,
+            coordinate,
+            &_file_op,
         )
         .map_err(|err| read_error_to_engine(err, Some(coordinate.world().as_str())))
     }
@@ -143,7 +148,7 @@ impl<'a> EngineOps<'a> {
             preconditions.into(),
         )
         .map_err(|message| EngineError::InvalidMetadata { message })?;
-        let outcome = world_ops::replace_write(self.core, &permit, req, hooks)
+        let outcome = world_ops::replace_write(self.core.as_ref(), &permit, req, hooks)
             .await
             .map_err(|err| write_error_to_engine(err, Some(world.as_str())))?;
         Ok(outcome.into())
@@ -160,7 +165,7 @@ impl<'a> EngineOps<'a> {
         let permit = world_ops::authorize_write(world, tier)?;
         self.ensure_not_shutdown()?;
         let outcome = world_ops::append_write(
-            self.core,
+            self.core.as_ref(),
             &permit,
             world_ops::AppendRequest {
                 body,
@@ -182,7 +187,7 @@ impl<'a> EngineOps<'a> {
     ) -> Result<(), delete_ops::DeleteError> {
         let permit = delete_ops::authorize_delete(world, tier)?;
         self.ensure_not_shutdown_for_delete()?;
-        delete_ops::delete(self.core, &permit, req, hooks).await
+        delete_ops::delete(self.core.as_ref(), &permit, req, hooks).await
     }
 
     pub(crate) fn subscribe(
@@ -200,7 +205,7 @@ impl<'a> EngineOps<'a> {
         pattern: &SubscribePattern,
         tier: auth::Tier,
     ) -> Result<SubscribePermit, EngineError> {
-        if !crate::can_read(self.core, tier) {
+        if !crate::can_read(self.core.as_ref(), tier) {
             return Err(EngineError::Auth(AuthGate::Read));
         }
         self.ensure_not_shutdown()?;
@@ -225,7 +230,7 @@ impl<'a> EngineOps<'a> {
         let replay_plan = resume.replay_plan(&self.core.listen_epoch);
         let _file_op = self.begin_file_op()?;
         let (interruption, replay, replay_fence) =
-            replay_after(self.core, replay_plan, &permit.pattern)?;
+            replay_after(self.core.as_ref(), replay_plan, &permit.pattern)?;
         let mut initial = VecDeque::new();
         if let Some(err) = interruption {
             initial.push_back(Err(err.into()));
@@ -267,7 +272,7 @@ impl Engine {
         let engine = self.clone();
         let world = world.clone();
         blocking_sqlite::run(move |proof| {
-            EngineOps::new(engine.core()).read(proof, &world, tier.into())
+            EngineOps::new(engine.core_arc()).read(proof, &world, tier.into())
         })
         .await
         .map_err(blocking_join_to_engine)?
@@ -296,7 +301,7 @@ impl Engine {
         let engine = self.clone();
         let address = address.clone();
         blocking_sqlite::run(move |proof| {
-            EngineOps::new(engine.core()).read_timeline_body(proof, &address, tier.into())
+            EngineOps::new(engine.core_arc()).read_timeline_body(proof, &address, tier.into())
         })
         .await
         .map_err(blocking_join_to_engine)?
@@ -325,7 +330,7 @@ impl Engine {
         let engine = self.clone();
         let coordinate = coordinate.clone();
         blocking_sqlite::run(move |proof| {
-            EngineOps::new(engine.core()).dereference_timeline_coordinate(
+            EngineOps::new(engine.core_arc()).dereference_timeline_coordinate(
                 proof,
                 &coordinate,
                 tier.into(),
@@ -366,7 +371,7 @@ impl Engine {
         preconditions: Preconditions,
         tier: AccessTier,
     ) -> Result<WriteResult, EngineError> {
-        EngineOps::new(self.core())
+        EngineOps::new(self.core_arc())
             .replace(
                 world,
                 representation,
@@ -401,7 +406,7 @@ impl Engine {
         preconditions: Preconditions,
         tier: AccessTier,
     ) -> Result<WriteResult, EngineError> {
-        EngineOps::new(self.core())
+        EngineOps::new(self.core_arc())
             .append(world, body, preconditions, tier.into(), &NoopWriteTrace)
             .await
     }
@@ -437,7 +442,7 @@ impl Engine {
         preconditions: Preconditions,
         tier: AccessTier,
     ) -> Result<(), EngineError> {
-        EngineOps::new(self.core())
+        EngineOps::new(self.core_arc())
             .delete(
                 world,
                 DeleteRequest::new(preconditions, String::new(), Vec::new()),
@@ -482,7 +487,7 @@ impl Engine {
         tier: AccessTier,
         resume: SubscriptionResume,
     ) -> Result<EngineSubscription, EngineError> {
-        EngineOps::new(self.core()).subscribe(pattern, tier.into(), resume)
+        EngineOps::new(self.core_arc()).subscribe(pattern, tier.into(), resume)
     }
 }
 
@@ -892,7 +897,9 @@ mod tests {
         let conn =
             rusqlite::Connection::open(world::world_db(&engine.core().data, world_path.as_str()))
                 .unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen =
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
+                .unwrap();
         TimelineAddress::test_only_new(
             world_path.clone(),
             gen,
@@ -905,7 +912,7 @@ mod tests {
         let conn =
             rusqlite::Connection::open(world::world_db(&engine.core().data, world_path.as_str()))
                 .unwrap();
-        world_schema::generation(&conn).unwrap()
+        world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap()
     }
 
     #[test]
@@ -1207,7 +1214,11 @@ mod tests {
             world.as_str(),
         ))
         .unwrap();
-        let first_generation = crate::world_schema::generation(&first_conn).unwrap();
+        let first_generation = crate::world_schema::generation(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &first_conn,
+        )
+        .unwrap();
         drop(first_conn);
 
         engine
@@ -1229,7 +1240,11 @@ mod tests {
             world.as_str(),
         ))
         .unwrap();
-        let second_generation = crate::world_schema::generation(&second_conn).unwrap();
+        let second_generation = crate::world_schema::generation(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &second_conn,
+        )
+        .unwrap();
         drop(second_conn);
         assert_ne!(first_generation, second_generation);
 
@@ -2147,7 +2162,9 @@ mod tests {
             .await
             .unwrap();
         let conn = rusqlite::Connection::open(world::validated_world_db(&root, &world)).unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen =
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
+                .unwrap();
         drop(conn);
         engine.core().event_log.lock().unwrap().clear();
         let missing_id =

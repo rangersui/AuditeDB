@@ -381,7 +381,7 @@ impl fmt::Display for InvalidProcPath {
 
 impl std::error::Error for InvalidProcPath {}
 
-impl EngineOps<'_> {
+impl EngineOps {
     pub(crate) fn list_worlds(
         &self,
         path: &ValidatedProcPath,
@@ -726,7 +726,7 @@ impl Engine {
     /// - [`EngineError::TransientStorage`] / [`EngineError::Storage`] /
     ///   [`EngineError::InsufficientStorage`] for storage failures.
     pub fn list_worlds(&self, tier: AccessTier) -> Result<Vec<ValidatedWorldPath>, EngineError> {
-        EngineOps::new(self.core()).list_worlds(&ValidatedProcPath::worlds(), tier.into())
+        EngineOps::new(self.core_arc()).list_worlds(&ValidatedProcPath::worlds(), tier.into())
     }
 
     /// Lists canonical worlds with the supplied canonical prefix.
@@ -747,7 +747,7 @@ impl Engine {
     ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
         let prefix =
             ValidatedWorldPrefix::new(prefix).map_err(|_| EngineError::InvalidWorldName)?;
-        EngineOps::new(self.core()).list_worlds_with_prefix(&prefix, tier.into())
+        EngineOps::new(self.core_arc()).list_worlds_with_prefix(&prefix, tier.into())
     }
 
     /// Lists canonical worlds with the supplied canonical prefix, returning
@@ -765,7 +765,7 @@ impl Engine {
     ) -> Result<Option<Vec<ValidatedWorldPath>>, EngineError> {
         let prefix =
             ValidatedWorldPrefix::new(prefix).map_err(|_| EngineError::InvalidWorldName)?;
-        EngineOps::new(self.core()).list_worlds_with_prefix_bounded(&prefix, tier.into(), max)
+        EngineOps::new(self.core_arc()).list_worlds_with_prefix_bounded(&prefix, tier.into(), max)
     }
 
     /// Returns per-world body byte size, `du`-style.
@@ -777,7 +777,7 @@ impl Engine {
     /// See [`Engine::list_worlds`] for the storage-failure variants. Same
     /// `Read`-tier requirement.
     pub fn du(&self, tier: AccessTier) -> Result<Vec<WorldUsage>, EngineError> {
-        EngineOps::new(self.core()).du(&ValidatedProcPath::du(), tier.into())
+        EngineOps::new(self.core_arc()).du(&ValidatedProcPath::du(), tier.into())
     }
 
     /// Returns aggregate storage + memory usage, `df`-style.
@@ -788,7 +788,7 @@ impl Engine {
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below `Read`.
     pub fn df(&self, tier: AccessTier) -> Result<DfSnapshot, EngineError> {
-        EngineOps::new(self.core()).df(&ValidatedProcPath::df(), tier.into())
+        EngineOps::new(self.core_arc()).df(&ValidatedProcPath::df(), tier.into())
     }
 
     /// Returns the read-cache + ledger-writer counter snapshot.
@@ -798,7 +798,7 @@ impl Engine {
     /// # Errors
     /// - [`EngineError::Auth`] if `tier` is below `Read`.
     pub fn pool(&self, tier: AccessTier) -> Result<PoolSnapshot, EngineError> {
-        EngineOps::new(self.core()).pool(&ValidatedProcPath::pool(), tier.into())
+        EngineOps::new(self.core_arc()).pool(&ValidatedProcPath::pool(), tier.into())
     }
 
     /// Verifies a single world's HMAC audit chain.
@@ -822,7 +822,7 @@ impl Engine {
         tier: AccessTier,
     ) -> Result<AuditVerify, EngineError> {
         let path = ValidatedProcPath::audit_verify(world.clone());
-        EngineOps::new(self.core()).verify_audit(&path, tier.into())
+        EngineOps::new(self.core_arc()).verify_audit(&path, tier.into())
     }
 
     /// Returns the audit chain's current head for external anchoring.
@@ -867,7 +867,7 @@ impl Engine {
         tier: AccessTier,
     ) -> Result<Option<HeadStamp>, EngineError> {
         let path = ValidatedProcPath::audit_head(world.clone());
-        EngineOps::new(self.core()).chain_head(&path, tier.into())
+        EngineOps::new(self.core_arc()).chain_head(&path, tier.into())
     }
 
     /// Returns the verified audit-chain stamp at a specific chain ordinal.
@@ -894,7 +894,7 @@ impl Engine {
         tier: AccessTier,
     ) -> Result<Option<ChainStampRead>, EngineError> {
         let path = ValidatedProcPath::audit_stamp(world.clone(), seq);
-        EngineOps::new(self.core()).chain_stamp(&path, tier.into())
+        EngineOps::new(self.core_arc()).chain_stamp(&path, tier.into())
     }
 }
 
@@ -1103,7 +1103,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            EngineOps::new(engine.core())
+            EngineOps::new(engine.core_arc())
                 .list_worlds(&ValidatedProcPath::du(), AccessTier::Read.into()),
             Err(EngineError::InternalInvariant(
                 "proc permit endpoint mismatch"
@@ -1399,6 +1399,7 @@ mod tests {
         assert_eq!(head.hmac, valid.latest);
         assert_eq!(head.seq, valid.events as i64);
         let disk_generation = crate::world_schema::generation(
+            &mut crate::blocking_sqlite::test_only_mint(),
             &rusqlite::Connection::open(crate::world::world_db(&engine.core().data, disk.as_str()))
                 .unwrap(),
         )

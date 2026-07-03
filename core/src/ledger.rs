@@ -191,6 +191,7 @@ impl LedgerWriter {
         let delete_subject = job.headers.delete_subject().cloned();
         let (format_event, row) = if is_empty {
             let (format_event, row) = audit::append_with_conn_genesis_row(
+                proof,
                 conn,
                 requested_event_type,
                 &ledger_world,
@@ -205,6 +206,7 @@ impl LedgerWriter {
             (Some(format_event), row)
         } else {
             let row = audit::append_with_conn_existing_row(
+                proof,
                 conn,
                 requested_event_type,
                 &ledger_world,

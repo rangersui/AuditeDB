@@ -580,7 +580,7 @@ impl Core {
     ) -> rusqlite::Result<Arc<StdMutex<world::OpenedWriteConnection>>> {
         if let Some(conn) = self.write_conns.get(world) {
             let conn = conn.clone();
-            verify_cached_writer_shape(&conn)?;
+            verify_cached_writer_shape(proof, &conn)?;
             return Ok(conn);
         }
         let conn = world::open_cached_writer(proof, &self.data, world, _file_op)?;
@@ -602,7 +602,7 @@ impl Core {
     ) -> rusqlite::Result<Option<Arc<StdMutex<world::OpenedWriteConnection>>>> {
         if let Some(conn) = self.write_conns.get(world) {
             let conn = conn.clone();
-            verify_cached_writer_shape(&conn)?;
+            verify_cached_writer_shape(proof, &conn)?;
             return Ok(Some(conn));
         }
         let Some(conn) = world::open_existing_cached_writer(proof, &self.data, world, _file_op)?
@@ -875,12 +875,13 @@ impl Core {
 }
 
 fn verify_cached_writer_shape(
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     conn: &StdMutex<world::OpenedWriteConnection>,
 ) -> rusqlite::Result<()> {
     let guard = conn
         .lock()
         .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-    guard.verify_shape()
+    guard.verify_shape(proof)
 }
 
 fn adjust_counter(counter: &AtomicUsize, subtract: usize, add: usize) {
@@ -936,7 +937,9 @@ mod tests {
         .unwrap();
 
         let conn = rusqlite::Connection::open(world::world_db(&core.data, world.as_str())).unwrap();
-        let gen = world_schema::generation(&conn).unwrap();
+        let gen =
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
+                .unwrap();
         drop(conn);
         let address = TimelineAddress::test_only_new(
             world.clone(),

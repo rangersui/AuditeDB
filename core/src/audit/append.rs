@@ -3,6 +3,7 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::{
+    blocking_sqlite::BlockingSqlite,
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     event::{AuditEventKind, BodyEventKind, EventMetadataKind},
     timeline::{BodySha256, TimelineAddress, TimelineSeq},
@@ -145,6 +146,7 @@ impl AppendedBodyAuditRow {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_with_conn_existing_row(
+    proof: &mut BlockingSqlite,
     conn: &mut Connection,
     event_type: EventMetadataKind,
     ledger_world: &ValidatedWorldPath,
@@ -156,6 +158,7 @@ pub(crate) fn append_with_conn_existing_row(
     key: &AuditHmacKey,
 ) -> AuditResult<AppendedAuditRow> {
     append_with_conn_verified(
+        proof,
         conn,
         event_type,
         ledger_world,
@@ -171,6 +174,7 @@ pub(crate) fn append_with_conn_existing_row(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_with_conn_genesis_row(
+    proof: &mut BlockingSqlite,
     conn: &mut Connection,
     event_type: EventMetadataKind,
     ledger_world: &ValidatedWorldPath,
@@ -182,7 +186,8 @@ pub(crate) fn append_with_conn_genesis_row(
     key: &AuditHmacKey,
 ) -> AuditResult<(AppendedAuditRow, AppendedAuditRow)> {
     let tx = conn.transaction()?;
-    let audit_tx = super::verify_appendable_tx(&tx, ledger_world, key, EmptyChain::Allow)?;
+    let audit_tx =
+        super::verify_appendable_tx(proof, &tx, ledger_world, key, EmptyChain::Allow)?;
     let format_row = append_format_tx_row(&audit_tx)?;
     let headers = headers.to_storage_pairs();
     let row = append_tx_inner(
@@ -200,6 +205,7 @@ pub(crate) fn append_with_conn_genesis_row(
 
 #[allow(clippy::too_many_arguments)]
 fn append_with_conn_verified(
+    proof: &mut BlockingSqlite,
     conn: &mut Connection,
     event_type: EventMetadataKind,
     ledger_world: &ValidatedWorldPath,
@@ -212,7 +218,7 @@ fn append_with_conn_verified(
     empty_chain: EmptyChain,
 ) -> AuditResult<AppendedAuditRow> {
     let tx = conn.transaction()?;
-    let audit_tx = super::verify_appendable_tx(&tx, ledger_world, key, empty_chain)?;
+    let audit_tx = super::verify_appendable_tx(proof, &tx, ledger_world, key, empty_chain)?;
     let headers = headers.to_storage_pairs();
     let row = append_tx_inner(
         &audit_tx,
@@ -298,7 +304,6 @@ fn append_tx_inner(
     );
     let canonical = canonical_headers(headers);
     let meta_sha256 = super::meta_sha256_canonical(content_type, &canonical);
-    let generation = crate::world_schema::generation(tx)?;
     let timestamp = AuditTimestamp::now_tx(tx)?;
     let prev = tx
         .query_row(
@@ -316,7 +321,7 @@ fn append_tx_inner(
             timestamp: &timestamp,
             event_type: event_type.as_str(),
             target: target.as_str(),
-            generation: &generation,
+            generation: audit_tx.generation(),
             body_sha256: body_sha256.as_str(),
             size,
             content_type,
@@ -350,7 +355,7 @@ fn append_tx_inner(
         world: audit_tx.world().clone(),
         id,
         hmac: h,
-        generation,
+        generation: audit_tx.generation().clone(),
         event_type,
         target: target.clone(),
         body_sha256: body_sha256.clone(),
