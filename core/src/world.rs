@@ -517,12 +517,13 @@ pub fn body_len(
 }
 
 pub(crate) fn usages(
+    proof: &mut BlockingSqlite,
     data_root: &Path,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Vec<(ValidatedWorldPath, StorageUsageSnapshot)>> {
     let mut out = Vec::new();
     for world_path in list(data_root)? {
-        if let Some(usage) = storage_usage(data_root, &world_path, file_op)? {
+        if let Some(usage) = storage_usage(proof, data_root, &world_path, file_op)? {
             out.push((world_path, usage));
         }
     }
@@ -1567,7 +1568,12 @@ mod tests {
             &file_op
         )
         .is_err());
-        assert!(usages(&root, &file_op).is_err());
+        assert!(usages(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &root,
+            &file_op
+        )
+        .is_err());
         // Read path goes through ReadCache now. Wrap the bare
         // Connection via the test-only helper exported from
         // `read_cache` and call `read_with_hmac_via_conn` on it.

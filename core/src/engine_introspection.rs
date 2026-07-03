@@ -455,8 +455,10 @@ impl EngineOps<'_> {
     ) -> Result<Vec<WorldUsage>, EngineError> {
         let permit = self.authorize_introspection(path, tier)?;
         ensure_proc_endpoint(&permit, ProcEndpoint::Du)?;
-        let mut sizes = world::usages(&self.core().data, &permit._file_op)
-            .map_err(|err| storage_error_to_engine("proc du", err, "du", None))?;
+        let mut sizes = blocking_sqlite::run_scoped(|proof| {
+            world::usages(proof, &self.core().data, &permit._file_op)
+        })
+        .map_err(|err| storage_error_to_engine("proc du", err, "du", None))?;
         sizes.extend(self.core().mem.sizes().into_iter().map(|(world, bytes)| {
             (
                 world,

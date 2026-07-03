@@ -513,7 +513,9 @@ impl Core {
                 .ok_or(world::WriteAuditError::StorageInvariant(
                     "fixture file operation gate closed",
                 ))?;
-            let before = world::storage_usage(&self.data, &world_path, &file_op)?;
+            let before = crate::blocking_sqlite::run_scoped(|proof| {
+                world::storage_usage(proof, &self.data, &world_path, &file_op)
+            })?;
             let existed = before.is_some();
             let before = before.unwrap_or_default();
             world::write_with_audit(
@@ -524,8 +526,10 @@ impl Core {
                 headers,
                 &self.hmac_key,
             )?;
-            let after =
-                world::storage_usage(&self.data, &world_path, &file_op)?.unwrap_or_default();
+            let after = crate::blocking_sqlite::run_scoped(|proof| {
+                world::storage_usage(proof, &self.data, &world_path, &file_op)
+            })?
+            .unwrap_or_default();
             self.replace_storage_usage(before, after);
             if !existed {
                 self.durable_world_count.fetch_add(1, Ordering::Relaxed);

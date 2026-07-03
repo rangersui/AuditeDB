@@ -23,6 +23,7 @@ use tokio::sync::{broadcast, watch, Semaphore};
 use crate::{
     audit,
     auth::{self, AuthGate, NonEmptyBytes},
+    blocking_sqlite,
     defaults::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES, DEFAULT_RETAINED_BODY_COUNT,
@@ -367,20 +368,19 @@ impl EngineBuilder {
                 })?;
 
         verify_all_worlds_with_names(&self.data_root, &hmac_key, &startup_file_op)?;
-        let durable_usages = world::usages(&self.data_root, &startup_file_op).map_err(|err| {
-            match storage_class::classify_storage_failure(&err) {
-                storage_class::StorageFailureClass::Transient => {
-                    EngineBuildError::DataRootLockHeld {
-                        path: self.data_root.clone(),
-                        holder_pid: None,
-                    }
-                }
-                storage_class::StorageFailureClass::InsufficientStorage
-                | storage_class::StorageFailureClass::Other => EngineBuildError::Storage {
-                    sqlite_code: sqlite_code(&err),
-                    detail: err.to_string(),
-                },
-            }
+        let durable_usages = blocking_sqlite::run_scoped(|proof| {
+            world::usages(proof, &self.data_root, &startup_file_op)
+        })
+        .map_err(|err| match storage_class::classify_storage_failure(&err) {
+            storage_class::StorageFailureClass::Transient => EngineBuildError::DataRootLockHeld {
+                path: self.data_root.clone(),
+                holder_pid: None,
+            },
+            storage_class::StorageFailureClass::InsufficientStorage
+            | storage_class::StorageFailureClass::Other => EngineBuildError::Storage {
+                sqlite_code: sqlite_code(&err),
+                detail: err.to_string(),
+            },
         })?;
         let storage_current_body_bytes: usize = durable_usages
             .iter()

@@ -163,8 +163,10 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
         return Err(DeleteError::NotFound);
     };
     let storage_usage_before = if store::is_persistent(&permit.world) {
-        match world::accounted_storage_usage(&core.data, &permit.world, &file_op)
-            .map_err(|err| classify_storage_error("storage size", &permit.world, err))?
+        match blocking_sqlite::run_scoped(|proof| {
+            world::accounted_storage_usage(proof, &core.data, &permit.world, &file_op)
+        })
+        .map_err(|err| classify_storage_error("storage size", &permit.world, err))?
         {
             Some(proof) => Some(proof),
             None => {

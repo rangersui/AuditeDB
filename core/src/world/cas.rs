@@ -277,24 +277,32 @@ pub fn storage_len(
             Some("test file operation gate unexpectedly closed".to_owned()),
         )
     })?;
-    Ok(storage_usage(data_root, world, &file_op)?.map(StorageUsageSnapshot::total_body_bytes))
+    Ok(storage_usage(
+        &mut crate::blocking_sqlite::test_only_mint(),
+        data_root,
+        world,
+        &file_op,
+    )?
+    .map(StorageUsageSnapshot::total_body_bytes))
 }
 
 pub fn storage_usage(
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<StorageUsageSnapshot>> {
-    storage_usage_inner(data_root, world, file_op)
+    storage_usage_inner(proof, data_root, world, file_op)
 }
 
 pub fn accounted_storage_usage(
+    proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<AccountedStorageUsage>> {
     Ok(
-        storage_usage_inner(data_root, world, file_op)?.map(|usage| AccountedStorageUsage {
+        storage_usage_inner(proof, data_root, world, file_op)?.map(|usage| AccountedStorageUsage {
             data_root: data_root.to_path_buf(),
             world: world.clone(),
             usage,
@@ -303,6 +311,7 @@ pub fn accounted_storage_usage(
 }
 
 fn storage_usage_inner(
+    _proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
