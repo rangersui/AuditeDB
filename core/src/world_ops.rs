@@ -255,22 +255,26 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
         } else {
             None
         };
-        let (write_conn, opened) = core
-            .cached_write_conn(&permit.world, &file_op)
-            .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?;
+        let (write_conn, opened) = blocking_sqlite::run_scoped(|proof| {
+            core.cached_write_conn(proof, &permit.world, &file_op)
+        })
+        .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?;
         let mut write_conn = write_conn
             .lock()
             .map_err(|_| WriteError::Internal("writer connection lock poisoned"))?;
-        match world::write_with_audit_checked_retaining_on_conn(
-            &mut write_conn,
-            opened,
-            &permit.world,
-            &req.body,
-            req.metadata.content_type(),
-            req.metadata.headers(),
-            &core.hmac_key,
-            core.retained_body_count,
-        ) {
+        match blocking_sqlite::run_scoped(|proof| {
+            world::write_with_audit_checked_retaining_on_conn(
+                proof,
+                &mut write_conn,
+                opened,
+                &permit.world,
+                &req.body,
+                req.metadata.content_type(),
+                req.metadata.headers(),
+                &core.hmac_key,
+                core.retained_body_count,
+            )
+        }) {
             Ok(result) => {
                 let actual_cas_len = if result.cas_body_inserted {
                     req.body.len()
@@ -479,9 +483,10 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         } else {
             None
         };
-        let Some(write_conn) = core
-            .cached_existing_write_conn(&permit.world, &file_op)
-            .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?
+        let Some(write_conn) = blocking_sqlite::run_scoped(|proof| {
+            core.cached_existing_write_conn(proof, &permit.world, &file_op)
+        })
+        .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?
         else {
             if let Some((_cas_candidate_len, prunable_cas_len, reserve_new_len)) = reservation {
                 core.rollback_storage_reservation_after_prune(0, reserve_new_len, prunable_cas_len);
@@ -491,15 +496,18 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
         let mut write_conn = write_conn
             .lock()
             .map_err(|_| WriteError::Internal("writer connection lock poisoned"))?;
-        match world::append_with_audit_retaining_on_conn(
-            &mut write_conn,
-            &permit.world,
-            &req.body,
-            &content_type,
-            &stored_headers,
-            &core.hmac_key,
-            core.retained_body_count,
-        ) {
+        match blocking_sqlite::run_scoped(|proof| {
+            world::append_with_audit_retaining_on_conn(
+                proof,
+                &mut write_conn,
+                &permit.world,
+                &req.body,
+                &content_type,
+                &stored_headers,
+                &core.hmac_key,
+                core.retained_body_count,
+            )
+        }) {
             Ok(Some((result, h))) => {
                 let actual_cas_len = if result.cas_body_inserted {
                     projected_len

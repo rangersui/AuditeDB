@@ -567,6 +567,7 @@ impl Core {
 
     pub(crate) fn cached_write_conn(
         &self,
+        _proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> rusqlite::Result<(Arc<StdMutex<rusqlite::Connection>>, world::OpenedWorldKind)> {
@@ -588,6 +589,7 @@ impl Core {
 
     pub(crate) fn cached_existing_write_conn(
         &self,
+        _proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> rusqlite::Result<Option<Arc<StdMutex<rusqlite::Connection>>>> {

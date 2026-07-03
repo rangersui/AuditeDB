@@ -20,6 +20,7 @@
 
 use crate::{
     audit,
+    blocking_sqlite::BlockingSqlite,
     engine_types::{AuditHmacKey, ValidatedWorldPath},
     event::BodyEventKind,
     state::FileOpPermit,
@@ -666,6 +667,7 @@ pub(crate) fn write_with_audit_checked_retaining(
 ) -> Result<WriteAuditResult, WriteAuditError> {
     let (mut c, opened) = open_validated_for_audit(data_root, world)?;
     write_with_audit_checked_retaining_on_conn(
+        &mut crate::blocking_sqlite::test_only_mint(),
         &mut c,
         opened,
         world,
@@ -679,6 +681,7 @@ pub(crate) fn write_with_audit_checked_retaining(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_with_audit_checked_retaining_on_conn(
+    _proof: &mut BlockingSqlite,
     c: &mut Connection,
     opened: OpenedWorldKind,
     world: &ValidatedWorldPath,
@@ -818,6 +821,7 @@ pub(crate) fn append_with_audit_retaining(
         return Ok(None);
     };
     append_with_audit_retaining_on_conn(
+        &mut crate::blocking_sqlite::test_only_mint(),
         &mut c,
         world,
         body,
@@ -830,6 +834,7 @@ pub(crate) fn append_with_audit_retaining(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_with_audit_retaining_on_conn(
+    _proof: &mut BlockingSqlite,
     c: &mut Connection,
     world: &ValidatedWorldPath,
     body: &[u8],
