@@ -1,4 +1,4 @@
-use crate::{engine_types::ValidatedWorldPath, world};
+use crate::{blocking_sqlite::BlockingSqlite, engine_types::ValidatedWorldPath, world};
 
 use super::ReadCache;
 
@@ -18,12 +18,13 @@ impl ReadCache {
     /// Thin wrapper over the generic `with_tracked_conn` machinery.
     pub(crate) fn cached_read_with_hmac(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         world_path: &ValidatedWorldPath,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<CurrentReadResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world_path, move |conn| {
+        self.with_tracked_conn(proof, data, world_path, move |conn| {
             Ok(world::read_with_hmac_via_conn(conn, world_path, &key))
         })
     }
@@ -35,12 +36,13 @@ impl ReadCache {
     /// is empty (bootstrap shape).
     pub(crate) fn cached_chain_head(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         world: &ValidatedWorldPath,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<ChainHeadResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world, move |conn| {
+        self.with_tracked_conn(proof, data, world, move |conn| {
             Ok(crate::audit::chain_head_via_conn(conn, world, &key))
         })
     }
@@ -50,13 +52,14 @@ impl ReadCache {
     /// via the slot guard, and the stamp is captured by the verifier walk.
     pub(crate) fn cached_chain_stamp(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         world: &ValidatedWorldPath,
         seq: crate::chain_stamp::ChainSeq,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<ChainStampResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world, move |conn| {
+        self.with_tracked_conn(proof, data, world, move |conn| {
             Ok(crate::audit::chain_stamp_via_conn(conn, world, seq, &key))
         })
     }
@@ -68,12 +71,13 @@ impl ReadCache {
     /// `/proc/audit/{world}/verify` endpoint.
     pub(crate) fn cached_verify_chain(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         world: &ValidatedWorldPath,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<crate::audit::VerifyReport>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world, move |conn| {
+        self.with_tracked_conn(proof, data, world, move |conn| {
             crate::audit::verify_chain_via_conn(conn, world, &key)
         })
     }
@@ -85,13 +89,14 @@ impl ReadCache {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn cached_read_timeline_body(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         address: &crate::timeline::TimelineAddress,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<TimelineReadResult>> {
         let world = address.world();
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world, move |conn| {
+        self.with_tracked_conn(proof, data, world, move |conn| {
             Ok(crate::audit::read_timeline_body_via_conn(
                 conn, address, &key,
             ))
@@ -104,6 +109,7 @@ impl ReadCache {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn cached_dereference_timeline_coordinate(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         // Deliberately require the read permit here so cache helpers cannot
         // turn raw coordinate syntax into a proof outside the read gate.
@@ -115,7 +121,7 @@ impl ReadCache {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let key = key.clone_secret();
-        self.with_tracked_conn(data, coordinate.world(), move |conn| {
+        self.with_tracked_conn(proof, data, coordinate.world(), move |conn| {
             Ok(
                 crate::audit::timeline_dereference::dereference_timeline_coordinate_via_conn(
                     conn, coordinate, &key,
@@ -129,13 +135,14 @@ impl ReadCache {
     /// later tombstone drain cannot race a bare fd.
     pub(crate) fn cached_latest_body_head(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         world: &crate::engine_types::ValidatedWorldPath,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<crate::audit::AuditResult<Option<crate::audit::VerifiedBodyHead>>>>
     {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, world, move |conn| {
+        self.with_tracked_conn(proof, data, world, move |conn| {
             Ok(crate::audit::verified_latest_body_head_via_conn(
                 conn, world, &key,
             ))
@@ -148,13 +155,14 @@ impl ReadCache {
     /// a replay scan owns the fd.
     pub(crate) fn cached_replay_chain_events_after(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         event_id: &crate::subscription_event_id::SubscriptionEventId,
         limit: usize,
         key: &crate::engine_types::AuditHmacKey,
     ) -> rusqlite::Result<Option<TimelineReplayAfterResult>> {
         let key = key.clone_secret();
-        self.with_tracked_conn(data, event_id.world(), move |conn| {
+        self.with_tracked_conn(proof, data, event_id.world(), move |conn| {
             Ok(crate::audit::verified_replay_events_after_via_conn(
                 conn,
                 event_id.world(),

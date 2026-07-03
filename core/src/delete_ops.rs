@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 
 use crate::{
     audit::{AuditHeaders, VerifiedDeleteSubject},
-    auth, can_delete,
+    auth, blocking_sqlite, can_delete,
     engine::EngineError,
     engine_types::{
         ChangeVerb, Preconditions, ValidatedRepresentationMetadata, ValidatedWorldPath,
@@ -147,16 +147,18 @@ pub(crate) async fn delete<H: DeleteTraceHooks + ?Sized>(
     hooks.lock_acquired(world_name);
     let _stream_guard = core.delete_ledger_stream_lock.lock().await;
     let file_op = core.begin_file_op().ok_or(DeleteError::ShuttingDown)?;
-    check_preconditions(core, &permit.world, &preconditions.into(), &file_op)?;
+    blocking_sqlite::run_scoped(|proof| {
+        check_preconditions(core, proof, &permit.world, &preconditions.into(), &file_op)
+    })?;
     let metadata = ValidatedRepresentationMetadata::new(content_type, headers)
         .map_err(|message| DeleteError::InvalidMetadata { message })?;
     let (content_type, headers) = metadata.into_parts();
     let user_headers =
         AuditHeaders::from_user(headers).map_err(|_| DeleteError::ReservedMetadataHeader)?;
 
-    let Some(stage) = core
-        .read_world(&permit.world, &file_op)
-        .map_err(|err| classify_audit_error("storage read", &permit.world, err))?
+    let Some(stage) =
+        blocking_sqlite::run_scoped(|proof| core.read_world(proof, &permit.world, &file_op))
+            .map_err(|err| classify_audit_error("storage read", &permit.world, err))?
     else {
         return Err(DeleteError::NotFound);
     };
@@ -360,11 +362,12 @@ fn capture_delete_subject_proof(
         return Ok(None);
     }
     let Some(head) =
-        core.latest_body_head(world, file_op)
-            .map_err(|err| DeleteError::SubjectAudit {
+        blocking_sqlite::run_scoped(|proof| core.latest_body_head(proof, world, file_op)).map_err(
+            |err| DeleteError::SubjectAudit {
                 world: world.clone(),
                 err,
-            })?
+            },
+        )?
     else {
         return Err(DeleteError::SubjectMissingHead {
             world: world.clone(),
@@ -395,6 +398,7 @@ fn subject_head_missing_error() -> rusqlite::Error {
 
 fn check_preconditions(
     core: &Core,
+    proof: &mut blocking_sqlite::BlockingSqlite,
     world: &ValidatedWorldPath,
     preconditions: &etag::Preconditions,
     file_op: &crate::state::FileOpPermit,
@@ -403,7 +407,7 @@ fn check_preconditions(
         return Ok(());
     }
     let current = core
-        .read_world_with_etag(world, file_op)
+        .read_world_with_etag(proof, world, file_op)
         .map_err(|err| classify_audit_error("precondition read", world, err))?;
     let current_tag = current.as_ref().map(|(_, etag)| etag.as_str());
     etag::check_preconditions(preconditions, current_tag)
@@ -761,7 +765,14 @@ mod tests {
 
         assert!(matches!(err, DeleteError::ReservedMetadataHeader));
         let file_op = core.begin_file_op().unwrap();
-        assert!(core.read_world(&subject, &file_op).unwrap().is_some());
+        assert!(core
+            .read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &subject,
+                &file_op,
+            )
+            .unwrap()
+            .is_some());
         assert!(!crate::world::world_db(&dir, "var/log/deletes").exists());
         let _ = std::fs::remove_dir_all(dir);
     }

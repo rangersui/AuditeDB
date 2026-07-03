@@ -8,7 +8,7 @@
 use std::{fmt, sync::atomic::Ordering};
 
 use crate::{
-    auth,
+    auth, blocking_sqlite,
     chain_stamp::{ChainSeq, ChainStampRead},
     engine::{Engine, EngineError},
     engine_ops::{log_storage_error, EngineOps},
@@ -580,7 +580,10 @@ impl EngineOps<'_> {
             }
             return Ok(AuditVerify::NotApplicable);
         }
-        match self.core().cached_verify_chain(world, &permit._file_op) {
+        match blocking_sqlite::run_scoped(|proof| {
+            self.core()
+                .cached_verify_chain(proof, world, &permit._file_op)
+        }) {
             Ok(Some(crate::audit::VerifyReport::Valid(report))) => {
                 Ok(AuditVerify::Valid(report.into()))
             }
@@ -615,7 +618,10 @@ impl EngineOps<'_> {
             // Memory worlds have no audit chain: nothing to anchor.
             return Ok(None);
         }
-        match self.core().cached_chain_head(world, &permit._file_op) {
+        match blocking_sqlite::run_scoped(|proof| {
+            self.core()
+                .cached_chain_head(proof, world, &permit._file_op)
+        }) {
             Ok(Some(Ok(Some(head)))) => Ok(Some(HeadStamp {
                 generation: head.generation().clone(),
                 seq: head.seq(),
@@ -661,7 +667,10 @@ impl EngineOps<'_> {
             }
             return Ok(None);
         }
-        match self.core().cached_chain_stamp(world, seq, &permit._file_op) {
+        match blocking_sqlite::run_scoped(|proof| {
+            self.core()
+                .cached_chain_stamp(proof, world, seq, &permit._file_op)
+        }) {
             Ok(Some(Ok(stamp))) => Ok(Some(stamp)),
             Ok(Some(Err(crate::audit::AuditError::ChainBroken(break_report)))) => {
                 crate::engine_error::log_audit_chain_error(

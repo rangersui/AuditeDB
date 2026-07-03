@@ -6,7 +6,9 @@
 #![cfg_attr(not(feature = "unstable-engine"), allow(dead_code))]
 
 use crate::{
-    audit, auth, can_read,
+    audit, auth,
+    blocking_sqlite::BlockingSqlite,
+    can_read,
     engine_types::ValidatedWorldPath,
     state::FileOpPermit,
     timeline::{TimelineAddress, TimelineCoordinate, TimelineRead},
@@ -71,14 +73,16 @@ pub(crate) fn authorize_read(
 
 pub(crate) fn read_world(
     core: &Core,
+    proof: &mut BlockingSqlite,
     permit: &ReadPermit,
     file_op: &FileOpPermit,
 ) -> Result<ReadOutcome, ReadError> {
-    read_world_for(core, permit, &permit.world, file_op)
+    read_world_for(core, proof, permit, &permit.world, file_op)
 }
 
 pub(crate) fn read_timeline_body(
     core: &Core,
+    proof: &mut BlockingSqlite,
     permit: &ReadPermit,
     address: &TimelineAddress,
     file_op: &FileOpPermit,
@@ -86,7 +90,7 @@ pub(crate) fn read_timeline_body(
     if permit.world != *address.world() {
         return Err(ReadError::PermitWorldMismatch);
     }
-    match core.read_timeline_body(address, file_op) {
+    match core.read_timeline_body(proof, address, file_op) {
         Ok(Some(read)) => Ok(read),
         Ok(None) => Ok(TimelineRead::Unproven {
             address: address.clone(),
@@ -98,6 +102,7 @@ pub(crate) fn read_timeline_body(
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn dereference_timeline_coordinate(
     core: &Core,
+    proof: &mut BlockingSqlite,
     permit: &ReadPermit,
     coordinate: &TimelineCoordinate,
     _file_op: &FileOpPermit,
@@ -107,7 +112,13 @@ pub(crate) fn dereference_timeline_coordinate(
     }
     let read = core
         .read_cache
-        .cached_dereference_timeline_coordinate(&core.data, permit, coordinate, &core.hmac_key)
+        .cached_dereference_timeline_coordinate(
+            proof,
+            &core.data,
+            permit,
+            coordinate,
+            &core.hmac_key,
+        )
         .map_err(audit::AuditError::from)
         .map_err(|err| classify_read_audit_error("timeline dereference", err))?;
     match read {
@@ -124,6 +135,7 @@ pub(crate) fn dereference_timeline_coordinate(
 
 pub(crate) fn read_world_for(
     core: &Core,
+    proof: &mut BlockingSqlite,
     permit: &ReadPermit,
     world: &ValidatedWorldPath,
     file_op: &FileOpPermit,
@@ -131,7 +143,7 @@ pub(crate) fn read_world_for(
     if &permit.world != world {
         return Err(ReadError::PermitWorldMismatch);
     }
-    match core.read_world_with_etag(world, file_op) {
+    match core.read_world_with_etag(proof, world, file_op) {
         Ok(Some((stage, etag))) => Ok(ReadOutcome::Found { stage, etag }),
         Ok(None) => Ok(ReadOutcome::Missing),
         Err(err) => Err(classify_read_audit_error("storage read", err)),
@@ -200,7 +212,13 @@ mod tests {
 
         let file_op = core.begin_file_op().unwrap();
         assert!(matches!(
-            read_timeline_body(&core, &permit, &address, &file_op),
+            read_timeline_body(
+                &core,
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &permit,
+                &address,
+                &file_op
+            ),
             Err(ReadError::PermitWorldMismatch)
         ));
 
@@ -217,7 +235,13 @@ mod tests {
 
         let file_op = core.begin_file_op().unwrap();
         assert!(matches!(
-            dereference_timeline_coordinate(&core, &permit, &coordinate, &file_op),
+            dereference_timeline_coordinate(
+                &core,
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &permit,
+                &coordinate,
+                &file_op
+            ),
             Err(ReadError::PermitWorldMismatch)
         ));
 
@@ -232,7 +256,15 @@ mod tests {
         let permit = authorize_read(&core, coordinate.world(), auth::Tier::Read).unwrap();
 
         let file_op = core.begin_file_op().unwrap();
-        match dereference_timeline_coordinate(&core, &permit, &coordinate, &file_op).unwrap() {
+        match dereference_timeline_coordinate(
+            &core,
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &permit,
+            &coordinate,
+            &file_op,
+        )
+        .unwrap()
+        {
             audit::timeline_dereference::TimelineDereference::UnprovenCoordinate(got) => {
                 assert_eq!(got, coordinate)
             }
@@ -251,7 +283,15 @@ mod tests {
         let address = timeline_address(world);
 
         let file_op = core.begin_file_op().unwrap();
-        match read_timeline_body(&core, &permit, &address, &file_op).unwrap() {
+        match read_timeline_body(
+            &core,
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &permit,
+            &address,
+            &file_op,
+        )
+        .unwrap()
+        {
             TimelineRead::Unproven { address: got } => assert_eq!(got, address),
             _ => panic!("expected unproven timeline read"),
         }
@@ -287,7 +327,12 @@ mod tests {
         let file_op = core.begin_file_op().unwrap();
         assert!(
             matches!(
-                read_world(&core, &read_permit, &file_op),
+                read_world(
+                    &core,
+                    &mut crate::blocking_sqlite::test_only_mint(),
+                    &read_permit,
+                    &file_op
+                ),
                 Err(ReadError::TransientStorage { .. })
             ),
             "real SQLite busy/locked errors must stay classified as transient"

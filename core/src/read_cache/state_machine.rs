@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use rusqlite::{ffi::ErrorCode, Connection, OpenFlags};
 
-use crate::{engine_types::ValidatedWorldPath, world, world_schema};
+use crate::{
+    blocking_sqlite::BlockingSqlite, engine_types::ValidatedWorldPath, world, world_schema,
+};
 
 use super::{
     log_read_cache_retry_budget_exhausted, read_cache_retry_budget_error, ReadCache, ReadSlot,
@@ -119,6 +121,7 @@ impl ReadCache {
     /// most once and returns its own `rusqlite::Result<R>`.
     pub(super) fn with_tracked_conn<F, R>(
         &self,
+        proof: &mut BlockingSqlite,
         data: &std::path::Path,
         world: &ValidatedWorldPath,
         f: F,
@@ -135,7 +138,7 @@ impl ReadCache {
             // PHASE 1 -- Cache hit (any state).
             if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
                 self.touch_slot(&arc);
-                match self.invoke_via_slot(arc.clone(), &mut f)? {
+                match self.invoke_via_slot(proof, arc.clone(), &mut f)? {
                     SlotRead::Done(value) => {
                         self.best_effort_trim_over_cap(world);
                         self.metrics.read_cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -171,7 +174,7 @@ impl ReadCache {
                 // Invariant: SlotRead::Done returns immediately after taking
                 // the FnOnce; retry states leave it present for fallback.
                 #[allow(clippy::expect_used)]
-                return self.invoke_transient(&path, world, f.take().expect("read closure"));
+                return self.invoke_transient(proof, &path, world, f.take().expect("read closure"));
             }
 
             // PHASE 3 -- Cache miss + room: slot-before-open lazy-init.
@@ -231,7 +234,7 @@ impl ReadCache {
             }
 
             self.touch_slot(&arc);
-            match self.invoke_via_slot(arc.clone(), &mut f)? {
+            match self.invoke_via_slot(proof, arc.clone(), &mut f)? {
                 SlotRead::Done(value) => {
                     self.best_effort_trim_over_cap(world);
                     return Ok(value);
@@ -248,6 +251,7 @@ impl ReadCache {
         // FnOnce; retry-budget fallback still owns it.
         #[allow(clippy::expect_used)]
         self.invoke_transient(
+            proof,
             &path,
             world,
             f.take().expect(
@@ -259,6 +263,7 @@ impl ReadCache {
 
     fn invoke_transient<F, R>(
         &self,
+        proof: &mut BlockingSqlite,
         path: &std::path::Path,
         world: &ValidatedWorldPath,
         f: F,
@@ -273,7 +278,7 @@ impl ReadCache {
             // the map entry yet).
             if let Some(arc) = self.read_conns.get(world).map(|e| e.value().clone()) {
                 self.touch_slot(&arc);
-                match self.invoke_via_slot(arc.clone(), &mut f)? {
+                match self.invoke_via_slot(proof, arc.clone(), &mut f)? {
                     SlotRead::Done(value) => {
                         self.best_effort_trim_over_cap(world);
                         return Ok(value);
@@ -336,7 +341,7 @@ impl ReadCache {
             }
 
             self.touch_slot(&arc);
-            let result = match self.invoke_via_slot(arc.clone(), &mut f)? {
+            let result = match self.invoke_via_slot(proof, arc.clone(), &mut f)? {
                 SlotRead::Done(value) => Ok(value),
                 SlotRead::Opening => continue,
                 SlotRead::Evicted => {
@@ -370,6 +375,7 @@ impl ReadCache {
 
     pub(super) fn invoke_via_slot<F, R>(
         &self,
+        _proof: &mut BlockingSqlite,
         arc: Arc<ReadSlot>,
         f: &mut Option<F>,
     ) -> rusqlite::Result<SlotRead<R>>
@@ -432,7 +438,9 @@ mod tests {
         let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
             panic!("failed Opening must retry, not run the read closure")
         });
-        let read = cache.invoke_via_slot(slot, &mut f).unwrap();
+        let read = cache
+            .invoke_via_slot(&mut crate::blocking_sqlite::test_only_mint(), slot, &mut f)
+            .unwrap();
         assert!(
             matches!(read, SlotRead::Evicted),
             "open/schema failure must not be represented as Tombstone/Ok(None)"

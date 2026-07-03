@@ -417,6 +417,10 @@ mod tests {
             .unwrap()
     }
 
+    fn proof() -> crate::blocking_sqlite::BlockingSqlite {
+        crate::blocking_sqlite::test_only_mint()
+    }
+
     fn v(world: &str) -> crate::engine_types::ValidatedWorldPath {
         crate::engine_types::ValidatedWorldPath::new(world).unwrap()
     }
@@ -462,14 +466,14 @@ mod tests {
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
         let r1 = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         assert!(r1.is_some());
         assert_eq!(cache.metrics.read_cache_hits.load(Ordering::Relaxed), 0);
         assert_eq!(cache.metrics.read_cache_misses.load(Ordering::Relaxed), 1);
 
         let r2 = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         assert!(r2.is_some());
         assert_eq!(cache.metrics.read_cache_hits.load(Ordering::Relaxed), 1);
@@ -540,10 +544,11 @@ mod tests {
         create_legacy_world_without_generation(&dir, "home/legacy");
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
-        let err = match cache.cached_read_with_hmac(&dir, &v("home/legacy"), &test_key()) {
-            Ok(_) => panic!("legacy schema must fail before read-cache promotion"),
-            Err(err) => err,
-        };
+        let err =
+            match cache.cached_read_with_hmac(&mut proof(), &dir, &v("home/legacy"), &test_key()) {
+                Ok(_) => panic!("legacy schema must fail before read-cache promotion"),
+                Err(err) => err,
+            };
 
         assert!(err.to_string().contains("stage_meta.generation"));
         assert!(cache.read_conns.get(&v("home/legacy")).is_none());
@@ -558,12 +563,12 @@ mod tests {
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
         assert!(cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap()
             .is_some());
         drop_generation_column_from_cached_world(&dir, world);
 
-        let err = match cache.cached_read_with_hmac(&dir, &v(world), &test_key()) {
+        let err = match cache.cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key()) {
             Ok(_) => panic!("cached read must revalidate stage_meta.generation"),
             Err(err) => err,
         };
@@ -580,7 +585,7 @@ mod tests {
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
 
         assert!(cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap()
             .unwrap()
             .is_ok());
@@ -590,7 +595,7 @@ mod tests {
             .unwrap();
         drop(conn);
 
-        let result = cache.cached_read_with_hmac(&dir, &v(world), &test_key());
+        let result = cache.cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key());
 
         assert!(matches!(
             result,
@@ -608,7 +613,7 @@ mod tests {
 
         let cache = ReadCache::new(2);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let a_first = cache
             .read_conns
@@ -618,7 +623,7 @@ mod tests {
             .load(Ordering::Relaxed);
 
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/b"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/b"), &test_key())
             .unwrap();
         let b_first = cache
             .read_conns
@@ -632,7 +637,7 @@ mod tests {
         );
 
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let a_second = cache
             .read_conns
@@ -653,7 +658,7 @@ mod tests {
         let dir = scratch_dir("missing");
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let r = cache
-            .cached_read_with_hmac(&dir, &v("home/none"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/none"), &test_key())
             .unwrap();
         assert!(r.is_none());
         assert!(cache.read_conns.get(&v("home/none")).is_none());
@@ -668,17 +673,17 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         cache.install_tombstone_blocking(&v(world));
         let r = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         assert!(r.is_none());
 
         cache.clear_tombstone(&v(world));
         let r2 = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         assert!(r2.is_some());
 
@@ -694,16 +699,16 @@ mod tests {
 
         let cache = ReadCache::new(2);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/b"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/b"), &test_key())
             .unwrap();
         assert_eq!(cache.read_conns.len(), 2);
         assert_eq!(cache.metrics.read_cache_capped.load(Ordering::Relaxed), 0);
 
         let r = cache
-            .cached_read_with_hmac(&dir, &v("home/c"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/c"), &test_key())
             .unwrap();
         assert!(r.is_some());
         assert!(
@@ -735,10 +740,10 @@ mod tests {
 
         let cache = ReadCache::new(2);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/b"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/b"), &test_key())
             .unwrap();
 
         let a_arc = cache.read_conns.get(&v("home/a")).unwrap().value().clone();
@@ -747,7 +752,7 @@ mod tests {
         let b_guard = b_arc.inner.read().unwrap();
 
         let r = cache
-            .cached_read_with_hmac(&dir, &v("home/c"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/c"), &test_key())
             .unwrap();
         assert!(r.is_some());
         assert!(cache.read_conns.get(&v("home/c")).is_none());
@@ -780,7 +785,7 @@ mod tests {
         let cache = ReadCache::new(1);
         for (idx, w) in worlds.iter().enumerate() {
             let read = cache
-                .cached_read_with_hmac(&dir, &v(w), &test_key())
+                .cached_read_with_hmac(&mut proof(), &dir, &v(w), &test_key())
                 .unwrap();
             let (stage, _hmac) = read
                 .expect("existing world must not look missing at cap=1")
@@ -827,7 +832,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 for _ in 0..8 {
                     let read = cache
-                        .cached_read_with_hmac(&dir, &v(world), &test_key())
+                        .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
                         .expect("cache-size-one concurrent read");
                     let (stage, _hmac) = read
                         .expect("existing world must not look missing at cache size 1")
@@ -857,14 +862,14 @@ mod tests {
 
         let cache = ReadCache::new(2);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/b"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/b"), &test_key())
             .unwrap();
         let hits_before = cache.metrics.read_cache_hits.load(Ordering::Relaxed);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let hits_after = cache.metrics.read_cache_hits.load(Ordering::Relaxed);
         assert_eq!(hits_after, hits_before + 1);
@@ -885,7 +890,7 @@ mod tests {
             .insert(v(world), cache.new_slot(SlotState::Evicted));
 
         let read = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         let (stage, _hmac) = read
             .expect("evicted cache slot must reopen existing world")
@@ -917,7 +922,7 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         let arc = cache.read_conns.get(&v(world)).unwrap().value().clone();
         let read_guard = arc.inner.read().unwrap();
@@ -943,7 +948,7 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         let arc = cache.read_conns.get(&v(world)).unwrap().value().clone();
 
@@ -969,7 +974,7 @@ mod tests {
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         let stale_arc = cache.read_conns.get(&v(world)).unwrap().value().clone();
         cache
@@ -1001,7 +1006,7 @@ mod tests {
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
         cache.install_tombstone_blocking(&v(world));
         let tombstone = cache
-            .cached_read_with_hmac(&dir, &v(world), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key())
             .unwrap();
         assert!(tombstone.is_none());
         assert_eq!(
@@ -1019,7 +1024,9 @@ mod tests {
         let mut f = Some(|_: &mut TrackedReadConnection| -> rusqlite::Result<()> {
             panic!("Opening must be a retry signal, not a readable slot")
         });
-        let opening = cache.invoke_via_slot(opening_slot, &mut f).unwrap();
+        let opening = cache
+            .invoke_via_slot(&mut proof(), opening_slot, &mut f)
+            .unwrap();
         assert!(
             matches!(opening, SlotRead::Opening),
             "Opening is not a definitive absence answer"
@@ -1046,7 +1053,7 @@ mod tests {
             .read_conns
             .insert(v(world), cache.new_slot(SlotState::Opening));
 
-        let err = match cache.cached_read_with_hmac(&dir, &v(world), &test_key()) {
+        let err = match cache.cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key()) {
             Ok(Some(_)) => panic!("stuck Opening must not resolve as a body"),
             Ok(None) => panic!("stuck Opening must not report a false 404"),
             Err(err) => err,
@@ -1074,7 +1081,7 @@ mod tests {
 
         let cache = ReadCache::new(2);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/ready"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/ready"), &test_key())
             .unwrap();
         cache.install_tombstone_blocking(&v("home/tomb"));
 
@@ -1088,7 +1095,7 @@ mod tests {
             "Tombstone is delete state, not an LRU eviction candidate"
         );
         let tombstone_read = cache
-            .cached_read_with_hmac(&dir, &v("home/tomb"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/tomb"), &test_key())
             .unwrap();
         assert!(tombstone_read.is_none());
 
@@ -1104,13 +1111,13 @@ mod tests {
 
         let cache = ReadCache::new(3);
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/b"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/b"), &test_key())
             .unwrap();
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/c"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/c"), &test_key())
             .unwrap();
 
         let a_arc = cache.read_conns.get(&v("home/a")).unwrap().value().clone();
@@ -1169,7 +1176,9 @@ mod tests {
 
         // Phase 3 lazy-init: first verify warms the cache.
         let key = test_key();
-        let r1 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
+        let r1 = cache
+            .cached_verify_chain(&mut proof(), &dir, &v(world), &key)
+            .unwrap();
         assert!(matches!(r1, Some(crate::audit::VerifyReport::Valid(_))));
         assert!(
             cache.read_conns.get(&v(world)).is_some(),
@@ -1179,18 +1188,24 @@ mod tests {
         );
 
         // Phase 1 cache hit: second verify reuses the cached slot.
-        let r2 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
+        let r2 = cache
+            .cached_verify_chain(&mut proof(), &dir, &v(world), &key)
+            .unwrap();
         assert!(matches!(r2, Some(crate::audit::VerifyReport::Valid(_))));
 
         // Tombstone short-circuits verify (delete intent).
         cache.install_tombstone_blocking(&v(world));
-        let r3 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
+        let r3 = cache
+            .cached_verify_chain(&mut proof(), &dir, &v(world), &key)
+            .unwrap();
         assert!(r3.is_none());
 
         // After clear_tombstone the next verify re-opens through
         // Phase 3 lazy-init.
         cache.clear_tombstone(&v(world));
-        let r4 = cache.cached_verify_chain(&dir, &v(world), &key).unwrap();
+        let r4 = cache
+            .cached_verify_chain(&mut proof(), &dir, &v(world), &key)
+            .unwrap();
         assert!(matches!(r4, Some(crate::audit::VerifyReport::Valid(_))));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1221,10 +1236,10 @@ mod tests {
         // cap=2 -> A and B fill it; C must go through transient.
         let cache = StdArc::new(ReadCache::new(2));
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/a"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/a"), &test_key())
             .unwrap();
         let _ = cache
-            .cached_read_with_hmac(&dir, &v("home/b"), &test_key())
+            .cached_read_with_hmac(&mut proof(), &dir, &v("home/b"), &test_key())
             .unwrap();
         let a_arc = cache.read_conns.get(&v("home/a")).unwrap().value().clone();
         let b_arc = cache.read_conns.get(&v("home/b")).unwrap().value().clone();
@@ -1256,7 +1271,7 @@ mod tests {
             let dir = dir.clone();
             handles.push(thread::spawn(move || {
                 cache
-                    .cached_read_with_hmac(&dir, &v("home/c"), &test_key())
+                    .cached_read_with_hmac(&mut proof(), &dir, &v("home/c"), &test_key())
                     .expect("read")
             }));
         }
@@ -1312,7 +1327,7 @@ mod tests {
         std::fs::set_permissions(&db_path, perms).unwrap();
 
         let cache = ReadCache::new(DEFAULT_READ_CACHE_MAX_ENTRIES);
-        let result = cache.cached_read_with_hmac(&dir, &v(world), &test_key());
+        let result = cache.cached_read_with_hmac(&mut proof(), &dir, &v(world), &test_key());
 
         // path.try_exists() returns Ok(true) for the still-on-disk
         // (but unreadable) file. The CANTOPEN error must propagate

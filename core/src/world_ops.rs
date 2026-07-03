@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 
 use crate::{
-    audit, auth,
+    audit, auth, blocking_sqlite,
     engine_types::{ChangeVerb, ValidatedRepresentationMetadata, ValidatedWorldPath},
     etag, event, store,
     subscription_event_id::ChangeTarget,
@@ -211,7 +211,9 @@ pub(crate) async fn replace_write<H: WriteTraceHooks + ?Sized>(
     hooks.lock_acquired();
     let file_op = core.begin_file_op().ok_or(WriteError::ShuttingDown)?;
     core.clear_tombstone(world_path);
-    check_write_preconditions(core, world_path, &req.preconditions, &file_op)?;
+    blocking_sqlite::run_scoped(|proof| {
+        check_write_preconditions(core, proof, world_path, &req.preconditions, &file_op)
+    })?;
 
     let (existed, etag, target, format_notice, aux) = if store::is_persistent(world_path) {
         let reservation = if let Some(quota) = core.max_storage_bytes {
@@ -421,7 +423,9 @@ pub(crate) async fn append_write<H: WriteTraceHooks + ?Sized>(
     hooks.lock_acquired();
     let file_op = core.begin_file_op().ok_or(WriteError::ShuttingDown)?;
     core.clear_tombstone(world_path);
-    check_write_preconditions(core, world_path, &req.preconditions, &file_op)?;
+    blocking_sqlite::run_scoped(|proof| {
+        check_write_preconditions(core, proof, world_path, &req.preconditions, &file_op)
+    })?;
 
     let memory_world = store::MemoryWorldPath::new(world_path);
     let Some((body_len, content_type, stored_headers)) = (if let Some(memory_world) = memory_world {
@@ -643,6 +647,7 @@ fn format_change_event(
 
 fn check_write_preconditions(
     core: &Core,
+    proof: &mut blocking_sqlite::BlockingSqlite,
     world: &ValidatedWorldPath,
     preconditions: &etag::Preconditions,
     file_op: &crate::state::FileOpPermit,
@@ -651,7 +656,7 @@ fn check_write_preconditions(
         return Ok(());
     }
     let current = core
-        .read_world_with_etag(world, file_op)
+        .read_world_with_etag(proof, world, file_op)
         .map_err(|err| classify_write_audit_error("precondition read", err))?;
     let current_tag = current.as_ref().map(|(_, etag)| etag.as_str());
     etag::check_preconditions(preconditions, current_tag)
@@ -723,14 +728,22 @@ mod tests {
             .expect("permit writes only its bound world");
 
         assert_eq!(
-            core.read_world(&world_path("home/permit-a"), &core.begin_file_op().unwrap())
-                .unwrap()
-                .unwrap()
-                .body,
+            core.read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &world_path("home/permit-a"),
+                &core.begin_file_op().unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .body,
             b"right-door"
         );
         assert!(core
-            .read_world(&world_path("home/permit-b"), &core.begin_file_op().unwrap())
+            .read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &world_path("home/permit-b"),
+                &core.begin_file_op().unwrap(),
+            )
             .unwrap()
             .is_none());
 
@@ -783,8 +796,9 @@ mod tests {
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 8);
         assert_eq!(
             core.read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
                 &world_path("home/quota-cas"),
-                &core.begin_file_op().unwrap()
+                &core.begin_file_op().unwrap(),
             )
             .unwrap()
             .unwrap()
@@ -839,8 +853,9 @@ mod tests {
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
         assert_eq!(
             core.read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
                 &world_path("home/replace-cas-mismatch"),
-                &core.begin_file_op().unwrap()
+                &core.begin_file_op().unwrap(),
             )
             .unwrap()
             .unwrap()
@@ -902,8 +917,9 @@ mod tests {
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
         assert_eq!(
             core.read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
                 &world_path("home/append-cas-mismatch"),
-                &core.begin_file_op().unwrap()
+                &core.begin_file_op().unwrap(),
             )
             .unwrap()
             .unwrap()
@@ -955,8 +971,9 @@ mod tests {
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 4);
         assert_eq!(
             core.read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
                 &world_path("home/append-quota"),
-                &core.begin_file_op().unwrap()
+                &core.begin_file_op().unwrap(),
             )
             .unwrap()
             .unwrap()

@@ -331,7 +331,11 @@ mod tests {
 
         let file_op = core.begin_file_op().unwrap();
         let stage = core
-            .read_world(&world_path("home/pdf"), &file_op)
+            .read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &world_path("home/pdf"),
+                &file_op,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(stage.content_type, "application/pdf");
@@ -365,7 +369,11 @@ mod tests {
         .unwrap();
 
         let stage = core
-            .read_world(&world_path("tmp/scratch"), &core.begin_file_op().unwrap())
+            .read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &world_path("tmp/scratch"),
+                &core.begin_file_op().unwrap(),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(stage.body, b"draft");
@@ -398,7 +406,14 @@ mod tests {
         .unwrap();
 
         let file_op = core.begin_file_op().unwrap();
-        let stage = core.read_world(&world, &file_op).unwrap().unwrap();
+        let stage = core
+            .read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &world,
+                &file_op,
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(stage.body, b"final");
         assert!(world::world_db(&core.data, "home/report").exists());
         assert_eq!(audit::latest_hmac(&core.data, "home/report"), Some(h));

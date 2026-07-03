@@ -292,11 +292,12 @@ impl Core {
 
     pub(crate) fn read_world(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         file_op: &FileOpPermit,
     ) -> audit::AuditResult<Option<Stage>> {
         Ok(self
-            .read_world_with_etag(world, file_op)?
+            .read_world_with_etag(proof, world, file_op)?
             .map(|(stage, _)| stage))
     }
 
@@ -307,6 +308,7 @@ impl Core {
     /// `std::sync::RwLock`, matching the existing handler call shape.
     pub(crate) fn read_world_with_etag(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> audit::AuditResult<Option<(Stage, String)>> {
@@ -318,7 +320,7 @@ impl Core {
         } else {
             Ok(self
                 .read_cache
-                .cached_read_with_hmac(&self.data, world, &self.hmac_key)?
+                .cached_read_with_hmac(proof, &self.data, world, &self.hmac_key)?
                 .transpose()?
                 .map(|(stage, hmac)| {
                     let etag = hmac
@@ -368,6 +370,7 @@ impl Core {
     /// here, same as `cached_verify_chain`.
     pub(crate) fn cached_chain_head(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> rusqlite::Result<Option<audit::AuditResult<Option<audit::VerifiedChainHead>>>> {
@@ -376,12 +379,13 @@ impl Core {
             "cached_chain_head only applies to durable worlds"
         );
         self.read_cache
-            .cached_chain_head(&self.data, world, &self.hmac_key)
+            .cached_chain_head(proof, &self.data, world, &self.hmac_key)
     }
 
     /// Verified chain-stamp lookup through the read-cache SlotState protocol.
     pub(crate) fn cached_chain_stamp(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         seq: crate::chain_stamp::ChainSeq,
         _file_op: &FileOpPermit,
@@ -391,7 +395,7 @@ impl Core {
             "cached_chain_stamp only applies to durable worlds"
         );
         self.read_cache
-            .cached_chain_stamp(&self.data, world, seq, &self.hmac_key)
+            .cached_chain_stamp(proof, &self.data, world, seq, &self.hmac_key)
     }
 
     /// Verify the audit chain through the read-cache SlotState
@@ -403,6 +407,7 @@ impl Core {
     /// here.
     pub(crate) fn cached_verify_chain(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> rusqlite::Result<Option<audit::VerifyReport>> {
@@ -411,7 +416,7 @@ impl Core {
             "cached_verify_chain only applies to durable worlds"
         );
         self.read_cache
-            .cached_verify_chain(&self.data, world, &self.hmac_key)
+            .cached_verify_chain(proof, &self.data, world, &self.hmac_key)
     }
 
     /// Historical body read through the read-cache SlotState protocol.
@@ -421,6 +426,7 @@ impl Core {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn read_timeline_body(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         address: &TimelineAddress,
         _file_op: &FileOpPermit,
     ) -> audit::AuditResult<Option<TimelineRead>> {
@@ -430,7 +436,7 @@ impl Core {
         );
         let read = self
             .read_cache
-            .cached_read_timeline_body(&self.data, address, &self.hmac_key)
+            .cached_read_timeline_body(proof, &self.data, address, &self.hmac_key)
             .map_err(audit::AuditError::from)?;
         match read {
             Some(result) => result.map(Some),
@@ -440,6 +446,7 @@ impl Core {
 
     pub(crate) fn replay_chain_events_after(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         event_id: &SubscriptionEventId,
         limit: usize,
         _file_op: &FileOpPermit,
@@ -450,7 +457,7 @@ impl Core {
         );
         let replay = self
             .read_cache
-            .cached_replay_chain_events_after(&self.data, event_id, limit, &self.hmac_key)
+            .cached_replay_chain_events_after(proof, &self.data, event_id, limit, &self.hmac_key)
             .map_err(audit::AuditError::from)?;
         match replay {
             Some(result) => result.map(Some),
@@ -463,6 +470,7 @@ impl Core {
     /// delete ledger can identify the exact body event being removed.
     pub(crate) fn latest_body_head(
         &self,
+        proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
     ) -> audit::AuditResult<Option<audit::VerifiedBodyHead>> {
@@ -472,7 +480,7 @@ impl Core {
         );
         let head = self
             .read_cache
-            .cached_latest_body_head(&self.data, world, &self.hmac_key)
+            .cached_latest_body_head(proof, &self.data, world, &self.hmac_key)
             .map_err(audit::AuditError::from)?;
         match head {
             Some(result) => result,
@@ -927,7 +935,11 @@ mod tests {
 
         let file_op = core.begin_file_op().unwrap();
         match core
-            .read_timeline_body(&address, &file_op)
+            .read_timeline_body(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &address,
+                &file_op,
+            )
             .unwrap()
             .unwrap()
         {
@@ -944,16 +956,24 @@ mod tests {
         core.install_tombstone(&world).await;
         let file_op = core.begin_file_op().unwrap();
         assert!(
-            core.read_timeline_body(&address, &file_op)
-                .unwrap()
-                .is_none(),
+            core.read_timeline_body(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &address,
+                &file_op,
+            )
+            .unwrap()
+            .is_none(),
             "timeline reads must route through the read-cache tombstone gate"
         );
 
         core.clear_tombstone(&world);
         let file_op = core.begin_file_op().unwrap();
         match core
-            .read_timeline_body(&address, &file_op)
+            .read_timeline_body(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &address,
+                &file_op,
+            )
             .unwrap()
             .unwrap()
         {

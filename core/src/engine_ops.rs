@@ -83,12 +83,13 @@ impl<'a> EngineOps<'a> {
 
     pub(crate) fn read(
         &self,
+        proof: &mut blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         tier: auth::Tier,
     ) -> Result<Option<ReadResult>, EngineError> {
         let permit = world_read_ops::authorize_read(self.core, world, tier)?;
         let _file_op = self.begin_file_op()?;
-        match world_read_ops::read_world(self.core, &permit, &_file_op)
+        match world_read_ops::read_world(self.core, proof, &permit, &_file_op)
             .map_err(|err| read_error_to_engine(err, Some(world.as_str())))?
         {
             world_read_ops::ReadOutcome::Found { stage, etag } => Ok(Some(ReadResult::new(
@@ -101,24 +102,28 @@ impl<'a> EngineOps<'a> {
 
     pub(crate) fn read_timeline_body(
         &self,
+        proof: &mut blocking_sqlite::BlockingSqlite,
         address: &TimelineAddress,
         tier: auth::Tier,
     ) -> Result<TimelineRead, EngineError> {
         let permit = world_read_ops::authorize_read(self.core, address.world(), tier)?;
         let _file_op = self.begin_file_op()?;
-        world_read_ops::read_timeline_body(self.core, &permit, address, &_file_op)
+        world_read_ops::read_timeline_body(self.core, proof, &permit, address, &_file_op)
             .map_err(|err| read_error_to_engine(err, Some(address.world().as_str())))
     }
 
     pub(crate) fn dereference_timeline_coordinate(
         &self,
+        proof: &mut blocking_sqlite::BlockingSqlite,
         coordinate: &TimelineCoordinate,
         tier: auth::Tier,
     ) -> Result<TimelineDereference, EngineError> {
         let permit = world_read_ops::authorize_read(self.core, coordinate.world(), tier)?;
         let _file_op = self.begin_file_op()?;
-        world_read_ops::dereference_timeline_coordinate(self.core, &permit, coordinate, &_file_op)
-            .map_err(|err| read_error_to_engine(err, Some(coordinate.world().as_str())))
+        world_read_ops::dereference_timeline_coordinate(
+            self.core, proof, &permit, coordinate, &_file_op,
+        )
+        .map_err(|err| read_error_to_engine(err, Some(coordinate.world().as_str())))
     }
 
     pub(crate) async fn replace<H: world_ops::WriteTraceHooks + ?Sized>(
@@ -261,9 +266,11 @@ impl Engine {
     ) -> Result<Option<ReadResult>, EngineError> {
         let engine = self.clone();
         let world = world.clone();
-        blocking_sqlite::run(move |_| EngineOps::new(engine.core()).read(&world, tier.into()))
-            .await
-            .map_err(blocking_join_to_engine)?
+        blocking_sqlite::run(move |proof| {
+            EngineOps::new(engine.core()).read(proof, &world, tier.into())
+        })
+        .await
+        .map_err(blocking_join_to_engine)?
     }
 
     /// Reads the body snapshot addressed by an audited timeline address.
@@ -288,8 +295,8 @@ impl Engine {
     ) -> Result<TimelineRead, EngineError> {
         let engine = self.clone();
         let address = address.clone();
-        blocking_sqlite::run(move |_| {
-            EngineOps::new(engine.core()).read_timeline_body(&address, tier.into())
+        blocking_sqlite::run(move |proof| {
+            EngineOps::new(engine.core()).read_timeline_body(proof, &address, tier.into())
         })
         .await
         .map_err(blocking_join_to_engine)?
@@ -317,8 +324,12 @@ impl Engine {
     ) -> Result<TimelineDereference, EngineError> {
         let engine = self.clone();
         let coordinate = coordinate.clone();
-        blocking_sqlite::run(move |_| {
-            EngineOps::new(engine.core()).dereference_timeline_coordinate(&coordinate, tier.into())
+        blocking_sqlite::run(move |proof| {
+            EngineOps::new(engine.core()).dereference_timeline_coordinate(
+                proof,
+                &coordinate,
+                tier.into(),
+            )
         })
         .await
         .map_err(blocking_join_to_engine)?
@@ -658,7 +669,9 @@ fn replay_after_durable_chain_event_id(
     let Some(file_op) = core.begin_file_op() else {
         return Err(EngineError::ShuttingDown);
     };
-    let replay = match core.replay_chain_events_after(&event_id, core.listen_replay_max, &file_op) {
+    let replay = match blocking_sqlite::run_scoped(|proof| {
+        core.replay_chain_events_after(proof, &event_id, core.listen_replay_max, &file_op)
+    }) {
         Ok(Some(crate::audit::VerifiedReplayAfter::Events(events))) => events,
         Ok(Some(crate::audit::VerifiedReplayAfter::GenerationMismatch)) => {
             return Ok((

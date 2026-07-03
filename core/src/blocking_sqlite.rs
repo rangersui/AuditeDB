@@ -4,8 +4,8 @@
 //! only inside `spawn_blocking`" because the engine intentionally keeps
 //! read, write, and ledger connections alive in caches. The invariant is
 //! narrower and enforceable: production helpers that execute SQLite must
-//! require `&mut BlockingSqlite`, and the only production minting path is
-//! `run`, which creates the token inside `tokio::task::spawn_blocking`.
+//! require `&mut BlockingSqlite`. Production code can only mint that proof
+//! through this module's blocking gates.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -77,6 +77,14 @@ where
     .map_err(BlockingJoinError::from)
 }
 
+pub(crate) fn run_scoped<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut BlockingSqlite) -> R,
+{
+    let mut proof = BlockingSqlite::mint();
+    f(&mut proof)
+}
+
 /// Test-only escape hatch for direct unit tests of blocking helpers.
 ///
 /// Production code has no direct minting path. Tests that use this bypass
@@ -113,5 +121,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_panic());
+    }
+
+    #[test]
+    fn run_scoped_mints_non_static_proof() {
+        let local = 7;
+        let value = run_scoped(|proof| requires_proof(proof) + local);
+        assert_eq!(value, 49);
     }
 }
