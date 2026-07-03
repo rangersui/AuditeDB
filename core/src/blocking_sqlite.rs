@@ -1,11 +1,16 @@
-//! Proof token for SQLite execution on Tokio's blocking pool.
+//! Proof token for authorised SQLite execution gates.
 //!
 //! `rusqlite` is synchronous. The invariant here is not "own a connection
 //! only inside `spawn_blocking`" because the engine intentionally keeps
 //! read, write, and ledger connections alive in caches. The invariant is
 //! narrower and enforceable: production helpers that execute SQLite must
 //! require `&mut BlockingSqlite`. Production code can only mint that proof
-//! through this module's blocking gates.
+//! through this module's gates.
+//!
+//! `run` is the async boundary: it mints the proof inside Tokio's blocking
+//! pool. `run_scoped` is the synchronous boundary for borrowed/non-`'static`
+//! engine internals that cannot cross `spawn_blocking`; it still centralises
+//! proof minting, but does not claim a scheduler transition.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -13,8 +18,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-/// Proof that the current call stack is inside the Engine's blocking
-/// SQLite execution gate.
+/// Proof that the current call stack is inside an Engine SQLite execution gate.
 ///
 /// The private fields prevent construction outside this module. The
 /// `Rc` marker makes the token `!Send + !Sync`, so it cannot be moved
