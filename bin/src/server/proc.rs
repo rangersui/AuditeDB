@@ -1134,7 +1134,16 @@ mod tests {
         assert!(df_body.contains("storage_current_body_bytes\t5\tunlimited\tunlimited\n"));
         assert!(df_body.contains("storage_retained_cas_body_bytes\t5\tunlimited\tunlimited\n"));
         assert!(df_body.contains("storage_audit_chain_events\t2\tunlimited\tunlimited\n"));
-        assert!(df_body.contains("memory\t4\t268435456\t268435452\n"));
+        let memory_line = df_body
+            .lines()
+            .find(|line| line.starts_with("memory\t"))
+            .expect("df output should include memory row");
+        let memory_parts: Vec<_> = memory_line.split('\t').collect();
+        assert_eq!(memory_parts[2], "268435456");
+        assert!(
+            memory_parts[1].parse::<usize>().unwrap() > 4,
+            "memory usage should charge key and metadata, not only body bytes"
+        );
         assert!(df_body.contains("worlds\t2\tunlimited\tunlimited\n"));
 
         let head = proc_du(State(state), Method::HEAD, headers).await;

@@ -674,15 +674,15 @@ impl Core {
     }
 
     fn evict_cached_write_conn_if_needed(&self, protected: &ValidatedWorldPath) {
-        if self.write_conns.len() <= WRITE_CONN_CACHE_MAX_ENTRIES {
-            return;
-        }
-        let victim = self
-            .write_conns
-            .iter()
-            .find(|entry| entry.key() != protected)
-            .map(|entry| entry.key().clone());
-        if let Some(victim) = victim {
+        while self.write_conns.len() > WRITE_CONN_CACHE_MAX_ENTRIES {
+            let victim = self
+                .write_conns
+                .iter()
+                .find(|entry| entry.key() != protected)
+                .map(|entry| entry.key().clone());
+            let Some(victim) = victim else {
+                return;
+            };
             self.write_conns.remove(&victim);
         }
     }

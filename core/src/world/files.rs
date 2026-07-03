@@ -88,6 +88,36 @@ pub fn list_with_prefix_bounded(
     )
 }
 
+pub(crate) enum WalkWorldsError<E> {
+    Storage(rusqlite::Error),
+    Visit(E),
+}
+
+pub(crate) fn try_for_each<E>(
+    proof: &mut BlockingSqlite,
+    data_root: &Path,
+    _file_op: &FileOpPermit,
+    mut visit: impl FnMut(&mut BlockingSqlite, ValidatedWorldPath) -> Result<(), E>,
+) -> Result<(), WalkWorldsError<E>> {
+    let rd = std::fs::read_dir(data_root)
+        .map_err(|err| WalkWorldsError::Storage(create_dir_error(err)))?;
+    for entry in rd {
+        let entry = entry.map_err(|err| WalkWorldsError::Storage(create_dir_error(err)))?;
+        if !entry.path().join("universe.db").exists() {
+            continue;
+        }
+        let name = entry.file_name().into_string().map_err(|_| {
+            WalkWorldsError::Storage(corrupt_disk_world_name(
+                "<non-unicode>",
+                "disk name is not Unicode",
+            ))
+        })?;
+        let world = decode_disk_world_name(&name).map_err(WalkWorldsError::Storage)?;
+        visit(proof, world).map_err(WalkWorldsError::Visit)?;
+    }
+    Ok(())
+}
+
 fn release_wal_files(proof: &mut BlockingSqlite, data_root: &Path, world: &ValidatedWorldPath) {
     match open_checkpoint_conn_validated(proof, data_root, world) {
         Ok(Some(c)) => {

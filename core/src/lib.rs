@@ -221,6 +221,7 @@ pub(crate) use data_lock::acquire_data_root_writer_lock;
 pub use defaults::{
     DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
     DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES, DEFAULT_RETAINED_BODY_COUNT,
+    MAX_RETAINED_BODY_COUNT,
 };
 #[cfg(feature = "unstable-engine")]
 #[doc(hidden)]

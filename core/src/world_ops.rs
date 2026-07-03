@@ -410,8 +410,16 @@ fn replace_write_blocking(
                 None,
                 event::ChangeEventAux::default(),
             ),
-            Err(store::MemoryQuotaError { quota, .. }) => {
-                return Err(WriteError::PayloadTooLarge { max: quota });
+            Err(store::MemoryQuotaError {
+                used,
+                quota,
+                projected,
+            }) => {
+                return Err(WriteError::QuotaExceeded {
+                    used,
+                    quota,
+                    projected,
+                });
             }
         }
     };
@@ -650,8 +658,16 @@ fn append_write_blocking(
                 event::ChangeEventAux::default(),
             ),
             Ok(None) => return Err(WriteError::NotFound),
-            Err(store::MemoryQuotaError { quota, .. }) => {
-                return Err(WriteError::PayloadTooLarge { max: quota });
+            Err(store::MemoryQuotaError {
+                used,
+                quota,
+                projected,
+            }) => {
+                return Err(WriteError::QuotaExceeded {
+                    used,
+                    quota,
+                    projected,
+                });
             }
         }
     };

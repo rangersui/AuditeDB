@@ -173,7 +173,7 @@ pub(super) fn verify_statement_capture(
             ) {
                 return Ok(VerifyCapturedReport::Broken(break_report));
             }
-            headers.clear();
+            headers = Vec::new();
         }
         if current.is_none() {
             current = Some(row);

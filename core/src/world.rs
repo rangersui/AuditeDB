@@ -49,6 +49,7 @@ pub(crate) use cas::{PrunedCas, RetainedBodyCount, RetainedCasBody};
 #[cfg(test)]
 use files::open_checkpoint_conn;
 pub use files::{list, list_with_prefix, list_with_prefix_bounded};
+pub(crate) use files::{try_for_each, WalkWorldsError};
 
 // Encode chars that confuse Windows / POSIX filesystems. Decoded form
 // is the canonical world key; encoded form is the on-disk dir name.

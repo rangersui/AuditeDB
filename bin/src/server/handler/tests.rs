@@ -869,17 +869,16 @@ async fn concurrent_puts_to_distinct_worlds_do_not_overshoot_quota() {
 async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
     // Mirror of concurrent_puts_to_distinct_worlds_do_not_overshoot_quota
     // for memory worlds. Per-world locks let writes to /tmp/a and
-    // /tmp/b run concurrently; before this fix each one would read
-    // total_bytes() as a snapshot, both pass the budget check, and
-    // both commit -- overshooting AUDITEDB_MAX_MEMORY_BYTES. With the
-    // check + write fused under the MemoryStore HashMap mutex inside
-    // write_with_quota, only the writes whose accept order keeps the
-    // running total under the cap can commit.
-    let cap = 100;
+    // /tmp/b run concurrently. The memory store now charges key,
+    // metadata, hash, and fixed entry overhead in addition to body
+    // bytes; the check + write stays fused under the HashMap mutex,
+    // so only the writes whose accept order keeps the accounted total
+    // under the cap can commit.
+    let cap = 2_000;
     let (engine, dir) = test_engine_for_server_with_memory_cap("memory-quota-race", cap);
 
     let workers = 16;
-    let body_len = 12; // 16 * 12 = 192 > cap: forced contention
+    let body_len = 12;
     let mut handles = Vec::with_capacity(workers);
     for i in 0..workers {
         let engine = engine.clone();
@@ -905,16 +904,23 @@ async fn concurrent_memory_puts_do_not_overshoot_max_memory_bytes() {
         let resp = handle.await.unwrap();
         match resp.status() {
             StatusCode::CREATED | StatusCode::OK => accepted += 1,
-            StatusCode::PAYLOAD_TOO_LARGE => {}
+            StatusCode::INSUFFICIENT_STORAGE => {}
             other => panic!("unexpected status: {other}"),
         }
     }
 
     let used = engine.df(AccessTier::Read).unwrap().memory_used;
-    let counted = accepted * body_len;
-    assert_eq!(
-        used, counted,
-        "memory total must equal sum of accepted bodies"
+    assert!(
+        accepted > 0,
+        "quota should allow at least one accounted memory write"
+    );
+    assert!(
+        accepted < workers,
+        "quota should reject part of the contended memory-write batch"
+    );
+    assert!(
+        used > accepted * body_len,
+        "memory total must charge key and metadata, not only accepted bodies"
     );
     assert!(
         used <= cap,
@@ -973,7 +979,7 @@ async fn put_and_post_enforce_world_size_cap() {
 
 #[tokio::test]
 async fn memory_backend_enforces_total_quota() {
-    let (engine, dir) = test_engine_for_server_with_memory_cap("memory-quota", 4);
+    let (engine, dir) = test_engine_for_server_with_memory_cap("memory-quota", 500);
     let headers = HeaderMap::new();
 
     let first = unwrap_response(
@@ -1011,7 +1017,7 @@ async fn memory_backend_enforces_total_quota() {
         )
         .await,
     );
-    assert_eq!(third.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(third.status(), StatusCode::INSUFFICIENT_STORAGE);
 
     let _ = std::fs::remove_dir_all(dir);
 }

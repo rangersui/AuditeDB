@@ -42,7 +42,7 @@ Common binary environment variables:
 | `AUDITEDB_PERSIST_HEADERS` | unset | Comma-separated custom response headers to preserve, e.g. `x-author,x-meta-*`. |
 | `AUDITEDB_DENY_HEADERS` | unset | Subtracts headers from the persist allowlist. |
 | `AUDITEDB_MAX_WORLD_BYTES` | `67108864` | Maximum body size for one world. |
-| `AUDITEDB_MAX_MEMORY_BYTES` | `268435456` | Total in-memory quota for `tmp/`, `dev/`, and `sys/` worlds. |
+| `AUDITEDB_MAX_MEMORY_BYTES` | `268435456` | Accounted in-memory quota for `tmp/`, `dev/`, and `sys/` worlds: body plus key, metadata, hash, and fixed entry overhead. |
 | `AUDITEDB_MAX_STORAGE_BYTES` | unset | Optional durable SQLite-backed storage quota. |
 | `AUDITEDB_MAX_LISTEN_CONNECTIONS` | `1024` | Maximum concurrent `/listen/*` SSE subscriptions. |
 | `AUDITEDB_LISTEN_REPLAY_MAX` | `1024` | Replay ring size for reconnecting SSE clients. |
@@ -198,8 +198,9 @@ world    total_body_bytes    current_body_bytes    retained_cas_body_bytes    au
 
 `/proc/df` keeps the legacy `storage`, `memory`, and `worlds` rows, and also
 emits `storage_current_body_bytes`, `storage_retained_cas_body_bytes`, and
-`storage_audit_chain_events`. The byte gauges are Engine-accounted body bytes,
-not SQLite file size, WAL size, or index overhead.
+`storage_audit_chain_events`. Durable storage byte gauges are Engine-accounted
+body bytes, not SQLite file size, WAL size, or index overhead. The `memory`
+row charges body bytes plus key, metadata, hash, and fixed entry overhead.
 
 For audit verification, `<world>` is still a normal canonical world key:
 `/proc/audit/home/note/verify` verifies `home/note`. It does not create or read

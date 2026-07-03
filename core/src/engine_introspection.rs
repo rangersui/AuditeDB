@@ -95,7 +95,10 @@ pub struct DfSnapshot {
     pub storage_audit_chain_events: usize,
     /// Configured durable quota, or `None` if unlimited.
     pub storage_quota: Option<usize>,
-    /// Bytes used by in-memory bodies.
+    /// Accounted in-memory bytes.
+    ///
+    /// This charges body bytes plus key, metadata, hash, and fixed entry
+    /// overhead for transient memory worlds.
     pub memory_used: usize,
     /// Configured memory cap. `0` means unlimited.
     pub memory_quota: usize,
@@ -493,7 +496,7 @@ impl EngineOps {
     ) -> Result<DfSnapshot, EngineError> {
         let permit = self.authorize_introspection(path, tier)?;
         ensure_proc_endpoint(&permit, ProcEndpoint::Df)?;
-        let memory_used = self.core().mem.total_bytes();
+        let memory_used = self.core().mem.accounted_total_bytes();
         let memory_worlds = self.core().mem.list().len();
         let storage_used = self.core().storage_body_bytes.load(Ordering::Relaxed);
         let storage_current_body_bytes = self
@@ -1083,7 +1086,8 @@ mod tests {
         assert_eq!(df.storage_retained_cas_body_bytes, b"hello".len());
         assert_eq!(df.storage_audit_chain_events, 2);
         assert_eq!(df.storage_quota, Some(64));
-        assert_eq!(df.memory_used, b"hello".len());
+        assert_eq!(df.memory_used, engine.core().mem.accounted_total_bytes());
+        assert!(df.memory_used > b"hello".len());
         assert_eq!(df.worlds, 2);
 
         let pool = engine.pool(AccessTier::Read).unwrap();

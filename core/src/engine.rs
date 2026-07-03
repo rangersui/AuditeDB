@@ -285,7 +285,8 @@ impl EngineBuilder {
         self
     }
 
-    /// Caps the in-memory backend's total bytes. Defaults to 256 MiB.
+    /// Caps the in-memory backend's accounted bytes. Defaults to 256 MiB.
+    /// Charges body bytes plus key, metadata, hash, and fixed entry overhead.
     pub fn max_memory_bytes(mut self, value: usize) -> Self {
         self.max_memory_bytes = value;
         self
@@ -324,10 +325,10 @@ impl EngineBuilder {
     /// Sets how many body-bearing audit rows keep dereferenceable CAS bytes.
     ///
     /// Defaults to [`DEFAULT_RETAINED_BODY_COUNT`]. `0` and values larger than
-    /// SQLite's signed rowid range revert to the default. Audit rows remain
-    /// permanent; this controls only retained historical body blobs. Older rows
-    /// may still dereference when they share identical bytes with a retained
-    /// newer row.
+    /// [`crate::MAX_RETAINED_BODY_COUNT`] revert to the default. Audit rows
+    /// remain permanent; this controls only retained historical body blobs.
+    /// Older rows may still dereference when they share identical bytes with a
+    /// retained newer row.
     pub fn retained_body_count(mut self, value: usize) -> Self {
         self.retained_body_count =
             world::RetainedBodyCount::new(nonzero_or_default(value, DEFAULT_RETAINED_BODY_COUNT))
@@ -576,12 +577,7 @@ fn verify_all_worlds_with_names(
     key: &AuditHmacKey,
     file_op: &crate::state::FileOpPermit,
 ) -> Result<(), EngineBuildError> {
-    let worlds = blocking_sqlite::run_scoped(|proof| world::list(proof, data_root, file_op))
-        .map_err(|err| EngineBuildError::Storage {
-            sqlite_code: sqlite_code(&err),
-            detail: format!("list worlds for audit verification failed: {err}"),
-        })?;
-    for world_path in worlds {
+    world::try_for_each(proof, data_root, file_op, |proof, world_path| {
         let world_name = world_path.as_str().to_owned();
         audit::verify_world_with_file_op(proof, data_root, &world_path, key, file_op).map_err(
             |err| match err {
@@ -607,9 +603,15 @@ fn verify_all_worlds_with_names(
                     }
                 }
             },
-        )?;
-    }
-    Ok(())
+        )
+    })
+    .map_err(|err| match err {
+        world::WalkWorldsError::Storage(err) => EngineBuildError::Storage {
+            sqlite_code: sqlite_code(&err),
+            detail: format!("list worlds for audit verification failed: {err}"),
+        },
+        world::WalkWorldsError::Visit(err) => err,
+    })
 }
 
 #[cfg(test)]
@@ -723,14 +725,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(target_pointer_width = "64")]
     #[test]
-    fn retained_body_count_rejects_values_outside_sqlite_rowid_range() {
+    fn retained_body_count_rejects_values_above_verification_memory_cap() {
         let root = temp_root("retained-body-count-too-large");
         let engine = Engine::builder()
             .data_root(root.clone())
             .key(AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap())
-            .retained_body_count(usize::MAX)
+            .retained_body_count(crate::defaults::MAX_RETAINED_BODY_COUNT + 1)
             .build()
             .unwrap();
 

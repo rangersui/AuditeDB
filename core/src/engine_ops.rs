@@ -359,7 +359,8 @@ impl Engine {
     ///   cap.
     /// - [`EngineError::PreconditionFailed`] if `preconditions` reject the
     ///   write.
-    /// - [`EngineError::QuotaExceeded`] for durable-storage quota failures.
+    /// - [`EngineError::QuotaExceeded`] for durable-storage or accounted
+    ///   memory quota failures.
     /// - [`EngineError::TransientStorage`] /
     ///   [`EngineError::InsufficientStorage`] / [`EngineError::Storage`]
     ///   for storage-layer failures.

@@ -59,19 +59,24 @@ struct MemEntry {
     headers: Vec<(String, String)>,
 }
 
+const MEMORY_ENTRY_OVERHEAD_BYTES: usize = 128;
+const MEMORY_BODY_HASH_HEX_BYTES: usize = 64;
+
 #[derive(Default)]
 pub struct MemoryStore {
     map: Mutex<HashMap<ValidatedWorldPath, MemEntry>>,
 }
 
 /// Returned by `write_with_quota` / `append_with_quota` when the requested
-/// write would push the total memory store size past `max_total_bytes`.
+/// write would push the total accounted memory store size past
+/// `max_total_bytes`.
 /// The check happens under the same mutex as the write so concurrent
 /// writers cannot both pass a stale snapshot and then both commit
 /// (durable quota is reserved before SQLite write transactions).
+#[derive(Debug)]
 pub struct MemoryQuotaError {
-    /// Pre-write total bytes across all memory worlds. Currently the
-    /// callers only need `quota` for payload-cap mapping, but `used` and
+    /// Pre-write total accounted bytes across all memory worlds. Currently
+    /// the callers only need `quota` for payload-cap mapping, but `used` and
     /// `projected` are populated for diagnostic clarity.
     #[allow(dead_code)]
     pub used: usize,
@@ -81,6 +86,7 @@ pub struct MemoryQuotaError {
 }
 
 /// Outcome of a successful `write_with_quota`.
+#[derive(Debug)]
 pub struct MemoryWriteOutcome {
     /// True if the world existed before this write.
     pub existed: bool,
@@ -160,10 +166,12 @@ impl MemoryStore {
 
     /// Write a memory world with an atomic quota check. The HashMap mutex
     /// is held across "compute current total -> compare against quota ->
-    /// insert", so two concurrent writes to different memory worlds
-    /// cannot both observe usage below the cap and both commit. Replaces
-    /// the old split read/check/write sequence, which was race-prone
-    /// after the global write_lock was removed.
+    /// insert", so two concurrent writes to different memory worlds cannot
+    /// both observe usage below the cap and both commit. The quota charges
+    /// stored body bytes plus key/metadata/hash/accounting overhead, so empty
+    /// memory worlds cannot grow the map without consuming quota. Replaces the
+    /// old split read/check/write sequence, which was race-prone after the
+    /// global write_lock was removed.
     ///
     /// Returns `Ok(outcome)` with `existed` populated for the caller's
     /// 200 vs 201 decision; `Err(MemoryQuotaError)` if accepting the
@@ -178,12 +186,19 @@ impl MemoryStore {
         max_total_bytes: usize,
     ) -> Result<MemoryWriteOutcome, MemoryQuotaError> {
         let mut map = self.map_guard();
-        let used: usize = map.values().map(|entry| entry.body.len()).sum();
+        let used = accounted_total_bytes(&map);
         let prev_len = map
             .get(world.as_path())
-            .map(|entry| entry.body.len())
+            .map(|entry| accounted_entry_bytes(world.as_path(), entry))
             .unwrap_or(0);
-        let projected = used.saturating_sub(prev_len).saturating_add(body.len());
+        let projected = used
+            .saturating_sub(prev_len)
+            .saturating_add(accounted_entry_parts_bytes(
+                world.as_path(),
+                body.len(),
+                content_type,
+                headers,
+            ));
         if projected > max_total_bytes {
             return Err(MemoryQuotaError {
                 used,
@@ -203,7 +218,7 @@ impl MemoryStore {
     /// Append to a memory world with an atomic quota check. Returns
     /// `Ok(None)` if the world does not exist (caller maps to 404).
     /// `Err(MemoryQuotaError)` if accepting the append would push the
-    /// total memory store size past `max_total_bytes`. Otherwise
+    /// total accounted memory store size past `max_total_bytes`. Otherwise
     /// `Ok(Some(result))` with the post-append SHA-256 of the body.
     pub fn append_with_quota(
         &self,
@@ -212,8 +227,20 @@ impl MemoryStore {
         max_total_bytes: usize,
     ) -> Result<Option<AppendResult>, MemoryQuotaError> {
         let mut map = self.map_guard();
-        let used: usize = map.values().map(|entry| entry.body.len()).sum();
-        let projected = used.saturating_add(body.len());
+        let Some(existing) = map.get(world.as_path()) else {
+            return Ok(None);
+        };
+        let used = accounted_total_bytes(&map);
+        let prev_len = accounted_entry_bytes(world.as_path(), existing);
+        let projected_len = existing.body.len().saturating_add(body.len());
+        let projected = used
+            .saturating_sub(prev_len)
+            .saturating_add(accounted_entry_parts_bytes(
+                world.as_path(),
+                projected_len,
+                &existing.content_type,
+                &existing.headers,
+            ));
         if projected > max_total_bytes {
             return Err(MemoryQuotaError {
                 used,
@@ -274,11 +301,16 @@ impl MemoryStore {
         Some(out)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn total_bytes(&self) -> usize {
         self.map_guard()
             .values()
             .map(|entry| entry.body.len())
             .sum()
+    }
+
+    pub fn accounted_total_bytes(&self) -> usize {
+        accounted_total_bytes(&self.map_guard())
     }
 
     pub fn sizes(&self) -> Vec<(ValidatedWorldPath, usize)> {
@@ -294,6 +326,37 @@ impl MemoryStore {
     fn map_guard(&self) -> MutexGuard<'_, HashMap<ValidatedWorldPath, MemEntry>> {
         self.map.lock().unwrap_or_else(|poison| poison.into_inner())
     }
+}
+
+fn accounted_total_bytes(map: &HashMap<ValidatedWorldPath, MemEntry>) -> usize {
+    map.iter()
+        .map(|(world, entry)| accounted_entry_bytes(world, entry))
+        .fold(0usize, usize::saturating_add)
+}
+
+fn accounted_entry_bytes(world: &ValidatedWorldPath, entry: &MemEntry) -> usize {
+    accounted_entry_parts_bytes(world, entry.body.len(), &entry.content_type, &entry.headers)
+}
+
+fn accounted_entry_parts_bytes(
+    world: &ValidatedWorldPath,
+    body_len: usize,
+    content_type: &str,
+    headers: &[(String, String)],
+) -> usize {
+    MEMORY_ENTRY_OVERHEAD_BYTES
+        .saturating_add(world.as_str().len())
+        .saturating_add(body_len)
+        .saturating_add(MEMORY_BODY_HASH_HEX_BYTES)
+        .saturating_add(metadata_bytes(content_type, headers))
+}
+
+fn metadata_bytes(content_type: &str, headers: &[(String, String)]) -> usize {
+    headers
+        .iter()
+        .fold(content_type.len(), |total, (name, value)| {
+            total.saturating_add(name.len()).saturating_add(value.len())
+        })
 }
 
 /// Combined view: sqlite + memory. Used by tests that assert both stores agree.
@@ -363,6 +426,67 @@ mod tests {
         assert!(!is_persistent(&world_path("tmp/scratch")));
         assert!(MemoryWorldPath::new(&world_path("tmp/scratch")).is_some());
         assert!(MemoryWorldPath::new(&world_path("home/report")).is_none());
+    }
+
+    #[test]
+    fn memory_quota_charges_empty_world_key_and_metadata() {
+        let store = MemoryStore::new();
+        let world = world_path("tmp/empty");
+        let headers = vec![("x-meta-owner".to_owned(), "agent".to_owned())];
+        let required = accounted_entry_parts_bytes(&world, 0, "text/plain", &headers);
+
+        let err = store
+            .write_with_quota(
+                MemoryWorldPath::new(&world).unwrap(),
+                b"",
+                "text/plain",
+                &headers,
+                required - 1,
+            )
+            .unwrap_err();
+        assert_eq!(err.quota, required - 1);
+
+        store
+            .write_with_quota(
+                MemoryWorldPath::new(&world).unwrap(),
+                b"",
+                "text/plain",
+                &headers,
+                required,
+            )
+            .unwrap();
+        assert_eq!(store.total_bytes(), 0);
+        assert_eq!(store.accounted_total_bytes(), required);
+    }
+
+    #[test]
+    fn memory_append_quota_charges_projected_body_without_losing_metadata() {
+        let store = MemoryStore::new();
+        let world = world_path("tmp/append");
+        let headers = vec![("x-meta-kind".to_owned(), "log".to_owned())];
+        let initial = accounted_entry_parts_bytes(&world, 1, "text/plain", &headers);
+
+        store
+            .write_with_quota(
+                MemoryWorldPath::new(&world).unwrap(),
+                b"a",
+                "text/plain",
+                &headers,
+                initial,
+            )
+            .unwrap();
+
+        assert!(store
+            .append_with_quota(MemoryWorldPath::new(&world).unwrap(), b"b", initial)
+            .is_err());
+
+        let appended = accounted_entry_parts_bytes(&world, 2, "text/plain", &headers);
+        store
+            .append_with_quota(MemoryWorldPath::new(&world).unwrap(), b"b", appended)
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.total_bytes(), 2);
+        assert_eq!(store.accounted_total_bytes(), appended);
     }
 
     #[test]

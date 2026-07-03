@@ -66,7 +66,10 @@ impl<'tx, 'conn> RetainedCasBody<'tx, 'conn> {
 
 impl RetainedBodyCount {
     pub(crate) fn new(value: usize) -> Option<Self> {
-        (value > 0 && i64::try_from(value).is_ok()).then_some(Self { count: value })
+        (value > 0
+            && value <= crate::defaults::MAX_RETAINED_BODY_COUNT
+            && i64::try_from(value).is_ok())
+        .then_some(Self { count: value })
     }
 
     pub(crate) fn get(self) -> usize {

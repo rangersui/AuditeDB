@@ -144,13 +144,15 @@ pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()
     let file_op = gate
         .begin()
         .ok_or_else(|| AuditError::Storage(file_op_gate_closed_error()))?;
-    for world in
-        crate::blocking_sqlite::run_scoped(|proof| world::list(proof, data_root, &file_op))?
-    {
-        crate::blocking_sqlite::run_scoped(|proof| {
+    crate::blocking_sqlite::run_scoped(|proof| {
+        world::try_for_each(proof, data_root, &file_op, |proof, world| {
             verify_world_with_file_op(proof, data_root, &world, key, &file_op)
-        })?;
-    }
+        })
+    })
+    .map_err(|err| match err {
+        world::WalkWorldsError::Storage(err) => AuditError::Storage(err),
+        world::WalkWorldsError::Visit(err) => err,
+    })?;
     Ok(())
 }
 
