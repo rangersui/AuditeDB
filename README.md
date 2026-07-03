@@ -107,8 +107,8 @@ curl http://localhost:3105/home/hello
 | `subscribe` | Stream change events.                   |
 
 In Rust, storage verbs that touch durable state are async: `read`,
-`replace`, `append`, and `delete` must be awaited. `subscribe` opens a
-synchronous handle; receiving from that handle is async.
+`replace`, `append`, `delete`, and `subscribe` must be awaited. A subscription
+then yields events asynchronously.
 
 In Python, the SDK surface is synchronous. The FFI boundary owns the Tokio
 runtime and blocks on async Engine verbs internally.

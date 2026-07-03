@@ -763,6 +763,7 @@ mod tests {
                 AccessTier::Read,
                 crate::engine_types::SubscriptionResume::none(),
             )
+            .await
             .expect("test subscription should open");
         let http_state = server_state_for_engine_for_tests(engine.clone());
 

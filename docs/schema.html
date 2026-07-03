@@ -687,6 +687,11 @@ the marker has fallen out, the stream reports <code>reset</code> with
 timeline address; use a timeline read to fetch the actual body. This prevents
 large bodies from flooding the SSE stream.</p>
 
+<p class="note">At the Engine layer, subscription open and receive are both
+async: <code>subscribe(...).await</code> opens the stream and
+<code>recv().await</code> consumes it. The SSE adapter maps that Engine stream
+directly onto the HTTP event stream.</p>
+
 <!-- ============================================================ -->
 <h2 id="s14">14. Four trust tiers</h2>
 

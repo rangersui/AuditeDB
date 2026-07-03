@@ -598,8 +598,7 @@ mod tests {
         let conn =
             Connection::open(crate::world::world_db(&engine.core().data, world.as_str())).unwrap();
         let generation =
-            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
-                .unwrap();
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap();
         let body_sha256: String = conn
             .query_row("SELECT body_sha256 FROM events WHERE id=?1", [id], |r| {
                 r.get(0)
@@ -692,8 +691,7 @@ mod tests {
         )
         .unwrap();
         let generation =
-            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
-                .unwrap();
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap();
         let body_sha256 = BodySha256::for_body(b"");
         let headers = if matches!(
             event_type,

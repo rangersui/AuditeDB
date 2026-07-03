@@ -43,7 +43,7 @@ pub(crate) async fn handler(
         Ok(resume) => resume,
         Err(reason) => return bad_request(&reason),
     };
-    let subscription = match state.engine().subscribe(&pattern, tier, resume) {
+    let subscription = match state.engine().subscribe(&pattern, tier, resume).await {
         Ok(subscription) => subscription,
         Err(EngineError::Auth(_)) => return unauthorized("listen requires read token"),
         Err(EngineError::SubscriptionLimit) => {
@@ -251,6 +251,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("test subscription should be accepted");
         let world = ValidatedWorldPath::new("home/task/a").unwrap();
         engine
@@ -307,6 +308,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("test subscription should be accepted");
         let world = ValidatedWorldPath::new("home/task/source").unwrap();
         engine
@@ -357,6 +359,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("ledger subscription opens");
 
         engine
@@ -410,6 +413,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("subject subscription opens");
 
         engine
@@ -453,6 +457,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("first subscription should consume the only listen slot");
 
         let resp = handler(

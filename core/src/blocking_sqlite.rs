@@ -7,10 +7,11 @@
 //! require `&mut BlockingSqlite`. Production code can only mint that proof
 //! through this module's gates.
 //!
-//! `run` is the async boundary: it mints the proof inside Tokio's blocking
-//! pool. `run_scoped` is the synchronous boundary for borrowed/non-`'static`
-//! engine internals that cannot cross `spawn_blocking`; it still centralises
-//! proof minting, but does not claim a scheduler transition.
+//! `run` is the async request-path boundary: it mints the proof inside
+//! Tokio's blocking pool. `run_scoped` is the synchronous gate for startup,
+//! sync management methods, and tests. It centralises proof minting, but does
+//! not move work off the caller thread and must not be used to justify
+//! blocking a Tokio request worker.
 
 #![cfg_attr(not(test), allow(dead_code))]
 

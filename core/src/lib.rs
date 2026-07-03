@@ -27,7 +27,7 @@
 //! | Replace value | [`Engine::replace`] | async |
 //! | Append bytes | [`Engine::append`] | async |
 //! | Delete value | [`Engine::delete`] | async |
-//! | Open subscription | [`Engine::subscribe`] | sync |
+//! | Open subscription | [`Engine::subscribe`] | async |
 //! | Receive subscription event | [`EngineSubscription::recv`] | async |
 //! | List / inspect | [`Engine::list_worlds`], [`Engine::du`], [`Engine::df`], [`Engine::pool`] | sync |
 //! | Verify audit chain | [`Engine::verify_audit`] | sync |
@@ -35,11 +35,13 @@
 //! | Shutdown signal | [`Engine::shutdown`] | sync |
 //!
 //! Storage-touching methods are async because durable reads, writes, appends,
-//! deletes, audit updates, and subscriber notifications cross the Engine's
-//! blocking-worker boundary and ordered transition points.
+//! deletes, audit updates, subscription replay setup, and subscriber
+//! notifications cross the Engine's blocking-worker boundary and ordered
+//! transition points.
 //!
-//! [`Engine::subscribe`] only opens the subscription and reserves a slot. The
-//! stream itself is consumed with async [`EngineSubscription::recv`].
+//! [`Engine::subscribe`] opens the subscription, reserves a slot, and may set
+//! up durable replay. The stream itself is consumed with async
+//! [`EngineSubscription::recv`].
 //!
 //! ## Quick start
 //!
@@ -107,7 +109,7 @@
 //!
 //! ## Subscribe to changes
 //!
-//! Opening a subscription is sync; receiving events is async. Persist
+//! Opening a subscription is async; receiving events is async. Persist
 //! durable [`ChangeEvent::identity`] values and resume with
 //! [`SubscriptionResume::after_event_id`] when a protocol needs reconnect
 //! replay.
@@ -120,6 +122,7 @@
 //! let pattern = SubscribePattern::new("/home/tasks/*");
 //! let mut sub = engine
 //!     .subscribe(&pattern, AccessTier::Read, SubscriptionResume::none())
+//!     .await
 //!     .expect("subscription opens");
 //!
 //! let event = sub.recv().await.expect("change event");

@@ -24,10 +24,11 @@ crate are sibling adapters.
   corruption outcomes without falling back to the current body; `Expired`
   carries the row content type, size, and HMAC proof
 - `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection
-- `engine.subscribe(pattern, tier, resume)` — blocking `FfiSubscription.next(timeout_ms)`
-  receiver with explicit `close()` for deterministic slot release in
-  garbage-collected languages; `close()` wakes a currently blocked `next()`
-  instead of waiting for the timeout window
+- `engine.subscribe(pattern, tier, resume)` — synchronously opens the Engine's
+  async subscription through the FFI runtime; `FfiSubscription.next(timeout_ms)`
+  is the blocking receiver. `close()` releases the slot deterministically in
+  garbage-collected languages and wakes a currently blocked `next()` instead
+  of waiting for the timeout window
 - subscription events expose Engine verbs (`Replace`, `Append`, `Delete`,
   `Format`), not HTTP method strings
 - durable subject-delete events expose `delete_subject_generation`; the signed

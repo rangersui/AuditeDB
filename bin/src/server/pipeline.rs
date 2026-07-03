@@ -695,6 +695,7 @@ mod tests {
                 tier,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("test subscription should open");
         engine
             .replace(

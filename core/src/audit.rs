@@ -569,7 +569,8 @@ fn verify_connection_for(
     world: &ValidatedWorldPath,
     key: &AuditHmacKey,
 ) -> rusqlite::Result<VerifyReport> {
-    let generation = crate::world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), c)?;
+    let generation =
+        crate::world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), c)?;
     let retention = retention::load(c)?;
     let mut stmt = c.prepare(AUDIT_SELECT)?;
     verify_statement(&mut stmt, key, false, &retention, world, &generation)

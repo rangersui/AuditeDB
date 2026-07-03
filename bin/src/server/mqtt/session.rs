@@ -315,7 +315,7 @@ impl MqttSession {
                 seen_results.insert(filter_path, SubscribeReasonCode::Failure);
                 continue;
             }
-            match self.prepare_subscription(filter_path.clone()) {
+            match self.prepare_subscription(filter_path.clone()).await {
                 Ok(item) => {
                     let Some(replay) = collect_retained_replay(
                         &self.engine,
@@ -360,13 +360,17 @@ impl MqttSession {
         Ok(true)
     }
 
-    fn prepare_subscription(&self, filter: String) -> Result<PreparedSubscription, MqttReject> {
+    async fn prepare_subscription(
+        &self,
+        filter: String,
+    ) -> Result<PreparedSubscription, MqttReject> {
         let route = mqtt_filter_to_route(&filter)?;
         let mut subscriptions = Vec::with_capacity(route.live_patterns().len());
         for pattern in route.live_patterns() {
             let subscription = self
                 .engine
                 .subscribe(pattern, self.tier, SubscriptionResume::none())
+                .await
                 .map_err(mqtt_reject_from_engine)?;
             subscriptions.push(subscription);
         }

@@ -111,9 +111,9 @@ impl From<crate::event::AuditEventKind> for AuditEventType {
 
 /// Subscription to protocol-neutral engine change events.
 ///
-/// Returned synchronously by [`crate::Engine::subscribe`]. Receiving from it is
-/// async through [`EngineSubscription::recv`]. The subscription holds a slot
-/// permit until dropped — drop it promptly when the caller is done so other
+/// Returned by async [`crate::Engine::subscribe`]. Receiving from it is async
+/// through [`EngineSubscription::recv`]. The subscription holds a slot permit
+/// until dropped — drop it promptly when the caller is done so other
 /// subscribers can join.
 pub struct EngineSubscription {
     slot: SubscriptionSlot,

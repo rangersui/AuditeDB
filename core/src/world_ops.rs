@@ -238,15 +238,17 @@ fn replace_write_blocking(
 
     let (existed, etag, target, format_notice, aux) = if store::is_persistent(world_path) {
         let reservation = if let Some(quota) = core.max_storage_bytes {
-            let prev_len_opt = world::body_len(proof, &core.data, world_path, &file_op)
-            .map_err(|err| {
-                classify_write_storage_error("storage metadata", err, StorageOp::Read)
-            })?;
+            let prev_len_opt =
+                world::body_len(proof, &core.data, world_path, &file_op).map_err(|err| {
+                    classify_write_storage_error("storage metadata", err, StorageOp::Read)
+                })?;
             let prev_len = prev_len_opt.unwrap_or(0);
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
             let cas_candidate_len =
                 world::cas_body_len_if_missing(proof, &core.data, world_path, &req.body, &file_op)
-            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?;
+                    .map_err(|err| {
+                        classify_write_storage_error("storage/cas", err, StorageOp::Read)
+                    })?;
             let prunable_cas_len = world::prunable_cas_body_len_after_next_write(
                 proof,
                 &core.data,

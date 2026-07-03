@@ -111,9 +111,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 pub fn open(data_root: &Path, world: &str) -> rusqlite::Result<Connection> {
     let mut proof = crate::blocking_sqlite::test_only_mint();
-    open_with_generation_minter(data_root, world, || {
-        world_generation::WorldGeneration::mint().map_err(mint_generation_error)
-    }, &mut proof)
+    open_with_generation_minter(
+        data_root,
+        world,
+        || world_generation::WorldGeneration::mint().map_err(mint_generation_error),
+        &mut proof,
+    )
 }
 
 pub fn open_validated(

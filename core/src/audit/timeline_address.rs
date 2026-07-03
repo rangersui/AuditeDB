@@ -805,7 +805,9 @@ mod tests {
         AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
     }
 
-    fn test_only_generation(conn: &rusqlite::Connection) -> crate::world_generation::WorldGeneration {
+    fn test_only_generation(
+        conn: &rusqlite::Connection,
+    ) -> crate::world_generation::WorldGeneration {
         world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), conn).unwrap()
     }
 

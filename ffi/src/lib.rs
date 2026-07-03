@@ -296,7 +296,9 @@ impl FfiEngine {
     ) -> Result<Arc<FfiSubscription>, FfiError> {
         let pattern = SubscribePattern::new(pattern);
         let resume = SubscriptionResume::try_from(resume)?;
-        let mut subscription = self.engine.subscribe(&pattern, tier.try_into()?, resume)?;
+        let mut subscription =
+            self.runtime
+                .block_on(self.engine.subscribe(&pattern, tier.try_into()?, resume))?;
         let (events_tx, events_rx) = mpsc::channel(FFI_SUBSCRIPTION_BUFFER);
         let (cancel, mut cancel_rx) = watch::channel(false);
         let pump = self.runtime.spawn(async move {

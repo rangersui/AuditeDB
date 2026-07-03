@@ -118,8 +118,7 @@ impl EngineOps {
         coordinate: &TimelineCoordinate,
         tier: auth::Tier,
     ) -> Result<TimelineDereference, EngineError> {
-        let permit =
-            world_read_ops::authorize_read(self.core.as_ref(), coordinate.world(), tier)?;
+        let permit = world_read_ops::authorize_read(self.core.as_ref(), coordinate.world(), tier)?;
         let _file_op = self.begin_file_op()?;
         world_read_ops::dereference_timeline_coordinate(
             self.core.as_ref(),
@@ -190,14 +189,14 @@ impl EngineOps {
         delete_ops::delete(Arc::clone(&self.core), permit, req, hooks).await
     }
 
-    pub(crate) fn subscribe(
+    pub(crate) async fn subscribe(
         &self,
         pattern: &SubscribePattern,
         tier: auth::Tier,
         resume: SubscriptionResume,
     ) -> Result<EngineSubscription, EngineError> {
         let permit = self.authorize_subscribe(pattern, tier)?;
-        self.open_subscription(permit, resume)
+        self.open_subscription(permit, resume).await
     }
 
     fn authorize_subscribe(
@@ -221,7 +220,7 @@ impl EngineOps {
         })
     }
 
-    fn open_subscription(
+    async fn open_subscription(
         &self,
         permit: SubscribePermit,
         resume: SubscriptionResume,
@@ -230,7 +229,7 @@ impl EngineOps {
         let replay_plan = resume.replay_plan(&self.core.listen_epoch);
         let _file_op = self.begin_file_op()?;
         let (interruption, replay, replay_fence) =
-            replay_after(self.core.as_ref(), replay_plan, &permit.pattern)?;
+            replay_after(Arc::clone(&self.core), replay_plan, &permit.pattern).await?;
         let mut initial = VecDeque::new();
         if let Some(err) = interruption {
             initial.push_back(Err(err.into()));
@@ -461,9 +460,10 @@ impl Engine {
 
     /// Subscribes to change events matching `pattern`.
     ///
-    /// Opening a subscription is synchronous: this method validates auth,
-    /// reserves a subscription slot, and prepares replay state. Receiving
-    /// events is async through [`EngineSubscription::recv`].
+    /// Opening a subscription is async: this method validates auth, reserves a
+    /// subscription slot, and may prepare durable replay through the blocking
+    /// SQLite gate. Receiving events is async through
+    /// [`EngineSubscription::recv`].
     ///
     /// If `resume` carries a durable [`crate::subscription_event_id::SubscriptionEventId`] and
     /// `pattern` is one exact world, the subscription verifies that world's
@@ -487,13 +487,15 @@ impl Engine {
     /// - [`EngineError::SubscriptionLimit`] if the slot pool is full.
     /// - [`EngineError::ShuttingDown`] if [`Engine::shutdown`] has been
     ///   called.
-    pub fn subscribe(
+    pub async fn subscribe(
         &self,
         pattern: &SubscribePattern,
         tier: AccessTier,
         resume: SubscriptionResume,
     ) -> Result<EngineSubscription, EngineError> {
-        EngineOps::new(self.core_arc()).subscribe(pattern, tier.into(), resume)
+        EngineOps::new(self.core_arc())
+            .subscribe(pattern, tier.into(), resume)
+            .await
     }
 }
 
@@ -536,14 +538,16 @@ impl From<ReplayInterruption> for SubscriptionRecvError {
     }
 }
 
-pub(crate) fn replay_after(
-    core: &Core,
+pub(crate) async fn replay_after(
+    core: Arc<Core>,
     replay_plan: ReplayPlan,
     pattern: &SubscribePattern,
 ) -> Result<(Option<ReplayInterruption>, Vec<ChangeEvent>, ReplayFence), EngineError> {
     match replay_plan {
         ReplayPlan::None => Ok((None, Vec::new(), ReplayFence::None)),
-        ReplayPlan::Durable { event_id } => replay_after_durable_event_id(core, event_id, pattern),
+        ReplayPlan::Durable { event_id } => {
+            replay_after_durable_event_id(core, event_id, pattern).await
+        }
         #[cfg(test)]
         ReplayPlan::Foreign { event_id } => {
             let newest = crate::state::last_issued_event_id(&core.next_event);
@@ -557,7 +561,9 @@ pub(crate) fn replay_after(
             ))
         }
         #[cfg(test)]
-        ReplayPlan::Current { event_id } => replay_after_process_event_id(core, event_id, pattern),
+        ReplayPlan::Current { event_id } => {
+            replay_after_process_event_id(core.as_ref(), event_id, pattern)
+        }
     }
 }
 
@@ -607,8 +613,8 @@ fn replay_after_process_event_id(
     ))
 }
 
-fn replay_after_durable_event_id(
-    core: &Core,
+async fn replay_after_durable_event_id(
+    core: Arc<Core>,
     event_id: SubscriptionEventId,
     pattern: &SubscribePattern,
 ) -> Result<(Option<ReplayInterruption>, Vec<ChangeEvent>, ReplayFence), EngineError> {
@@ -625,10 +631,10 @@ fn replay_after_durable_event_id(
                 ReplayFence::None,
             ));
         }
-        return replay_after_durable_chain_event_id(core, event_id);
+        return replay_after_durable_chain_event_id(core, event_id).await;
     }
 
-    replay_after_durable_ring_event_id(core, event_id, pattern)
+    replay_after_durable_ring_event_id(core.as_ref(), event_id, pattern)
 }
 
 fn replay_after_durable_ring_event_id(
@@ -673,16 +679,23 @@ fn replay_after_durable_ring_event_id(
     ))
 }
 
-fn replay_after_durable_chain_event_id(
-    core: &Core,
+async fn replay_after_durable_chain_event_id(
+    core: Arc<Core>,
     event_id: SubscriptionEventId,
 ) -> Result<(Option<ReplayInterruption>, Vec<ChangeEvent>, ReplayFence), EngineError> {
     let Some(file_op) = core.begin_file_op() else {
         return Err(EngineError::ShuttingDown);
     };
-    let replay = match blocking_sqlite::run_scoped(|proof| {
-        core.replay_chain_events_after(proof, &event_id, core.listen_replay_max, &file_op)
-    }) {
+    let error_world = event_id.world().clone();
+    let event_id_for_replay = event_id.clone();
+    let listen_replay_max = core.listen_replay_max;
+    let listen_epoch = core.listen_epoch.clone();
+    let replay = match blocking_sqlite::run(move |proof| {
+        core.replay_chain_events_after(proof, &event_id_for_replay, listen_replay_max, &file_op)
+    })
+    .await
+    .map_err(blocking_join_to_engine)?
+    {
         Ok(Some(crate::audit::VerifiedReplayAfter::Events(events))) => events,
         Ok(Some(crate::audit::VerifiedReplayAfter::GenerationMismatch)) => {
             return Ok((
@@ -711,7 +724,7 @@ fn replay_after_durable_chain_event_id(
                 ReplayFence::None,
             ));
         }
-        Err(err) => return Err(audit_replay_error_to_engine(err, event_id.world())),
+        Err(err) => return Err(audit_replay_error_to_engine(err, &error_world)),
     };
 
     let mut fence = event_id;
@@ -734,15 +747,8 @@ fn replay_after_durable_chain_event_id(
             }
         };
         events.push(
-            event::ChangeEvent::new_with_aux(
-                id,
-                core.listen_epoch.clone(),
-                verb,
-                target,
-                etag,
-                aux,
-            )
-            .into(),
+            event::ChangeEvent::new_with_aux(id, listen_epoch.clone(), verb, target, etag, aux)
+                .into(),
         );
     }
 
@@ -904,8 +910,7 @@ mod tests {
             rusqlite::Connection::open(world::world_db(&engine.core().data, world_path.as_str()))
                 .unwrap();
         let gen =
-            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
-                .unwrap();
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap();
         TimelineAddress::test_only_new(
             world_path.clone(),
             gen,
@@ -921,8 +926,8 @@ mod tests {
         world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap()
     }
 
-    #[test]
-    fn replay_after_reports_ring_gap_and_replays_available_events() {
+    #[tokio::test]
+    async fn replay_after_reports_ring_gap_and_replays_available_events() {
         let (engine, root) = test_engine("replay-gap");
         {
             let mut log = engine.core().event_log.lock().unwrap();
@@ -942,11 +947,12 @@ mod tests {
 
         let pattern = SubscribePattern::new("home/task/*");
         let (interruption, replay, floor) = replay_after(
-            engine.core(),
+            engine.core_arc(),
             SubscriptionResume::test_only_after_process_event_id(5)
                 .replay_plan(&engine.core().listen_epoch),
             &pattern,
         )
+        .await
         .unwrap();
 
         assert_eq!(
@@ -967,8 +973,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn replay_after_handles_max_last_event_id_without_overflow() {
+    #[tokio::test]
+    async fn replay_after_handles_max_last_event_id_without_overflow() {
         let (engine, root) = test_engine("replay-max-last-id");
         {
             let mut log = engine.core().event_log.lock().unwrap();
@@ -984,11 +990,12 @@ mod tests {
 
         let pattern = SubscribePattern::new("home/task/*");
         let (interruption, replay, floor) = replay_after(
-            engine.core(),
+            engine.core_arc(),
             SubscriptionResume::test_only_after_process_event_id(u64::MAX)
                 .replay_plan(&engine.core().listen_epoch),
             &pattern,
         )
+        .await
         .unwrap();
 
         assert_eq!(interruption, None);
@@ -1004,8 +1011,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn replay_after_flags_cursor_ahead_of_current_process() {
+    #[tokio::test]
+    async fn replay_after_flags_cursor_ahead_of_current_process() {
         let (engine, root) = test_engine("replay-ahead");
         {
             let mut log = engine.core().event_log.lock().unwrap();
@@ -1021,11 +1028,12 @@ mod tests {
 
         let pattern = SubscribePattern::new("home/task/*");
         let (interruption, replay, floor) = replay_after(
-            engine.core(),
+            engine.core_arc(),
             SubscriptionResume::test_only_after_process_event_id(42)
                 .replay_plan(&engine.core().listen_epoch),
             &pattern,
         )
+        .await
         .unwrap();
 
         assert_eq!(
@@ -1046,8 +1054,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn replay_after_treats_legacy_decimal_cursor_as_foreign_even_when_id_exists() {
+    #[tokio::test]
+    async fn replay_after_treats_legacy_decimal_cursor_as_foreign_even_when_id_exists() {
         let (engine, root) = test_engine("replay-legacy-foreign");
         {
             let mut log = engine.core().event_log.lock().unwrap();
@@ -1067,11 +1075,12 @@ mod tests {
 
         let pattern = SubscribePattern::new("home/task/*");
         let (interruption, replay, floor) = replay_after(
-            engine.core(),
+            engine.core_arc(),
             SubscriptionResume::test_only_legacy_event_id(5)
                 .replay_plan(&engine.core().listen_epoch),
             &pattern,
         )
+        .await
         .unwrap();
 
         assert_eq!(
@@ -1881,7 +1890,9 @@ mod tests {
         let pattern = SubscribePattern::new("home/events/*");
 
         assert!(matches!(
-            engine.subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none()),
+            engine
+                .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+                .await,
             Err(EngineError::Auth(AuthGate::Read))
         ));
 
@@ -1902,6 +1913,7 @@ mod tests {
                 AccessTier::Read,
                 SubscriptionResume::test_only_after_process_event_id(0),
             )
+            .await
             .expect("read tier subscribes");
         expect_format_event(&mut subscription, &world).await;
         let event = subscription.recv().await.expect("replay event");
@@ -1932,6 +1944,7 @@ mod tests {
         let pattern = SubscribePattern::new("home/events/*");
         let mut subscription = engine
             .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("subscription opens");
         let world = ValidatedWorldPath::new("home/events/race").unwrap();
 
@@ -1997,6 +2010,7 @@ mod tests {
             let pattern = SubscribePattern::new(world.as_str());
             let mut subscription = engine
                 .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+                .await
                 .expect("subscription opens");
 
             engine
@@ -2043,6 +2057,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::after_event_id(first_id.clone()),
             )
+            .await
             .expect("chain replay subscription opens");
 
         let replayed = subscription.recv().await.expect("replayed event");
@@ -2081,6 +2096,7 @@ mod tests {
         let wildcard = SubscribePattern::new("*");
         let mut live = engine
             .subscribe(&wildcard, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("subscription opens");
         let first_world = ValidatedWorldPath::new("home/events/wild-a").unwrap();
         engine
@@ -2126,6 +2142,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::after_event_id(first_id.clone()),
             )
+            .await
             .expect("wildcard resume opens");
         let replayed_memory = replay.recv().await.expect("ring memory replay event");
         assert_eq!(replayed_memory.path(), &memory_world);
@@ -2169,8 +2186,7 @@ mod tests {
             .unwrap();
         let conn = rusqlite::Connection::open(world::validated_world_db(&root, &world)).unwrap();
         let gen =
-            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
-                .unwrap();
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap();
         drop(conn);
         engine.core().event_log.lock().unwrap().clear();
         let missing_id =
@@ -2187,6 +2203,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::after_event_id(missing_id),
             )
+            .await
             .expect("wildcard resume opens");
         assert!(matches!(
             replay.recv().await,
@@ -2207,6 +2224,7 @@ mod tests {
         let pattern = SubscribePattern::new(world.as_str());
         let mut subscription = engine
             .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("subscription opens");
 
         engine
@@ -2241,11 +2259,13 @@ mod tests {
         drop(conn);
         drop(subscription);
 
-        let result = engine.subscribe(
-            &pattern,
-            AccessTier::Anon,
-            SubscriptionResume::after_event_id(first_id.clone()),
-        );
+        let result = engine
+            .subscribe(
+                &pattern,
+                AccessTier::Anon,
+                SubscriptionResume::after_event_id(first_id.clone()),
+            )
+            .await;
         match result {
             Err(EngineError::Storage) => {}
             Err(err) => panic!("unexpected replay error: {err:?}"),
@@ -2266,6 +2286,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::test_only_after_process_event_id(0),
             )
+            .await
             .expect("subscription opens");
         let world = ValidatedWorldPath::new("tmp/events/a").unwrap();
 
@@ -2311,6 +2332,7 @@ mod tests {
         let pattern = SubscribePattern::new("home/events/*");
         let mut subscription = engine
             .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("subscription opens");
         engine
             .delete(&world, Preconditions::none(), AccessTier::Approve)
@@ -2362,6 +2384,7 @@ mod tests {
         let pattern = SubscribePattern::new(ledger.as_str());
         let mut subscription = engine
             .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("ledger subscription opens");
         engine
             .delete(&subject, Preconditions::none(), AccessTier::Approve)
@@ -2437,6 +2460,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("ledger subscription opens");
         let delete_first = {
             let engine = engine.clone();
@@ -2503,6 +2527,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("subject subscription opens");
         engine
             .delete(&subject, Preconditions::none(), AccessTier::Approve)
@@ -2539,6 +2564,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::none(),
             )
+            .await
             .expect("live subscription opens");
         engine
             .replace(
@@ -2572,6 +2598,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::after_event_id(first_id.clone()),
             )
+            .await
             .expect("replay subscription opens");
         let replayed = replay.recv().await.expect("second replay");
         assert_eq!(replayed.path(), &world);
@@ -2638,6 +2665,7 @@ mod tests {
             let pattern = SubscribePattern::new(ledger.as_str());
             let mut subscription = engine
                 .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+                .await
                 .expect("ledger subscription opens");
             engine
                 .delete(&subject, Preconditions::none(), AccessTier::Approve)
@@ -2680,6 +2708,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::after_event_id(first_id.clone()),
             )
+            .await
             .expect("ledger replay subscription opens");
 
         let replayed = subscription.recv().await.expect("delete commit replay");
@@ -2736,6 +2765,7 @@ mod tests {
         let pattern = SubscribePattern::new("home/events/*");
         let mut subscription = engine
             .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("subscription opens");
         engine
             .append(
@@ -2783,6 +2813,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::test_only_after_process_event_id(42),
             )
+            .await
             .expect("subscription opens with stale cursor");
 
         let first = tokio::time::timeout(recv_budget, subscription.recv())
@@ -2819,15 +2850,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn engine_subscribe_enforces_slot_cap_at_entry() {
+    #[tokio::test]
+    async fn engine_subscribe_enforces_slot_cap_at_entry() {
         let (engine, root) = test_engine("subscribe-cap");
         let pattern = SubscribePattern::new("*");
         let first = engine
             .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("first subscription consumes the sole slot");
         assert!(matches!(
-            engine.subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none()),
+            engine
+                .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+                .await,
             Err(EngineError::SubscriptionLimit)
         ));
 
@@ -2836,8 +2870,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn engine_subscribe_denied_auth_does_not_consume_slot() {
+    #[tokio::test]
+    async fn engine_subscribe_denied_auth_does_not_consume_slot() {
         let root = temp_root("subscribe-auth-slot");
         let engine = Engine::builder()
             .data_root(root.clone())
@@ -2849,11 +2883,14 @@ mod tests {
         let pattern = SubscribePattern::new("*");
 
         assert!(matches!(
-            engine.subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none()),
+            engine
+                .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+                .await,
             Err(EngineError::Auth(AuthGate::Read))
         ));
         let subscription = engine
             .subscribe(&pattern, AccessTier::Read, SubscriptionResume::none())
+            .await
             .expect("failed auth must not consume the only slot");
 
         drop(subscription);
@@ -2867,6 +2904,7 @@ mod tests {
         let pattern = SubscribePattern::new("*");
         let mut subscription = engine
             .subscribe(&pattern, AccessTier::Anon, SubscriptionResume::none())
+            .await
             .expect("subscription opens before shutdown");
 
         engine.shutdown();
@@ -2907,6 +2945,7 @@ mod tests {
                 AccessTier::Anon,
                 SubscriptionResume::test_only_after_process_event_id(0),
             )
+            .await
             .expect("subscription opens before shutdown");
         engine.shutdown();
         let replay_a_format = subscription.recv().await.unwrap();

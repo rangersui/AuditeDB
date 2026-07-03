@@ -938,8 +938,7 @@ mod tests {
 
         let conn = rusqlite::Connection::open(world::world_db(&core.data, world.as_str())).unwrap();
         let gen =
-            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn)
-                .unwrap();
+            world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap();
         drop(conn);
         let address = TimelineAddress::test_only_new(
             world.clone(),
