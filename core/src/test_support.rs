@@ -69,6 +69,7 @@ pub(crate) fn test_core_with_read_cache_max(
                 shutdown: watch::channel(false).1,
                 next_event: crate::state::new_event_counter(),
                 world_locks: Arc::new(DashMap::new()),
+                world_lock_sweep_tick: AtomicUsize::new(0),
                 ledger: Arc::new(crate::ledger::LedgerWriter::new()),
                 delete_ledger_stream_lock: Arc::new(tokio::sync::Mutex::new(())),
                 read_cache: Arc::new(crate::read_cache::ReadCache::new(read_cache_max_entries)),

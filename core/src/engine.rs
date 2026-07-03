@@ -440,6 +440,7 @@ impl EngineBuilder {
             shutdown: shutdown_rx,
             next_event: new_event_counter(),
             world_locks: Arc::new(DashMap::new()),
+            world_lock_sweep_tick: AtomicUsize::new(0),
             ledger: Arc::new(crate::ledger::LedgerWriter::new()),
             delete_ledger_stream_lock: Arc::new(tokio::sync::Mutex::new(())),
             read_cache: Arc::new(ReadCache::new(self.read_cache_max_entries)),

@@ -17,13 +17,13 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Condvar, Mutex as StdMutex,
+    Arc, Condvar, Mutex as StdMutex, Weak,
 };
 
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
 
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
 use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
@@ -57,6 +57,7 @@ pub(crate) fn new_event_counter() -> Arc<EventCounter> {
 }
 
 const WRITE_CONN_CACHE_MAX_ENTRIES: usize = 64;
+const WORLD_LOCK_SWEEP_INTERVAL: usize = 256;
 
 pub(crate) struct FileOpGate {
     shutting_down: AtomicBool,
@@ -228,15 +229,16 @@ pub(crate) struct Core {
     /// against Last-Event-ID. 64-bit targets use `AtomicU64`; 32-bit targets
     /// fall back to a tiny mutex because they lack native 64-bit atomics.
     pub(crate) next_event: Arc<EventCounter>,
-    /// Per-world async write lock. Replaces the previous global
-    /// write_lock. Writes to different worlds run concurrently;
-    /// writes to the same world serialize (preserving
-    /// If-Match/If-None-Match + write atomicity). Locks are created
-    /// lazily on first write and never evicted while the process
-    /// runs. See `acquire_world_lock` for the rationale (eviction is
-    /// unsafe when waiters hold a clone of the Arc). DashMap shards
-    /// reads, so lookup is mostly lock-free.
-    pub(crate) world_locks: Arc<DashMap<ValidatedWorldPath, Arc<Mutex<()>>>>,
+    /// Per-world async write lock table. Writes to different worlds run
+    /// concurrently; writes to the same world serialize (preserving
+    /// If-Match/If-None-Match + write atomicity).
+    ///
+    /// The table stores `Weak` handles so a dynamic keyspace does not leak one
+    /// lock per world forever. Holders and waiters own an `Arc` through
+    /// `OwnedMutexGuard` / `lock_owned()`, so pruning expired weak entries
+    /// cannot remove a live same-world serializer.
+    pub(crate) world_locks: Arc<DashMap<ValidatedWorldPath, Weak<Mutex<()>>>>,
+    pub(crate) world_lock_sweep_tick: AtomicUsize,
     /// Cached writer + init counter for the `var/log/deletes` audit
     /// ledger. See `crate::ledger::LedgerWriter` for the semantics
     /// (lazy init, `inits` counter, no `acquire_world_lock` needed
@@ -261,14 +263,13 @@ pub(crate) struct Core {
 impl Core {
     /// Acquire the per-world write lock. Different worlds run concurrent
     /// writes; same-world writes serialize. Lazy creation: the lock is
-    /// inserted on first acquire and never evicted while the process runs.
+    /// inserted on first acquire.
     ///
-    /// We deliberately do NOT remove the entry on delete. Removing while
-    /// another waiter holds a clone of the Arc would let the next acquirer
-    /// create a fresh Arc<Mutex<()>> for the same world, breaking mutual
-    /// exclusion (two concurrent writers, two different mutexes). The map
-    /// grows by one entry per distinct world ever written -- bounded in
-    /// practice by total world cardinality.
+    /// Expired weak entries are swept opportunistically. A live holder or
+    /// waiter owns a strong `Arc`, so sweeping only `strong_count == 0` entries
+    /// cannot split one world across two mutexes. This preserves per-world
+    /// parallelism without letting an unbounded dynamic keyspace grow the lock
+    /// table forever.
     ///
     /// Lock ordering rule for callers that need more than one world lock
     /// (currently only delete, which also touches the shared `var/log/deletes`
@@ -282,13 +283,38 @@ impl Core {
         &self,
         world: &ValidatedWorldPath,
     ) -> OwnedMutexGuard<()> {
-        let lock = {
-            self.world_locks
-                .entry(world.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        };
-        lock.lock_owned().await
+        self.world_lock_handle(world).lock_owned().await
+    }
+
+    fn world_lock_handle(&self, world: &ValidatedWorldPath) -> Arc<Mutex<()>> {
+        self.maybe_prune_world_locks();
+        match self.world_locks.entry(world.clone()) {
+            Entry::Occupied(mut entry) => {
+                if let Some(lock) = entry.get().upgrade() {
+                    lock
+                } else {
+                    let lock = Arc::new(Mutex::new(()));
+                    entry.insert(Arc::downgrade(&lock));
+                    lock
+                }
+            }
+            Entry::Vacant(entry) => {
+                let lock = Arc::new(Mutex::new(()));
+                entry.insert(Arc::downgrade(&lock));
+                lock
+            }
+        }
+    }
+
+    fn maybe_prune_world_locks(&self) {
+        let tick = self.world_lock_sweep_tick.fetch_add(1, Ordering::Relaxed);
+        if tick % WORLD_LOCK_SWEEP_INTERVAL == WORLD_LOCK_SWEEP_INTERVAL - 1 {
+            self.prune_expired_world_locks();
+        }
+    }
+
+    fn prune_expired_world_locks(&self) {
+        self.world_locks.retain(|_, lock| lock.strong_count() != 0);
     }
 
     pub(crate) fn read_world(
@@ -907,6 +933,98 @@ mod tests {
 
         fn assert_audit_hmac_key(_: &AuditHmacKey) {}
         assert_audit_hmac_key(&core.hmac_key);
+
+        drop(core);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn world_lock_prune_preserves_live_guard() {
+        let (core, dir) = crate::test_support::test_core("world-lock-live-guard");
+        let world = ValidatedWorldPath::new("home/live-lock").unwrap();
+
+        let guard = core.acquire_world_lock(&world).await;
+        assert_eq!(core.world_locks.len(), 1);
+
+        core.prune_expired_world_locks();
+        assert_eq!(
+            core.world_locks.len(),
+            1,
+            "live world-lock guards must keep their weak table entries"
+        );
+
+        drop(guard);
+        core.prune_expired_world_locks();
+        assert_eq!(
+            core.world_locks.len(),
+            0,
+            "expired world-lock entries should be pruned"
+        );
+
+        drop(core);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn world_lock_prune_preserves_waiting_future() {
+        let (core, dir) = crate::test_support::test_core("world-lock-waiter");
+        let world = ValidatedWorldPath::new("home/waiting-lock").unwrap();
+        let lock = core.world_lock_handle(&world);
+        let weak = std::sync::Arc::downgrade(&lock);
+        let guard = std::sync::Arc::clone(&lock).lock_owned().await;
+        let waiter = std::sync::Arc::clone(&lock).lock_owned();
+        drop(lock);
+        tokio::pin!(waiter);
+
+        tokio::select! {
+            acquired = &mut waiter => {
+                drop(acquired);
+                panic!("waiter should not acquire while the first guard is live");
+            }
+            _ = tokio::task::yield_now() => {}
+        }
+
+        drop(guard);
+        core.prune_expired_world_locks();
+        let lock_kept_by_waiter = weak
+            .upgrade()
+            .expect("pending waiter future should keep the world lock alive");
+        let lock_after_prune = core.world_lock_handle(&world);
+        assert!(
+            std::sync::Arc::ptr_eq(&lock_kept_by_waiter, &lock_after_prune),
+            "a waiting same-world future must keep the weak table entry live"
+        );
+
+        let waiter_guard = waiter.await;
+        drop(waiter_guard);
+        drop(lock_kept_by_waiter);
+        drop(lock_after_prune);
+
+        core.prune_expired_world_locks();
+        assert_eq!(
+            core.world_locks.len(),
+            0,
+            "world-lock entry should expire after holder and waiter drop"
+        );
+
+        drop(core);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn world_lock_sweep_bounds_dynamic_keyspace() {
+        let (core, dir) = crate::test_support::test_core("world-lock-sweep");
+
+        for i in 0..=super::WORLD_LOCK_SWEEP_INTERVAL {
+            let world = ValidatedWorldPath::new(format!("home/dynamic-lock-{i}")).unwrap();
+            drop(core.acquire_world_lock(&world).await);
+        }
+
+        assert!(
+            core.world_locks.len() <= 2,
+            "opportunistic sweep should prevent one retained lock per dynamic world; len={}",
+            core.world_locks.len()
+        );
 
         drop(core);
         std::fs::remove_dir_all(dir).ok();
