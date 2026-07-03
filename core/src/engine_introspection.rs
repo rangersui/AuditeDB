@@ -207,7 +207,7 @@ pub struct HeadStamp {
 
 struct IntrospectionPermit {
     path: ValidatedProcPath,
-    _file_op: FileOpPermit,
+    file_op: FileOpPermit,
 }
 
 impl ValidatedProcPath {
@@ -389,8 +389,10 @@ impl EngineOps<'_> {
     ) -> Result<Vec<ValidatedWorldPath>, EngineError> {
         let permit = self.authorize_introspection(path, tier)?;
         ensure_proc_endpoint(&permit, ProcEndpoint::Worlds)?;
-        let mut names = blocking_sqlite::run_scoped(|proof| world::list(proof, &self.core().data))
-            .map_err(|err| storage_error_to_engine("proc worlds", err, "list_worlds", None))?;
+        let mut names = blocking_sqlite::run_scoped(|proof| {
+            world::list(proof, &self.core().data, &permit.file_op)
+        })
+        .map_err(|err| storage_error_to_engine("proc worlds", err, "list_worlds", None))?;
         names.extend(self.core().mem.list());
         sort_dedup_worlds(&mut names);
         Ok(names)
@@ -404,12 +406,12 @@ impl EngineOps<'_> {
         if !crate::can_read(self.core(), tier) {
             return Err(EngineError::Auth(AuthGate::Read));
         }
-        let _file_op = self
+        let file_op = self
             .core()
             .begin_file_op()
             .ok_or(EngineError::ShuttingDown)?;
         let mut names = blocking_sqlite::run_scoped(|proof| {
-            world::list_with_prefix(proof, &self.core().data, prefix)
+            world::list_with_prefix(proof, &self.core().data, prefix, &file_op)
         })
         .map_err(|err| {
             storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
@@ -428,13 +430,13 @@ impl EngineOps<'_> {
         if !crate::can_read(self.core(), tier) {
             return Err(EngineError::Auth(AuthGate::Read));
         }
-        let _file_op = self
+        let file_op = self
             .core()
             .begin_file_op()
             .ok_or(EngineError::ShuttingDown)?;
         let limit = max.saturating_add(1);
         let Some(mut names) = blocking_sqlite::run_scoped(|proof| {
-            world::list_with_prefix_bounded(proof, &self.core().data, prefix, limit)
+            world::list_with_prefix_bounded(proof, &self.core().data, prefix, limit, &file_op)
         })
         .map_err(|err| {
             storage_error_to_engine("worlds prefix", err, "list_worlds_with_prefix", None)
@@ -461,7 +463,7 @@ impl EngineOps<'_> {
         let permit = self.authorize_introspection(path, tier)?;
         ensure_proc_endpoint(&permit, ProcEndpoint::Du)?;
         let mut sizes = blocking_sqlite::run_scoped(|proof| {
-            world::usages(proof, &self.core().data, &permit._file_op)
+            world::usages(proof, &self.core().data, &permit.file_op)
         })
         .map_err(|err| storage_error_to_engine("proc du", err, "du", None))?;
         sizes.extend(self.core().mem.sizes().into_iter().map(|(world, bytes)| {
@@ -589,7 +591,7 @@ impl EngineOps<'_> {
         }
         match blocking_sqlite::run_scoped(|proof| {
             self.core()
-                .cached_verify_chain(proof, world, &permit._file_op)
+                .cached_verify_chain(proof, world, &permit.file_op)
         }) {
             Ok(Some(crate::audit::VerifyReport::Valid(report))) => {
                 Ok(AuditVerify::Valid(report.into()))
@@ -626,8 +628,7 @@ impl EngineOps<'_> {
             return Ok(None);
         }
         match blocking_sqlite::run_scoped(|proof| {
-            self.core()
-                .cached_chain_head(proof, world, &permit._file_op)
+            self.core().cached_chain_head(proof, world, &permit.file_op)
         }) {
             Ok(Some(Ok(Some(head)))) => Ok(Some(HeadStamp {
                 generation: head.generation().clone(),
@@ -676,7 +677,7 @@ impl EngineOps<'_> {
         }
         match blocking_sqlite::run_scoped(|proof| {
             self.core()
-                .cached_chain_stamp(proof, world, seq, &permit._file_op)
+                .cached_chain_stamp(proof, world, seq, &permit.file_op)
         }) {
             Ok(Some(Ok(stamp))) => Ok(Some(stamp)),
             Ok(Some(Err(crate::audit::AuditError::ChainBroken(break_report)))) => {
@@ -709,7 +710,7 @@ impl EngineOps<'_> {
             .ok_or(EngineError::ShuttingDown)?;
         Ok(IntrospectionPermit {
             path: path.clone(),
-            _file_op: file_op,
+            file_op,
         })
     }
 }

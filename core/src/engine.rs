@@ -571,12 +571,10 @@ fn verify_all_worlds_with_names(
     key: &AuditHmacKey,
     file_op: &crate::state::FileOpPermit,
 ) -> Result<(), EngineBuildError> {
-    let worlds =
-        blocking_sqlite::run_scoped(|proof| world::list(proof, data_root)).map_err(|err| {
-            EngineBuildError::Storage {
-                sqlite_code: sqlite_code(&err),
-                detail: format!("list worlds for audit verification failed: {err}"),
-            }
+    let worlds = blocking_sqlite::run_scoped(|proof| world::list(proof, data_root, file_op))
+        .map_err(|err| EngineBuildError::Storage {
+            sqlite_code: sqlite_code(&err),
+            detail: format!("list worlds for audit verification failed: {err}"),
         })?;
     for world_path in worlds {
         let world_name = world_path.as_str().to_owned();

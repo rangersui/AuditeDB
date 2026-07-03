@@ -299,11 +299,18 @@ impl MemoryStore {
 /// Combined view: sqlite + memory. Used by tests that assert both stores agree.
 #[cfg(test)]
 pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<String>> {
-    let mut out: Vec<String> =
-        world::list(&mut crate::blocking_sqlite::test_only_mint(), data_root)?
-            .into_iter()
-            .map(|world| world.as_str().to_owned())
-            .collect();
+    let gate = std::sync::Arc::new(crate::state::FileOpGate::new());
+    let file_op = gate
+        .begin()
+        .ok_or_else(|| rusqlite::Error::ExecuteReturnedResults)?;
+    let mut out: Vec<String> = world::list(
+        &mut crate::blocking_sqlite::test_only_mint(),
+        data_root,
+        &file_op,
+    )?
+    .into_iter()
+    .map(|world| world.as_str().to_owned())
+    .collect();
     out.extend(
         mem.list()
             .into_iter()

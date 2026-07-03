@@ -127,9 +127,32 @@ pub fn open_validated(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OpenedWorldKind {
+enum OpenedWorldKind {
     Created,
     Existing,
+}
+
+pub(crate) struct OpenedWriteConnection {
+    conn: Connection,
+    opened: OpenedWorldKind,
+}
+
+impl OpenedWriteConnection {
+    fn new(conn: Connection, opened: OpenedWorldKind) -> Self {
+        Self { conn, opened }
+    }
+
+    pub(crate) fn verify_shape(&self) -> rusqlite::Result<()> {
+        world_schema::verify_open_shape(&self.conn)
+    }
+
+    fn as_mut_conn(&mut self, _proof: &mut BlockingSqlite) -> &mut Connection {
+        &mut self.conn
+    }
+
+    fn mark_existing(&mut self) {
+        self.opened = OpenedWorldKind::Existing;
+    }
 }
 
 #[cfg(test)]
@@ -176,12 +199,13 @@ pub(crate) fn open_cached_writer(
     data_root: &Path,
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,
-) -> rusqlite::Result<(Connection, OpenedWorldKind)> {
+) -> rusqlite::Result<OpenedWriteConnection> {
     open_world_paths_with_generation_minter_and_kind(
         validated_world_dir(data_root, world),
         validated_world_db(data_root, world),
         || world_generation::WorldGeneration::mint().map_err(mint_generation_error),
     )
+    .map(|(conn, opened)| OpenedWriteConnection::new(conn, opened))
 }
 
 fn open_validated_with_generation_minter_and_kind<F>(
@@ -324,8 +348,11 @@ pub(crate) fn open_existing_cached_writer(
     data_root: &Path,
     world: &ValidatedWorldPath,
     _file_op: &FileOpPermit,
-) -> rusqlite::Result<Option<Connection>> {
-    open_existing_writer_path(&validated_world_db(data_root, world))
+) -> rusqlite::Result<Option<OpenedWriteConnection>> {
+    Ok(
+        open_existing_writer_path(&validated_world_db(data_root, world))?
+            .map(|conn| OpenedWriteConnection::new(conn, OpenedWorldKind::Existing)),
+    )
 }
 
 fn open_existing_writer_path(path: &Path) -> rusqlite::Result<Option<Connection>> {
@@ -527,7 +554,7 @@ pub(crate) fn usages(
     file_op: &FileOpPermit,
 ) -> rusqlite::Result<Vec<(ValidatedWorldPath, StorageUsageSnapshot)>> {
     let mut out = Vec::new();
-    for world_path in list(proof, data_root)? {
+    for world_path in list(proof, data_root, file_op)? {
         if let Some(usage) = storage_usage(proof, data_root, &world_path, file_op)? {
             out.push((world_path, usage));
         }
@@ -674,11 +701,11 @@ pub(crate) fn write_with_audit_checked_retaining(
     key: &AuditHmacKey,
     retained_body_count: RetainedBodyCount,
 ) -> Result<WriteAuditResult, WriteAuditError> {
-    let (mut c, opened) = open_validated_for_audit(data_root, world)?;
+    let (c, opened) = open_validated_for_audit(data_root, world)?;
+    let mut opened_conn = OpenedWriteConnection::new(c, opened);
     write_with_audit_checked_retaining_on_conn(
         &mut crate::blocking_sqlite::test_only_mint(),
-        &mut c,
-        opened,
+        &mut opened_conn,
         world,
         body,
         content_type,
@@ -690,9 +717,8 @@ pub(crate) fn write_with_audit_checked_retaining(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_with_audit_checked_retaining_on_conn(
-    _proof: &mut BlockingSqlite,
-    c: &mut Connection,
-    opened: OpenedWorldKind,
+    proof: &mut BlockingSqlite,
+    opened_conn: &mut OpenedWriteConnection,
     world: &ValidatedWorldPath,
     body: &[u8],
     content_type: &str,
@@ -700,7 +726,9 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
     key: &AuditHmacKey,
     retained_body_count: RetainedBodyCount,
 ) -> Result<WriteAuditResult, WriteAuditError> {
-    let tx = c.transaction()?;
+    let opened = opened_conn.opened;
+    let conn = opened_conn.as_mut_conn(proof);
+    let tx = conn.transaction()?;
     let previous_len = tx.query_row(
         "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
         [],
@@ -746,6 +774,7 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
         )
     };
     tx.commit()?;
+    opened_conn.mark_existing();
     Ok(WriteAuditResult {
         hmac,
         cas_body_inserted,
@@ -826,12 +855,13 @@ pub(crate) fn append_with_audit_retaining(
     if !path.exists() {
         return Ok(None);
     }
-    let Some(mut c) = open_existing_validated_for_write(data_root, world)? else {
+    let Some(c) = open_existing_validated_for_write(data_root, world)? else {
         return Ok(None);
     };
+    let mut opened_conn = OpenedWriteConnection::new(c, OpenedWorldKind::Existing);
     append_with_audit_retaining_on_conn(
         &mut crate::blocking_sqlite::test_only_mint(),
-        &mut c,
+        &mut opened_conn,
         world,
         body,
         content_type,
@@ -843,8 +873,8 @@ pub(crate) fn append_with_audit_retaining(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_with_audit_retaining_on_conn(
-    _proof: &mut BlockingSqlite,
-    c: &mut Connection,
+    proof: &mut BlockingSqlite,
+    opened_conn: &mut OpenedWriteConnection,
     world: &ValidatedWorldPath,
     body: &[u8],
     content_type: &str,
@@ -852,7 +882,8 @@ pub(crate) fn append_with_audit_retaining_on_conn(
     key: &AuditHmacKey,
     retained_body_count: RetainedBodyCount,
 ) -> Result<Option<(AppendAuditResult, String)>, WriteAuditError> {
-    let tx = c.transaction()?;
+    let conn = opened_conn.as_mut_conn(proof);
+    let tx = conn.transaction()?;
     let (cas_body_inserted, pruned_cas, format_event, body_event, hmac) = {
         let (audit_tx, is_genesis) =
             verify_appendable_world_tx(&tx, world, key, OpenedWorldKind::Existing)?;
@@ -1426,7 +1457,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::File::create(dir.join("universe.db")).unwrap();
 
-        let err = list(&mut crate::blocking_sqlite::test_only_mint(), &root).unwrap_err();
+        let gate = std::sync::Arc::new(crate::state::FileOpGate::new());
+        let file_op = gate.begin().unwrap();
+        let err = list(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &root,
+            &file_op,
+        )
+        .unwrap_err();
 
         assert!(err.to_string().contains("invalid percent UTF-8"));
         let _ = std::fs::remove_dir_all(root);
@@ -1440,7 +1478,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::File::create(dir.join("universe.db")).unwrap();
 
-        let err = list(&mut crate::blocking_sqlite::test_only_mint(), &root).unwrap_err();
+        let gate = std::sync::Arc::new(crate::state::FileOpGate::new());
+        let file_op = gate.begin().unwrap();
+        let err = list(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &root,
+            &file_op,
+        )
+        .unwrap_err();
 
         assert!(err.to_string().contains("non-canonical disk name"));
         let _ = std::fs::remove_dir_all(root);

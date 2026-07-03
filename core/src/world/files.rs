@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::{
     blocking_sqlite::BlockingSqlite,
     engine_types::{ValidatedWorldPath, ValidatedWorldPrefix},
+    state::FileOpPermit,
     world_schema,
 };
 
@@ -54,6 +55,7 @@ pub(crate) fn delete(
 pub fn list(
     _proof: &mut BlockingSqlite,
     data_root: &Path,
+    _file_op: &FileOpPermit,
 ) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
     list_matching(data_root, |_| true)
 }
@@ -63,6 +65,7 @@ pub fn list_with_prefix(
     _proof: &mut BlockingSqlite,
     data_root: &Path,
     prefix: &ValidatedWorldPrefix,
+    _file_op: &FileOpPermit,
 ) -> rusqlite::Result<Vec<ValidatedWorldPath>> {
     list_matching(data_root, |world| {
         world.as_str().starts_with(prefix.as_str())
@@ -76,6 +79,7 @@ pub fn list_with_prefix_bounded(
     data_root: &Path,
     prefix: &ValidatedWorldPrefix,
     max: usize,
+    _file_op: &FileOpPermit,
 ) -> rusqlite::Result<Option<Vec<ValidatedWorldPath>>> {
     list_matching_bounded(
         data_root,

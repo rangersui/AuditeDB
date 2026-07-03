@@ -36,7 +36,7 @@ use crate::subscription_cursor::SubscriptionEpoch;
 use crate::subscription_event_id::{ChangeTarget, SubscriptionEventId};
 use crate::timeline::{TimelineAddress, TimelineRead};
 use crate::world::Stage;
-use crate::{audit, auth, event, store, world, world_schema};
+use crate::{audit, auth, event, store, world};
 
 #[cfg(target_has_atomic = "64")]
 pub(crate) type EventCounter = AtomicU64;
@@ -214,7 +214,8 @@ pub(crate) struct Core {
     /// for every world ever touched. DELETE removes the cached connection
     /// before unlinking the database so Windows never sees a live writer fd
     /// during physical removal.
-    pub(crate) write_conns: Arc<DashMap<ValidatedWorldPath, Arc<StdMutex<CachedWriteConnection>>>>,
+    pub(crate) write_conns:
+        Arc<DashMap<ValidatedWorldPath, Arc<StdMutex<world::OpenedWriteConnection>>>>,
     pub(crate) durable_world_count: Arc<AtomicUsize>,
     pub(crate) delete_ledger_created: Arc<AtomicBool>,
     pub(crate) events: broadcast::Sender<event::ChangeEvent>,
@@ -255,27 +256,6 @@ pub(crate) struct Core {
     /// before physical removal and clears it on both success and
     /// failure paths.
     pub(crate) read_cache: Arc<ReadCache>,
-}
-
-pub(crate) struct CachedWriteConnection {
-    inner: rusqlite::Connection,
-}
-
-impl CachedWriteConnection {
-    fn new(inner: rusqlite::Connection) -> Self {
-        Self { inner }
-    }
-
-    pub(crate) fn as_mut_conn(
-        &mut self,
-        _proof: &mut crate::blocking_sqlite::BlockingSqlite,
-    ) -> &mut rusqlite::Connection {
-        &mut self.inner
-    }
-
-    fn verify_shape(&self) -> rusqlite::Result<()> {
-        world_schema::verify_open_shape(&self.inner)
-    }
 }
 
 impl Core {
@@ -597,21 +577,21 @@ impl Core {
         proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
-    ) -> rusqlite::Result<(Arc<StdMutex<CachedWriteConnection>>, world::OpenedWorldKind)> {
+    ) -> rusqlite::Result<Arc<StdMutex<world::OpenedWriteConnection>>> {
         if let Some(conn) = self.write_conns.get(world) {
             let conn = conn.clone();
             verify_cached_writer_shape(&conn)?;
-            return Ok((conn, world::OpenedWorldKind::Existing));
+            return Ok(conn);
         }
-        let (conn, opened) = world::open_cached_writer(proof, &self.data, world, _file_op)?;
-        let conn = Arc::new(StdMutex::new(CachedWriteConnection::new(conn)));
+        let conn = world::open_cached_writer(proof, &self.data, world, _file_op)?;
+        let conn = Arc::new(StdMutex::new(conn));
         let entry = self
             .write_conns
             .entry(world.clone())
             .or_insert_with(|| conn.clone())
             .clone();
         self.evict_cached_write_conn_if_needed(world);
-        Ok((entry, opened))
+        Ok(entry)
     }
 
     pub(crate) fn cached_existing_write_conn(
@@ -619,7 +599,7 @@ impl Core {
         proof: &mut crate::blocking_sqlite::BlockingSqlite,
         world: &ValidatedWorldPath,
         _file_op: &FileOpPermit,
-    ) -> rusqlite::Result<Option<Arc<StdMutex<CachedWriteConnection>>>> {
+    ) -> rusqlite::Result<Option<Arc<StdMutex<world::OpenedWriteConnection>>>> {
         if let Some(conn) = self.write_conns.get(world) {
             let conn = conn.clone();
             verify_cached_writer_shape(&conn)?;
@@ -629,7 +609,7 @@ impl Core {
         else {
             return Ok(None);
         };
-        let conn = Arc::new(StdMutex::new(CachedWriteConnection::new(conn)));
+        let conn = Arc::new(StdMutex::new(conn));
         let entry = self
             .write_conns
             .entry(world.clone())
@@ -894,7 +874,9 @@ impl Core {
     }
 }
 
-fn verify_cached_writer_shape(conn: &StdMutex<CachedWriteConnection>) -> rusqlite::Result<()> {
+fn verify_cached_writer_shape(
+    conn: &StdMutex<world::OpenedWriteConnection>,
+) -> rusqlite::Result<()> {
     let guard = conn
         .lock()
         .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
