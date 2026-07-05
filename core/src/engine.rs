@@ -210,6 +210,51 @@ pub enum EngineError {
     InternalInvariant(&'static str),
 }
 
+impl fmt::Display for EngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auth(gate) => write!(
+                f,
+                "authorization failed: {} access required",
+                auth_gate_name(*gate)
+            ),
+            Self::InvalidWorldName => f.write_str("invalid world name"),
+            Self::InvalidMetadata { message } => write!(f, "invalid metadata: {message}"),
+            Self::NotFound => f.write_str("world not found"),
+            Self::AppendOnly => f.write_str("world is append-only"),
+            Self::PayloadTooLarge { max } => {
+                write!(f, "payload exceeds configured maximum of {max} bytes")
+            }
+            Self::PreconditionFailed { message } => write!(f, "precondition failed: {message}"),
+            Self::QuotaExceeded {
+                used,
+                quota,
+                projected,
+            } => write!(
+                f,
+                "storage quota exceeded: used {used}, quota {quota}, projected {projected}"
+            ),
+            Self::TransientStorage => f.write_str("storage is temporarily unavailable"),
+            Self::InsufficientStorage => f.write_str("storage backing is exhausted"),
+            Self::Storage => f.write_str("storage error"),
+            Self::SubscriptionLimit => f.write_str("subscription limit reached"),
+            Self::ShuttingDown => f.write_str("engine is shutting down"),
+            Self::InternalInvariant(_) => f.write_str("internal engine invariant failed"),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+fn auth_gate_name(gate: AuthGate) -> &'static str {
+    match gate {
+        AuthGate::Read => "read",
+        AuthGate::Write => "write",
+        AuthGate::WriteApprove => "approve-write",
+        AuthGate::Delete => "approve-delete",
+    }
+}
+
 impl Default for EngineBuilder {
     fn default() -> Self {
         Self {
@@ -696,6 +741,43 @@ mod tests {
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn engine_error_is_displayable_std_error() {
+        fn engine_result() -> Result<(), EngineError> {
+            Err(EngineError::QuotaExceeded {
+                used: 8,
+                quota: 10,
+                projected: 12,
+            })
+        }
+
+        fn as_boxed_error() -> Result<(), Box<dyn std::error::Error>> {
+            engine_result()?;
+            Ok(())
+        }
+
+        let err = as_boxed_error().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "storage quota exceeded: used 8, quota 10, projected 12"
+        );
+    }
+
+    #[test]
+    fn engine_error_display_hides_internal_invariant_detail() {
+        let err = EngineError::InternalInvariant("audit verify missing world");
+
+        assert_eq!(err.to_string(), "internal engine invariant failed");
+        assert!(
+            !err.to_string().contains("audit verify"),
+            "Display must not expose internal diagnostic details"
+        );
+        assert!(
+            format!("{err:?}").contains("audit verify missing world"),
+            "Debug keeps developer diagnostics"
+        );
     }
 
     #[test]
