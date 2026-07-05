@@ -105,12 +105,13 @@ pub(super) fn retain_body_tx<'tx, 'conn>(
            ON CONFLICT(body_sha256) DO NOTHING"#,
         params![body_sha256.as_str(), body],
     )? == 1;
-    let stored: Vec<u8> = tx.query_row(
-        "SELECT body FROM cas_bodies WHERE body_sha256=?1",
+    let stored_len: Option<i64> = tx.query_row(
+        "SELECT CASE WHEN typeof(body)='blob' THEN length(body) END
+         FROM cas_bodies WHERE body_sha256=?1",
         params![body_sha256.as_str()],
         |r| r.get(0),
     )?;
-    if stored != body {
+    if stored_len != Some(size) {
         return Err(WriteAuditError::CasBodyMismatch { body_sha256 });
     }
     Ok(RetainedCasBody {
