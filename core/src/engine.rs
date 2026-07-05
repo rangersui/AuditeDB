@@ -28,7 +28,7 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES, DEFAULT_RETAINED_BODY_COUNT,
     },
-    engine_types::{AccessTier, AuditHmacKey, ValidatedWorldPath},
+    engine_types::{AccessTier, AuditHmacKey},
     read_cache::ReadCache,
     state::{new_event_counter, Core},
     storage_class, store, world,
@@ -579,13 +579,15 @@ fn verify_all_worlds_with_names(
     data_root: &std::path::Path,
     key: &AuditHmacKey,
     file_op: &crate::state::FileOpPermit,
-) -> Result<Vec<ValidatedWorldPath>, EngineBuildError> {
+) -> Result<Vec<audit::VerifiedAuditPrefix>, EngineBuildError> {
     let mut verified = Vec::new();
     world::try_for_each(proof, data_root, file_op, |proof, world_path| {
         let world_name = world_path.as_str().to_owned();
         audit::verify_world_with_file_op(proof, data_root, &world_path, key, file_op)
-            .map(|()| {
-                verified.push(world_path);
+            .map(|verified_prefix| {
+                if let Some(prefix) = verified_prefix {
+                    verified.push(prefix);
+                }
             })
             .map_err(|err| match err {
                 audit::AuditError::ChainBroken(break_report) => {
@@ -884,6 +886,30 @@ mod tests {
             other => panic!("expected audit-chain corruption, got {other:?}"),
         }
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_world_during_startup_verify_does_not_mint_runtime_proof() {
+        let root = temp_root("audit-verify-missing-race");
+        let key = AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap();
+        let world = ValidatedWorldPath::new("home/audit-missing-race").unwrap();
+        let gate = std::sync::Arc::new(crate::state::FileOpGate::new());
+        let file_op = gate.begin().unwrap();
+
+        let verified = audit::verify_world_with_file_op(
+            &mut crate::blocking_sqlite::test_only_mint(),
+            &root,
+            &world,
+            &key,
+            &file_op,
+        )
+        .unwrap();
+
+        assert!(
+            verified.is_none(),
+            "a world that disappears before open is not a verified prefix"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

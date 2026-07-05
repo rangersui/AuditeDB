@@ -186,7 +186,8 @@ pub(crate) fn append_with_conn_genesis_row(
     key: &AuditHmacKey,
 ) -> AuditResult<(AppendedAuditRow, AppendedAuditRow)> {
     let tx = conn.transaction()?;
-    let audit_tx = super::verify_appendable_tx(proof, &tx, ledger_world, key, EmptyChain::Allow)?;
+    let (audit_tx, _) =
+        super::verify_appendable_tx(proof, &tx, ledger_world, key, EmptyChain::Allow)?;
     let format_row = append_format_tx_row(&audit_tx)?;
     let headers = headers.to_storage_pairs();
     let row = append_tx_inner(
@@ -217,7 +218,7 @@ fn append_with_conn_verified(
     empty_chain: EmptyChain,
 ) -> AuditResult<AppendedAuditRow> {
     let tx = conn.transaction()?;
-    let audit_tx = super::verify_appendable_tx(proof, &tx, ledger_world, key, empty_chain)?;
+    let (audit_tx, _) = super::verify_appendable_tx(proof, &tx, ledger_world, key, empty_chain)?;
     let headers = headers.to_storage_pairs();
     let row = append_tx_inner(
         &audit_tx,

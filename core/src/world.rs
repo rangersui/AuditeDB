@@ -760,8 +760,8 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
         [],
         |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
     )?;
-    let (format_event, hmac, cas_body_inserted, pruned_cas, body_event, mark_verified) = {
-        let (audit_tx, is_genesis, mark_verified) =
+    let (format_event, hmac, cas_body_inserted, pruned_cas, body_event, verified_prefix) = {
+        let (audit_tx, is_genesis, verified_prefix) =
             verify_appendable_world_tx(proof, &tx, verified_audit_worlds, world, key, opened)?;
         let format_event = if is_genesis {
             Some(audit::append_format_tx_row(&audit_tx)?)
@@ -798,12 +798,12 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
             retained.inserted(),
             pruned,
             row,
-            mark_verified,
+            verified_prefix,
         )
     };
     tx.commit()?;
-    if mark_verified {
-        verified_audit_worlds.mark_verified(world);
+    if let Some(prefix) = verified_prefix {
+        verified_audit_worlds.mark_verified(prefix);
     }
     opened_conn.mark_existing();
     Ok(WriteAuditResult {
@@ -919,8 +919,8 @@ pub(crate) fn append_with_audit_retaining_on_conn(
 ) -> Result<Option<(AppendAuditResult, String)>, WriteAuditError> {
     let conn = opened_conn.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let (cas_body_inserted, pruned_cas, format_event, body_event, hmac, mark_verified) = {
-        let (audit_tx, is_genesis, mark_verified) = verify_appendable_world_tx(
+    let (cas_body_inserted, pruned_cas, format_event, body_event, hmac, verified_prefix) = {
+        let (audit_tx, is_genesis, verified_prefix) = verify_appendable_world_tx(
             proof,
             &tx,
             verified_audit_worlds,
@@ -961,12 +961,12 @@ pub(crate) fn append_with_audit_retaining_on_conn(
             format_event,
             row,
             hmac,
-            mark_verified,
+            verified_prefix,
         )
     };
     tx.commit()?;
-    if mark_verified {
-        verified_audit_worlds.mark_verified(world);
+    if let Some(prefix) = verified_prefix {
+        verified_audit_worlds.mark_verified(prefix);
     }
     Ok(Some((
         AppendAuditResult {
@@ -986,31 +986,36 @@ fn verify_appendable_world_tx<'tx, 'conn, 'key>(
     world: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     opened: OpenedWorldKind,
-) -> Result<(audit::VerifiedAuditTx<'tx, 'conn, 'key>, bool, bool), WriteAuditError> {
+) -> Result<
+    (
+        audit::VerifiedAuditTx<'tx, 'conn, 'key>,
+        bool,
+        Option<audit::VerifiedAuditPrefix>,
+    ),
+    WriteAuditError,
+> {
     match audit_chain_opening(tx, opened)? {
         AuditChainOpening::Genesis(_proof) => {
             verified_audit_worlds.note_full_append_gate();
-            Ok((
-                audit::verify_appendable_tx_genesis_checked(proof, tx, world, key)?,
-                true,
-                true,
-            ))
-        }
-        AuditChainOpening::Existing if verified_audit_worlds.is_verified(world) => {
-            verified_audit_worlds.note_tail_append_gate();
-            Ok((
-                audit::verify_appendable_tx_existing_tail_checked(proof, tx, world, key)?,
-                false,
-                false,
-            ))
+            let (audit_tx, prefix) =
+                audit::verify_appendable_tx_genesis_checked_with_prefix(proof, tx, world, key)?;
+            Ok((audit_tx, true, Some(prefix)))
         }
         AuditChainOpening::Existing => {
-            verified_audit_worlds.note_full_append_gate();
-            Ok((
-                audit::verify_appendable_tx_existing_checked(proof, tx, world, key)?,
-                false,
-                true,
-            ))
+            if let Some(prefix) = verified_audit_worlds.verified_prefix(world) {
+                verified_audit_worlds.note_tail_append_gate();
+                Ok((
+                    audit::verify_appendable_tx_existing_tail_checked(proof, tx, &prefix, key)?,
+                    false,
+                    None,
+                ))
+            } else {
+                verified_audit_worlds.note_full_append_gate();
+                let (audit_tx, prefix) = audit::verify_appendable_tx_existing_checked_with_prefix(
+                    proof, tx, world, key,
+                )?;
+                Ok((audit_tx, false, Some(prefix)))
+            }
         }
     }
 }

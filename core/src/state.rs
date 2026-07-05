@@ -23,7 +23,7 @@ use std::sync::{
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
 
-use dashmap::{mapref::entry::Entry, DashMap, DashSet};
+use dashmap::{mapref::entry::Entry, DashMap};
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
 use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
@@ -198,7 +198,7 @@ pub(crate) struct StorageReservationError {
 /// must check this cache before minting `VerifiedAuditTx`; an existing file
 /// alone is not a proof because a `universe.db` can appear after startup.
 pub(crate) struct AuditVerificationCache {
-    worlds: DashSet<ValidatedWorldPath>,
+    worlds: DashMap<ValidatedWorldPath, crate::audit::VerifiedAuditPrefix>,
     #[cfg(test)]
     full_append_gates: AtomicUsize,
     #[cfg(test)]
@@ -206,9 +206,15 @@ pub(crate) struct AuditVerificationCache {
 }
 
 impl AuditVerificationCache {
-    pub(crate) fn from_verified(worlds: impl IntoIterator<Item = ValidatedWorldPath>) -> Self {
+    pub(crate) fn from_verified(
+        prefixes: impl IntoIterator<Item = crate::audit::VerifiedAuditPrefix>,
+    ) -> Self {
+        let worlds = DashMap::new();
+        for prefix in prefixes {
+            worlds.insert(prefix.world().clone(), prefix);
+        }
         Self {
-            worlds: worlds.into_iter().collect(),
+            worlds,
             #[cfg(test)]
             full_append_gates: AtomicUsize::new(0),
             #[cfg(test)]
@@ -216,16 +222,24 @@ impl AuditVerificationCache {
         }
     }
 
-    pub(crate) fn mark_verified(&self, world: &ValidatedWorldPath) {
-        self.worlds.insert(world.clone());
+    pub(crate) fn mark_verified(&self, prefix: crate::audit::VerifiedAuditPrefix) {
+        self.worlds.insert(prefix.world().clone(), prefix);
     }
 
     pub(crate) fn unmark(&self, world: &ValidatedWorldPath) {
         self.worlds.remove(world);
     }
 
+    pub(crate) fn verified_prefix(
+        &self,
+        world: &ValidatedWorldPath,
+    ) -> Option<crate::audit::VerifiedAuditPrefix> {
+        self.worlds.get(world).map(|prefix| prefix.value().clone())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_verified(&self, world: &ValidatedWorldPath) -> bool {
-        self.worlds.contains(world)
+        self.worlds.contains_key(world)
     }
 
     pub(crate) fn note_full_append_gate(&self) {

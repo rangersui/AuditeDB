@@ -83,6 +83,28 @@ pub struct VerifiedAuditTx<'tx, 'conn, 'key> {
     generation: WorldGeneration,
 }
 
+/// Runtime proof that an Engine process has full-verified a world's prefix.
+///
+/// The constructor is private to this module. Callers can only obtain this
+/// proof by running a full audit-chain verification path, then cache it for
+/// later O(1) tail checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedAuditPrefix {
+    world: ValidatedWorldPath,
+}
+
+impl VerifiedAuditPrefix {
+    fn new(world: &ValidatedWorldPath) -> Self {
+        Self {
+            world: world.clone(),
+        }
+    }
+
+    pub(crate) fn world(&self) -> &ValidatedWorldPath {
+        &self.world
+    }
+}
+
 pub type AuditResult<T> = Result<T, AuditError>;
 
 #[derive(Debug)]
@@ -146,7 +168,7 @@ pub fn verify_all_worlds(data_root: &Path, key: &AuditHmacKey) -> AuditResult<()
         .ok_or_else(|| AuditError::Storage(file_op_gate_closed_error()))?;
     crate::blocking_sqlite::run_scoped(|proof| {
         world::try_for_each(proof, data_root, &file_op, |proof, world| {
-            verify_world_with_file_op(proof, data_root, &world, key, &file_op)
+            verify_world_with_file_op(proof, data_root, &world, key, &file_op).map(|_| ())
         })
     })
     .map_err(|err| match err {
@@ -167,7 +189,7 @@ pub fn verify_world(
         .begin()
         .ok_or_else(|| AuditError::Storage(file_op_gate_closed_error()))?;
     crate::blocking_sqlite::run_scoped(|proof| {
-        verify_world_with_file_op(proof, data_root, world, key, &file_op)
+        verify_world_with_file_op(proof, data_root, world, key, &file_op).map(|_| ())
     })
 }
 
@@ -177,16 +199,16 @@ pub(crate) fn verify_world_with_file_op(
     world: &ValidatedWorldPath,
     key: &AuditHmacKey,
     file_op: &crate::state::FileOpPermit,
-) -> AuditResult<()> {
+) -> AuditResult<Option<VerifiedAuditPrefix>> {
     let Some(mut c) = world::open_existing_validated(proof, data_root, world, file_op)? else {
-        return Ok(());
+        return Ok(None);
     };
     let tx = c.transaction()?;
     require_intact(verify_world_tx(proof, &tx, world, key)?)?;
     if let Some(break_report) = live_body::verify_tx(&tx)? {
         return Err(AuditError::ChainBroken(break_report));
     }
-    Ok(())
+    Ok(Some(VerifiedAuditPrefix::new(world)))
 }
 
 fn file_op_gate_closed_error() -> rusqlite::Error {
@@ -218,6 +240,7 @@ pub(crate) fn require_current_world_intact_tx(
     require_current_tail_intact_tx(proof, tx, world, key)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
     proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
@@ -225,14 +248,25 @@ pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
     key: &'key AuditHmacKey,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
     verify_appendable_tx_full(proof, tx, world_name, key, EmptyChain::Reject)
+        .map(|(audit_tx, _)| audit_tx)
+}
+
+pub(crate) fn verify_appendable_tx_existing_checked_with_prefix<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
+    tx: &'tx Transaction<'conn>,
+    world_name: &ValidatedWorldPath,
+    key: &'key AuditHmacKey,
+) -> AuditResult<(VerifiedAuditTx<'tx, 'conn, 'key>, VerifiedAuditPrefix)> {
+    verify_appendable_tx_full(proof, tx, world_name, key, EmptyChain::Reject)
 }
 
 pub(crate) fn verify_appendable_tx_existing_tail_checked<'tx, 'conn, 'key>(
     proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
-    world_name: &ValidatedWorldPath,
+    verified_prefix: &VerifiedAuditPrefix,
     key: &'key AuditHmacKey,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+    let world_name = verified_prefix.world();
     let generation = crate::world_schema::generation(proof, tx)?;
     let _retention = retention::load_for_append(tx)?;
     require_current_tail_intact_tx(proof, tx, world_name, key)?;
@@ -244,12 +278,23 @@ pub(crate) fn verify_appendable_tx_existing_tail_checked<'tx, 'conn, 'key>(
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn, 'key>(
     proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
     world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
 ) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+    verify_appendable_tx(proof, tx, world_name, key, EmptyChain::Allow)
+        .map(|(audit_tx, _)| audit_tx)
+}
+
+pub(crate) fn verify_appendable_tx_genesis_checked_with_prefix<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
+    tx: &'tx Transaction<'conn>,
+    world_name: &ValidatedWorldPath,
+    key: &'key AuditHmacKey,
+) -> AuditResult<(VerifiedAuditTx<'tx, 'conn, 'key>, VerifiedAuditPrefix)> {
     verify_appendable_tx(proof, tx, world_name, key, EmptyChain::Allow)
 }
 
@@ -259,7 +304,7 @@ fn verify_appendable_tx<'tx, 'conn, 'key>(
     world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
-) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+) -> AuditResult<(VerifiedAuditTx<'tx, 'conn, 'key>, VerifiedAuditPrefix)> {
     verify_appendable_tx_full(proof, tx, world_name, key, empty_chain)
 }
 
@@ -269,7 +314,7 @@ fn verify_appendable_tx_full<'tx, 'conn, 'key>(
     world_name: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     empty_chain: EmptyChain,
-) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+) -> AuditResult<(VerifiedAuditTx<'tx, 'conn, 'key>, VerifiedAuditPrefix)> {
     let generation = crate::world_schema::generation(proof, tx)?;
     let retention = retention::load_for_append(tx)?;
     let mut stmt = tx.prepare(AUDIT_SELECT)?;
@@ -288,12 +333,15 @@ fn verify_appendable_tx_full<'tx, 'conn, 'key>(
     if let Some(break_report) = live_body::verify_tx(tx)? {
         return Err(AuditError::ChainBroken(break_report));
     }
-    Ok(VerifiedAuditTx {
-        tx,
-        key,
-        world: world_name.clone(),
-        generation,
-    })
+    Ok((
+        VerifiedAuditTx {
+            tx,
+            key,
+            world: world_name.clone(),
+            generation,
+        },
+        VerifiedAuditPrefix::new(world_name),
+    ))
 }
 
 /// O(1) current-state gate for ordinary reads.
