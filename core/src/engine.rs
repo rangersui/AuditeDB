@@ -28,7 +28,7 @@ use crate::{
         DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS, DEFAULT_MAX_MEMORY_BYTES,
         DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES, DEFAULT_RETAINED_BODY_COUNT,
     },
-    engine_types::{AccessTier, AuditHmacKey},
+    engine_types::{AccessTier, AuditHmacKey, ValidatedWorldPath},
     read_cache::ReadCache,
     state::{new_event_counter, Core},
     storage_class, store, world,
@@ -368,7 +368,7 @@ impl EngineBuilder {
                     detail: "startup file operation gate unexpectedly closed".to_owned(),
                 })?;
 
-        blocking_sqlite::run_scoped(|proof| {
+        let verified_audit_worlds = blocking_sqlite::run_scoped(|proof| {
             verify_all_worlds_with_names(proof, &self.data_root, &hmac_key, &startup_file_op)
         })?;
         let durable_usages = blocking_sqlite::run_scoped(|proof| {
@@ -428,6 +428,9 @@ impl EngineBuilder {
             )),
             storage_audit_chain_events: Arc::new(AtomicUsize::new(storage_audit_chain_events)),
             file_ops: Arc::new(crate::state::FileOpGate::new()),
+            verified_audit_worlds: Arc::new(crate::state::AuditVerificationCache::from_verified(
+                verified_audit_worlds,
+            )),
             write_conns: Arc::new(DashMap::new()),
             durable_world_count: Arc::new(AtomicUsize::new(durable_world_count)),
             delete_ledger_created: Arc::new(AtomicBool::new(delete_ledger_created)),
@@ -576,11 +579,15 @@ fn verify_all_worlds_with_names(
     data_root: &std::path::Path,
     key: &AuditHmacKey,
     file_op: &crate::state::FileOpPermit,
-) -> Result<(), EngineBuildError> {
+) -> Result<Vec<ValidatedWorldPath>, EngineBuildError> {
+    let mut verified = Vec::new();
     world::try_for_each(proof, data_root, file_op, |proof, world_path| {
         let world_name = world_path.as_str().to_owned();
-        audit::verify_world_with_file_op(proof, data_root, &world_path, key, file_op).map_err(
-            |err| match err {
+        audit::verify_world_with_file_op(proof, data_root, &world_path, key, file_op)
+            .map(|()| {
+                verified.push(world_path);
+            })
+            .map_err(|err| match err {
                 audit::AuditError::ChainBroken(break_report) => {
                     EngineBuildError::AuditChainCorrupted {
                         world: world_name.clone(),
@@ -602,8 +609,7 @@ fn verify_all_worlds_with_names(
                         },
                     }
                 }
-            },
-        )
+            })
     })
     .map_err(|err| match err {
         world::WalkWorldsError::Storage(err) => EngineBuildError::Storage {
@@ -611,7 +617,8 @@ fn verify_all_worlds_with_names(
             detail: format!("list worlds for audit verification failed: {err}"),
         },
         world::WalkWorldsError::Visit(err) => err,
-    })
+    })?;
+    Ok(verified)
 }
 
 #[cfg(test)]

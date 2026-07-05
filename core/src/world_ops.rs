@@ -287,6 +287,7 @@ fn replace_write_blocking(
         match world::write_with_audit_checked_retaining_on_conn(
             proof,
             &mut write_conn,
+            core.verified_audit_worlds.as_ref(),
             &permit.world,
             &req.body,
             req.metadata.content_type(),
@@ -546,6 +547,7 @@ fn append_write_blocking(
         match world::append_with_audit_retaining_on_conn(
             proof,
             &mut write_conn,
+            core.verified_audit_worlds.as_ref(),
             &permit.world,
             &req.body,
             &content_type,

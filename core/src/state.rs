@@ -23,7 +23,7 @@ use std::sync::{
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
 
-use dashmap::{mapref::entry::Entry, DashMap};
+use dashmap::{mapref::entry::Entry, DashMap, DashSet};
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard, Semaphore};
 
 use crate::engine_types::{AuditHmacKey, ValidatedWorldPath};
@@ -191,6 +191,62 @@ pub(crate) struct StorageReservationError {
     pub(crate) projected: usize,
 }
 
+/// Runtime proof cache for issue #98's write fast path.
+///
+/// A world is present only after this Engine process has full-verified its
+/// audit prefix or has created the world itself. Tail-only append authority
+/// must check this cache before minting `VerifiedAuditTx`; an existing file
+/// alone is not a proof because a `universe.db` can appear after startup.
+pub(crate) struct AuditVerificationCache {
+    worlds: DashSet<ValidatedWorldPath>,
+    #[cfg(test)]
+    full_append_gates: AtomicUsize,
+    #[cfg(test)]
+    tail_append_gates: AtomicUsize,
+}
+
+impl AuditVerificationCache {
+    pub(crate) fn from_verified(worlds: impl IntoIterator<Item = ValidatedWorldPath>) -> Self {
+        Self {
+            worlds: worlds.into_iter().collect(),
+            #[cfg(test)]
+            full_append_gates: AtomicUsize::new(0),
+            #[cfg(test)]
+            tail_append_gates: AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn mark_verified(&self, world: &ValidatedWorldPath) {
+        self.worlds.insert(world.clone());
+    }
+
+    pub(crate) fn unmark(&self, world: &ValidatedWorldPath) {
+        self.worlds.remove(world);
+    }
+
+    pub(crate) fn is_verified(&self, world: &ValidatedWorldPath) -> bool {
+        self.worlds.contains(world)
+    }
+
+    pub(crate) fn note_full_append_gate(&self) {
+        #[cfg(test)]
+        self.full_append_gates.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_tail_append_gate(&self) {
+        #[cfg(test)]
+        self.tail_append_gates.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only_append_gate_counts(&self) -> (usize, usize) {
+        (
+            self.full_append_gates.load(Ordering::Relaxed),
+            self.tail_append_gates.load(Ordering::Relaxed),
+        )
+    }
+}
+
 pub(crate) struct Core {
     pub(crate) data: PathBuf,
     pub(crate) tokens: auth::Tokens,
@@ -205,6 +261,10 @@ pub(crate) struct Core {
     pub(crate) storage_retained_cas_body_bytes: Arc<AtomicUsize>,
     pub(crate) storage_audit_chain_events: Arc<AtomicUsize>,
     pub(crate) file_ops: Arc<FileOpGate>,
+    /// Worlds whose audit prefix has been full-verified during this Engine
+    /// lifetime. Ordinary durable replace/append may use O(1) tail
+    /// verification only when this cache contains the exact canonical world.
+    pub(crate) verified_audit_worlds: Arc<AuditVerificationCache>,
     /// Per-world writer connections used only while the caller holds the
     /// matching `world_locks` guard.
     ///

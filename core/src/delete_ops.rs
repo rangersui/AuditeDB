@@ -247,6 +247,7 @@ fn delete_blocking(
     if !ok {
         return Err(DeleteError::DeleteFailedAfterIntent);
     }
+    core.verified_audit_worlds.unmark(&permit.world);
     hooks.physical_deleted();
 
     if store::is_persistent(&permit.world) {

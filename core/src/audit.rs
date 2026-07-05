@@ -227,6 +227,23 @@ pub(crate) fn verify_appendable_tx_existing_checked<'tx, 'conn, 'key>(
     verify_appendable_tx_full(proof, tx, world_name, key, EmptyChain::Reject)
 }
 
+pub(crate) fn verify_appendable_tx_existing_tail_checked<'tx, 'conn, 'key>(
+    proof: &mut BlockingSqlite,
+    tx: &'tx Transaction<'conn>,
+    world_name: &ValidatedWorldPath,
+    key: &'key AuditHmacKey,
+) -> AuditResult<VerifiedAuditTx<'tx, 'conn, 'key>> {
+    let generation = crate::world_schema::generation(proof, tx)?;
+    let _retention = retention::load_for_append(tx)?;
+    require_current_tail_intact_tx(proof, tx, world_name, key)?;
+    Ok(VerifiedAuditTx {
+        tx,
+        key,
+        world: world_name.clone(),
+        generation,
+    })
+}
+
 pub(crate) fn verify_appendable_tx_genesis_checked<'tx, 'conn, 'key>(
     proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,

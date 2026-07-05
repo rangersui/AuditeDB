@@ -918,6 +918,226 @@ mod tests {
         world_schema::generation(&mut crate::blocking_sqlite::test_only_mint(), &conn).unwrap()
     }
 
+    fn test_key() -> AuditHmacKey {
+        AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
+    }
+
+    fn build_engine_with_key(root: PathBuf, key: &AuditHmacKey) -> Engine {
+        Engine::builder()
+            .data_root(root)
+            .key(key.clone_secret())
+            .max_listen_connections(1)
+            .build()
+            .unwrap()
+    }
+
+    fn direct_put(
+        root: &std::path::Path,
+        world_path: &ValidatedWorldPath,
+        body: &'static [u8],
+        key: &AuditHmacKey,
+    ) {
+        world::write_with_audit_checked(root, world_path, body, "text/plain", &[], key)
+            .expect("direct fixture write succeeds");
+    }
+
+    fn corrupt_first_body_event(root: &std::path::Path, world_path: &ValidatedWorldPath) {
+        let conn = rusqlite::Connection::open(world::validated_world_db(root, world_path)).unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE events
+                 SET body_sha256='0000000000000000000000000000000000000000000000000000000000000000'
+                 WHERE id=(
+                    SELECT MIN(id) FROM events WHERE event_type IN ('put', 'append')
+                 )",
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "fixture must corrupt exactly one body event");
+    }
+
+    fn append_gate_counts(engine: &Engine) -> (usize, usize) {
+        engine
+            .core()
+            .verified_audit_worlds
+            .test_only_append_gate_counts()
+    }
+
+    #[tokio::test]
+    async fn write_fast_path_uses_tail_after_startup_verified_world() {
+        let root = temp_root("write-tail-startup-verified");
+        let key = test_key();
+        let world = ValidatedWorldPath::new("home/write-tail-startup-verified").unwrap();
+        direct_put(&root, &world, b"before-build", &key);
+
+        let engine = build_engine_with_key(root.clone(), &key);
+        assert!(
+            engine.core().verified_audit_worlds.is_verified(&world),
+            "startup full verification must mark existing worlds"
+        );
+        assert_eq!(append_gate_counts(&engine), (0, 0));
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"after-build"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            append_gate_counts(&engine),
+            (0, 1),
+            "startup-verified existing worlds may use the O(1) tail gate"
+        );
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn external_clean_world_full_verifies_once_then_uses_tail() {
+        let root = temp_root("write-tail-external-clean");
+        let key = test_key();
+        let engine = build_engine_with_key(root.clone(), &key);
+        let world = ValidatedWorldPath::new("home/write-tail-external-clean").unwrap();
+        direct_put(&root, &world, b"external", &key);
+
+        engine
+            .append(
+                &world,
+                Bytes::from_static(b" first-engine-append"),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        assert!(
+            engine.core().verified_audit_worlds.is_verified(&world),
+            "first engine append must mark a clean external world after full verification"
+        );
+        assert_eq!(
+            append_gate_counts(&engine),
+            (1, 0),
+            "cache-miss external worlds must not use the tail gate first"
+        );
+
+        engine
+            .append(
+                &world,
+                Bytes::from_static(b" second-engine-append"),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            append_gate_counts(&engine),
+            (1, 1),
+            "marked worlds switch to the tail gate after one full verification"
+        );
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn external_corrupt_prefix_rejects_before_tail_fast_path() {
+        let root = temp_root("write-tail-external-corrupt");
+        let key = test_key();
+        let engine = build_engine_with_key(root.clone(), &key);
+        let world = ValidatedWorldPath::new("home/write-tail-external-corrupt").unwrap();
+        direct_put(&root, &world, b"external-one", &key);
+        direct_put(&root, &world, b"external-two", &key);
+        corrupt_first_body_event(&root, &world);
+
+        assert!(matches!(
+            engine
+                .append(
+                    &world,
+                    Bytes::from_static(b" engine-append"),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await,
+            Err(EngineError::Storage)
+        ));
+        assert!(
+            !engine.core().verified_audit_worlds.is_verified(&world),
+            "failed full verification must not mark a corrupt external world"
+        );
+        assert_eq!(
+            append_gate_counts(&engine),
+            (1, 0),
+            "corrupt cache-miss worlds must fail through the full gate, not tail"
+        );
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn delete_keeps_full_verification_for_startup_marked_worlds() {
+        let root = temp_root("write-tail-delete-full-verify");
+        let key = test_key();
+        let world = ValidatedWorldPath::new("home/write-tail-delete-full-verify").unwrap();
+        direct_put(&root, &world, b"before-build-one", &key);
+        direct_put(&root, &world, b"before-build-two", &key);
+        let engine = build_engine_with_key(root.clone(), &key);
+        assert!(engine.core().verified_audit_worlds.is_verified(&world));
+        corrupt_first_body_event(&root, &world);
+
+        assert!(matches!(
+            engine
+                .delete(&world, Preconditions::none(), AccessTier::Approve)
+                .await,
+            Err(EngineError::Storage)
+        ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn delete_unmarks_world_before_same_name_can_append_again() {
+        let root = temp_root("write-tail-delete-unmarks");
+        let key = test_key();
+        let world = ValidatedWorldPath::new("home/write-tail-delete-unmarks").unwrap();
+        direct_put(&root, &world, b"before-build", &key);
+        let engine = build_engine_with_key(root.clone(), &key);
+        assert!(engine.core().verified_audit_worlds.is_verified(&world));
+
+        engine
+            .delete(&world, Preconditions::none(), AccessTier::Approve)
+            .await
+            .unwrap();
+        assert!(
+            !engine.core().verified_audit_worlds.is_verified(&world),
+            "physical delete must revoke the runtime proof for that world name"
+        );
+
+        direct_put(&root, &world, b"external-one", &key);
+        direct_put(&root, &world, b"external-two", &key);
+        corrupt_first_body_event(&root, &world);
+
+        assert!(matches!(
+            engine
+                .append(
+                    &world,
+                    Bytes::from_static(b" engine-append"),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await,
+            Err(EngineError::Storage)
+        ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn replay_after_reports_ring_gap_and_replays_available_events() {
         let (engine, root) = test_engine("replay-gap");

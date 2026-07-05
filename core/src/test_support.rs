@@ -56,6 +56,9 @@ pub(crate) fn test_core_with_read_cache_max(
                 storage_retained_cas_body_bytes: Arc::new(AtomicUsize::new(0)),
                 storage_audit_chain_events: Arc::new(AtomicUsize::new(0)),
                 file_ops: Arc::new(crate::state::FileOpGate::new()),
+                verified_audit_worlds: Arc::new(
+                    crate::state::AuditVerificationCache::from_verified(std::iter::empty()),
+                ),
                 write_conns: Arc::new(DashMap::new()),
                 durable_world_count: Arc::new(AtomicUsize::new(0)),
                 delete_ledger_created: Arc::new(AtomicBool::new(false)),

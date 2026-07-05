@@ -725,9 +725,12 @@ pub(crate) fn write_with_audit_checked_retaining(
 ) -> Result<WriteAuditResult, WriteAuditError> {
     let (c, opened) = open_validated_for_audit(data_root, world)?;
     let mut opened_conn = OpenedWriteConnection::new(c, opened);
+    let verified_audit_worlds =
+        crate::state::AuditVerificationCache::from_verified(std::iter::empty());
     write_with_audit_checked_retaining_on_conn(
         &mut crate::blocking_sqlite::test_only_mint(),
         &mut opened_conn,
+        &verified_audit_worlds,
         world,
         body,
         content_type,
@@ -741,6 +744,7 @@ pub(crate) fn write_with_audit_checked_retaining(
 pub(crate) fn write_with_audit_checked_retaining_on_conn(
     proof: &mut BlockingSqlite,
     opened_conn: &mut OpenedWriteConnection,
+    verified_audit_worlds: &crate::state::AuditVerificationCache,
     world: &ValidatedWorldPath,
     body: &[u8],
     content_type: &str,
@@ -756,8 +760,9 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
         [],
         |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
     )?;
-    let (format_event, hmac, cas_body_inserted, pruned_cas, body_event) = {
-        let (audit_tx, is_genesis) = verify_appendable_world_tx(proof, &tx, world, key, opened)?;
+    let (format_event, hmac, cas_body_inserted, pruned_cas, body_event, mark_verified) = {
+        let (audit_tx, is_genesis, mark_verified) =
+            verify_appendable_world_tx(proof, &tx, verified_audit_worlds, world, key, opened)?;
         let format_event = if is_genesis {
             Some(audit::append_format_tx_row(&audit_tx)?)
         } else {
@@ -793,9 +798,13 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
             retained.inserted(),
             pruned,
             row,
+            mark_verified,
         )
     };
     tx.commit()?;
+    if mark_verified {
+        verified_audit_worlds.mark_verified(world);
+    }
     opened_conn.mark_existing();
     Ok(WriteAuditResult {
         hmac,
@@ -881,9 +890,12 @@ pub(crate) fn append_with_audit_retaining(
         return Ok(None);
     };
     let mut opened_conn = OpenedWriteConnection::new(c, OpenedWorldKind::Existing);
+    let verified_audit_worlds =
+        crate::state::AuditVerificationCache::from_verified(std::iter::empty());
     append_with_audit_retaining_on_conn(
         &mut crate::blocking_sqlite::test_only_mint(),
         &mut opened_conn,
+        &verified_audit_worlds,
         world,
         body,
         content_type,
@@ -897,6 +909,7 @@ pub(crate) fn append_with_audit_retaining(
 pub(crate) fn append_with_audit_retaining_on_conn(
     proof: &mut BlockingSqlite,
     opened_conn: &mut OpenedWriteConnection,
+    verified_audit_worlds: &crate::state::AuditVerificationCache,
     world: &ValidatedWorldPath,
     body: &[u8],
     content_type: &str,
@@ -906,9 +919,15 @@ pub(crate) fn append_with_audit_retaining_on_conn(
 ) -> Result<Option<(AppendAuditResult, String)>, WriteAuditError> {
     let conn = opened_conn.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let (cas_body_inserted, pruned_cas, format_event, body_event, hmac) = {
-        let (audit_tx, is_genesis) =
-            verify_appendable_world_tx(proof, &tx, world, key, OpenedWorldKind::Existing)?;
+    let (cas_body_inserted, pruned_cas, format_event, body_event, hmac, mark_verified) = {
+        let (audit_tx, is_genesis, mark_verified) = verify_appendable_world_tx(
+            proof,
+            &tx,
+            verified_audit_worlds,
+            world,
+            key,
+            OpenedWorldKind::Existing,
+        )?;
         let format_event = if is_genesis {
             Some(audit::append_format_tx_row(&audit_tx)?)
         } else {
@@ -936,9 +955,19 @@ pub(crate) fn append_with_audit_retaining_on_conn(
         cas::mark_retention_started_tx(&tx, row.id())?;
         let pruned = cas::prune_to_count_tx(&tx, retained_body_count)?;
         let hmac = row.hmac().to_owned();
-        (retained.inserted(), pruned, format_event, row, hmac)
+        (
+            retained.inserted(),
+            pruned,
+            format_event,
+            row,
+            hmac,
+            mark_verified,
+        )
     };
     tx.commit()?;
+    if mark_verified {
+        verified_audit_worlds.mark_verified(world);
+    }
     Ok(Some((
         AppendAuditResult {
             cas_body_inserted,
@@ -953,19 +982,36 @@ pub(crate) fn append_with_audit_retaining_on_conn(
 fn verify_appendable_world_tx<'tx, 'conn, 'key>(
     proof: &mut BlockingSqlite,
     tx: &'tx Transaction<'conn>,
+    verified_audit_worlds: &crate::state::AuditVerificationCache,
     world: &ValidatedWorldPath,
     key: &'key AuditHmacKey,
     opened: OpenedWorldKind,
-) -> Result<(audit::VerifiedAuditTx<'tx, 'conn, 'key>, bool), WriteAuditError> {
+) -> Result<(audit::VerifiedAuditTx<'tx, 'conn, 'key>, bool, bool), WriteAuditError> {
     match audit_chain_opening(tx, opened)? {
-        AuditChainOpening::Genesis(_proof) => Ok((
-            audit::verify_appendable_tx_genesis_checked(proof, tx, world, key)?,
-            true,
-        )),
-        AuditChainOpening::Existing => Ok((
-            audit::verify_appendable_tx_existing_checked(proof, tx, world, key)?,
-            false,
-        )),
+        AuditChainOpening::Genesis(_proof) => {
+            verified_audit_worlds.note_full_append_gate();
+            Ok((
+                audit::verify_appendable_tx_genesis_checked(proof, tx, world, key)?,
+                true,
+                true,
+            ))
+        }
+        AuditChainOpening::Existing if verified_audit_worlds.is_verified(world) => {
+            verified_audit_worlds.note_tail_append_gate();
+            Ok((
+                audit::verify_appendable_tx_existing_tail_checked(proof, tx, world, key)?,
+                false,
+                false,
+            ))
+        }
+        AuditChainOpening::Existing => {
+            verified_audit_worlds.note_full_append_gate();
+            Ok((
+                audit::verify_appendable_tx_existing_checked(proof, tx, world, key)?,
+                false,
+                true,
+            ))
+        }
     }
 }
 
