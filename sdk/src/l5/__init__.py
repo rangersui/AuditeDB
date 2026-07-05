@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 HeaderInput = Mapping[str, str] | Sequence[tuple[str, str]] | None
+EtagInput = str | Sequence[str] | None
 T = TypeVar("T")
 __version__ = "8.3.0"
 
@@ -364,10 +365,16 @@ class Engine:
         *,
         content_type: str = "application/octet-stream",
         headers: HeaderInput = None,
+        if_match: EtagInput = None,
+        if_none_match: EtagInput = None,
     ) -> object:
         """Replace ``path`` with ``data``."""
 
         engine = self._engine_handle()
+        preconditions = self._preconditions(
+            if_match=if_match,
+            if_none_match=if_none_match,
+        )
         representation = self._ffi.FfiRepresentation(
             body=bytes(data),
             content_type=str(content_type),
@@ -378,7 +385,7 @@ class Engine:
             lambda: engine.replace(
                 path,
                 representation,
-                self._preconditions(),
+                preconditions,
                 self._access_tier("Write"),
             ),
         )
@@ -425,22 +432,35 @@ class Engine:
         )
         return headers
 
-    def append(self, path: str, data: bytes) -> object:
+    def append(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        if_match: EtagInput = None,
+        if_none_match: EtagInput = None,
+    ) -> object:
         """Append ``data`` to ``path``."""
 
         engine = self._engine_handle()
         body = bytes(data)
+        preconditions = self._preconditions(
+            if_match=if_match,
+            if_none_match=if_none_match,
+        )
         try:
             return _call_ffi(
                 self._ffi,
                 lambda: engine.append(
                     path,
                     body,
-                    self._preconditions(),
+                    preconditions,
                     self._access_tier("Write"),
                 ),
             )
         except NotFound:
+            if self._has_preconditions(preconditions):
+                raise
             self.put(path, b"")
             engine = self._engine_handle()
             return _call_ffi(
@@ -448,21 +468,31 @@ class Engine:
                 lambda: engine.append(
                     path,
                     body,
-                    self._preconditions(),
+                    preconditions,
                     self._access_tier("Write"),
                 ),
             )
 
-    def delete(self, path: str) -> bool:
+    def delete(
+        self,
+        path: str,
+        *,
+        if_match: EtagInput = None,
+        if_none_match: EtagInput = None,
+    ) -> bool:
         """Delete ``path``."""
 
         engine = self._engine_handle()
+        preconditions = self._preconditions(
+            if_match=if_match,
+            if_none_match=if_none_match,
+        )
         try:
             _call_ffi(
                 self._ffi,
                 lambda: engine.delete(
                     path,
-                    self._preconditions(),
+                    preconditions,
                     self._access_tier("Approve"),
                 ),
             )
@@ -672,8 +702,47 @@ class Engine:
             lambda: engine.audit_verify(path, self._access_tier("Read")),
         )
 
-    def _preconditions(self) -> "_ffi_types.FfiPreconditions":
-        return self._ffi.FfiPreconditions(if_match=[], if_none_match=[])
+    def _preconditions(
+        self,
+        *,
+        if_match: EtagInput = None,
+        if_none_match: EtagInput = None,
+    ) -> "_ffi_types.FfiPreconditions":
+        return self._ffi.FfiPreconditions(
+            if_match=self._etag_matchers(if_match),
+            if_none_match=self._etag_matchers(if_none_match),
+        )
+
+    @staticmethod
+    def _has_preconditions(preconditions: "_ffi_types.FfiPreconditions") -> bool:
+        return bool(preconditions.if_match or preconditions.if_none_match)
+
+    def _etag_matchers(self, value: EtagInput) -> list["_ffi_types.FfiEtagMatcher"]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            values = [part for part in (part.strip() for part in value.split(",")) if part]
+        else:
+            values = list(value)
+        if not values:
+            raise ValueError("ETag matcher list must not be empty")
+        return [self._etag_matcher(item) for item in values]
+
+    def _etag_matcher(self, value: str) -> "_ffi_types.FfiEtagMatcher":
+        etag = str(value).strip()
+        if etag == "*":
+            return self._ffi.FfiEtagMatcher.ANY()
+        weak = False
+        if etag[:2].lower() == "w/":
+            weak = True
+            etag = etag[2:].strip()
+        if len(etag) >= 2 and etag[0] == '"' and etag[-1] == '"':
+            etag = etag[1:-1]
+        if not etag or '"' in etag:
+            raise ValueError("ETag matcher must be non-empty and must not contain quotes")
+        if weak:
+            return self._ffi.FfiEtagMatcher.WEAK(etag)
+        return self._ffi.FfiEtagMatcher.STRONG(etag)
 
     def _access_tier(self, name: str) -> "_ffi_types.FfiAccessTier":
         tier = self._ffi.FfiAccessTier
