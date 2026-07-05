@@ -268,6 +268,7 @@ where
     )?;
     if db_existed {
         world_schema::verify_open_shape(proof, &c)?;
+        world_schema::ensure_write_indexes(&c)?;
     } else {
         let schema = world_schema::new_world(proof, &c)?;
         let generation = generation.ok_or_else(missing_minted_generation_error)?;
@@ -399,6 +400,7 @@ fn open_existing_writer_path(
         "#,
     )?;
     world_schema::verify_open_shape(proof, &c)?;
+    world_schema::ensure_write_indexes(&c)?;
     Ok(Some(c))
 }
 
@@ -1063,6 +1065,7 @@ fn is_empty_bootstrap_tx(tx: &Transaction<'_>) -> rusqlite::Result<bool> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
 
     fn test_key() -> AuditHmacKey {
         AuditHmacKey::try_from_slice(crate::test_support::TEST_HMAC_KEY).unwrap()
@@ -1083,6 +1086,17 @@ mod tests {
             params![text],
         )
         .unwrap();
+    }
+
+    fn index_exists(c: &Connection, name: &str) -> bool {
+        c.query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type='index' AND name=?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap()
+        .is_some()
     }
 
     fn create_legacy_world_without_generation(data_root: &Path, world: &str) {
@@ -1611,6 +1625,28 @@ mod tests {
                 .unwrap(),
             crate::world_generation::WorldGeneration::new(stored).unwrap()
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_open_backfills_event_headers_event_id_index() {
+        let root = test_root("event-headers-index-backfill");
+        let _ = std::fs::remove_dir_all(&root);
+        {
+            let c = open(&root, "home/indexed").unwrap();
+            assert!(index_exists(&c, "idx_event_headers_event_id"));
+            c.execute("DROP INDEX idx_event_headers_event_id", [])
+                .unwrap();
+            assert!(!index_exists(&c, "idx_event_headers_event_id"));
+        }
+        {
+            let c = open_existing(&root, "home/indexed").unwrap().unwrap();
+            assert!(!index_exists(&c, "idx_event_headers_event_id"));
+        }
+        {
+            let c = open(&root, "home/indexed").unwrap();
+            assert!(index_exists(&c, "idx_event_headers_event_id"));
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -45,6 +45,12 @@ CREATE TABLE cas_state(
 )
 "#;
 
+const EVENT_HEADERS_EVENT_ID_INDEX_NAME: &str = "idx_event_headers_event_id";
+const EVENT_HEADERS_EVENT_ID_INDEX_SQL: &str =
+    "CREATE INDEX IF NOT EXISTS idx_event_headers_event_id ON event_headers(event_id)";
+const EVENT_HEADERS_EVENT_ID_INDEX_SHAPE_SQL: &str =
+    "CREATE INDEX idx_event_headers_event_id ON event_headers(event_id)";
+
 pub(crate) struct NewWorldSchema<'c> {
     c: &'c Connection,
 }
@@ -127,7 +133,8 @@ pub(crate) fn create(
             value TEXT NOT NULL
         );
         "#,
-    )
+    )?;
+    ensure_write_indexes(c)
 }
 
 pub(crate) fn verify(_proof: &mut BlockingSqlite, c: &Connection) -> rusqlite::Result<()> {
@@ -150,6 +157,16 @@ pub(crate) fn verify_open_shape(
     verify_cas_state_row(c)?;
     verify_world_format_row(c)?;
     Ok(())
+}
+
+pub(crate) fn ensure_write_indexes(c: &Connection) -> rusqlite::Result<()> {
+    c.execute_batch(EVENT_HEADERS_EVENT_ID_INDEX_SQL)?;
+    verify_exact_index(
+        c,
+        EVENT_HEADERS_EVENT_ID_INDEX_NAME,
+        "event_headers",
+        EVENT_HEADERS_EVENT_ID_INDEX_SHAPE_SQL,
+    )
 }
 
 pub(crate) fn generation(
@@ -222,6 +239,34 @@ fn verify_exact_table(c: &Connection, table: &str, expected_sql: &str) -> rusqli
     } else {
         Err(schema_error(format!(
             "schema mismatch for required table: {table}"
+        )))
+    }
+}
+
+fn verify_exact_index(
+    c: &Connection,
+    index: &str,
+    expected_table: &str,
+    expected_sql: &str,
+) -> rusqlite::Result<()> {
+    let (table, sql) = c
+        .query_row(
+            "SELECT tbl_name, sql FROM sqlite_schema WHERE type='index' AND name=?1",
+            [index],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| schema_error(format!("missing required index: {index}")))?;
+
+    if table == expected_table
+        && sql.as_deref().is_some_and(|actual| {
+            normalized_schema_sql(actual) == normalized_schema_sql(expected_sql)
+        })
+    {
+        Ok(())
+    } else {
+        Err(schema_error(format!(
+            "schema mismatch for required index: {index}"
         )))
     }
 }
@@ -429,6 +474,17 @@ mod tests {
         super::generation(&mut test_only_proof(), c)
     }
 
+    fn index_exists(c: &Connection, name: &str) -> bool {
+        c.query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type='index' AND name=?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap()
+        .is_some()
+    }
+
     fn minted_generation() -> MintedWorldGeneration {
         MintedWorldGeneration::test_only_from_entropy_bytes([
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
@@ -542,7 +598,51 @@ mod tests {
         assert_eq!(state_rows, 1);
         assert_eq!(format_version, CURRENT_WORLD_FORMAT_VERSION);
         assert_eq!(first_retained_type, "null");
+        assert!(index_exists(&c, "idx_event_headers_event_id"));
         verify(&c).unwrap();
+    }
+
+    #[test]
+    fn verify_allows_missing_event_headers_index_for_read_only_open() {
+        let c = Connection::open_in_memory().unwrap();
+        create_valid_schema(&c);
+        c.execute("DROP INDEX idx_event_headers_event_id", [])
+            .unwrap();
+
+        assert!(!index_exists(&c, "idx_event_headers_event_id"));
+        verify(&c).unwrap();
+    }
+
+    #[test]
+    fn ensure_write_indexes_backfills_event_headers_index() {
+        let c = Connection::open_in_memory().unwrap();
+        create_valid_schema(&c);
+        c.execute("DROP INDEX idx_event_headers_event_id", [])
+            .unwrap();
+
+        super::ensure_write_indexes(&c).unwrap();
+
+        assert!(index_exists(&c, "idx_event_headers_event_id"));
+        verify(&c).unwrap();
+    }
+
+    #[test]
+    fn ensure_write_indexes_rejects_wrong_event_headers_index_shape() {
+        let c = Connection::open_in_memory().unwrap();
+        create_valid_schema(&c);
+        c.execute("DROP INDEX idx_event_headers_event_id", [])
+            .unwrap();
+        c.execute(
+            "CREATE INDEX idx_event_headers_event_id ON event_headers(name)",
+            [],
+        )
+        .unwrap();
+
+        let err = super::ensure_write_indexes(&c).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("schema mismatch for required index"));
     }
 
     #[test]
