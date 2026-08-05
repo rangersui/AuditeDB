@@ -403,9 +403,12 @@ impl EngineSubscription {
     /// - [`SubscriptionRecvError::Lagged`] when the broadcast ring buffer
     ///   overflowed and events were lost. Recoverable: the next call resumes
     ///   with fresh events.
-    /// - [`SubscriptionRecvError::Reset`] when the supplied durable resume
-    ///   point cannot be spliced into the live stream. Recoverable: discard
-    ///   the cursor, establish a fresh baseline, then subscribe again.
+    /// - [`SubscriptionRecvError::Reset`] when durable replay continuity
+    ///   cannot be established or maintained. Continuity is lost: drop this
+    ///   subscription and discard the cursor. To recover current state without
+    ///   a read/subscribe race, first open a new subscription with
+    ///   [`crate::SubscriptionResume::none`], then read a fresh baseline while
+    ///   the new subscription buffers live changes.
     pub async fn recv(&mut self) -> Result<ChangeEvent, SubscriptionRecvError> {
         loop {
             let state = std::mem::replace(&mut self.state, SubscriptionState::Closed);
