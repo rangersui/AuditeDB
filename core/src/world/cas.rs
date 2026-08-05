@@ -198,9 +198,14 @@ pub(super) fn prune_to_count_tx(
         return Ok(PrunedCas::default());
     }
 
-    let pruned_bytes: i64 = tx.query_row(
-        r#"SELECT COALESCE(SUM(length(body)), 0)
-           FROM cas_bodies
+    tx.execute_batch(
+        r#"CREATE TEMP TABLE cas_prune_candidates (
+               body_sha256 TEXT PRIMARY KEY
+           ) WITHOUT ROWID;"#,
+    )?;
+    tx.execute(
+        r#"INSERT INTO temp.cas_prune_candidates(body_sha256)
+           SELECT body_sha256 FROM cas_bodies
            WHERE body_sha256 IN (
                SELECT body_sha256 FROM events
                WHERE event_type IN (?1, ?2) AND id < ?3
@@ -214,40 +219,26 @@ pub(super) fn prune_to_count_tx(
             AuditEventKind::Append.as_str(),
             new_floor.get(),
         ],
+    )?;
+    let pruned_bytes: i64 = tx.query_row(
+        r#"SELECT COALESCE(SUM(length(c.body)), 0)
+           FROM cas_bodies AS c
+           JOIN temp.cas_prune_candidates AS p USING(body_sha256)"#,
+        [],
         |r| r.get(0),
     )?;
     tx.execute(
         r#"DELETE FROM cas_bodies
            WHERE body_sha256 IN (
-               SELECT body_sha256 FROM events
-               WHERE event_type IN (?1, ?2) AND id < ?3
-           )
-           AND body_sha256 NOT IN (
-               SELECT body_sha256 FROM events
-               WHERE event_type IN (?1, ?2) AND id >= ?3
+               SELECT body_sha256 FROM temp.cas_prune_candidates
            )"#,
-        params![
-            AuditEventKind::Put.as_str(),
-            AuditEventKind::Append.as_str(),
-            new_floor.get(),
-        ],
+        [],
     )?;
     let remaining_old_bodies: i64 = tx.query_row(
         r#"SELECT COUNT(*)
-           FROM cas_bodies
-           WHERE body_sha256 IN (
-               SELECT body_sha256 FROM events
-               WHERE event_type IN (?1, ?2) AND id < ?3
-           )
-           AND body_sha256 NOT IN (
-               SELECT body_sha256 FROM events
-               WHERE event_type IN (?1, ?2) AND id >= ?3
-           )"#,
-        params![
-            AuditEventKind::Put.as_str(),
-            AuditEventKind::Append.as_str(),
-            new_floor.get(),
-        ],
+           FROM cas_bodies AS c
+           JOIN temp.cas_prune_candidates AS p USING(body_sha256)"#,
+        [],
         |r| r.get(0),
     )?;
     if remaining_old_bodies != 0 {
@@ -264,6 +255,7 @@ pub(super) fn prune_to_count_tx(
             "cas_state singleton row missing",
         ));
     }
+    tx.execute("DROP TABLE temp.cas_prune_candidates", [])?;
     Ok(PrunedCas {
         bytes: pruned_bytes.max(0) as usize,
     })
@@ -589,4 +581,81 @@ fn corrupt(message: &str) -> rusqlite::Error {
         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
         Some(message.to_owned()),
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_temp_table_fails_loud_and_rolls_back_cleanly() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"CREATE TABLE cas_state (
+                   id INTEGER PRIMARY KEY,
+                   first_retained_seq INTEGER
+               );
+               INSERT INTO cas_state(id, first_retained_seq) VALUES(1, NULL);
+               CREATE TABLE events (
+                   id INTEGER PRIMARY KEY,
+                   event_type TEXT NOT NULL,
+                   body_sha256 TEXT NOT NULL
+               );
+               INSERT INTO events(id, event_type, body_sha256)
+               VALUES(1, 'put', 'old'), (2, 'put', 'new');
+               CREATE TABLE cas_bodies (
+                   body_sha256 TEXT PRIMARY KEY,
+                   body BLOB NOT NULL
+               );
+               INSERT INTO cas_bodies(body_sha256, body)
+               VALUES('old', x'6f6c64'), ('new', x'6e6577');
+               CREATE TEMP TABLE cas_prune_candidates(wrong_shape INTEGER);"#,
+        )
+        .unwrap();
+
+        let retained = RetainedBodyCount::new(1).unwrap();
+        let tx = conn.transaction().unwrap();
+        assert!(matches!(
+            prune_to_count_tx(&tx, retained),
+            Err(WriteAuditError::Sqlite(_))
+        ));
+        drop(tx);
+        conn.execute_batch(
+            r#"DROP TABLE temp.cas_prune_candidates;
+               CREATE TRIGGER fail_floor_update
+               BEFORE UPDATE OF first_retained_seq ON cas_state
+               BEGIN
+                   SELECT RAISE(ABORT, 'injected floor update failure');
+               END;"#,
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        assert!(matches!(
+            prune_to_count_tx(&tx, retained),
+            Err(WriteAuditError::Sqlite(_))
+        ));
+        drop(tx);
+        conn.execute_batch("DROP TRIGGER fail_floor_update")
+            .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let pruned = prune_to_count_tx(&tx, retained).unwrap();
+        assert_eq!(pruned.bytes(), 3);
+        tx.commit().unwrap();
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cas_bodies", [], |row| row.get(0))
+            .unwrap();
+        let temp_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM temp.sqlite_schema WHERE name='cas_prune_candidates'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 1);
+        assert_eq!(temp_tables, 0);
+    }
 }
