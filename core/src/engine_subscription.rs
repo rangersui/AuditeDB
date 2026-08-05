@@ -403,6 +403,9 @@ impl EngineSubscription {
     /// - [`SubscriptionRecvError::Lagged`] when the broadcast ring buffer
     ///   overflowed and events were lost. Recoverable: the next call resumes
     ///   with fresh events.
+    /// - [`SubscriptionRecvError::Reset`] when the supplied durable resume
+    ///   point cannot be spliced into the live stream. Recoverable: discard
+    ///   the cursor, establish a fresh baseline, then subscribe again.
     pub async fn recv(&mut self) -> Result<ChangeEvent, SubscriptionRecvError> {
         loop {
             let state = std::mem::replace(&mut self.state, SubscriptionState::Closed);
