@@ -239,18 +239,7 @@ fn replace_write_blocking(
 
     let (existed, etag, target, format_notice, aux) = if store::is_persistent(world_path) {
         let reservation = if let Some(quota) = core.max_storage_bytes {
-            let prev_len_opt =
-                world::body_len(proof, &core.data, world_path, &file_op).map_err(|err| {
-                    classify_write_storage_error("storage metadata", err, StorageOp::Read)
-                })?;
-            let prev_len = prev_len_opt.unwrap_or(0);
-            hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
-            let cas_candidate_len =
-                world::cas_body_len_if_missing(proof, &core.data, world_path, &req.body, &file_op)
-                    .map_err(|err| {
-                        classify_write_storage_error("storage/cas", err, StorageOp::Read)
-                    })?;
-            let prunable_cas_len = world::prunable_cas_body_len_after_next_write(
+            let snapshot = world::replace_quota_snapshot(
                 proof,
                 &core.data,
                 world_path,
@@ -258,7 +247,13 @@ fn replace_write_blocking(
                 core.retained_body_count,
                 &file_op,
             )
-            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?;
+            .map_err(|err| {
+                classify_write_storage_error("storage quota preflight", err, StorageOp::Read)
+            })?;
+            let prev_len = snapshot.previous_body_len();
+            hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
+            let cas_candidate_len = snapshot.candidate_cas_len();
+            let prunable_cas_len = snapshot.prunable_cas_len();
             let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
             if let Err(quota) =
                 core.reserve_storage_after_prune(prev_len, reserve_new_len, prunable_cas_len)

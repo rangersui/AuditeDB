@@ -40,6 +40,13 @@ pub(crate) struct PrunedCas {
     bytes: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReplaceQuotaSnapshot {
+    previous_body_len: usize,
+    candidate_cas_len: usize,
+    prunable_cas_len: usize,
+}
+
 struct EstimatedRetentionFloor(TimelineSeq);
 
 impl<'tx, 'conn> RetainedCasBody<'tx, 'conn> {
@@ -88,6 +95,20 @@ impl Default for RetainedBodyCount {
 impl PrunedCas {
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
+    }
+}
+
+impl ReplaceQuotaSnapshot {
+    pub(crate) fn previous_body_len(self) -> usize {
+        self.previous_body_len
+    }
+
+    pub(crate) fn candidate_cas_len(self) -> usize {
+        self.candidate_cas_len
+    }
+
+    pub(crate) fn prunable_cas_len(self) -> usize {
+        self.prunable_cas_len
     }
 }
 
@@ -336,31 +357,31 @@ fn storage_usage_inner(
     )))
 }
 
-pub fn body_len_if_missing(
-    proof: &mut crate::blocking_sqlite::BlockingSqlite,
-    data_root: &Path,
-    world: &ValidatedWorldPath,
-    body: &[u8],
-    file_op: &FileOpPermit,
-) -> rusqlite::Result<usize> {
-    let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
-        return Ok(body.len());
-    };
-    missing_body_len(&c, body)
-}
-
-pub fn prunable_body_len_after_next_write(
+pub(crate) fn replace_quota_snapshot(
     proof: &mut crate::blocking_sqlite::BlockingSqlite,
     data_root: &Path,
     world: &ValidatedWorldPath,
     body: &[u8],
     retained: RetainedBodyCount,
     file_op: &FileOpPermit,
-) -> rusqlite::Result<usize> {
+) -> rusqlite::Result<ReplaceQuotaSnapshot> {
     let Some(c) = open_existing_validated(proof, data_root, world, file_op)? else {
-        return Ok(0);
+        return Ok(ReplaceQuotaSnapshot {
+            previous_body_len: 0,
+            candidate_cas_len: body.len(),
+            prunable_cas_len: 0,
+        });
     };
-    prunable_body_len_after_next_body(&c, body, retained)
+    let previous_body_len = c.query_row(
+        "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
+        [],
+        |row| Ok(row.get::<_, i64>(0)?.max(0) as usize),
+    )?;
+    Ok(ReplaceQuotaSnapshot {
+        previous_body_len,
+        candidate_cas_len: missing_body_len(&c, body)?,
+        prunable_cas_len: prunable_body_len_after_next_body(&c, body, retained)?,
+    })
 }
 
 pub fn append_body_len_if_missing(

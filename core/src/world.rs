@@ -42,10 +42,9 @@ pub use cas::storage_len;
 pub use cas::{
     accounted_storage_usage, append_body_len_if_missing as append_cas_body_len_if_missing,
     append_prunable_body_len_after_next_write as append_prunable_cas_body_len_after_next_write,
-    body_len_if_missing as cas_body_len_if_missing,
-    prunable_body_len_after_next_write as prunable_cas_body_len_after_next_write, storage_usage,
+    storage_usage,
 };
-pub(crate) use cas::{PrunedCas, RetainedBodyCount, RetainedCasBody};
+pub(crate) use cas::{replace_quota_snapshot, PrunedCas, RetainedBodyCount, RetainedCasBody};
 #[cfg(test)]
 use files::open_checkpoint_conn;
 pub use files::{list, list_with_prefix, list_with_prefix_bounded};
@@ -555,6 +554,7 @@ pub fn metadata(
     Ok(Some((body_len, content_type, headers)))
 }
 
+#[cfg(test)]
 pub fn body_len(
     proof: &mut BlockingSqlite,
     data_root: &Path,
