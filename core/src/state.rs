@@ -606,7 +606,13 @@ impl Core {
         let world_path = ValidatedWorldPath::new(world)
             .map_err(|_| world::WriteAuditError::StorageInvariant("invalid fixture world path"))?;
         if let Some(memory_world) = store::MemoryWorldPath::new(&world_path) {
-            self.mem.write(memory_world, body, content_type, headers);
+            self.mem
+                .write_with_quota(memory_world, body, content_type, headers, usize::MAX)
+                .map_err(|_| {
+                    world::WriteAuditError::StorageInvariant(
+                        "fixture memory accounting exceeded usize",
+                    )
+                })?;
             Ok(())
         } else {
             let file_op = self

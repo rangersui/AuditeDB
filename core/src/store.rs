@@ -20,7 +20,7 @@ use crate::{
     engine_types::{ValidatedWorldPath, ValidatedWorldPrefix},
     world::{self, AppendResult, Stage, WorldMetadata},
 };
-use std::collections::HashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 #[cfg(test)]
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -59,20 +59,34 @@ struct MemEntry {
     headers: Vec<(String, String)>,
 }
 
+impl MemEntry {
+    fn new(body: &[u8], content_type: &str, headers: &[(String, String)]) -> Self {
+        Self {
+            body: body.to_vec(),
+            body_hash: world::sha256_hex(body),
+            content_type: content_type.to_owned(),
+            headers: headers.to_vec(),
+        }
+    }
+}
+
 const MEMORY_ENTRY_OVERHEAD_BYTES: usize = 128;
 const MEMORY_BODY_HASH_HEX_BYTES: usize = 64;
 
 #[derive(Default)]
 pub struct MemoryStore {
-    map: Mutex<HashMap<ValidatedWorldPath, MemEntry>>,
+    map: DashMap<ValidatedWorldPath, MemEntry>,
+    /// Short global commit point for the transient-store byte budget.
+    /// Body cloning and hashing happen before this lock is acquired.
+    accounted_bytes: Mutex<usize>,
 }
 
 /// Returned by `write_with_quota` / `append_with_quota` when the requested
 /// write would push the total accounted memory store size past
 /// `max_total_bytes`.
-/// The check happens under the same mutex as the write so concurrent
-/// writers cannot both pass a stale snapshot and then both commit
-/// (durable quota is reserved before SQLite write transactions).
+/// The check and DashMap entry commit happen under the same short quota
+/// mutex so concurrent writers cannot both pass a stale snapshot and then
+/// both commit. Body cloning and hashing stay outside that mutex.
 #[derive(Debug)]
 pub struct MemoryQuotaError {
     /// Pre-write total accounted bytes across all memory worlds. Currently
@@ -106,8 +120,7 @@ impl MemoryStore {
     }
 
     pub fn read_with_hash(&self, world: MemoryWorldPath<'_>) -> Option<(Stage, String)> {
-        let map = self.map_guard();
-        let e = map.get(world.as_path())?;
+        let e = self.map.get(world.as_path())?;
         Some((
             Stage {
                 body: e.body.clone(),
@@ -119,59 +132,20 @@ impl MemoryStore {
     }
 
     pub fn metadata(&self, world: MemoryWorldPath<'_>) -> Option<WorldMetadata> {
-        let map = self.map_guard();
-        let e = map.get(world.as_path())?;
+        let e = self.map.get(world.as_path())?;
         Some((e.body.len(), e.content_type.clone(), e.headers.clone()))
     }
 
     pub fn contains(&self, world: MemoryWorldPath<'_>) -> bool {
-        self.map_guard().contains_key(world.as_path())
+        self.map.contains_key(world.as_path())
     }
 
-    /// Unconditional write without quota enforcement. Used only by the
-    /// test-only `Core::write_world` fixture; production goes through
-    /// `write_with_quota`. Kept as `#[allow(dead_code)]` so the test
-    /// helper survives future production-only clippy passes.
-    #[allow(dead_code)]
-    pub fn write(
-        &self,
-        world: MemoryWorldPath<'_>,
-        body: &[u8],
-        content_type: &str,
-        headers: &[(String, String)],
-    ) {
-        let mut map = self.map_guard();
-        let e = map.entry(world.as_path().clone()).or_default();
-        e.body = body.to_vec();
-        e.body_hash = world::sha256_hex(body);
-        e.content_type = content_type.to_string();
-        e.headers = headers.to_vec();
-    }
-
-    /// Append without quota enforcement. Replaced in production by
-    /// `append_with_quota`; kept available with `#[allow(dead_code)]`
-    /// for future tooling that wants the raw primitive (e.g. tests
-    /// asserting growth behavior).
-    #[allow(dead_code)]
-    pub fn append(&self, world: MemoryWorldPath<'_>, body: &[u8]) -> Option<AppendResult> {
-        let mut map = self.map_guard();
-        let e = map.get_mut(world.as_path())?;
-        e.body.extend_from_slice(body);
-        let after = world::sha256_hex(&e.body);
-        e.body_hash = after.clone();
-        Some(AppendResult {
-            body_sha256_after: after,
-        })
-    }
-
-    /// Write a memory world with an atomic quota check. The HashMap mutex
-    /// is held across "compute current total -> compare against quota ->
-    /// insert", so two concurrent writes to different memory worlds cannot
-    /// both observe usage below the cap and both commit. The quota charges
-    /// stored body bytes plus key/metadata/hash/accounting overhead, so empty
-    /// memory worlds cannot grow the map without consuming quota. Replaces the
-    /// old split read/check/write sequence, which was race-prone after the
-    /// global write_lock was removed.
+    /// Write a memory world with an atomic quota check. The replacement body,
+    /// hash, and metadata are prepared before any lock. The DashMap entry guard
+    /// then stabilizes this world while the short quota mutex serializes only
+    /// "compare global total -> commit entry -> update total". The quota
+    /// charges stored body bytes plus key/metadata/hash/accounting overhead, so
+    /// empty memory worlds cannot grow the map without consuming quota.
     ///
     /// Returns `Ok(outcome)` with `existed` populated for the caller's
     /// 200 vs 201 decision; `Err(MemoryQuotaError)` if accepting the
@@ -185,20 +159,31 @@ impl MemoryStore {
         headers: &[(String, String)],
         max_total_bytes: usize,
     ) -> Result<MemoryWriteOutcome, MemoryQuotaError> {
-        let mut map = self.map_guard();
-        let used = accounted_total_bytes(&map);
-        let prev_len = map
-            .get(world.as_path())
-            .map(|entry| accounted_entry_bytes(world.as_path(), entry))
-            .unwrap_or(0);
-        let projected = used
-            .saturating_sub(prev_len)
-            .saturating_add(accounted_entry_parts_bytes(
-                world.as_path(),
-                body.len(),
-                content_type,
-                headers,
-            ));
+        let Some(next_len) =
+            accounted_entry_parts_bytes(world.as_path(), body.len(), content_type, headers)
+        else {
+            return Err(self.accounting_overflow(max_total_bytes));
+        };
+        let replacement = MemEntry::new(body, content_type, headers);
+        let entry = self.map.entry(world.as_path().clone());
+        let (existed, previous_len) = match &entry {
+            Entry::Occupied(slot) => {
+                let Some(previous_len) = accounted_entry_bytes(world.as_path(), slot.get()) else {
+                    return Err(self.accounting_overflow(max_total_bytes));
+                };
+                (true, previous_len)
+            }
+            Entry::Vacant(_) => (false, 0),
+        };
+        let mut accounted = self.accounted_guard();
+        let used = *accounted;
+        let Some(projected) = projected_accounted_bytes(used, previous_len, next_len) else {
+            return Err(MemoryQuotaError {
+                used,
+                quota: max_total_bytes,
+                projected: usize::MAX,
+            });
+        };
         if projected > max_total_bytes {
             return Err(MemoryQuotaError {
                 used,
@@ -206,12 +191,16 @@ impl MemoryStore {
                 projected,
             });
         }
-        let existed = map.contains_key(world.as_path());
-        let e = map.entry(world.as_path().clone()).or_default();
-        e.body = body.to_vec();
-        e.body_hash = world::sha256_hex(body);
-        e.content_type = content_type.to_string();
-        e.headers = headers.to_vec();
+        let previous = match entry {
+            Entry::Occupied(mut slot) => Some(slot.insert(replacement)),
+            Entry::Vacant(slot) => {
+                drop(slot.insert(replacement));
+                None
+            }
+        };
+        *accounted = projected;
+        drop(accounted);
+        drop(previous);
         Ok(MemoryWriteOutcome { existed })
     }
 
@@ -226,56 +215,92 @@ impl MemoryStore {
         body: &[u8],
         max_total_bytes: usize,
     ) -> Result<Option<AppendResult>, MemoryQuotaError> {
-        let mut map = self.map_guard();
-        let Some(existing) = map.get(world.as_path()) else {
+        let Entry::Occupied(mut entry) = self.map.entry(world.as_path().clone()) else {
             return Ok(None);
         };
-        let used = accounted_total_bytes(&map);
-        let prev_len = accounted_entry_bytes(world.as_path(), existing);
-        let projected_len = existing.body.len().saturating_add(body.len());
-        let projected = used
-            .saturating_sub(prev_len)
-            .saturating_add(accounted_entry_parts_bytes(
-                world.as_path(),
-                projected_len,
-                &existing.content_type,
-                &existing.headers,
-            ));
+        let Some(previous_len) = accounted_entry_bytes(world.as_path(), entry.get()) else {
+            return Err(self.accounting_overflow(max_total_bytes));
+        };
+        let mut next_body = entry.get().body.clone();
+        next_body.extend_from_slice(body);
+        let after = world::sha256_hex(&next_body);
+        let replacement = MemEntry {
+            body: next_body,
+            body_hash: after.clone(),
+            content_type: entry.get().content_type.clone(),
+            headers: entry.get().headers.clone(),
+        };
+        let Some(next_len) = accounted_entry_bytes(world.as_path(), &replacement) else {
+            let error = self.accounting_overflow(max_total_bytes);
+            drop(entry);
+            drop(replacement);
+            return Err(error);
+        };
+        let mut accounted = self.accounted_guard();
+        let used = *accounted;
+        let Some(projected) = projected_accounted_bytes(used, previous_len, next_len) else {
+            let error = MemoryQuotaError {
+                used,
+                quota: max_total_bytes,
+                projected: usize::MAX,
+            };
+            drop(accounted);
+            drop(entry);
+            drop(replacement);
+            return Err(error);
+        };
         if projected > max_total_bytes {
-            return Err(MemoryQuotaError {
+            let error = MemoryQuotaError {
                 used,
                 quota: max_total_bytes,
                 projected,
-            });
+            };
+            drop(accounted);
+            drop(entry);
+            drop(replacement);
+            return Err(error);
         }
-        let Some(entry) = map.get_mut(world.as_path()) else {
-            return Ok(None);
-        };
-        entry.body.extend_from_slice(body);
-        let after = world::sha256_hex(&entry.body);
-        entry.body_hash = after.clone();
+        let previous = entry.insert(replacement);
+        *accounted = projected;
+        drop(accounted);
+        drop(entry);
+        drop(previous);
         Ok(Some(AppendResult {
             body_sha256_after: after,
         }))
     }
 
     pub fn delete(&self, world: MemoryWorldPath<'_>) -> bool {
-        let mut map = self.map_guard();
-        map.remove(world.as_path()).is_some()
+        let Entry::Occupied(entry) = self.map.entry(world.as_path().clone()) else {
+            return false;
+        };
+        let Some(removed_len) = accounted_entry_bytes(world.as_path(), entry.get()) else {
+            return false;
+        };
+        let mut accounted = self.accounted_guard();
+        let Some(projected) = accounted.checked_sub(removed_len) else {
+            return false;
+        };
+        let removed = entry.remove();
+        *accounted = projected;
+        drop(accounted);
+        drop(removed);
+        true
     }
 
     pub fn list(&self) -> Vec<ValidatedWorldPath> {
-        let mut out: Vec<ValidatedWorldPath> = self.map_guard().keys().cloned().collect();
+        let mut out: Vec<ValidatedWorldPath> =
+            self.map.iter().map(|entry| entry.key().clone()).collect();
         out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         out
     }
 
     pub fn list_with_prefix(&self, prefix: &ValidatedWorldPrefix) -> Vec<ValidatedWorldPath> {
         let mut out: Vec<ValidatedWorldPath> = self
-            .map_guard()
-            .keys()
-            .filter(|world| world.as_str().starts_with(prefix.as_str()))
-            .cloned()
+            .map
+            .iter()
+            .filter(|entry| entry.key().as_str().starts_with(prefix.as_str()))
+            .map(|entry| entry.key().clone())
             .collect();
         out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         out
@@ -288,14 +313,14 @@ impl MemoryStore {
     ) -> Option<Vec<ValidatedWorldPath>> {
         let mut out = Vec::new();
         for world in self
-            .map_guard()
-            .keys()
-            .filter(|world| world.as_str().starts_with(prefix.as_str()))
+            .map
+            .iter()
+            .filter(|entry| entry.key().as_str().starts_with(prefix.as_str()))
         {
             if out.len() >= max {
                 return None;
             }
-            out.push(world.clone());
+            out.push(world.key().clone());
         }
         out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         Some(out)
@@ -303,38 +328,39 @@ impl MemoryStore {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn total_bytes(&self) -> usize {
-        self.map_guard()
-            .values()
-            .map(|entry| entry.body.len())
-            .sum()
+        self.map.iter().map(|entry| entry.value().body.len()).sum()
     }
 
     pub fn accounted_total_bytes(&self) -> usize {
-        accounted_total_bytes(&self.map_guard())
+        *self.accounted_guard()
     }
 
     pub fn sizes(&self) -> Vec<(ValidatedWorldPath, usize)> {
         let mut out: Vec<(ValidatedWorldPath, usize)> = self
-            .map_guard()
+            .map
             .iter()
-            .map(|(world, entry)| (world.clone(), entry.body.len()))
+            .map(|entry| (entry.key().clone(), entry.value().body.len()))
             .collect();
         out.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         out
     }
 
-    fn map_guard(&self) -> MutexGuard<'_, HashMap<ValidatedWorldPath, MemEntry>> {
-        self.map.lock().unwrap_or_else(|poison| poison.into_inner())
+    fn accounted_guard(&self) -> MutexGuard<'_, usize> {
+        self.accounted_bytes
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn accounting_overflow(&self, quota: usize) -> MemoryQuotaError {
+        MemoryQuotaError {
+            used: *self.accounted_guard(),
+            quota,
+            projected: usize::MAX,
+        }
     }
 }
 
-fn accounted_total_bytes(map: &HashMap<ValidatedWorldPath, MemEntry>) -> usize {
-    map.iter()
-        .map(|(world, entry)| accounted_entry_bytes(world, entry))
-        .fold(0usize, usize::saturating_add)
-}
-
-fn accounted_entry_bytes(world: &ValidatedWorldPath, entry: &MemEntry) -> usize {
+fn accounted_entry_bytes(world: &ValidatedWorldPath, entry: &MemEntry) -> Option<usize> {
     accounted_entry_parts_bytes(world, entry.body.len(), &entry.content_type, &entry.headers)
 }
 
@@ -343,20 +369,24 @@ fn accounted_entry_parts_bytes(
     body_len: usize,
     content_type: &str,
     headers: &[(String, String)],
-) -> usize {
+) -> Option<usize> {
     MEMORY_ENTRY_OVERHEAD_BYTES
-        .saturating_add(world.as_str().len())
-        .saturating_add(body_len)
-        .saturating_add(MEMORY_BODY_HASH_HEX_BYTES)
-        .saturating_add(metadata_bytes(content_type, headers))
+        .checked_add(world.as_str().len())?
+        .checked_add(body_len)?
+        .checked_add(MEMORY_BODY_HASH_HEX_BYTES)?
+        .checked_add(metadata_bytes(content_type, headers)?)
 }
 
-fn metadata_bytes(content_type: &str, headers: &[(String, String)]) -> usize {
+fn metadata_bytes(content_type: &str, headers: &[(String, String)]) -> Option<usize> {
     headers
         .iter()
-        .fold(content_type.len(), |total, (name, value)| {
-            total.saturating_add(name.len()).saturating_add(value.len())
+        .try_fold(content_type.len(), |total, (name, value)| {
+            total.checked_add(name.len())?.checked_add(value.len())
         })
+}
+
+fn projected_accounted_bytes(used: usize, previous: usize, next: usize) -> Option<usize> {
+    used.checked_sub(previous)?.checked_add(next)
 }
 
 /// Combined view: sqlite + memory. Used by tests that assert both stores agree.
@@ -389,9 +419,30 @@ pub fn list_all(data_root: &Path, mem: &MemoryStore) -> rusqlite::Result<Vec<Str
 mod tests {
     use super::*;
     use crate::{audit, engine_types::ValidatedWorldPath, test_support::test_core};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     fn world_path(world: &str) -> ValidatedWorldPath {
         ValidatedWorldPath::new(world).unwrap()
+    }
+
+    fn recomputed_accounted_bytes(store: &MemoryStore) -> usize {
+        store
+            .map
+            .iter()
+            .try_fold(0usize, |total, entry| {
+                total.checked_add(accounted_entry_bytes(entry.key(), entry.value())?)
+            })
+            .unwrap()
+    }
+
+    fn expected_accounted_entry_parts_bytes(
+        world: &ValidatedWorldPath,
+        body_len: usize,
+        content_type: &str,
+        headers: &[(String, String)],
+    ) -> usize {
+        accounted_entry_parts_bytes(world, body_len, content_type, headers).unwrap()
     }
 
     #[test]
@@ -433,7 +484,7 @@ mod tests {
         let store = MemoryStore::new();
         let world = world_path("tmp/empty");
         let headers = vec![("x-meta-owner".to_owned(), "agent".to_owned())];
-        let required = accounted_entry_parts_bytes(&world, 0, "text/plain", &headers);
+        let required = expected_accounted_entry_parts_bytes(&world, 0, "text/plain", &headers);
 
         let err = store
             .write_with_quota(
@@ -464,7 +515,7 @@ mod tests {
         let store = MemoryStore::new();
         let world = world_path("tmp/append");
         let headers = vec![("x-meta-kind".to_owned(), "log".to_owned())];
-        let initial = accounted_entry_parts_bytes(&world, 1, "text/plain", &headers);
+        let initial = expected_accounted_entry_parts_bytes(&world, 1, "text/plain", &headers);
 
         store
             .write_with_quota(
@@ -480,13 +531,160 @@ mod tests {
             .append_with_quota(MemoryWorldPath::new(&world).unwrap(), b"b", initial)
             .is_err());
 
-        let appended = accounted_entry_parts_bytes(&world, 2, "text/plain", &headers);
+        let appended = expected_accounted_entry_parts_bytes(&world, 2, "text/plain", &headers);
         store
             .append_with_quota(MemoryWorldPath::new(&world).unwrap(), b"b", appended)
             .unwrap()
             .unwrap();
         assert_eq!(store.total_bytes(), 2);
         assert_eq!(store.accounted_total_bytes(), appended);
+    }
+
+    #[test]
+    fn memory_accounting_tracks_replace_append_and_delete() {
+        let store = MemoryStore::new();
+        let world = world_path("tmp/accounting");
+        let initial_headers = vec![("x-meta-owner".to_owned(), "one".to_owned())];
+        let initial =
+            expected_accounted_entry_parts_bytes(&world, 1, "text/plain", &initial_headers);
+
+        store
+            .write_with_quota(
+                MemoryWorldPath::new(&world).unwrap(),
+                b"a",
+                "text/plain",
+                &initial_headers,
+                usize::MAX,
+            )
+            .unwrap();
+        assert_eq!(store.accounted_total_bytes(), initial);
+        assert_eq!(recomputed_accounted_bytes(&store), initial);
+
+        let replacement_headers = vec![("x-meta-owner".to_owned(), "two".to_owned())];
+        let replaced = expected_accounted_entry_parts_bytes(
+            &world,
+            4,
+            "application/octet-stream",
+            &replacement_headers,
+        );
+        store
+            .write_with_quota(
+                MemoryWorldPath::new(&world).unwrap(),
+                b"body",
+                "application/octet-stream",
+                &replacement_headers,
+                usize::MAX,
+            )
+            .unwrap();
+        assert_eq!(store.accounted_total_bytes(), replaced);
+        assert_eq!(recomputed_accounted_bytes(&store), replaced);
+
+        let appended = expected_accounted_entry_parts_bytes(
+            &world,
+            5,
+            "application/octet-stream",
+            &replacement_headers,
+        );
+        store
+            .append_with_quota(MemoryWorldPath::new(&world).unwrap(), b"!", usize::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.accounted_total_bytes(), appended);
+        assert_eq!(recomputed_accounted_bytes(&store), appended);
+
+        assert!(store.delete(MemoryWorldPath::new(&world).unwrap()));
+        assert_eq!(store.accounted_total_bytes(), 0);
+        assert_eq!(recomputed_accounted_bytes(&store), 0);
+    }
+
+    #[test]
+    fn rejected_memory_replace_preserves_entry_and_accounting() {
+        let store = MemoryStore::new();
+        let world = world_path("tmp/rejected-replace");
+        let headers = vec![("x-meta-owner".to_owned(), "original".to_owned())];
+        let quota = expected_accounted_entry_parts_bytes(&world, 4, "text/plain", &headers);
+
+        store
+            .write_with_quota(
+                MemoryWorldPath::new(&world).unwrap(),
+                b"keep",
+                "text/plain",
+                &headers,
+                quota,
+            )
+            .unwrap();
+        let error = store
+            .write_with_quota(
+                MemoryWorldPath::new(&world).unwrap(),
+                b"replacement is too large",
+                "text/plain",
+                &headers,
+                quota,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.used, quota);
+        assert!(error.projected > quota);
+        let (stage, body_hash) = store
+            .read_with_hash(MemoryWorldPath::new(&world).unwrap())
+            .unwrap();
+        assert_eq!(stage.body, b"keep");
+        assert_eq!(body_hash, world::sha256_hex(b"keep"));
+        assert_eq!(store.accounted_total_bytes(), quota);
+        assert_eq!(recomputed_accounted_bytes(&store), quota);
+    }
+
+    #[test]
+    fn concurrent_memory_writes_cannot_oversubscribe_quota() {
+        const WRITERS: usize = 16;
+        const ALLOWED: usize = 4;
+
+        let store = Arc::new(MemoryStore::new());
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let sample = world_path("tmp/concurrent-00");
+        let per_entry = expected_accounted_entry_parts_bytes(&sample, 1, "text/plain", &[]);
+        let quota = per_entry * ALLOWED;
+        let mut writers = Vec::new();
+
+        for index in 0..WRITERS {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            writers.push(thread::spawn(move || {
+                let world = world_path(&format!("tmp/concurrent-{index:02}"));
+                let body = [index as u8];
+                barrier.wait();
+                store
+                    .write_with_quota(
+                        MemoryWorldPath::new(&world).unwrap(),
+                        &body,
+                        "text/plain",
+                        &[],
+                        quota,
+                    )
+                    .is_ok()
+            }));
+        }
+
+        let accepted = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .filter(|accepted| *accepted)
+            .count();
+        assert_eq!(accepted, ALLOWED);
+        assert_eq!(store.list().len(), ALLOWED);
+        assert_eq!(store.accounted_total_bytes(), quota);
+        assert_eq!(recomputed_accounted_bytes(&store), quota);
+    }
+
+    #[test]
+    fn memory_accounting_rejects_integer_overflow() {
+        let world = world_path("tmp/overflow");
+
+        assert_eq!(
+            accounted_entry_parts_bytes(&world, usize::MAX, "text/plain", &[]),
+            None
+        );
+        assert_eq!(projected_accounted_bytes(usize::MAX, 0, 1), None);
     }
 
     #[test]

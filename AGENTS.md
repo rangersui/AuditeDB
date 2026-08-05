@@ -75,7 +75,11 @@ These are not preferences. They are the contract every change must keep.
   writes to the same world serialize through `Core::acquire_world_lock(world)`.
   No new global write mutex. Counters touched on the write path
   (`storage_body_bytes`, `durable_world_count`) must use `fetch_update` /
-  `fetch_add` / `fetch_sub` so cross-world writers stay coherent.
+  `fetch_add` / `fetch_sub` so cross-world writers stay coherent. The narrow
+  exception is `MemoryStore`'s transient quota allocator: it may use a short
+  quota mutex only for `compare total -> commit DashMap entry -> update total`.
+  Body cloning and hashing stay outside that mutex; it is a global allocator
+  commit point, not a global write lock.
 - **Mechanism, not policy.** Core provides primitives — token tiers, path
   scopes, HMAC chain, change events, ETag/CAS, byte storage. Business logic
   (validation, transactional flows, schema evolution) lives in reactors and
