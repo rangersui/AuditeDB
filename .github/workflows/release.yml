@@ -144,6 +144,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: UniFFI binding consistency checker tests
+        run: >
+          python -m unittest discover -s tools
+          -p "test_uniffi_binding_consistency.py" -v
+
       - name: verify release versions match tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
@@ -162,6 +167,12 @@ jobs:
           "$bindgen" generate "${{ matrix.library-path }}" \
             --language python \
             --out-dir target/bindings/python
+
+      - name: verify tracked Python UniFFI binding
+        run: >
+          python tools/uniffi_binding_consistency.py
+          sdk/src/l5/_ffi/l5_ffi.py
+          ffi/target/bindings/python/l5_ffi.py
 
       - name: smoke generated Python binding
         shell: bash
