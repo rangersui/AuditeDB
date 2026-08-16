@@ -963,6 +963,30 @@ mod tests {
             .test_only_append_gate_counts()
     }
 
+    fn assert_shutdown_state_unchanged(
+        engine: &Engine,
+        memory_world: &ValidatedWorldPath,
+        storage_used: usize,
+        memory_used: usize,
+        event_count: usize,
+    ) {
+        assert_eq!(
+            engine
+                .core()
+                .storage_body_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            storage_used
+        );
+        assert_eq!(engine.core().mem.accounted_total_bytes(), memory_used);
+        assert_eq!(engine.core().event_log.lock().unwrap().len(), event_count);
+        let memory = engine
+            .core()
+            .mem
+            .read(crate::store::MemoryWorldPath::new(memory_world).unwrap())
+            .expect("rejected shutdown operation must preserve memory state");
+        assert_eq!(memory.body, b"memory-before");
+    }
+
     #[tokio::test]
     async fn engine_read_maps_real_sqlite_lock_to_transient_storage() {
         let root = temp_root("engine-read-transient-storage");
@@ -1000,6 +1024,7 @@ mod tests {
     async fn engine_operations_reject_after_shutdown() {
         let (engine, root) = test_engine("operations-after-shutdown");
         let world = ValidatedWorldPath::new("home/shutdown").unwrap();
+        let memory_world = ValidatedWorldPath::new("tmp/shutdown").unwrap();
         engine
             .replace(
                 &world,
@@ -1009,16 +1034,38 @@ mod tests {
             )
             .await
             .unwrap();
+        engine
+            .replace(
+                &memory_world,
+                Representation::new(
+                    Bytes::from_static(b"memory-before"),
+                    "text/plain",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
         let head_before_shutdown = engine
             .chain_head(&world, AccessTier::Read)
             .unwrap()
             .expect("seed world should have an audit head");
+        let before_shutdown = engine.df(AccessTier::Read).unwrap();
+        let events_before_shutdown = engine.core().event_log.lock().unwrap().len();
         engine.shutdown();
 
         assert!(matches!(
             engine.read(&world, AccessTier::Read).await,
             Err(EngineError::ShuttingDown)
         ));
+        assert_shutdown_state_unchanged(
+            &engine,
+            &memory_world,
+            before_shutdown.storage_used,
+            before_shutdown.memory_used,
+            events_before_shutdown,
+        );
         assert!(matches!(
             engine
                 .replace(
@@ -1030,6 +1077,13 @@ mod tests {
                 .await,
             Err(EngineError::ShuttingDown)
         ));
+        assert_shutdown_state_unchanged(
+            &engine,
+            &memory_world,
+            before_shutdown.storage_used,
+            before_shutdown.memory_used,
+            events_before_shutdown,
+        );
         assert!(matches!(
             engine
                 .append(
@@ -1041,12 +1095,26 @@ mod tests {
                 .await,
             Err(EngineError::ShuttingDown)
         ));
+        assert_shutdown_state_unchanged(
+            &engine,
+            &memory_world,
+            before_shutdown.storage_used,
+            before_shutdown.memory_used,
+            events_before_shutdown,
+        );
         assert!(matches!(
             engine
                 .delete(&world, Preconditions::none(), AccessTier::Approve)
                 .await,
             Err(EngineError::ShuttingDown)
         ));
+        assert_shutdown_state_unchanged(
+            &engine,
+            &memory_world,
+            before_shutdown.storage_used,
+            before_shutdown.memory_used,
+            events_before_shutdown,
+        );
         assert!(matches!(
             engine
                 .subscribe(
@@ -1057,6 +1125,13 @@ mod tests {
                 .await,
             Err(EngineError::ShuttingDown)
         ));
+        assert_shutdown_state_unchanged(
+            &engine,
+            &memory_world,
+            before_shutdown.storage_used,
+            before_shutdown.memory_used,
+            events_before_shutdown,
+        );
 
         drop(engine);
         let reopened = build_engine_with_key(root.clone(), &test_key());
@@ -1284,6 +1359,23 @@ mod tests {
     #[tokio::test]
     async fn engine_append_missing_world_returns_not_found_without_creation() {
         let (engine, root) = test_engine("append-missing");
+        let durable_control = ValidatedWorldPath::new("home/append-control").unwrap();
+        let memory_control = ValidatedWorldPath::new("tmp/append-control").unwrap();
+        for control in [&durable_control, &memory_control] {
+            engine
+                .replace(
+                    control,
+                    Representation::new(Bytes::from_static(b"control"), "text/control", Vec::new()),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await
+                .unwrap();
+        }
+        let durable_head = engine
+            .chain_head(&durable_control, AccessTier::Read)
+            .unwrap()
+            .expect("durable control world should have an audit head");
         let before = engine.df(AccessTier::Read).unwrap();
         let events_before = engine.core().event_log.lock().unwrap().len();
 
@@ -1308,6 +1400,45 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none());
+            let after_failure = engine.df(AccessTier::Read).unwrap();
+            assert_eq!(
+                (
+                    after_failure.storage_used,
+                    after_failure.storage_current_body_bytes,
+                    after_failure.storage_retained_cas_body_bytes,
+                    after_failure.storage_audit_chain_events,
+                    after_failure.memory_used,
+                    after_failure.worlds,
+                ),
+                (
+                    before.storage_used,
+                    before.storage_current_body_bytes,
+                    before.storage_retained_cas_body_bytes,
+                    before.storage_audit_chain_events,
+                    before.memory_used,
+                    before.worlds,
+                ),
+                "each missing append must preserve nonzero resource state"
+            );
+            assert_eq!(
+                engine.core().event_log.lock().unwrap().len(),
+                events_before,
+                "each missing append must preserve prior notifications"
+            );
+            for control in [&durable_control, &memory_control] {
+                let read = engine
+                    .read(control, AccessTier::Read)
+                    .await
+                    .unwrap()
+                    .expect("missing append must preserve unrelated worlds");
+                assert_eq!(read.representation.body, Bytes::from_static(b"control"));
+            }
+            assert_eq!(
+                engine
+                    .chain_head(&durable_control, AccessTier::Read)
+                    .unwrap(),
+                Some(durable_head.clone())
+            );
         }
 
         let after = engine.df(AccessTier::Read).unwrap();
