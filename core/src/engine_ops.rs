@@ -1856,6 +1856,14 @@ mod tests {
             .chain_head(&ledger, AccessTier::Read)
             .unwrap()
             .expect("successful delete should create the delete ledger");
+        let mut failed_delete_events = engine
+            .subscribe(
+                &SubscribePattern::new(world.as_str()),
+                AccessTier::Read,
+                SubscriptionResume::none(),
+            )
+            .await
+            .unwrap();
         assert!(matches!(
             engine
                 .delete(&world, Preconditions::none(), AccessTier::Approve)
@@ -1867,6 +1875,31 @@ mod tests {
             Some(head_before_second_delete),
             "missing-world delete must not append another ledger event"
         );
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"notification barrier"),
+                    "text/plain",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let format_notification = failed_delete_events
+            .recv()
+            .await
+            .expect("successful replacement should notify after failed delete");
+        assert_eq!(format_notification.verb(), ChangeVerb::Format);
+        assert_eq!(format_notification.path(), &world);
+        let replace_notification = failed_delete_events
+            .recv()
+            .await
+            .expect("successful replacement should follow format notification");
+        assert_eq!(replace_notification.verb(), ChangeVerb::Replace);
+        assert_eq!(replace_notification.path(), &world);
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);

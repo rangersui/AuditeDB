@@ -420,7 +420,7 @@ mod tests {
         let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-if-match");
         let state = server_state_for_engine_for_tests(engine.clone());
         let world = world_path("home/delete-cas");
-        let write = engine
+        engine
             .replace(
                 &world,
                 Representation::new(
@@ -430,6 +430,14 @@ mod tests {
                 ),
                 Preconditions::none(),
                 AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let mut failed_delete_events = engine
+            .subscribe(
+                &SubscribePattern::new(world.as_str()),
+                AccessTier::Read,
+                SubscriptionResume::none(),
             )
             .await
             .unwrap();
@@ -452,11 +460,30 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+        let barrier_write = engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"notification barrier"),
+                    "text/plain; charset=utf-8",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let notification = failed_delete_events
+            .recv()
+            .await
+            .expect("successful replacement should notify after stale delete");
+        assert_eq!(notification.verb(), ChangeVerb::Replace);
+        assert_eq!(notification.path(), &world);
 
         let mut good = HeaderMap::new();
         good.insert(
             header::IF_MATCH,
-            HeaderValue::from_str(&format!("\"{}\"", write.etag)).unwrap(),
+            HeaderValue::from_str(&format!("\"{}\"", barrier_write.etag)).unwrap(),
         );
         let resp = unwrap_response(
             execute_delete(
@@ -807,12 +834,21 @@ mod tests {
     async fn delete_missing_world_does_not_write_delete_ledger() {
         let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-missing");
         let state = server_state_for_engine_for_tests(engine.clone());
+        let world = world_path("home/missing");
+        let mut failed_delete_events = engine
+            .subscribe(
+                &SubscribePattern::new(world.as_str()),
+                AccessTier::Read,
+                SubscriptionResume::none(),
+            )
+            .await
+            .unwrap();
         let headers = HeaderMap::new();
         let resp = unwrap_response(
             execute_delete(
                 headers.clone(),
                 AccessTier::Approve,
-                world_path("home/missing"),
+                world.clone(),
                 &state,
                 &TraceCtx::disabled(),
             )
@@ -824,6 +860,31 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"notification barrier"),
+                    "text/plain; charset=utf-8",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let format_notification = failed_delete_events
+            .recv()
+            .await
+            .expect("successful replacement should notify after missing delete");
+        assert_eq!(format_notification.verb(), ChangeVerb::Format);
+        assert_eq!(format_notification.path(), &world);
+        let replace_notification = failed_delete_events
+            .recv()
+            .await
+            .expect("successful replacement should follow format notification");
+        assert_eq!(replace_notification.verb(), ChangeVerb::Replace);
+        assert_eq!(replace_notification.path(), &world);
 
         let _ = std::fs::remove_dir_all(dir);
     }
