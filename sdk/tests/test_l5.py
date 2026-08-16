@@ -11,11 +11,9 @@ import l5
 class EngineTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._root = tempfile.TemporaryDirectory(prefix="l5-python-test-")
+        self.addCleanup(self._root.cleanup)
         self.db = l5.open(self._root.name, key=b"0" * 32)
-
-    def tearDown(self) -> None:
-        self.db.close()
-        self._root.cleanup()
+        self.addCleanup(self.db.close)
 
     def test_representation_roundtrip_and_mapping_protocol(self) -> None:
         self.db.put(
@@ -82,15 +80,18 @@ class EngineTestCase(unittest.TestCase):
         head = self.db.chain_head("home/audit")
         self.assertIsNotNone(head)
         assert head is not None
-        self.assertGreaterEqual(head["events"], 3)
-        self.assertTrue(head["genesis"])
-        self.assertTrue(head["latest"])
-        self.assertIn("home/audit", self.db.list_worlds())
-        self.assertEqual(self.db.ls(), self.db.list_worlds())
-        self.assertGreater(self.db.du()["home/audit"], 0)
+        self.assertEqual(head["events"], 3)
+        self.assertRegex(str(head["genesis"]), r"^hmac-[0-9a-f]{64}$")
+        self.assertRegex(str(head["latest"]), r"^hmac-[0-9a-f]{64}$")
+        self.assertEqual(self.db.list_worlds(), ["home/audit"])
+        self.assertEqual(self.db.ls(), ["home/audit"])
+        usage_by_world = self.db.du()
+        self.assertEqual(set(usage_by_world), {"home/audit"})
+        self.assertGreater(usage_by_world["home/audit"], 0)
 
         usage = self.db.df()
-        self.assertGreaterEqual(usage["worlds"], 1)
+        self.assertEqual(usage["worlds"], 1)
+        self.assertEqual(usage["storage_audit_chain_events"], 3)
         self.assertGreaterEqual(usage["storage_used"], len(b"first-second"))
 
     def test_context_manager_closes_engine(self) -> None:
@@ -102,26 +103,31 @@ class EngineTestCase(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 db.get("home/context")
 
+            with l5.open(root, key=b"1" * 32) as reopened:
+                self.assertEqual(reopened.get("home/context"), b"ok")
+                self.assertTrue(reopened.verify("home/context"))
+
     def test_subscription_delivers_write_and_closes_cleanly(self) -> None:
         subscription = self.db.subscribe("home/events/*")
+        native_subscription = subscription._subscription
         try:
             self.db.put("home/events/one", b"payload")
-            writes = []
-            for _ in range(4):
+            events = []
+            for _ in range(2):
                 event = subscription.next(timeout_ms=1000)
-                if event is None:
-                    continue
+                self.assertIsNotNone(event)
+                assert event is not None
                 self.assertEqual(event["kind"], "event")
                 self.assertEqual(event["path"], "home/events/one")
-                if event["verb"] == "replace":
-                    writes.append(event)
-                    break
+                events.append(event)
 
-            self.assertEqual(len(writes), 1)
-            self.assertTrue(str(writes[0]["etag"]).startswith("hmac-"))
+            self.assertEqual([event["verb"] for event in events], ["format", "replace"])
+            self.assertTrue(str(events[1]["etag"]).startswith("hmac-"))
+            self.assertIsNone(subscription.next(timeout_ms=50))
         finally:
             subscription.close()
 
+        self.assertEqual(native_subscription.next(100).kind.name, "CLOSED")
         self.assertEqual(subscription.next(), {"kind": "closed"})
 
 
