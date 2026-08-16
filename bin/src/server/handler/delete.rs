@@ -334,7 +334,9 @@ mod tests {
     #[cfg(feature = "multi-thread")]
     use crate::server::handler::execute_put;
     use crate::{
-        engine_types::{Preconditions, Representation},
+        engine_types::{
+            ChangeVerb, Preconditions, Representation, SubscribePattern, SubscriptionResume,
+        },
         server::{
             http::semantics::HeaderAllowlist,
             test_support::{
@@ -691,6 +693,19 @@ mod tests {
             .unwrap();
         let delete_ledger = world_path("var/log/deletes");
         let headers = HeaderMap::new();
+        let ledger_head_before_denied = engine
+            .chain_head(&delete_ledger, AccessTier::Read)
+            .unwrap()
+            .expect("seed delete should create the ledger");
+        let df_before_denied = engine.df(AccessTier::Read).unwrap();
+        let mut denied_notifications = engine
+            .subscribe(
+                &SubscribePattern::new(protected_world.as_str()),
+                AccessTier::Read,
+                SubscriptionResume::none(),
+            )
+            .await
+            .unwrap();
 
         let (auth_status, auth_reason, _) = error_parts(
             execute_delete(
@@ -710,6 +725,51 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+        assert_eq!(
+            engine.chain_head(&delete_ledger, AccessTier::Read).unwrap(),
+            Some(ledger_head_before_denied),
+            "denied delete must not append an intent"
+        );
+        let df_after_denied = engine.df(AccessTier::Read).unwrap();
+        assert_eq!(
+            (
+                df_after_denied.storage_used,
+                df_after_denied.storage_current_body_bytes,
+                df_after_denied.storage_retained_cas_body_bytes,
+                df_after_denied.storage_audit_chain_events,
+                df_after_denied.memory_used,
+                df_after_denied.worlds,
+            ),
+            (
+                df_before_denied.storage_used,
+                df_before_denied.storage_current_body_bytes,
+                df_before_denied.storage_retained_cas_body_bytes,
+                df_before_denied.storage_audit_chain_events,
+                df_before_denied.memory_used,
+                df_before_denied.worlds,
+            ),
+            "denied delete must preserve accounting"
+        );
+        engine
+            .replace(
+                &protected_world,
+                Representation::new(
+                    Bytes::from_static(b"notification barrier"),
+                    "text/plain; charset=utf-8",
+                    Vec::new(),
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let notification = denied_notifications
+            .recv()
+            .await
+            .expect("authorised barrier write should notify");
+        assert_eq!(notification.verb(), ChangeVerb::Replace);
+        assert_eq!(notification.path(), &protected_world);
+        drop(denied_notifications);
 
         let ledger_delete = unwrap_response(
             execute_delete(
