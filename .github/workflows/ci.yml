@@ -21,12 +21,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: UniFFI binding consistency checker tests
+        run: >
+          python -m unittest discover -s tools
+          -p "test_uniffi_binding_consistency.py" -v
       - name: version consistency
         run: python tools/version_consistency_check.py
       - name: audit chain verifier self-test
         run: python tools/audit_chain_verify.py --self-test
       - name: build l5 ffi native library for Python tests
-        run: cargo build --release --manifest-path ffi/Cargo.toml
+        run: cargo build --locked --release --manifest-path ffi/Cargo.toml
+      - name: verify FFI lockfile is unchanged
+        run: git diff --exit-code -- ffi/Cargo.lock
       - name: generate Python UniFFI binding
         shell: bash
         working-directory: ffi
@@ -137,6 +143,16 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: UniFFI binding consistency checker tests
+        run: >
+          python -m unittest discover -s tools
+          -p "test_uniffi_binding_consistency.py" -v
+      - name: core tests on Windows
+        run: cargo test --locked --manifest-path core/Cargo.toml
+      - name: binary tests on Windows
+        run: cargo test --locked --manifest-path bin/Cargo.toml
+      - name: FFI tests on Windows
+        run: cargo test --locked --manifest-path ffi/Cargo.toml
       - name: build l5 ffi native library
         run: cargo build --locked --release --manifest-path ffi/Cargo.toml
       - name: generate Python UniFFI binding

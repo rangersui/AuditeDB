@@ -73,11 +73,11 @@ jobs:
               export CC_aarch64_unknown_linux_musl=musl-gcc
               ;;
           esac
-          cargo build --release --manifest-path bin/Cargo.toml --target ${{ matrix.rust-target }}
+          cargo build --locked --release --manifest-path bin/Cargo.toml --target ${{ matrix.rust-target }}
 
       - name: build core (native)
         if: matrix.rust-target == ''
-        run: cargo build --release --manifest-path bin/Cargo.toml
+        run: cargo build --locked --release --manifest-path bin/Cargo.toml
 
       - name: package core asset (windows)
         if: runner.os == 'Windows'
@@ -149,7 +149,7 @@ jobs:
         run: python tools/version_consistency_check.py --tag "${{ github.ref_name }}"
 
       - name: build ffi library
-        run: cargo build --release --manifest-path ffi/Cargo.toml
+        run: cargo build --locked --release --manifest-path ffi/Cargo.toml
 
       - name: generate Python UniFFI binding
         shell: bash
@@ -340,6 +340,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: UniFFI binding consistency checker tests
+        run: >
+          python -m unittest discover -s tools
+          -p "test_uniffi_binding_consistency.py" -v
+
       - name: show platform
         run: python -c "import platform, sys; print(sys.platform, platform.machine())"
 
@@ -353,12 +358,14 @@ jobs:
           name: ffi-asset-${{ matrix.name }}
           path: ffi-asset
 
-      - name: unpack ffi asset into Python package
+      - name: verify and unpack ffi asset into Python package
         shell: bash
         run: |
           python - <<'PY'
           import pathlib
           import shutil
+          import subprocess
+          import sys
           import zipfile
 
           zips = list(pathlib.Path("ffi-asset").glob("*.zip"))
@@ -371,10 +378,17 @@ jobs:
 
           package_ffi = pathlib.Path("sdk/src/l5/_ffi")
           package_ffi.mkdir(parents=True, exist_ok=True)
+          generated_binding = out / "python" / "l5_ffi.py"
+          subprocess.run([
+              sys.executable,
+              "tools/uniffi_binding_consistency.py",
+              str(package_ffi / "l5_ffi.py"),
+              str(generated_binding),
+          ], check=True)
           for stale in package_ffi.glob("l5_ffi.*"):
               if stale.suffix in {".dll", ".so", ".dylib"}:
                   stale.unlink()
-          shutil.copy2(out / "python" / "l5_ffi.py", package_ffi / "l5_ffi.py")
+          shutil.copy2(generated_binding, package_ffi / "l5_ffi.py")
           libraries = [
               p for p in (out / "python").iterdir()
               if p.name != "l5_ffi.py" and p.is_file()
