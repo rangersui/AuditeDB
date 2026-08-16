@@ -1128,6 +1128,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_memory_quota_honors_exact_public_boundary_without_failed_write_side_effects() {
+        let world = ValidatedWorldPath::new("tmp/exact-quota").unwrap();
+        let headers = vec![("x-meta-owner".to_owned(), "quota-test".to_owned())];
+
+        let probe_root = temp_root("memory-quota-probe");
+        let probe = build_engine_with_key(probe_root.clone(), &test_key());
+        probe
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"exact"), "text/plain", headers.clone()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let exact_quota = probe.df(AccessTier::Read).unwrap().memory_used;
+        assert!(exact_quota > b"exact".len());
+        drop(probe);
+        let _ = std::fs::remove_dir_all(probe_root);
+
+        let exact_root = temp_root("memory-quota-exact");
+        let exact = Engine::builder()
+            .data_root(exact_root.clone())
+            .key(test_key())
+            .max_memory_bytes(exact_quota)
+            .build()
+            .unwrap();
+        let write = exact
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"exact"), "text/plain", headers.clone()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(write.kind, WriteKind::Created));
+        let accepted = exact.df(AccessTier::Read).unwrap();
+        assert_eq!(accepted.memory_used, exact_quota);
+        assert_eq!(accepted.worlds, 1);
+        let events_after_accept = exact.core().event_log.lock().unwrap().len();
+
+        let rejected = match exact
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"exact!"), "text/plain", headers.clone()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("one-byte-over replacement must exceed the exact quota"),
+        };
+        assert!(matches!(
+            rejected,
+            EngineError::QuotaExceeded {
+                used,
+                quota,
+                projected,
+            } if used == exact_quota
+                && quota == exact_quota
+                && projected == exact_quota + 1
+        ));
+        let unchanged = exact.df(AccessTier::Read).unwrap();
+        assert_eq!(unchanged.memory_used, accepted.memory_used);
+        assert_eq!(unchanged.worlds, accepted.worlds);
+        assert_eq!(
+            exact
+                .read(&world, AccessTier::Read)
+                .await
+                .unwrap()
+                .expect("rejected replacement must preserve the world")
+                .representation
+                .body,
+            Bytes::from_static(b"exact")
+        );
+        assert_eq!(
+            exact.core().event_log.lock().unwrap().len(),
+            events_after_accept,
+            "rejected replacement must not notify subscribers"
+        );
+        drop(exact);
+        let _ = std::fs::remove_dir_all(exact_root);
+
+        let below_root = temp_root("memory-quota-below");
+        let below = Engine::builder()
+            .data_root(below_root.clone())
+            .key(test_key())
+            .max_memory_bytes(exact_quota - 1)
+            .build()
+            .unwrap();
+        let before = below.df(AccessTier::Read).unwrap();
+        let events_before = below.core().event_log.lock().unwrap().len();
+        let rejected = match below
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"exact"), "text/plain", headers),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("exact payload must fail when the public quota is one byte short"),
+        };
+        assert!(matches!(
+            rejected,
+            EngineError::QuotaExceeded {
+                used: 0,
+                quota,
+                projected,
+            } if quota == exact_quota - 1 && projected == exact_quota
+        ));
+        assert!(below
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
+        let after = below.df(AccessTier::Read).unwrap();
+        assert_eq!(
+            (after.memory_used, after.worlds),
+            (before.memory_used, before.worlds)
+        );
+        assert_eq!(
+            below.core().event_log.lock().unwrap().len(),
+            events_before,
+            "rejected creation must not notify subscribers"
+        );
+
+        drop(below);
+        let _ = std::fs::remove_dir_all(below_root);
+    }
+
+    #[tokio::test]
     async fn engine_append_missing_world_returns_not_found_without_creation() {
         let (engine, root) = test_engine("append-missing");
         let before = engine.df(AccessTier::Read).unwrap();
