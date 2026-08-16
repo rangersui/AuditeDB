@@ -238,41 +238,39 @@ fn replace_write_blocking(
     )?;
 
     let (existed, etag, target, format_notice, aux) = if store::is_persistent(world_path) {
-        let reservation = if let Some(quota) = core.max_storage_bytes {
-            let snapshot = world::replace_quota_snapshot(
-                proof,
-                &core.data,
-                world_path,
-                &req.body,
-                core.retained_body_count,
-                &file_op,
-            )
-            .map_err(|err| {
-                classify_write_storage_error("storage quota preflight", err, StorageOp::Read)
-            })?;
-            let prev_len = snapshot.previous_body_len();
+        let snapshot = world::replace_quota_snapshot(
+            proof,
+            &core.data,
+            world_path,
+            &req.body,
+            core.retained_body_count,
+            &file_op,
+        )
+        .map_err(|err| {
+            classify_write_storage_error("storage accounting preflight", err, StorageOp::Read)
+        })?;
+        let prev_len = snapshot.previous_body_len();
+        if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
-            let cas_candidate_len = snapshot.candidate_cas_len();
-            let prunable_cas_len = snapshot.prunable_cas_len();
-            let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
-            if let Err(quota) =
-                core.reserve_storage_after_prune(prev_len, reserve_new_len, prunable_cas_len)
-            {
-                return Err(WriteError::QuotaExceeded {
-                    used: quota.used,
-                    quota: quota.quota,
-                    projected: quota.projected,
-                });
-            }
-            Some((
-                prev_len,
-                cas_candidate_len,
-                prunable_cas_len,
-                reserve_new_len,
-            ))
-        } else {
-            None
-        };
+        }
+        let cas_candidate_len = snapshot.candidate_cas_len();
+        let prunable_cas_len = snapshot.prunable_cas_len();
+        let reserve_new_len =
+            req.body
+                .len()
+                .checked_add(cas_candidate_len)
+                .ok_or(WriteError::QuotaExceeded {
+                    used: core.storage_body_bytes.load(Ordering::Relaxed),
+                    quota: core.max_storage_bytes.unwrap_or(usize::MAX),
+                    projected: usize::MAX,
+                })?;
+        let pending = core
+            .reserve_storage_after_prune(prev_len, reserve_new_len, prunable_cas_len)
+            .map_err(|quota| WriteError::QuotaExceeded {
+                used: quota.used,
+                quota: quota.quota,
+                projected: quota.projected,
+            })?;
         let write_conn = core
             .cached_write_conn(proof, &permit.world, &file_op)
             .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?;
@@ -296,32 +294,14 @@ fn replace_write_blocking(
                 } else {
                     0
                 };
-                let prev_len = reservation
-                    .as_ref()
-                    .map(|(prev_len, _, _, _)| *prev_len)
-                    .unwrap_or(result.previous_len);
-                let pruned_cas_len = result.pruned_cas.bytes();
-                if reservation.is_none() {
-                    let _ = core.reserve_storage_after_prune(
-                        prev_len,
-                        req.body.len().saturating_add(actual_cas_len),
-                        pruned_cas_len,
-                    );
-                }
-                core.note_current_body_replaced(prev_len, req.body.len());
-                if let Some((_prev_len, cas_candidate_len, prunable_cas_len, _reserve_new_len)) =
-                    reservation
-                {
-                    if !result.cas_body_inserted {
-                        core.rollback_storage_reservation(0, cas_candidate_len);
-                    } else {
-                        core.note_retained_cas_inserted(cas_candidate_len);
-                    }
-                    core.credit_pruned_storage_after_estimate(result.pruned_cas, prunable_cas_len);
+                pending.commit();
+                if !result.cas_body_inserted {
+                    core.rollback_storage_reservation(0, cas_candidate_len);
                 } else {
                     core.note_retained_cas_inserted(actual_cas_len);
-                    core.credit_pruned_storage_after_estimate(result.pruned_cas, pruned_cas_len);
                 }
+                core.credit_pruned_storage_after_estimate(result.pruned_cas, prunable_cas_len);
+                core.note_current_body_replaced(prev_len, req.body.len());
                 let audit_event_count = 1 + usize::from(result.format_event.is_some());
                 core.note_audit_events_appended(audit_event_count);
                 if !result.existed {
@@ -334,27 +314,9 @@ fn replace_write_blocking(
                 (result.existed, etag, target, format_notice, aux)
             }
             Err(world::WriteAuditError::Audit(err)) => {
-                if let Some((prev_len, _cas_candidate_len, prunable_cas_len, reserve_new_len)) =
-                    reservation
-                {
-                    core.rollback_storage_reservation_after_prune(
-                        prev_len,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(classify_write_audit_error("storage/audit", err));
             }
             Err(world::WriteAuditError::Sqlite(err)) => {
-                if let Some((prev_len, _cas_candidate_len, prunable_cas_len, reserve_new_len)) =
-                    reservation
-                {
-                    core.rollback_storage_reservation_after_prune(
-                        prev_len,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(classify_write_storage_error(
                     "storage/audit",
                     err,
@@ -362,29 +324,11 @@ fn replace_write_blocking(
                 ));
             }
             Err(world::WriteAuditError::CasBodyMismatch { body_sha256 }) => {
-                if let Some((prev_len, _cas_candidate_len, prunable_cas_len, reserve_new_len)) =
-                    reservation
-                {
-                    core.rollback_storage_reservation_after_prune(
-                        prev_len,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(WriteError::StorageInvariant(
                     StorageInvariantReason::CasBodyMismatch(body_sha256),
                 ));
             }
             Err(world::WriteAuditError::StorageInvariant(reason)) => {
-                if let Some((prev_len, _cas_candidate_len, prunable_cas_len, reserve_new_len)) =
-                    reservation
-                {
-                    core.rollback_storage_reservation_after_prune(
-                        prev_len,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(WriteError::StorageInvariant(
                     StorageInvariantReason::CasState(reason),
                 ));
@@ -496,44 +440,44 @@ fn append_write_blocking(
     }
 
     let (etag, target, format_notice, aux) = if store::is_persistent(world_path) {
-        let reservation = if let Some(quota) = core.max_storage_bytes {
+        if let Some(quota) = core.max_storage_bytes {
             hooks.quota_check(core.storage_body_bytes.load(Ordering::Relaxed), quota);
-            let cas_candidate_len = world::append_cas_body_len_if_missing(
-                proof, &core.data, world_path, &req.body, &file_op,
-            )
-            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
-            .ok_or(WriteError::NotFound)?;
-            let prunable_cas_len = world::append_prunable_cas_body_len_after_next_write(
-                proof,
-                &core.data,
-                world_path,
-                &req.body,
-                core.retained_body_count,
-                &file_op,
-            )
-            .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
-            .ok_or(WriteError::NotFound)?;
-            let reserve_new_len = req.body.len().saturating_add(cas_candidate_len);
-            if let Err(quota) =
-                core.reserve_storage_after_prune(0, reserve_new_len, prunable_cas_len)
-            {
-                return Err(WriteError::QuotaExceeded {
-                    used: quota.used,
-                    quota: quota.quota,
-                    projected: quota.projected,
-                });
-            }
-            Some((cas_candidate_len, prunable_cas_len, reserve_new_len))
-        } else {
-            None
-        };
+        }
+        let cas_candidate_len = world::append_cas_body_len_if_missing(
+            proof, &core.data, world_path, &req.body, &file_op,
+        )
+        .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
+        .ok_or(WriteError::NotFound)?;
+        let prunable_cas_len = world::append_prunable_cas_body_len_after_next_write(
+            proof,
+            &core.data,
+            world_path,
+            &req.body,
+            core.retained_body_count,
+            &file_op,
+        )
+        .map_err(|err| classify_write_storage_error("storage/cas", err, StorageOp::Read))?
+        .ok_or(WriteError::NotFound)?;
+        let reserve_new_len =
+            req.body
+                .len()
+                .checked_add(cas_candidate_len)
+                .ok_or(WriteError::QuotaExceeded {
+                    used: core.storage_body_bytes.load(Ordering::Relaxed),
+                    quota: core.max_storage_bytes.unwrap_or(usize::MAX),
+                    projected: usize::MAX,
+                })?;
+        let pending = core
+            .reserve_storage_after_prune(0, reserve_new_len, prunable_cas_len)
+            .map_err(|quota| WriteError::QuotaExceeded {
+                used: quota.used,
+                quota: quota.quota,
+                projected: quota.projected,
+            })?;
         let Some(write_conn) = core
             .cached_existing_write_conn(proof, &permit.world, &file_op)
             .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?
         else {
-            if let Some((_cas_candidate_len, prunable_cas_len, reserve_new_len)) = reservation {
-                core.rollback_storage_reservation_after_prune(0, reserve_new_len, prunable_cas_len);
-            }
             return Err(WriteError::NotFound);
         };
         let mut write_conn = write_conn
@@ -556,26 +500,14 @@ fn append_write_blocking(
                 } else {
                     0
                 };
-                let pruned_cas_len = result.pruned_cas.bytes();
-                if reservation.is_none() {
-                    let _ = core.reserve_storage_after_prune(
-                        0,
-                        req.body.len().saturating_add(actual_cas_len),
-                        pruned_cas_len,
-                    );
-                }
-                core.note_current_body_replaced(body_len, projected_len);
-                if let Some((cas_candidate_len, prunable_cas_len, _reserve_new_len)) = reservation {
-                    if !result.cas_body_inserted {
-                        core.rollback_storage_reservation(0, cas_candidate_len);
-                    } else {
-                        core.note_retained_cas_inserted(cas_candidate_len);
-                    }
-                    core.credit_pruned_storage_after_estimate(result.pruned_cas, prunable_cas_len);
+                pending.commit();
+                if !result.cas_body_inserted {
+                    core.rollback_storage_reservation(0, cas_candidate_len);
                 } else {
                     core.note_retained_cas_inserted(actual_cas_len);
-                    core.credit_pruned_storage_after_estimate(result.pruned_cas, pruned_cas_len);
                 }
+                core.credit_pruned_storage_after_estimate(result.pruned_cas, prunable_cas_len);
+                core.note_current_body_replaced(body_len, projected_len);
                 let audit_event_count = 1 + usize::from(result.format_event.is_some());
                 core.note_audit_events_appended(audit_event_count);
                 let target = ChangeTarget::from_appended_body_audit_row(&result.body_event);
@@ -584,33 +516,12 @@ fn append_write_blocking(
                 (etag::hmac_etag(&h), target, format_notice, aux)
             }
             Ok(None) => {
-                if let Some((_cas_candidate_len, prunable_cas_len, reserve_new_len)) = reservation {
-                    core.rollback_storage_reservation_after_prune(
-                        0,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(WriteError::NotFound);
             }
             Err(world::WriteAuditError::Audit(err)) => {
-                if let Some((_cas_candidate_len, prunable_cas_len, reserve_new_len)) = reservation {
-                    core.rollback_storage_reservation_after_prune(
-                        0,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(classify_write_audit_error("storage/audit", err));
             }
             Err(world::WriteAuditError::Sqlite(err)) => {
-                if let Some((_cas_candidate_len, prunable_cas_len, reserve_new_len)) = reservation {
-                    core.rollback_storage_reservation_after_prune(
-                        0,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(classify_write_storage_error(
                     "storage/audit",
                     err,
@@ -618,25 +529,11 @@ fn append_write_blocking(
                 ));
             }
             Err(world::WriteAuditError::CasBodyMismatch { body_sha256 }) => {
-                if let Some((_cas_candidate_len, prunable_cas_len, reserve_new_len)) = reservation {
-                    core.rollback_storage_reservation_after_prune(
-                        0,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(WriteError::StorageInvariant(
                     StorageInvariantReason::CasBodyMismatch(body_sha256),
                 ));
             }
             Err(world::WriteAuditError::StorageInvariant(reason)) => {
-                if let Some((_cas_candidate_len, prunable_cas_len, reserve_new_len)) = reservation {
-                    core.rollback_storage_reservation_after_prune(
-                        0,
-                        reserve_new_len,
-                        prunable_cas_len,
-                    );
-                }
                 return Err(WriteError::StorageInvariant(
                     StorageInvariantReason::CasState(reason),
                 ));
@@ -775,6 +672,25 @@ mod tests {
             etag::Preconditions::default(),
         )
         .unwrap()
+    }
+
+    fn poison_cached_writer(core: &Core, world: &ValidatedWorldPath) {
+        let conn = core
+            .write_conns
+            .get(world)
+            .expect("fixture write should warm the cached writer")
+            .clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = conn.lock().expect("cached writer should start unpoisoned");
+            panic!("poison cached writer for reservation rollback test");
+        })
+        .join();
+        assert!(panic.is_err(), "fixture thread must poison the writer lock");
+    }
+
+    fn clear_cached_writer(core: &Core, world: &ValidatedWorldPath) {
+        let file_op = core.begin_file_op().unwrap();
+        core.clear_cached_write_conn(world, &file_op);
     }
 
     #[tokio::test]
@@ -988,6 +904,122 @@ mod tests {
             .unwrap();
         assert_eq!(events, 2);
         drop(c);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn replace_cached_writer_failure_rolls_back_storage_reservation() {
+        let (mut core, dir) = test_core("replace-writer-failure-accounting");
+        core.max_storage_bytes = Some(15);
+        let core = Arc::new(core);
+        let world = world_path("home/replace-writer-failure");
+        let permit = authorize_write(&world, auth::Tier::Write).unwrap();
+        replace_write(
+            Arc::clone(&core),
+            permit.clone(),
+            replace_req(b"old", "text/plain"),
+            test_hooks(),
+        )
+        .await
+        .unwrap();
+        let before = core.storage_body_bytes.load(Ordering::Relaxed);
+        assert_eq!(before, 6);
+        poison_cached_writer(&core, &world);
+
+        let err = replace_write(
+            Arc::clone(&core),
+            permit.clone(),
+            replace_req(b"newer", "text/plain"),
+            test_hooks(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, WriteError::StorageRead { .. }));
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
+        clear_cached_writer(&core, &world);
+        replace_write(
+            Arc::clone(&core),
+            permit,
+            replace_req(b"next", "text/plain"),
+            test_hooks(),
+        )
+        .await
+        .expect("rolled-back reservation must leave room for the next write");
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 11);
+        assert_eq!(
+            core.read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &world,
+                &core.begin_file_op().unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .body,
+            b"next"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn append_cached_writer_failure_rolls_back_storage_reservation() {
+        let (mut core, dir) = test_core("append-writer-failure-accounting");
+        core.max_storage_bytes = Some(12);
+        let core = Arc::new(core);
+        let world = world_path("home/append-writer-failure");
+        let permit = authorize_write(&world, auth::Tier::Write).unwrap();
+        replace_write(
+            Arc::clone(&core),
+            permit.clone(),
+            replace_req(b"old", "text/plain"),
+            test_hooks(),
+        )
+        .await
+        .unwrap();
+        let before = core.storage_body_bytes.load(Ordering::Relaxed);
+        assert_eq!(before, 6);
+        poison_cached_writer(&core, &world);
+
+        let err = append_write(
+            Arc::clone(&core),
+            permit.clone(),
+            AppendRequest {
+                body: Bytes::from_static(b"x"),
+                preconditions: etag::Preconditions::default(),
+            },
+            test_hooks(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, WriteError::StorageRead { .. }));
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
+        clear_cached_writer(&core, &world);
+        append_write(
+            Arc::clone(&core),
+            permit,
+            AppendRequest {
+                body: Bytes::from_static(b"y"),
+                preconditions: etag::Preconditions::default(),
+            },
+            test_hooks(),
+        )
+        .await
+        .expect("rolled-back reservation must leave room for the next append");
+        assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), 11);
+        assert_eq!(
+            core.read_world(
+                &mut crate::blocking_sqlite::test_only_mint(),
+                &world,
+                &core.begin_file_op().unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .body,
+            b"oldy"
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -38,6 +38,9 @@ use crate::timeline::{TimelineAddress, TimelineRead};
 use crate::world::Stage;
 use crate::{audit, auth, event, store, world};
 
+mod storage_reservation;
+pub(crate) use storage_reservation::PendingStorageReservation;
+
 #[cfg(target_has_atomic = "64")]
 pub(crate) type EventCounter = AtomicU64;
 
@@ -807,10 +810,11 @@ impl Core {
     /// Caller must hold `acquire_world_lock(world)` so that `prev_len`
     /// reflects the world's true current accounted length (cannot change
     /// underneath us). On success the global counter has already been
-    /// updated; on success of the subsequent storage write, refund any
-    /// pessimistically reserved CAS bytes that were already present. On
-    /// failure of the storage write, call `rollback_storage_reservation` to
-    /// credit back the whole reservation.
+    /// updated and the returned proof is armed. Only positive growth becomes
+    /// visible before SQLite commit; shrink credit stays in the proof so other
+    /// worlds cannot consume uncommitted capacity. Commit that proof after the
+    /// storage transaction succeeds; dropping it on any earlier return
+    /// restores the complete reservation automatically.
     ///
     /// `prev_len` is 0 for new worlds and for append (where the existing
     /// bytes stay and we only add `new_len` new).
@@ -819,56 +823,43 @@ impl Core {
         prev_len: usize,
         new_len: usize,
         pruned_len: usize,
-    ) -> Result<(), StorageReservationError> {
-        if let Some(quota) = self.max_storage_bytes {
-            let result = self.storage_body_bytes.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |used| {
-                    let projected = used
-                        .saturating_sub(prev_len)
-                        .saturating_add(new_len)
-                        .saturating_sub(pruned_len);
-                    if projected > quota {
-                        None
-                    } else {
-                        Some(projected)
-                    }
-                },
-            );
-            match result {
-                Ok(_) => Ok(()),
-                Err(used) => {
-                    let projected = used
-                        .saturating_sub(prev_len)
-                        .saturating_add(new_len)
-                        .saturating_sub(pruned_len);
-                    Err(StorageReservationError {
-                        used,
-                        quota,
-                        projected,
-                    })
-                }
-            }
+    ) -> Result<PendingStorageReservation, StorageReservationError> {
+        let used = self.storage_body_bytes.load(Ordering::Relaxed);
+        let quota = self.max_storage_bytes.unwrap_or(usize::MAX);
+        let Some(predicted_credit) = prev_len.checked_add(pruned_len) else {
+            return Err(StorageReservationError {
+                used,
+                quota,
+                projected: usize::MAX,
+            });
+        };
+        let (reserved_increase, deferred_credit) = if new_len >= predicted_credit {
+            (new_len - predicted_credit, 0)
         } else {
-            // No quota: still keep the counter coherent for /proc/df.
-            let _ = self.storage_body_bytes.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |used| {
-                    Some(
-                        used.saturating_sub(prev_len)
-                            .saturating_add(new_len)
-                            .saturating_sub(pruned_len),
-                    )
-                },
-            );
-            Ok(())
+            (0, predicted_credit - new_len)
+        };
+        let result =
+            self.storage_body_bytes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    used.checked_add(reserved_increase)
+                        .filter(|projected| *projected <= quota)
+                });
+        match result {
+            Ok(_) => Ok(PendingStorageReservation::mint(
+                Arc::clone(&self.storage_body_bytes),
+                reserved_increase,
+                deferred_credit,
+            )),
+            Err(used) => Err(StorageReservationError {
+                used,
+                quota,
+                projected: used.saturating_add(reserved_increase),
+            }),
         }
     }
 
-    /// Inverse of `reserve_storage`. Call when the reserved write
-    /// subsequently fails so we credit the bytes back into available quota.
+    /// Refund a pessimistically reserved subcomponent after a successful
+    /// transaction proves those bytes were already present.
     pub(crate) fn rollback_storage_reservation(&self, prev_len: usize, new_len: usize) {
         self.rollback_storage_reservation_after_prune(prev_len, new_len, 0);
     }
@@ -879,15 +870,12 @@ impl Core {
         new_len: usize,
         pruned_len: usize,
     ) {
-        let _ =
-            self.storage_body_bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                    Some(
-                        used.saturating_sub(new_len)
-                            .saturating_add(prev_len)
-                            .saturating_add(pruned_len),
-                    )
-                });
+        storage_reservation::rollback_storage_counter(
+            &self.storage_body_bytes,
+            prev_len,
+            new_len,
+            pruned_len,
+        );
     }
 
     pub(crate) fn note_current_body_replaced(&self, previous_len: usize, next_len: usize) {
@@ -1013,6 +1001,79 @@ mod tests {
 
         fn assert_audit_hmac_key(_: &AuditHmacKey) {}
         assert_audit_hmac_key(&core.hmac_key);
+
+        drop(core);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shrinking_reservation_does_not_publish_capacity_before_commit() {
+        let (mut core, dir) = crate::test_support::test_core("quota-shrink-deferred-credit");
+        core.max_storage_bytes = Some(20);
+        core.storage_body_bytes
+            .store(20, std::sync::atomic::Ordering::Relaxed);
+
+        let shrinking = core
+            .reserve_storage_after_prune(10, 2, 0)
+            .unwrap_or_else(|_| {
+                panic!("a shrinking write should reserve without publishing its credit")
+            });
+        assert_eq!(
+            core.storage_body_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            20
+        );
+        assert!(
+            core.reserve_storage_after_prune(0, 1, 0).is_err(),
+            "another world must not consume uncommitted shrink capacity"
+        );
+
+        drop(shrinking);
+        assert_eq!(
+            core.storage_body_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            20,
+            "a failed shrinking write must leave accounting unchanged"
+        );
+
+        let committed = core
+            .reserve_storage_after_prune(10, 2, 0)
+            .unwrap_or_else(|_| panic!("the shrinking write should still fit"));
+        committed.commit();
+        assert_eq!(
+            core.storage_body_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            12,
+            "only commit may publish the shrink credit"
+        );
+
+        drop(core);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn storage_reservation_rejects_counter_overflow_without_mutation() {
+        let (core, dir) = crate::test_support::test_core("quota-counter-overflow");
+        core.storage_body_bytes
+            .store(usize::MAX - 1, std::sync::atomic::Ordering::Relaxed);
+
+        let overflow = core.reserve_storage_after_prune(0, 2, 0);
+        assert!(overflow.is_err());
+        assert_eq!(
+            core.storage_body_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            usize::MAX - 1,
+            "representational overflow must fail before changing accounting"
+        );
+
+        let credit_overflow = core.reserve_storage_after_prune(usize::MAX, 0, 1);
+        assert!(credit_overflow.is_err());
+        assert_eq!(
+            core.storage_body_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            usize::MAX - 1,
+            "overflow while calculating deferred credit must also fail closed"
+        );
 
         drop(core);
         std::fs::remove_dir_all(dir).ok();

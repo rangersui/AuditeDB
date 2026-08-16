@@ -498,12 +498,8 @@ pub struct WriteAuditResult {
     pub(crate) pruned_cas: PrunedCas,
     pub(crate) format_event: Option<audit::AppendedAuditRow>,
     pub(crate) body_event: audit::AppendedBodyAuditRow,
-    /// Body length before this write. Used by no-quota accounting, where
-    /// the hot path avoids an extra pre-write metadata connection and
-    /// reconciles counters from the committed transaction result.
-    pub previous_len: usize,
-    /// Whether the world existed before this write. Used by no-quota
-    /// accounting to update durable-world counters from committed state.
+    /// Whether the world existed before this write. Used to update
+    /// durable-world counters from committed state.
     pub existed: bool,
 }
 
@@ -757,11 +753,6 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
     let opened = opened_conn.opened;
     let conn = opened_conn.as_mut_conn(proof);
     let tx = conn.transaction()?;
-    let previous_len = tx.query_row(
-        "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
-        [],
-        |r| Ok(r.get::<_, i64>(0)?.max(0) as usize),
-    )?;
     let (format_event, hmac, cas_body_inserted, pruned_cas, body_event, verified_prefix) = {
         let (audit_tx, is_genesis, verified_prefix) =
             verify_appendable_world_tx(proof, &tx, verified_audit_worlds, world, key, opened)?;
@@ -814,7 +805,6 @@ pub(crate) fn write_with_audit_checked_retaining_on_conn(
         pruned_cas,
         format_event,
         body_event,
-        previous_len,
         existed: matches!(opened, OpenedWorldKind::Existing),
     })
 }
