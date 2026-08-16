@@ -683,6 +683,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_intent_failure_preserves_world_ledger_accounting_and_notifications() {
+        let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-intent-audit-fail");
+        let state = server_state_for_engine_for_tests(engine.clone());
+        let warmup = world_path("home/delete-intent-warmup");
+        engine
+            .replace(
+                &warmup,
+                Representation::new(Bytes::from_static(b"warmup"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        engine
+            .delete(&warmup, Preconditions::none(), AccessTier::Approve)
+            .await
+            .unwrap();
+
+        let world = world_path("home/delete-intent-preserved");
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"alive"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let delete_ledger = world_path("var/log/deletes");
+        let ledger_head_before = engine
+            .chain_head(&delete_ledger, AccessTier::Read)
+            .unwrap()
+            .expect("warmup delete should create the delete ledger");
+        let df_before = engine.df(AccessTier::Read).unwrap();
+        let mut notifications = engine
+            .subscribe(
+                &SubscribePattern::new(world.as_str()),
+                AccessTier::Read,
+                SubscriptionResume::none(),
+            )
+            .await
+            .unwrap();
+        {
+            let c =
+                rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "var/log/deletes"))
+                    .unwrap();
+            c.execute_batch(
+                r#"
+                CREATE TRIGGER fail_delete_intent
+                BEFORE INSERT ON events
+                WHEN NEW.event_type='delete_intent'
+                BEGIN
+                    SELECT RAISE(FAIL, 'delete_intent blocked');
+                END;
+                "#,
+            )
+            .unwrap();
+        }
+
+        let (status, reason, body) = error_parts(
+            execute_delete(
+                HeaderMap::new(),
+                AccessTier::Approve,
+                world.clone(),
+                &state,
+                &TraceCtx::disabled(),
+            )
+            .await,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(matches!(reason, ErrorReason::StorageWriteAudit));
+        assert_eq!(body, "internal error: storage failure\n");
+        assert_eq!(
+            engine
+                .read(&world, AccessTier::Read)
+                .await
+                .unwrap()
+                .expect("failed intent must preserve the subject")
+                .representation
+                .body,
+            Bytes::from_static(b"alive")
+        );
+        assert_eq!(
+            engine.chain_head(&delete_ledger, AccessTier::Read).unwrap(),
+            Some(ledger_head_before),
+            "failed intent must not advance the delete ledger"
+        );
+        let df_after = engine.df(AccessTier::Read).unwrap();
+        assert_eq!(df_after.storage_used, df_before.storage_used);
+        assert_eq!(
+            df_after.storage_current_body_bytes,
+            df_before.storage_current_body_bytes
+        );
+        assert_eq!(
+            df_after.storage_retained_cas_body_bytes,
+            df_before.storage_retained_cas_body_bytes
+        );
+        assert_eq!(
+            df_after.storage_audit_chain_events,
+            df_before.storage_audit_chain_events
+        );
+        assert_eq!(df_after.worlds, df_before.worlds);
+
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"barrier"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let notification = notifications
+            .recv()
+            .await
+            .expect("barrier replacement should be the first notification");
+        assert_eq!(notification.verb(), ChangeVerb::Replace);
+        assert_eq!(notification.path(), &world);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn delete_rejects_auth_token_and_append_only_ledger() {
         let (engine, dir) = test_engine_for_server_with_auth_tokens("delete-policy");
         let state = server_state_for_engine_for_tests(engine.clone());
