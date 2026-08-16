@@ -130,6 +130,32 @@ async fn get_and_head_require_read_token_when_enabled() {
 }
 
 #[tokio::test]
+async fn put_rejects_read_tier_without_creating_world() {
+    let (engine, dir) = test_engine_for_server("put-read-tier");
+    let world = world_path("home/read-cannot-write");
+    let response = unwrap_response(
+        execute_put_with_engine_state(
+            HeaderMap::new(),
+            Bytes::from_static(b"not authorised"),
+            AccessTier::Read,
+            world.clone(),
+            &engine,
+            &TraceCtx::disabled(),
+        )
+        .await,
+    );
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(engine
+        .read(&world, AccessTier::Read)
+        .await
+        .unwrap()
+        .is_none());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn get_and_head_honor_single_byte_range() {
     let (engine, dir) = test_engine_for_server("range-handler");
     write_text_world_for_tests(&engine, "home/range", "abcdef").await;
