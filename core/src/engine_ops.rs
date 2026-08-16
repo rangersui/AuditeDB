@@ -1131,22 +1131,14 @@ mod tests {
     async fn engine_memory_quota_honors_exact_public_boundary_without_failed_write_side_effects() {
         let world = ValidatedWorldPath::new("tmp/exact-quota").unwrap();
         let headers = vec![("x-meta-owner".to_owned(), "quota-test".to_owned())];
-
-        let probe_root = temp_root("memory-quota-probe");
-        let probe = build_engine_with_key(probe_root.clone(), &test_key());
-        probe
-            .replace(
-                &world,
-                Representation::new(Bytes::from_static(b"exact"), "text/plain", headers.clone()),
-                Preconditions::none(),
-                AccessTier::Write,
-            )
-            .await
-            .unwrap();
-        let exact_quota = probe.df(AccessTier::Read).unwrap().memory_used;
-        assert!(exact_quota > b"exact".len());
-        drop(probe);
-        let _ = std::fs::remove_dir_all(probe_root);
+        let exact_quota = 128
+            + 64
+            + world.as_str().len()
+            + b"exact".len()
+            + "text/plain".len()
+            + "x-meta-owner".len()
+            + "quota-test".len();
+        assert_eq!(exact_quota, 244, "quota oracle must stay independent");
 
         let exact_root = temp_root("memory-quota-exact");
         let exact = Engine::builder()
@@ -1170,10 +1162,29 @@ mod tests {
         assert_eq!(accepted.worlds, 1);
         let events_after_accept = exact.core().event_log.lock().unwrap().len();
 
+        let rejected_headers = vec![
+            ("x-meta-owner".to_owned(), "mutated".to_owned()),
+            ("x-meta-extra".to_owned(), "present".to_owned()),
+        ];
+        let rejected_content_type = "application/octet-stream";
+        let rejected_body = b"exact!";
+        let rejected_projected = 128
+            + 64
+            + world.as_str().len()
+            + rejected_body.len()
+            + rejected_content_type.len()
+            + rejected_headers
+                .iter()
+                .map(|(name, value)| name.len() + value.len())
+                .sum::<usize>();
         let rejected = match exact
             .replace(
                 &world,
-                Representation::new(Bytes::from_static(b"exact!"), "text/plain", headers.clone()),
+                Representation::new(
+                    Bytes::from_static(rejected_body),
+                    rejected_content_type,
+                    rejected_headers,
+                ),
                 Preconditions::none(),
                 AccessTier::Write,
             )
@@ -1190,21 +1201,20 @@ mod tests {
                 projected,
             } if used == exact_quota
                 && quota == exact_quota
-                && projected == exact_quota + 1
+                && projected == rejected_projected
         ));
         let unchanged = exact.df(AccessTier::Read).unwrap();
         assert_eq!(unchanged.memory_used, accepted.memory_used);
         assert_eq!(unchanged.worlds, accepted.worlds);
-        assert_eq!(
-            exact
-                .read(&world, AccessTier::Read)
-                .await
-                .unwrap()
-                .expect("rejected replacement must preserve the world")
-                .representation
-                .body,
-            Bytes::from_static(b"exact")
-        );
+        let preserved = exact
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .expect("rejected replacement must preserve the world")
+            .representation;
+        assert_eq!(preserved.body, Bytes::from_static(b"exact"));
+        assert_eq!(preserved.content_type, "text/plain");
+        assert_eq!(preserved.headers, headers);
         assert_eq!(
             exact.core().event_log.lock().unwrap().len(),
             events_after_accept,
@@ -1225,7 +1235,7 @@ mod tests {
         let rejected = match below
             .replace(
                 &world,
-                Representation::new(Bytes::from_static(b"exact"), "text/plain", headers),
+                Representation::new(Bytes::from_static(b"exact"), "text/plain", headers.clone()),
                 Preconditions::none(),
                 AccessTier::Write,
             )
