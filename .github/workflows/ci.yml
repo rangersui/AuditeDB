@@ -25,10 +25,19 @@ jobs:
         run: python tools/version_consistency_check.py
       - name: audit chain verifier self-test
         run: python tools/audit_chain_verify.py --self-test
-      - name: build l5 ffi native library for Python smoke
+      - name: build l5 ffi native library for Python tests
         run: cargo build --release --manifest-path ffi/Cargo.toml
-      - name: stage l5 ffi native library for Python smoke
-        run: cp ffi/target/release/libl5_ffi.so sdk/src/l5/_ffi/libl5_ffi.so
+      - name: generate Python UniFFI binding
+        shell: bash
+        working-directory: ffi
+        run: |
+          target/release/uniffi-bindgen generate target/release/libl5_ffi.so \
+            --language python \
+            --out-dir target/bindings/python
+      - name: stage l5 ffi library and generated binding for Python tests
+        run: |
+          cp ffi/target/release/libl5_ffi.so sdk/src/l5/_ffi/libl5_ffi.so
+          cp ffi/target/bindings/python/l5_ffi.py sdk/src/l5/_ffi/l5_ffi.py
       - name: python l5 sdk smoke
         env:
           PYTHONPATH: sdk/src
