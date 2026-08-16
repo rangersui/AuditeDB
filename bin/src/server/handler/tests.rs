@@ -8,6 +8,7 @@ use crate::{
         test_engine_for_server_with_storage_quota, test_engine_for_server_with_world_cap,
         world_db_path_for_server_tests, write_text_world_for_tests,
     },
+    AuthGate,
 };
 use axum::response::Response;
 
@@ -130,24 +131,53 @@ async fn get_and_head_require_read_token_when_enabled() {
 }
 
 #[tokio::test]
-async fn put_rejects_read_tier_without_creating_world() {
+async fn put_and_post_reject_read_tier_at_write_gate_without_creating_world() {
     let (engine, dir) = test_engine_for_server("put-read-tier");
-    let world = world_path("home/read-cannot-write");
-    let response = unwrap_response(
-        execute_put_with_engine_state(
-            HeaderMap::new(),
-            Bytes::from_static(b"not authorised"),
-            AccessTier::Read,
-            world.clone(),
-            &engine,
-            &TraceCtx::disabled(),
-        )
-        .await,
-    );
+    let put_world = world_path("home/read-cannot-put");
+    let put_phase = execute_put_with_engine_state(
+        HeaderMap::new(),
+        Bytes::from_static(b"not authorised"),
+        AccessTier::Read,
+        put_world.clone(),
+        &engine,
+        &TraceCtx::disabled(),
+    )
+    .await;
+    let put_response = match put_phase {
+        Phase::Error {
+            resp,
+            reason: ErrorReason::Auth(AuthGate::Write),
+        } => resp,
+        _ => panic!("PUT with Read tier must fail at the Write auth gate"),
+    };
 
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let post_world = world_path("home/read-cannot-post");
+    let post_phase = execute_post_with_engine_state(
+        HeaderMap::new(),
+        Bytes::from_static(b"not authorised"),
+        AccessTier::Read,
+        post_world.clone(),
+        &engine,
+        &TraceCtx::disabled(),
+    )
+    .await;
+    let post_response = match post_phase {
+        Phase::Error {
+            resp,
+            reason: ErrorReason::Auth(AuthGate::Write),
+        } => resp,
+        _ => panic!("POST with Read tier must fail at the Write auth gate"),
+    };
+
+    assert_eq!(put_response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(post_response.status(), StatusCode::UNAUTHORIZED);
     assert!(engine
-        .read(&world, AccessTier::Read)
+        .read(&put_world, AccessTier::Read)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(engine
+        .read(&post_world, AccessTier::Read)
         .await
         .unwrap()
         .is_none());
