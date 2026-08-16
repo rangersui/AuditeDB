@@ -379,6 +379,88 @@ mod tests {
         (status, reason, body)
     }
 
+    fn world_logical_snapshot(path: &std::path::Path) -> Vec<u8> {
+        use rusqlite::types::ValueRef;
+
+        let c = rusqlite::Connection::open(path).expect("world database should open");
+        let mut snapshot = Vec::new();
+        let mut schema = c
+            .prepare(
+                "SELECT type, name, tbl_name, rootpage, coalesce(sql, '') \
+                 FROM sqlite_schema ORDER BY type, name",
+            )
+            .expect("schema snapshot query should prepare");
+        let schema_rows = schema
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .expect("schema snapshot should query");
+        for row in schema_rows {
+            let (kind, name, table, rootpage, sql) = row.expect("schema row should decode");
+            snapshot.extend_from_slice(
+                format!("schema\0{kind}\0{name}\0{table}\0{rootpage}\0{sql}\0").as_bytes(),
+            );
+        }
+        drop(schema);
+
+        let mut table_names = c
+            .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+            .expect("table-name query should prepare");
+        let names = table_names
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("table names should query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("table names should decode");
+        drop(table_names);
+        for name in names {
+            snapshot.extend_from_slice(format!("table\0{name}\0").as_bytes());
+            let quoted = name.replace('"', "\"\"");
+            let probe = c
+                .prepare(&format!("SELECT * FROM \"{quoted}\" LIMIT 0"))
+                .expect("table snapshot probe should prepare");
+            let column_count = probe.column_count();
+            drop(probe);
+            let order = (1..=column_count)
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut statement = c
+                .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY {order}"))
+                .expect("table snapshot query should prepare");
+            let mut rows = statement.query([]).expect("table snapshot should query");
+            while let Some(row) = rows.next().expect("table snapshot should advance") {
+                snapshot.extend_from_slice(b"row\0");
+                for index in 0..column_count {
+                    match row.get_ref(index).expect("cell should decode") {
+                        ValueRef::Null => snapshot.extend_from_slice(b"n\0"),
+                        ValueRef::Integer(value) => {
+                            snapshot.extend_from_slice(format!("i{value}\0").as_bytes())
+                        }
+                        ValueRef::Real(value) => snapshot
+                            .extend_from_slice(format!("r{:016x}\0", value.to_bits()).as_bytes()),
+                        ValueRef::Text(value) => {
+                            snapshot.extend_from_slice(format!("t{}\0", value.len()).as_bytes());
+                            snapshot.extend_from_slice(value);
+                            snapshot.push(0);
+                        }
+                        ValueRef::Blob(value) => {
+                            snapshot.extend_from_slice(format!("b{}\0", value.len()).as_bytes());
+                            snapshot.extend_from_slice(value);
+                            snapshot.push(0);
+                        }
+                    }
+                }
+            }
+        }
+        snapshot
+    }
+
     #[tokio::test]
     async fn delete_error_phase_preserves_audit_intent_worker_failure_body() {
         let (status, reason, body) = error_parts(delete_error_phase(
@@ -725,10 +807,17 @@ mod tests {
             )
             .await
             .unwrap();
+        let mut ledger_notifications = engine
+            .subscribe(
+                &SubscribePattern::new(delete_ledger.as_str()),
+                AccessTier::Read,
+                SubscriptionResume::none(),
+            )
+            .await
+            .unwrap();
+        let ledger_path = world_db_path_for_server_tests(&dir, "var/log/deletes");
         {
-            let c =
-                rusqlite::Connection::open(world_db_path_for_server_tests(&dir, "var/log/deletes"))
-                    .unwrap();
+            let c = rusqlite::Connection::open(&ledger_path).unwrap();
             c.execute_batch(
                 r#"
                 CREATE TRIGGER fail_delete_intent
@@ -741,6 +830,7 @@ mod tests {
             )
             .unwrap();
         }
+        let ledger_snapshot_before = world_logical_snapshot(&ledger_path);
 
         let (status, reason, body) = error_parts(
             execute_delete(
@@ -757,6 +847,22 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(matches!(reason, ErrorReason::StorageWriteAudit));
         assert_eq!(body, "internal error: storage failure\n");
+        let subject_path = world_db_path_for_server_tests(&dir, world.as_str());
+        assert!(
+            subject_path.exists(),
+            "failed intent must not unlink the subject database"
+        );
+        let subject = rusqlite::Connection::open_with_flags(
+            &subject_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("preserved subject should reopen independently");
+        let stored_body: Vec<u8> = subject
+            .query_row("SELECT body FROM stage_meta WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .expect("preserved subject body should remain readable");
+        assert_eq!(stored_body, b"alive");
         assert_eq!(
             engine
                 .read(&world, AccessTier::Read)
@@ -771,6 +877,20 @@ mod tests {
             engine.chain_head(&delete_ledger, AccessTier::Read).unwrap(),
             Some(ledger_head_before),
             "failed intent must not advance the delete ledger"
+        );
+        assert_eq!(
+            world_logical_snapshot(&ledger_path),
+            ledger_snapshot_before,
+            "failed intent must not mutate delete-ledger schema or data"
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                ledger_notifications.recv(),
+            )
+            .await
+            .is_err(),
+            "failed intent must not notify delete-ledger subscribers"
         );
         let df_after = engine.df(AccessTier::Read).unwrap();
         assert_eq!(df_after.storage_used, df_before.storage_used);
