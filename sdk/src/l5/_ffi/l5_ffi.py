@@ -482,7 +482,7 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_l5_ffi_checksum_func_ffi_version() != 52695:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_l5_ffi_checksum_constructor_ffiengine_open() != 11411:
+    if lib.uniffi_l5_ffi_checksum_constructor_ffiengine_open() != 21227:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_l5_ffi_checksum_method_ffiengine_append() != 22632:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")

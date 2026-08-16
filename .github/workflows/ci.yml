@@ -34,10 +34,13 @@ jobs:
           target/release/uniffi-bindgen generate target/release/libl5_ffi.so \
             --language python \
             --out-dir target/bindings/python
-      - name: stage l5 ffi library and generated binding for Python tests
-        run: |
-          cp ffi/target/release/libl5_ffi.so sdk/src/l5/_ffi/libl5_ffi.so
-          cp ffi/target/bindings/python/l5_ffi.py sdk/src/l5/_ffi/l5_ffi.py
+      - name: verify tracked Python UniFFI binding
+        run: >
+          python tools/uniffi_binding_consistency.py
+          sdk/src/l5/_ffi/l5_ffi.py
+          ffi/target/bindings/python/l5_ffi.py
+      - name: stage l5 ffi library for Python tests
+        run: cp ffi/target/release/libl5_ffi.so sdk/src/l5/_ffi/libl5_ffi.so
       - name: python l5 sdk smoke
         env:
           PYTHONPATH: sdk/src
@@ -144,11 +147,14 @@ jobs:
             .\target\release\l5_ffi.dll `
             --language python `
             --out-dir .\target\bindings\python
-      - name: stage l5 ffi library and generated binding
+      - name: verify tracked Python UniFFI binding
+        run: >
+          python tools/uniffi_binding_consistency.py
+          sdk/src/l5/_ffi/l5_ffi.py
+          ffi/target/bindings/python/l5_ffi.py
+      - name: stage l5 ffi library
         shell: pwsh
-        run: |
-          Copy-Item ffi\target\release\l5_ffi.dll sdk\src\l5\_ffi\l5_ffi.dll -Force
-          Copy-Item ffi\target\bindings\python\l5_ffi.py sdk\src\l5\_ffi\l5_ffi.py -Force
+        run: Copy-Item ffi\target\release\l5_ffi.dll sdk\src\l5\_ffi\l5_ffi.dll -Force
       - name: python l5 sdk smoke
         env:
           PYTHONPATH: sdk/src
