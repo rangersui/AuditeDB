@@ -207,6 +207,19 @@ mod tests {
 
         assert_eq!(disk_world_name_len(&exact_limit), MAX_DISK_WORLD_NAME_BYTES);
         assert!(valid_world_name(&exact_limit));
+        let validated = crate::ValidatedWorldPath::new(exact_limit.clone()).unwrap();
+        let encoded_component =
+            crate::world::validated_world_dir(std::path::Path::new("data"), &validated);
+        assert_eq!(
+            encoded_component
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .len(),
+            MAX_DISK_WORLD_NAME_BYTES,
+            "validator length estimator must match the storage encoder"
+        );
         assert_eq!(
             disk_world_name_len(&one_over_limit),
             MAX_DISK_WORLD_NAME_BYTES + 1

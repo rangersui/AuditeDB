@@ -964,6 +964,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_read_maps_real_sqlite_lock_to_transient_storage() {
+        let root = temp_root("engine-read-transient-storage");
+        let key = test_key();
+        let world = ValidatedWorldPath::new("home/busy").unwrap();
+        direct_put(&root, &world, b"before-lock", &key);
+        let engine = build_engine_with_key(root.clone(), &key);
+
+        let holder = rusqlite::Connection::open(world::validated_world_db(&root, &world)).unwrap();
+        holder
+            .pragma_update(None, "locking_mode", "EXCLUSIVE")
+            .unwrap();
+        holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+        assert!(matches!(
+            engine.read(&world, AccessTier::Read).await,
+            Err(EngineError::TransientStorage)
+        ));
+
+        drop(holder);
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn engine_operations_reject_after_shutdown() {
         let (engine, root) = test_engine("operations-after-shutdown");
         let world = ValidatedWorldPath::new("home/shutdown").unwrap();
@@ -976,6 +1000,10 @@ mod tests {
             )
             .await
             .unwrap();
+        let head_before_shutdown = engine
+            .chain_head(&world, AccessTier::Read)
+            .unwrap()
+            .expect("seed world should have an audit head");
         engine.shutdown();
 
         assert!(matches!(
@@ -1022,6 +1050,26 @@ mod tests {
         ));
 
         drop(engine);
+        let reopened = build_engine_with_key(root.clone(), &test_key());
+        let read = reopened
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .expect("shutdown must preserve the seeded world");
+        assert_eq!(read.representation.body, Bytes::from_static(b"before"));
+        assert_eq!(
+            reopened.chain_head(&world, AccessTier::Read).unwrap(),
+            Some(head_before_shutdown),
+            "rejected operations must not advance the audit chain"
+        );
+        let delete_ledger = ValidatedWorldPath::new("var/log/deletes").unwrap();
+        assert!(reopened
+            .read(&delete_ledger, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
+
+        drop(reopened);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1031,7 +1079,7 @@ mod tests {
 
         for name in ["home/empty", "tmp/empty"] {
             let world = ValidatedWorldPath::new(name).unwrap();
-            engine
+            let write = engine
                 .replace(
                     &world,
                     Representation::new(Bytes::new(), "application/octet-stream", Vec::new()),
@@ -1040,6 +1088,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            assert!(matches!(write.kind, WriteKind::Created));
 
             let read = engine
                 .read(&world, AccessTier::Read)
@@ -1055,17 +1104,39 @@ mod tests {
             engine.verify_audit(&durable, AccessTier::Read).unwrap(),
             crate::AuditVerify::Valid(_)
         ));
+        let transient = ValidatedWorldPath::new("tmp/empty").unwrap();
+        assert!(matches!(
+            engine.verify_audit(&transient, AccessTier::Read).unwrap(),
+            crate::AuditVerify::NotApplicable
+        ));
 
         drop(engine);
+        let reopened = build_engine_with_key(root.clone(), &test_key());
+        let reopened_empty = reopened
+            .read(&durable, AccessTier::Read)
+            .await
+            .unwrap()
+            .expect("durable empty world should survive reopen");
+        assert!(reopened_empty.representation.body.is_empty());
+        assert!(matches!(
+            reopened.verify_audit(&durable, AccessTier::Read).unwrap(),
+            crate::AuditVerify::Valid(_)
+        ));
+
+        drop(reopened);
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn engine_append_missing_world_returns_not_found_without_creation() {
         let (engine, root) = test_engine("append-missing");
+        let before = engine.df(AccessTier::Read).unwrap();
+        let events_before = engine.core().event_log.lock().unwrap().len();
 
         for name in ["home/missing", "tmp/missing"] {
             let world = ValidatedWorldPath::new(name).unwrap();
+            let db_path = world::validated_world_db(&root, &world);
+            assert!(!db_path.exists());
             assert!(matches!(
                 engine
                     .append(
@@ -1077,12 +1148,39 @@ mod tests {
                     .await,
                 Err(EngineError::NotFound)
             ));
+            assert!(!db_path.exists(), "missing append must not create storage");
             assert!(engine
                 .read(&world, AccessTier::Read)
                 .await
                 .unwrap()
                 .is_none());
         }
+
+        let after = engine.df(AccessTier::Read).unwrap();
+        assert_eq!(
+            (
+                after.storage_used,
+                after.storage_current_body_bytes,
+                after.storage_retained_cas_body_bytes,
+                after.storage_audit_chain_events,
+                after.memory_used,
+                after.worlds,
+            ),
+            (
+                before.storage_used,
+                before.storage_current_body_bytes,
+                before.storage_retained_cas_body_bytes,
+                before.storage_audit_chain_events,
+                before.memory_used,
+                before.worlds,
+            ),
+            "missing append must not change resource accounting"
+        );
+        assert_eq!(
+            engine.core().event_log.lock().unwrap().len(),
+            events_before,
+            "missing append must not notify subscribers"
+        );
 
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
@@ -1627,13 +1725,14 @@ mod tests {
             engine.verify_audit(&world, AccessTier::Read).unwrap(),
             crate::AuditVerify::Valid(_)
         ));
+        let recreated_head = engine
+            .chain_head(&world, AccessTier::Read)
+            .unwrap()
+            .expect("recreated world should have an audit head");
+        assert_eq!(recreated_head.generation, second_generation);
         assert_eq!(
-            engine
-                .chain_head(&world, AccessTier::Read)
-                .unwrap()
-                .expect("recreated world should have an audit head")
-                .generation,
-            second_generation
+            recreated_head.seq, 2,
+            "recreated chain should contain only format plus replacement"
         );
 
         let ledger =
