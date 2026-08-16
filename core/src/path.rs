@@ -201,14 +201,18 @@ mod tests {
 
     #[test]
     fn disk_encoded_world_name_length_is_bounded() {
-        let ok = format!("home/{}", "a".repeat(185));
-        let too_long = format!("home/{}", "a".repeat(195));
+        let exact_limit = format!("home/{}", "a".repeat(193));
+        let one_over_limit = format!("home/{}", "a".repeat(194));
         let encoded_slashes_too_long = format!("home/{}", "a/".repeat(70));
 
-        assert_eq!(disk_world_name_len(&ok), 192);
-        assert!(valid_world_name(&ok));
+        assert_eq!(disk_world_name_len(&exact_limit), MAX_DISK_WORLD_NAME_BYTES);
+        assert!(valid_world_name(&exact_limit));
         assert_eq!(
-            validate_world_name(&too_long),
+            disk_world_name_len(&one_over_limit),
+            MAX_DISK_WORLD_NAME_BYTES + 1
+        );
+        assert_eq!(
+            validate_world_name(&one_over_limit),
             Err("world path is too long")
         );
         assert_eq!(

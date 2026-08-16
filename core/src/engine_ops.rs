@@ -964,6 +964,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_operations_reject_after_shutdown() {
+        let (engine, root) = test_engine("operations-after-shutdown");
+        let world = ValidatedWorldPath::new("home/shutdown").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(Bytes::from_static(b"before"), "text/plain", Vec::new()),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        engine.shutdown();
+
+        assert!(matches!(
+            engine.read(&world, AccessTier::Read).await,
+            Err(EngineError::ShuttingDown)
+        ));
+        assert!(matches!(
+            engine
+                .replace(
+                    &world,
+                    Representation::new(Bytes::from_static(b"after"), "text/plain", Vec::new()),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await,
+            Err(EngineError::ShuttingDown)
+        ));
+        assert!(matches!(
+            engine
+                .append(
+                    &world,
+                    Bytes::from_static(b"after"),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await,
+            Err(EngineError::ShuttingDown)
+        ));
+        assert!(matches!(
+            engine
+                .delete(&world, Preconditions::none(), AccessTier::Approve)
+                .await,
+            Err(EngineError::ShuttingDown)
+        ));
+        assert!(matches!(
+            engine
+                .subscribe(
+                    &SubscribePattern::new("home/*"),
+                    AccessTier::Read,
+                    SubscriptionResume::none(),
+                )
+                .await,
+            Err(EngineError::ShuttingDown)
+        ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_empty_body_roundtrips_across_storage_backends() {
+        let (engine, root) = test_engine("empty-body");
+
+        for name in ["home/empty", "tmp/empty"] {
+            let world = ValidatedWorldPath::new(name).unwrap();
+            engine
+                .replace(
+                    &world,
+                    Representation::new(Bytes::new(), "application/octet-stream", Vec::new()),
+                    Preconditions::none(),
+                    AccessTier::Write,
+                )
+                .await
+                .unwrap();
+
+            let read = engine
+                .read(&world, AccessTier::Read)
+                .await
+                .unwrap()
+                .expect("empty world should exist");
+            assert!(read.representation.body.is_empty());
+            assert_eq!(read.representation.content_type, "application/octet-stream");
+        }
+
+        let durable = ValidatedWorldPath::new("home/empty").unwrap();
+        assert!(matches!(
+            engine.verify_audit(&durable, AccessTier::Read).unwrap(),
+            crate::AuditVerify::Valid(_)
+        ));
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_append_missing_world_returns_not_found_without_creation() {
+        let (engine, root) = test_engine("append-missing");
+
+        for name in ["home/missing", "tmp/missing"] {
+            let world = ValidatedWorldPath::new(name).unwrap();
+            assert!(matches!(
+                engine
+                    .append(
+                        &world,
+                        Bytes::from_static(b"tail"),
+                        Preconditions::none(),
+                        AccessTier::Write,
+                    )
+                    .await,
+                Err(EngineError::NotFound)
+            ));
+            assert!(engine
+                .read(&world, AccessTier::Read)
+                .await
+                .unwrap()
+                .is_none());
+        }
+
+        drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn write_fast_path_uses_tail_after_startup_verified_world() {
         let root = temp_root("write-tail-startup-verified");
         let key = test_key();
@@ -1343,6 +1468,23 @@ mod tests {
             .unwrap()
             .is_none());
 
+        let ledger = ValidatedWorldPath::new("var/log/deletes").unwrap();
+        let head_before_second_delete = engine
+            .chain_head(&ledger, AccessTier::Read)
+            .unwrap()
+            .expect("successful delete should create the delete ledger");
+        assert!(matches!(
+            engine
+                .delete(&world, Preconditions::none(), AccessTier::Approve)
+                .await,
+            Err(EngineError::NotFound)
+        ));
+        assert_eq!(
+            engine.chain_head(&ledger, AccessTier::Read).unwrap(),
+            Some(head_before_second_delete),
+            "missing-world delete must not append another ledger event"
+        );
+
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1474,6 +1616,25 @@ mod tests {
         .unwrap();
         drop(second_conn);
         assert_ne!(first_generation, second_generation);
+
+        let recreated = engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .expect("recreated world should exist");
+        assert_eq!(recreated.representation.body, Bytes::from_static(b"second"));
+        assert!(matches!(
+            engine.verify_audit(&world, AccessTier::Read).unwrap(),
+            crate::AuditVerify::Valid(_)
+        ));
+        assert_eq!(
+            engine
+                .chain_head(&world, AccessTier::Read)
+                .unwrap()
+                .expect("recreated world should have an audit head")
+                .generation,
+            second_generation
+        );
 
         let ledger =
             rusqlite::Connection::open(crate::world::world_db(&root, "var/log/deletes")).unwrap();
