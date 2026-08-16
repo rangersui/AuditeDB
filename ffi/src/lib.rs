@@ -489,8 +489,7 @@ mod tests {
     use l5::{AuditVerify, EngineBuildError, EngineError, SubscriptionEventId};
     use std::{
         path::{Path, PathBuf},
-        sync::mpsc as std_mpsc,
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -533,8 +532,9 @@ mod tests {
 
     #[test]
     fn engine_handle_drop_shuts_down_cleanly() {
-        let engine = FfiEngine::open(FfiEngineConfig {
-            data_root: unique_test_dir("drop-shutdown"),
+        let data_root = unique_test_dir("drop-shutdown");
+        let config = || FfiEngineConfig {
+            data_root: data_root.clone(),
             hmac_key: b"0123456789abcdef0123456789abcdef".to_vec(),
             read_token: None,
             write_token: None,
@@ -545,10 +545,15 @@ mod tests {
             max_listen_connections: None,
             listen_replay_max: None,
             read_cache_max_entries: None,
-        })
-        .expect("engine opens");
+        };
+        let engine = FfiEngine::open(config()).expect("engine opens");
 
         drop(engine);
+
+        let reopened = FfiEngine::open(config()).expect("drop must release the data-root lock");
+        reopened.shutdown();
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(data_root);
     }
 
     #[test]
@@ -1426,16 +1431,18 @@ mod tests {
         let subscription = engine
             .subscribe("*".to_owned(), FfiAccessTier::Read, resume_none())
             .expect("subscription opens");
-        let (started_tx, started_rx) = std_mpsc::channel();
         let waiting = Arc::clone(&subscription);
 
-        let handle = std::thread::spawn(move || {
-            started_tx.send(()).expect("signal next waiter started");
-            waiting.next(1_000)
-        });
-        started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("next waiter should start");
+        let handle = std::thread::spawn(move || waiting.next(1_000));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while let Ok(receiver) = subscription.events.try_lock() {
+            drop(receiver);
+            assert!(
+                Instant::now() < deadline,
+                "next() must acquire the receiver before close()"
+            );
+            std::thread::yield_now();
+        }
 
         subscription.close();
 
@@ -1453,12 +1460,8 @@ mod tests {
 
         drop(engine);
 
-        let next = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subscription.next(10)))
-            .expect("subscription next must not panic after engine handle drop");
-        assert!(matches!(
-            next.kind,
-            FfiSubscriptionNextKind::Closed | FfiSubscriptionNextKind::Timeout
-        ));
+        let next = subscription.next(1_000);
+        assert_eq!(next.kind, FfiSubscriptionNextKind::Closed);
         assert!(next.event.is_none());
     }
 
