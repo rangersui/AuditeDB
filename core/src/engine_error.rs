@@ -227,6 +227,21 @@ pub(crate) fn log_blocking_storage_error(
             log_storage_error(scope, err, operation, world)
         }
         BlockingSqliteError::Sqlite(err) => log_storage_error(scope, err, operation, world),
+        BlockingSqliteError::CounterCapacity => {
+            #[cfg(feature = "unstable-engine")]
+            tracing::error!(
+                scope,
+                operation,
+                world = world.unwrap_or(""),
+                "audit event counter capacity exhausted"
+            );
+
+            #[cfg(not(feature = "unstable-engine"))]
+            eprintln!(
+                "l5 internal {scope} ({operation}) world={}: audit event counter capacity exhausted",
+                world.unwrap_or("")
+            );
+        }
         BlockingSqliteError::Worker => {
             #[cfg(feature = "unstable-engine")]
             tracing::error!(

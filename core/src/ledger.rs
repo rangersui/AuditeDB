@@ -52,6 +52,7 @@ pub(crate) struct AuditAppendJob {
 pub(crate) enum BlockingSqliteError {
     Audit(audit::AuditError),
     Sqlite(rusqlite::Error),
+    CounterCapacity,
     Worker,
 }
 

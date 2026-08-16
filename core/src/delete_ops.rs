@@ -340,8 +340,15 @@ fn append_ledger_event_and_notify(
     job: AuditAppendJob,
     file_op: &crate::state::FileOpPermit,
 ) -> Result<crate::ledger::AppendedLedgerEvent, BlockingSqliteError> {
+    let pending_audit_events = core
+        .reserve_audit_events()
+        .map_err(|()| BlockingSqliteError::CounterCapacity)?;
     let event = core.append_to_ledger_blocking(proof, job, file_op)?;
-    core.note_audit_events_appended(1 + usize::from(event.format_event().is_some()));
+    if event.format_event().is_some() {
+        pending_audit_events.commit_two();
+    } else {
+        pending_audit_events.commit_one();
+    }
     notify_ledger_event(core, &event);
     Ok(event)
 }
@@ -505,6 +512,9 @@ fn blocking_error_to_engine(
             StorageFailureClass::Transient => EngineError::TransientStorage,
             StorageFailureClass::Other => EngineError::Storage,
         },
+        BlockingSqliteError::CounterCapacity => {
+            EngineError::InternalInvariant("audit event counter capacity exhausted")
+        }
         BlockingSqliteError::Worker => EngineError::InternalInvariant("sqlite worker failed"),
     }
 }

@@ -67,3 +67,47 @@ pub(super) fn rollback_storage_counter(
         )
     });
 }
+
+/// Pessimistic reservation for one audit append.
+///
+/// A write can append a format marker plus its body event. Both slots are
+/// reserved before SQLite mutation. Drop refunds both; the two typed commit
+/// methods keep exactly the representable event count.
+#[must_use = "dropping an uncommitted audit-event reservation rolls it back"]
+pub(crate) struct PendingAuditEvents {
+    counter: Arc<AtomicUsize>,
+    armed: bool,
+}
+
+impl PendingAuditEvents {
+    const MAXIMUM: usize = 2;
+
+    pub(super) fn reserve(counter: Arc<AtomicUsize>) -> Result<Self, ()> {
+        counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(Self::MAXIMUM)
+            })
+            .map_err(|_| ())?;
+        Ok(Self {
+            counter,
+            armed: true,
+        })
+    }
+
+    pub(crate) fn commit_one(mut self) {
+        credit_storage_counter(&self.counter, 1);
+        self.armed = false;
+    }
+
+    pub(crate) fn commit_two(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingAuditEvents {
+    fn drop(&mut self) {
+        if self.armed {
+            credit_storage_counter(&self.counter, Self::MAXIMUM);
+        }
+    }
+}

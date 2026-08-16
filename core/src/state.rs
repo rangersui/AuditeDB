@@ -39,7 +39,7 @@ use crate::world::Stage;
 use crate::{audit, auth, event, store, world};
 
 mod storage_reservation;
-pub(crate) use storage_reservation::PendingStorageReservation;
+pub(crate) use storage_reservation::{PendingAuditEvents, PendingStorageReservation};
 
 #[cfg(target_has_atomic = "64")]
 pub(crate) type EventCounter = AtomicU64;
@@ -889,11 +889,8 @@ impl Core {
         adjust_counter(&self.storage_retained_cas_body_bytes, 0, bytes);
     }
 
-    pub(crate) fn note_audit_events_appended(&self, events: usize) {
-        if events == 0 {
-            return;
-        }
-        adjust_counter(&self.storage_audit_chain_events, 0, events);
+    pub(crate) fn reserve_audit_events(&self) -> Result<PendingAuditEvents, ()> {
+        PendingAuditEvents::reserve(Arc::clone(&self.storage_audit_chain_events))
     }
 
     /// Credits bytes physically pruned from retained CAS storage after a

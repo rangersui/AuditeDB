@@ -271,6 +271,9 @@ fn replace_write_blocking(
                 quota: quota.quota,
                 projected: quota.projected,
             })?;
+        let pending_audit_events = core
+            .reserve_audit_events()
+            .map_err(|()| WriteError::Internal("audit event counter capacity exhausted"))?;
         let write_conn = core
             .cached_write_conn(proof, &permit.world, &file_op)
             .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?;
@@ -302,8 +305,11 @@ fn replace_write_blocking(
                 }
                 core.credit_pruned_storage_after_estimate(result.pruned_cas, prunable_cas_len);
                 core.note_current_body_replaced(prev_len, req.body.len());
-                let audit_event_count = 1 + usize::from(result.format_event.is_some());
-                core.note_audit_events_appended(audit_event_count);
+                if result.format_event.is_some() {
+                    pending_audit_events.commit_two();
+                } else {
+                    pending_audit_events.commit_one();
+                }
                 if !result.existed {
                     core.durable_world_count.fetch_add(1, Ordering::Relaxed);
                 }
@@ -474,6 +480,9 @@ fn append_write_blocking(
                 quota: quota.quota,
                 projected: quota.projected,
             })?;
+        let pending_audit_events = core
+            .reserve_audit_events()
+            .map_err(|()| WriteError::Internal("audit event counter capacity exhausted"))?;
         let Some(write_conn) = core
             .cached_existing_write_conn(proof, &permit.world, &file_op)
             .map_err(|err| classify_write_storage_error("storage/audit", err, StorageOp::Read))?
@@ -508,8 +517,11 @@ fn append_write_blocking(
                 }
                 core.credit_pruned_storage_after_estimate(result.pruned_cas, prunable_cas_len);
                 core.note_current_body_replaced(body_len, projected_len);
-                let audit_event_count = 1 + usize::from(result.format_event.is_some());
-                core.note_audit_events_appended(audit_event_count);
+                if result.format_event.is_some() {
+                    pending_audit_events.commit_two();
+                } else {
+                    pending_audit_events.commit_one();
+                }
                 let target = ChangeTarget::from_appended_body_audit_row(&result.body_event);
                 let aux = event::ChangeEventAux::default();
                 let format_notice = result.format_event.as_ref().map(format_change_event);
@@ -923,6 +935,7 @@ mod tests {
         .await
         .unwrap();
         let before = core.storage_body_bytes.load(Ordering::Relaxed);
+        let audit_events_before = core.storage_audit_chain_events.load(Ordering::Relaxed);
         assert_eq!(before, 6);
         poison_cached_writer(&core, &world);
 
@@ -937,6 +950,11 @@ mod tests {
 
         assert!(matches!(err, WriteError::StorageRead { .. }));
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
+        assert_eq!(
+            core.storage_audit_chain_events.load(Ordering::Relaxed),
+            audit_events_before,
+            "failed write must refund its audit-event reservation"
+        );
         clear_cached_writer(&core, &world);
         replace_write(
             Arc::clone(&core),
@@ -978,6 +996,7 @@ mod tests {
         .await
         .unwrap();
         let before = core.storage_body_bytes.load(Ordering::Relaxed);
+        let audit_events_before = core.storage_audit_chain_events.load(Ordering::Relaxed);
         assert_eq!(before, 6);
         poison_cached_writer(&core, &world);
 
@@ -995,6 +1014,11 @@ mod tests {
 
         assert!(matches!(err, WriteError::StorageRead { .. }));
         assert_eq!(core.storage_body_bytes.load(Ordering::Relaxed), before);
+        assert_eq!(
+            core.storage_audit_chain_events.load(Ordering::Relaxed),
+            audit_events_before,
+            "failed append must refund its audit-event reservation"
+        );
         clear_cached_writer(&core, &world);
         append_write(
             Arc::clone(&core),
@@ -1018,6 +1042,46 @@ mod tests {
             .unwrap()
             .body,
             b"oldy"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn genesis_write_rejects_audit_counter_overflow_before_storage_mutation() {
+        let (core, dir) = test_core("audit-counter-overflow");
+        core.storage_audit_chain_events
+            .store(usize::MAX - 1, Ordering::Relaxed);
+        let core = Arc::new(core);
+        let world = world_path("home/audit-counter-overflow");
+        let permit = authorize_write(&world, auth::Tier::Write).unwrap();
+        let storage_before = core.storage_body_bytes.load(Ordering::Relaxed);
+
+        let err = replace_write(
+            Arc::clone(&core),
+            permit,
+            replace_req(b"body", "text/plain"),
+            test_hooks(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            WriteError::Internal("audit event counter capacity exhausted")
+        ));
+        assert_eq!(
+            core.storage_audit_chain_events.load(Ordering::Relaxed),
+            usize::MAX - 1
+        );
+        assert_eq!(
+            core.storage_body_bytes.load(Ordering::Relaxed),
+            storage_before,
+            "rejected audit reservation must roll back body accounting"
+        );
+        assert!(
+            !world::world_dir(&dir, world.as_str()).exists(),
+            "counter overflow must fail before creating the world"
         );
 
         let _ = std::fs::remove_dir_all(dir);
