@@ -99,9 +99,13 @@ class EngineTestCase(unittest.TestCase):
             with l5.open(root, key=b"1" * 32) as db:
                 db.put("home/context", b"ok")
                 self.assertEqual(db.get("home/context"), b"ok")
+                live_subscription = db.subscribe("home/context")
+                native_subscription = live_subscription._subscription
 
             with self.assertRaises(RuntimeError):
                 db.get("home/context")
+            self.assertEqual(native_subscription.next(100).kind.name, "CLOSED")
+            self.assertEqual(live_subscription.next(), {"kind": "closed"})
 
             with l5.open(root, key=b"1" * 32) as reopened:
                 self.assertEqual(reopened.get("home/context"), b"ok")
@@ -112,8 +116,9 @@ class EngineTestCase(unittest.TestCase):
         native_subscription = subscription._subscription
         try:
             self.db.put("home/events/one", b"payload")
+            self.db.put("home/events/one", b"payload-2")
             events = []
-            for _ in range(2):
+            for _ in range(3):
                 event = subscription.next(timeout_ms=1000)
                 self.assertIsNotNone(event)
                 assert event is not None
@@ -121,14 +126,26 @@ class EngineTestCase(unittest.TestCase):
                 self.assertEqual(event["path"], "home/events/one")
                 events.append(event)
 
-            self.assertEqual([event["verb"] for event in events], ["format", "replace"])
-            self.assertTrue(str(events[1]["etag"]).startswith("hmac-"))
-            self.assertIsNone(subscription.next(timeout_ms=50))
+            self.assertEqual(
+                [event["verb"] for event in events],
+                ["format", "replace", "replace"],
+            )
+            event_ids = [int(event["id"]) for event in events]
+            self.assertEqual(event_ids, sorted(set(event_ids)))
+            self.assertEqual(len({event["cursor"] for event in events}), 3)
+            self.assertTrue(all(str(event["etag"]).startswith("hmac-") for event in events))
         finally:
             subscription.close()
 
         self.assertEqual(native_subscription.next(100).kind.name, "CLOSED")
         self.assertEqual(subscription.next(), {"kind": "closed"})
+
+        with self.assertRaisesRegex(RuntimeError, "subscription body failed"):
+            with self.db.subscribe("home/exceptional/*") as exceptional:
+                exceptional_native = exceptional._subscription
+                raise RuntimeError("subscription body failed")
+        self.assertEqual(exceptional_native.next(100).kind.name, "CLOSED")
+        self.assertEqual(exceptional.next(), {"kind": "closed"})
 
 
 if __name__ == "__main__":
