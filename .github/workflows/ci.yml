@@ -105,6 +105,9 @@ jobs:
       - name: binary tests
         working-directory: bin
         run: cargo test --locked
+      - name: binary all-features tests
+        working-directory: bin
+        run: cargo test --locked --all-features
       - name: ffi tests
         working-directory: ffi
         run: cargo test --locked
