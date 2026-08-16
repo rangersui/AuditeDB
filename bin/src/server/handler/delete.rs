@@ -342,6 +342,7 @@ mod tests {
                 test_engine_for_server_with_auth_tokens, world_db_path_for_server_tests,
             },
         },
+        AuthGate,
     };
     use axum::body::{to_bytes, Bytes};
     use axum::{http::HeaderValue, response::Response};
@@ -691,7 +692,7 @@ mod tests {
         let delete_ledger = world_path("var/log/deletes");
         let headers = HeaderMap::new();
 
-        let auth_delete = unwrap_response(
+        let (auth_status, auth_reason, _) = error_parts(
             execute_delete(
                 headers.clone(),
                 AccessTier::Write,
@@ -700,8 +701,10 @@ mod tests {
                 &TraceCtx::disabled(),
             )
             .await,
-        );
-        assert_eq!(auth_delete.status(), StatusCode::UNAUTHORIZED);
+        )
+        .await;
+        assert_eq!(auth_status, StatusCode::UNAUTHORIZED);
+        assert!(matches!(auth_reason, ErrorReason::Auth(AuthGate::Delete)));
         assert!(engine
             .read(&protected_world, AccessTier::Read)
             .await
