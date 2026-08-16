@@ -33,6 +33,10 @@ jobs:
         env:
           PYTHONPATH: sdk/src
         run: python tools/l5_python_smoke.py
+      - name: python l5 sdk tests
+        env:
+          PYTHONPATH: sdk/src
+        run: python -m unittest discover -s sdk/tests -v
       - name: format
         working-directory: core
         run: cargo fmt --check
