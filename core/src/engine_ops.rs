@@ -983,6 +983,15 @@ mod tests {
         ));
 
         drop(holder);
+        let recovered = engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .expect("same Engine should recover after the transient lock clears");
+        assert_eq!(
+            recovered.representation.body,
+            Bytes::from_static(b"before-lock")
+        );
         drop(engine);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1729,6 +1738,100 @@ mod tests {
         );
 
         drop(engine);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn engine_memory_delete_reclaims_and_recreates_without_stale_state() {
+        let (engine, root) = test_engine("memory-delete-recreate");
+        let world = ValidatedWorldPath::new("tmp/delete-recreate").unwrap();
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"first"),
+                    "text/first",
+                    vec![("x-meta-version".to_owned(), "first".to_owned())],
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let first_usage = engine.df(AccessTier::Read).unwrap().memory_used;
+        assert!(first_usage > b"first".len());
+        let mut subscription = engine
+            .subscribe(
+                &SubscribePattern::new(world.as_str()),
+                AccessTier::Read,
+                SubscriptionResume::none(),
+            )
+            .await
+            .unwrap();
+
+        engine
+            .delete(&world, Preconditions::none(), AccessTier::Approve)
+            .await
+            .unwrap();
+        assert!(engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(engine.df(AccessTier::Read).unwrap().memory_used, 0);
+
+        engine
+            .replace(
+                &world,
+                Representation::new(
+                    Bytes::from_static(b"second"),
+                    "text/second",
+                    vec![("x-meta-version".to_owned(), "second".to_owned())],
+                ),
+                Preconditions::none(),
+                AccessTier::Write,
+            )
+            .await
+            .unwrap();
+        let recreated = engine
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .expect("memory world should recreate");
+        assert_eq!(recreated.representation.body, Bytes::from_static(b"second"));
+        assert_eq!(recreated.representation.content_type, "text/second");
+        assert_eq!(
+            recreated.representation.headers,
+            vec![("x-meta-version".to_owned(), "second".to_owned())]
+        );
+        assert!(matches!(
+            engine.verify_audit(&world, AccessTier::Read).unwrap(),
+            crate::AuditVerify::NotApplicable
+        ));
+
+        let deleted = subscription.recv().await.expect("delete notification");
+        let replaced = subscription.recv().await.expect("recreate notification");
+        assert_eq!(deleted.verb(), ChangeVerb::Delete);
+        assert_eq!(replaced.verb(), ChangeVerb::Replace);
+        assert_eq!(deleted.path(), &world);
+        assert_eq!(replaced.path(), &world);
+        drop(subscription);
+
+        drop(engine);
+        let reopened = build_engine_with_key(root.clone(), &test_key());
+        assert!(reopened
+            .read(&world, AccessTier::Read)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(reopened.df(AccessTier::Read).unwrap().memory_used, 0);
+        let ledger = ValidatedWorldPath::new("var/log/deletes").unwrap();
+        assert!(matches!(
+            reopened.verify_audit(&ledger, AccessTier::Read).unwrap(),
+            crate::AuditVerify::Valid(_)
+        ));
+
+        drop(reopened);
         let _ = std::fs::remove_dir_all(root);
     }
 
