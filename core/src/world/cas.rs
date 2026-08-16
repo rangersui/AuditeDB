@@ -15,6 +15,16 @@ use super::{
     open_existing_validated, AccountedStorageUsage, StorageUsageSnapshot, WriteAuditError,
 };
 
+fn nonnegative_usize(value: i64, column: usize) -> rusqlite::Result<usize> {
+    usize::try_from(value.max(0)).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            Box::new(err),
+        )
+    })
+}
+
 /// Proof that this transaction has retained the full body in CAS storage.
 ///
 /// The lifetimes bind the proof to the transaction that inserted or verified
@@ -278,7 +288,7 @@ pub(super) fn prune_to_count_tx(
     }
     tx.execute("DROP TABLE temp.cas_prune_candidates", [])?;
     Ok(PrunedCas {
-        bytes: pruned_bytes.max(0) as usize,
+        bytes: nonnegative_usize(pruned_bytes, 0)?,
     })
 }
 
@@ -350,10 +360,15 @@ fn storage_usage_inner(
         |r| r.get(0),
     )?;
     let events: i64 = c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
+    let current_len = nonnegative_usize(current_len, 0)?;
+    let retained_len = nonnegative_usize(retained_len, 0)?;
+    current_len
+        .checked_add(retained_len)
+        .ok_or_else(|| rusqlite::Error::IntegralValueOutOfRange(0, i64::MAX))?;
     Ok(Some(StorageUsageSnapshot::from_durable_parts(
-        current_len.max(0) as usize,
-        retained_len.max(0) as usize,
-        events.max(0) as usize,
+        current_len,
+        retained_len,
+        nonnegative_usize(events, 0)?,
     )))
 }
 
@@ -375,7 +390,7 @@ pub(crate) fn replace_quota_snapshot(
     let previous_body_len = c.query_row(
         "SELECT CASE WHEN typeof(body) = 'blob' THEN length(body) END FROM stage_meta WHERE id=1",
         [],
-        |row| Ok(row.get::<_, i64>(0)?.max(0) as usize),
+        |row| nonnegative_usize(row.get::<_, i64>(0)?, 0),
     )?;
     Ok(ReplaceQuotaSnapshot {
         previous_body_len,
@@ -535,7 +550,7 @@ fn prunable_body_len_after_next_body(
         ],
         |r| r.get(0),
     )?;
-    Ok(pruned_bytes.max(0) as usize)
+    nonnegative_usize(pruned_bytes, 0)
 }
 
 fn retained_floor_after_next_body(

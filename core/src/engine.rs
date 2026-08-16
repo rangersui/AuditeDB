@@ -151,6 +151,20 @@ impl fmt::Display for EngineBuildError {
 
 impl std::error::Error for EngineBuildError {}
 
+fn checked_startup_usage_sum(
+    component: &'static str,
+    values: impl IntoIterator<Item = usize>,
+) -> Result<usize, EngineBuildError> {
+    values.into_iter().try_fold(0usize, |total, value| {
+        total
+            .checked_add(value)
+            .ok_or_else(|| EngineBuildError::Storage {
+                sqlite_code: None,
+                detail: format!("startup {component} accounting exceeds this target's range"),
+            })
+    })
+}
+
 /// Runtime operation errors reported by the Engine facade.
 ///
 /// Distinct from [`EngineBuildError`]: these are per-operation failures
@@ -430,20 +444,28 @@ impl EngineBuilder {
                 detail: err.to_string(),
             },
         })?;
-        let storage_current_body_bytes: usize = durable_usages
-            .iter()
-            .map(|(_, usage)| usage.current_body_bytes())
-            .sum();
-        let storage_retained_cas_body_bytes: usize = durable_usages
-            .iter()
-            .map(|(_, usage)| usage.retained_cas_body_bytes())
-            .sum();
-        let storage_audit_chain_events: usize = durable_usages
-            .iter()
-            .map(|(_, usage)| usage.audit_chain_events())
-            .sum();
-        let storage_body_bytes =
-            storage_current_body_bytes.saturating_add(storage_retained_cas_body_bytes);
+        let storage_current_body_bytes = checked_startup_usage_sum(
+            "current body",
+            durable_usages
+                .iter()
+                .map(|(_, usage)| usage.current_body_bytes()),
+        )?;
+        let storage_retained_cas_body_bytes = checked_startup_usage_sum(
+            "retained CAS body",
+            durable_usages
+                .iter()
+                .map(|(_, usage)| usage.retained_cas_body_bytes()),
+        )?;
+        let storage_audit_chain_events = checked_startup_usage_sum(
+            "audit event",
+            durable_usages
+                .iter()
+                .map(|(_, usage)| usage.audit_chain_events()),
+        )?;
+        let storage_body_bytes = checked_startup_usage_sum(
+            "total body",
+            [storage_current_body_bytes, storage_retained_cas_body_bytes],
+        )?;
         let durable_world_count = durable_usages.len();
         let delete_ledger_created = durable_usages
             .iter()
@@ -697,6 +719,13 @@ mod tests {
         assert!(SecretBytes::try_from_slice("\u{2003}\n".as_bytes()).is_err());
         assert!(SecretBytes::try_from_slice(b"key").is_ok());
         assert!(SecretBytes::try_from_slice(&[0xff, b'k', b'e', b'y']).is_ok());
+    }
+
+    #[test]
+    fn startup_usage_sum_rejects_target_width_overflow() {
+        let err = checked_startup_usage_sum("test", [usize::MAX, 1])
+            .expect_err("startup accounting must fail closed on overflow");
+        assert!(matches!(err, EngineBuildError::Storage { .. }));
     }
 
     #[test]
