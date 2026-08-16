@@ -124,3 +124,36 @@ jobs:
       - name: ffi tests
         working-directory: ffi
         run: cargo test --locked
+
+  python-sdk-windows:
+    name: python SDK tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: build l5 ffi native library
+        run: cargo build --locked --release --manifest-path ffi/Cargo.toml
+      - name: generate Python UniFFI binding
+        shell: pwsh
+        working-directory: ffi
+        run: |
+          .\target\release\uniffi-bindgen.exe generate `
+            .\target\release\l5_ffi.dll `
+            --language python `
+            --out-dir .\target\bindings\python
+      - name: stage l5 ffi library and generated binding
+        shell: pwsh
+        run: |
+          Copy-Item ffi\target\release\l5_ffi.dll sdk\src\l5\_ffi\l5_ffi.dll -Force
+          Copy-Item ffi\target\bindings\python\l5_ffi.py sdk\src\l5\_ffi\l5_ffi.py -Force
+      - name: python l5 sdk smoke
+        env:
+          PYTHONPATH: sdk/src
+        run: python tools/l5_python_smoke.py
+      - name: python l5 sdk tests
+        env:
+          PYTHONPATH: sdk/src
+        run: python -m unittest discover -s sdk/tests -v
