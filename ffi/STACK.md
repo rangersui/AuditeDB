@@ -54,16 +54,6 @@ HTTP server, routes, status codes, or `/proc/*` paths.
    - Fail tagged releases if `ffi/Cargo.toml` does not match the tag version,
      so `ffi_version()` and attached native libraries cannot drift.
    - Add FFI packages to release checksum manifests.
-   - Document OpenWrt/MIPS as a cross-toolchain target, not a guaranteed
-     GitHub-hosted runner output.
-
-7. **OpenWrt/MIPS Cross-Toolchain Boundary**
-   - Keep MIPS out of the hosted artifact matrix until a real OpenWrt SDK,
-     Rust standard-library support, and a QEMU or hardware smoke path exist.
-   - Document the proof chain required before an OpenWrt `.so` can be attached
-     to a release.
-   - Do not treat Linux ARM64 as a proxy for MIPS; it proves the hosted ARM64
-     runner only.
 
 ## Boundary Rules
 

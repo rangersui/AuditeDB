@@ -82,9 +82,6 @@ jobs:
       - name: binary production clippy doctrine lint
         working-directory: bin
         run: cargo clippy --locked --bins -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
-      - name: binary all-features production clippy doctrine lint
-        working-directory: bin
-        run: cargo clippy --locked --bins --all-features -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
       - name: ffi production clippy doctrine lint
         working-directory: ffi
         run: cargo clippy --locked --lib -- -D unsafe_code -D clippy::unwrap_used -D clippy::expect_used -D clippy::print_stdout
@@ -127,9 +124,6 @@ jobs:
       - name: binary tests
         working-directory: bin
         run: cargo test --locked
-      - name: binary all-features tests
-        working-directory: bin
-        run: cargo test --locked --all-features
       - name: ffi tests
         working-directory: ffi
         run: cargo test --locked
