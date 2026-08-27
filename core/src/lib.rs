@@ -224,9 +224,6 @@ pub use defaults::{
     MAX_RETAINED_BODY_COUNT,
 };
 #[cfg(feature = "unstable-engine")]
-#[doc(hidden)]
-pub use engine::ShutdownToken;
-#[cfg(feature = "unstable-engine")]
 pub use engine::{Engine, EngineBuildError, EngineBuilder, EngineError};
 #[cfg(feature = "unstable-engine")]
 pub use engine_introspection::{

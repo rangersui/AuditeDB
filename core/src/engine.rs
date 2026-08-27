@@ -53,14 +53,6 @@ struct EngineInner {
     _data_lock: StdMutex<rusqlite::Connection>,
 }
 
-/// Adapter-side handle for waiting on Engine shutdown without exposing Tokio's
-/// watch channel type in the public facade.
-#[cfg(feature = "unstable-engine")]
-#[doc(hidden)]
-pub struct ShutdownToken {
-    rx: watch::Receiver<bool>,
-}
-
 /// Builder for an `Engine`.
 ///
 /// The builder is the only public construction path. New fields can gain
@@ -541,19 +533,6 @@ impl Engine {
         Arc::clone(&self.inner.core)
     }
 
-    /// Subscribes to the engine shutdown signal.
-    ///
-    /// Returned receiver yields `true` exactly once when [`Engine::shutdown`]
-    /// is called. Intended for adapter graceful-shutdown loops; not part of
-    /// the documented stable surface.
-    #[cfg(feature = "unstable-engine")]
-    #[doc(hidden)]
-    pub fn shutdown_receiver(&self) -> ShutdownToken {
-        ShutdownToken {
-            rx: self.inner.shutdown_tx.subscribe(),
-        }
-    }
-
     /// Maps raw token bytes to an [`AccessTier`].
     ///
     /// Constant-time comparison against configured tokens. Returns
@@ -587,22 +566,6 @@ impl Engine {
                 true
             }
         });
-    }
-}
-
-#[cfg(feature = "unstable-engine")]
-impl ShutdownToken {
-    /// Returns whether shutdown has already been requested.
-    pub fn is_shutdown(&self) -> bool {
-        *self.rx.borrow()
-    }
-
-    /// Waits until shutdown is requested or the Engine owner is dropped.
-    pub async fn wait(&mut self) {
-        if self.is_shutdown() {
-            return;
-        }
-        let _ = self.rx.changed().await;
     }
 }
 
