@@ -30,7 +30,6 @@ and timeline history. No infrastructure to add — plain files on disk,
 (Python) and call five verbs directly. No network, no server.
 
 **Run the server:** start the `auditedb` binary and use `curl`.
-CoAP is included by default; MQTT is available with the `mqtt` feature.
 
 ## Quick start — Python
 
@@ -279,7 +278,7 @@ operation, no "warning and continue":
 
 ```
 core/   l5 engine library (Rust)     — paths, bytes, ETags, audit, auth
-bin/    auditedb server binary       — HTTP + CoAP adapters (+MQTT opt-in)
+bin/    auditedb server binary       — HTTP + SSE adapters
 ffi/    UniFFI bridge                — currently packaged for Python
 sdk/    l5 Python package            — in-process Engine handle over FFI
 ```

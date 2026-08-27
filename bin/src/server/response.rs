@@ -1,6 +1,6 @@
 //! HTTP response constructors and small header helpers.
 //!
-//! Centralized so handlers, audit verifiers, listen, and coap all emit
+//! Centralized so handlers, audit verifiers, and listen all emit
 //! the same error/status shapes. Functions here are pure: they take
 //! primitive inputs and return a `Response` (or a header value / body
 //! string). They do not touch `Core`, locks, or storage.

@@ -1,7 +1,7 @@
 //! UniFFI adapter for the protocol-neutral L5 Engine.
 //!
 //! This crate is intentionally separate from `l5`: it is an adapter
-//! peer of HTTP and CoAP, not a new core surface. This stack binds Engine
+//! peer of HTTP, not a new core surface. This stack binds Engine
 //! methods directly and keeps HTTP route/status vocabulary out of the ABI.
 
 // UniFFI's export macro references deprecated smoke exports inside this crate.

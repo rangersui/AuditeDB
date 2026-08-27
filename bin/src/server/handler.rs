@@ -25,11 +25,6 @@
 //! intent / commit dance -- including the honest double-failure case
 //! where the commit append AND the subsequent failure-event append
 //! both fail (e.g. persistent DiskFull).
-//!
-//! ## CoAP coexistence
-//!
-//! HTTP and CoAP do not share the request lifecycle, but both now call public
-//! Engine methods. Each adapter keeps owning its wire rendering.
 
 #[path = "handler/delete.rs"]
 mod delete;

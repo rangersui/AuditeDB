@@ -30,9 +30,9 @@ Engine canonical: home/a     tmp/x
 ### MQTT-shaped canonical keys
 
 Core canonical keys are MQTT-topic-shaped: `home/sensor/temp`, not
-`/home/sensor/temp` and not `home/sensor/temp?x=y`. This is why HTTP, CoAP,
-SSE, and MQTT can all project onto the same validated Engine world grammar:
-the adapter owns wire syntax, the engine owns the topic-like key.
+`/home/sensor/temp` and not `home/sensor/temp?x=y`. This is why HTTP, SSE,
+and protocol sidecars can all project onto the same validated Engine world
+grammar: the adapter owns wire syntax, the engine owns the topic-like key.
 
 ### Bare-path rule
 

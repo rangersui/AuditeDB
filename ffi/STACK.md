@@ -92,7 +92,7 @@ filtering. This is by design:
   interpret response headers as security directives.
 - The HTTP read path applies an L1 hard-deny filter on output regardless of
   which adapter wrote the data.
-- Non-browser consumers (FFI, MQTT, CoAP) treat headers as plain key-value
+- Non-browser consumers (FFI) treat headers as plain key-value
   metadata with no execution semantics.
 
 FFI callers are responsible for the content they store. If an FFI-written

@@ -3,8 +3,9 @@
 `l5-ffi` is the UniFFI adapter for the L5 Engine.
 
 This crate is deliberately not an HTTP binding. Its upstream is the Rust
-`Engine` facade from `l5`; HTTP, CoAP, SDK wire clients, and this FFI
-crate are sibling adapters.
+`Engine` facade from `l5`; the HTTP adapter and this FFI crate are sibling
+adapters. The Python SDK builds on this FFI crate rather than speaking a
+wire protocol.
 
 ## Current Surface
 

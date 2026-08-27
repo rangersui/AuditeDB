@@ -25,6 +25,7 @@ body:
       description: Where should this live?
       options:
         - Rust core
+        - AuditeDB server (HTTP/SSE)
         - Python SDK
         - Docs
         - Packaging / release

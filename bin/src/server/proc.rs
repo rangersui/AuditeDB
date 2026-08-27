@@ -234,34 +234,6 @@ pub(crate) async fn proc_pool(
     proc_text_response(method, body)
 }
 
-// /proc/mqtt/metrics -- MQTT adapter counters.
-//
-// Mirrors /proc/pool's one-line-per-metric shape. Values are protocol-local
-// process counters, not Engine worlds, but the endpoint is still read-gated so
-// MQTT operational state follows the same visibility policy as /proc/*.
-#[cfg(feature = "mqtt")]
-pub(crate) async fn proc_mqtt_metrics(
-    State(state): State<ServerState>,
-    method: Method,
-    headers: HeaderMap,
-) -> Response {
-    if method == Method::OPTIONS {
-        return options_response(PROC_ALLOW);
-    }
-    if method != Method::GET && method != Method::HEAD {
-        return method_not_allowed(PROC_ALLOW);
-    }
-    let tier = state.access_tier_from_headers(&headers);
-    if !state.engine().allows_read(tier) {
-        return unauthorized("read requires read token");
-    }
-    let Some(metrics) = state.mqtt_metrics() else {
-        return not_found();
-    };
-    let body = mqtt_metrics_body(&metrics.snapshot());
-    proc_text_response(method, body)
-}
-
 // /proc/audit/{world}/verify, /head, and /stamp/{seq}
 pub(crate) async fn proc_audit_verify(
     State(state): State<ServerState>,
@@ -490,42 +462,6 @@ fn pool_body(snapshot: &PoolSnapshot) -> String {
         snapshot.read_cache_open_fails,
         snapshot.read_cache_max_entries,
         snapshot.ledger_writer_inits
-    )
-}
-
-#[cfg(feature = "mqtt")]
-fn mqtt_metrics_body(snapshot: &crate::server::mqtt::MqttMetricsSnapshot) -> String {
-    format!(
-        "mqtt_active_connections {} snapshot\n\
-         mqtt_total_connections {} counter\n\
-         mqtt_auth_failures {} counter\n\
-         mqtt_publish_failures {} counter\n\
-         mqtt_retained_publishes {} counter\n\
-         mqtt_keep_alive_timeouts {} counter\n\
-         mqtt_retained_replay_failures {} counter\n\
-         mqtt_retained_replay_messages {} counter\n\
-         mqtt_retained_replay_worlds_scanned {} counter\n\
-         mqtt_preauth_rejections {} counter\n\
-         mqtt_client_id_replacements {} counter\n\
-         mqtt_fanout_drops {} counter\n\
-         mqtt_qos2_pending_messages {} snapshot\n\
-         mqtt_qos2_pending_bytes {} snapshot\n\
-         mqtt_qos2_pending_bytes_peak {} snapshot\n",
-        snapshot.active_connections,
-        snapshot.total_connections,
-        snapshot.auth_failures,
-        snapshot.publish_failures,
-        snapshot.retained_publishes,
-        snapshot.keep_alive_timeouts,
-        snapshot.retained_replay_failures,
-        snapshot.retained_replay_messages,
-        snapshot.retained_replay_worlds_scanned,
-        snapshot.preauth_rejections,
-        snapshot.client_id_replacements,
-        snapshot.fanout_drops,
-        snapshot.qos2_pending_messages,
-        snapshot.qos2_pending_bytes,
-        snapshot.qos2_pending_bytes_peak
     )
 }
 

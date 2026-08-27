@@ -13,8 +13,8 @@ What problem does this solve?
 ## Surface
 
 - [ ] Rust core
+- [ ] AuditeDB server (HTTP/SSE)
 - [ ] Python SDK
-- [ ] CoAP
 - [ ] Packaging / release
 - [ ] Docs only
 

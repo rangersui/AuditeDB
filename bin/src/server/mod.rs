@@ -3,17 +3,11 @@
 //! Startup constructs the protocol-neutral `Engine` first and keeps HTTP
 //! adapter state beside it in `ServerState`.
 
-#[cfg(feature = "coap")]
-pub(crate) mod coap;
-#[cfg(feature = "coap")]
-pub(crate) mod coap_errors;
 pub(crate) mod config;
 pub(crate) mod handler;
 pub(crate) mod http;
 pub(crate) mod listen;
 pub(crate) mod middleware;
-#[cfg(feature = "mqtt")]
-pub(crate) mod mqtt;
 pub(crate) mod path;
 pub(crate) mod pipeline;
 pub(crate) mod proc;
@@ -24,8 +18,6 @@ mod state;
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(crate) mod test_support;
 pub(crate) use pipeline::{ErrorReason, Phase, TraceCtx, Verb};
-#[cfg(feature = "mqtt")]
-pub(crate) use proc::proc_mqtt_metrics;
 pub(crate) use proc::{
     proc_audit_verify, proc_df, proc_du, proc_pool, proc_reserved, proc_version, proc_worlds,
     root_hint,
@@ -40,27 +32,17 @@ pub(crate) const WORLD_ALLOW: &str = "GET, HEAD, PUT, POST, DELETE, OPTIONS";
 use std::net::IpAddr;
 #[cfg(not(test))]
 use std::path::PathBuf;
-#[cfg(all(not(test), feature = "mqtt"))]
-use std::time::Duration;
 
 #[cfg(not(test))]
 use crate::{
     engine::{Engine, EngineBuilder},
     engine_types::AuditHmacKey,
 };
-#[cfg(all(not(test), feature = "coap"))]
-use config::{coap_bind_from_env, DEFAULT_COAP_MAX_IN_FLIGHT};
 #[cfg(not(test))]
 use config::{
     env_nonzero_usize, env_optional_usize, env_usize, hmac_key_from_env_value, listen_addr,
     should_warn_public_read, DEFAULT_LISTEN_REPLAY_MAX, DEFAULT_MAX_LISTEN_CONNECTIONS,
     DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_WORLD_BYTES, DEFAULT_READ_CACHE_MAX_ENTRIES,
-};
-#[cfg(all(not(test), feature = "mqtt"))]
-use config::{
-    mqtt_bind_from_env, mqtt_max_packet_default, DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
-    DEFAULT_MQTT_MAX_CONNECTIONS, DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
-    DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
 };
 #[cfg(not(test))]
 use http::semantics::{header_allowlist_from_env, header_user_deny_from_env};
@@ -79,12 +61,6 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
             return Err("AUDITEDB_PORT must be valid Unicode".into());
         }
     };
-    #[cfg(feature = "coap")]
-    let coap_bind = coap_bind_from_env();
-    #[cfg(feature = "mqtt")]
-    let mqtt_bind = mqtt_bind_from_env(&host);
-    #[cfg(feature = "mqtt")]
-    let mqtt_metrics = mqtt_bind.as_ref().map(|_| mqtt::MqttMetrics::shared());
     let data = PathBuf::from(std::env::var("AUDITEDB_DATA").unwrap_or_else(|_| "./data".into()));
     let max_world_bytes = env_usize("AUDITEDB_MAX_WORLD_BYTES", DEFAULT_MAX_WORLD_BYTES)?;
     let max_memory_bytes = env_usize("AUDITEDB_MAX_MEMORY_BYTES", DEFAULT_MAX_MEMORY_BYTES)?;
@@ -95,34 +71,6 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
     )?;
     let listen_replay_max =
         env_nonzero_usize("AUDITEDB_LISTEN_REPLAY_MAX", DEFAULT_LISTEN_REPLAY_MAX)?;
-    #[cfg(feature = "coap")]
-    let coap_max_in_flight =
-        env_nonzero_usize("AUDITEDB_COAP_MAX_IN_FLIGHT", DEFAULT_COAP_MAX_IN_FLIGHT)?;
-    #[cfg(feature = "mqtt")]
-    let mqtt_max_packet_bytes = env_nonzero_usize(
-        "AUDITEDB_MQTT_MAX_PACKET_BYTES",
-        mqtt_max_packet_default(max_world_bytes),
-    )?;
-    #[cfg(feature = "mqtt")]
-    let mqtt_max_connections = env_nonzero_usize(
-        "AUDITEDB_MQTT_MAX_CONNECTIONS",
-        DEFAULT_MQTT_MAX_CONNECTIONS,
-    )?;
-    #[cfg(feature = "mqtt")]
-    let mqtt_max_pending_qos2_bytes = env_nonzero_usize(
-        "AUDITEDB_MQTT_MAX_PENDING_QOS2_BYTES",
-        DEFAULT_MQTT_MAX_PENDING_QOS2_BYTES,
-    )?;
-    #[cfg(feature = "mqtt")]
-    let mqtt_connect_timeout_ms = env_nonzero_usize(
-        "AUDITEDB_MQTT_CONNECT_TIMEOUT_MS",
-        DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
-    )?;
-    #[cfg(feature = "mqtt")]
-    let mqtt_max_preauth_per_ip = env_nonzero_usize(
-        "AUDITEDB_MQTT_MAX_PREAUTH_PER_IP",
-        DEFAULT_MQTT_MAX_PREAUTH_PER_IP,
-    )?;
     let read_cache_max_entries = env_nonzero_usize(
         "AUDITEDB_READ_CACHE_MAX_ENTRIES",
         DEFAULT_READ_CACHE_MAX_ENTRIES,
@@ -165,12 +113,6 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
         persist_header_allowlist,
         persist_header_user_deny,
     );
-    #[cfg(feature = "mqtt")]
-    let state = if let Some(metrics) = mqtt_metrics.clone() {
-        state.with_mqtt_metrics(metrics)
-    } else {
-        state
-    };
 
     let addr = listen_addr(&host, port);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -182,51 +124,6 @@ pub(crate) async fn run_from_env() -> Result<(), String> {
         .unwrap_or_else(|_| IpAddr::from([127, 0, 0, 1]));
     eprintln!("auditedb v{VERSION} on http://{addr}/");
     print_auth_summary(&tokens, bind_ip);
-    #[cfg(feature = "coap")]
-    if let Some((coap_host, coap_port)) = coap_bind {
-        let coap_addr = listen_addr(&coap_host, coap_port);
-        let coap_engine = engine.clone();
-        let coap_shutdown = coap_engine.shutdown_receiver();
-        tokio::spawn(async move {
-            coap::serve(coap_engine, coap_addr, coap_shutdown, coap_max_in_flight).await;
-        });
-    }
-    #[cfg(feature = "mqtt")]
-    if let Some((mqtt_host, mqtt_port)) = mqtt_bind {
-        let mqtt_addr = listen_addr(&mqtt_host, mqtt_port);
-        if mqtt_host
-            .parse::<IpAddr>()
-            .map(|ip| !ip.is_loopback())
-            .unwrap_or(false)
-        {
-            eprintln!(
-                "  WARNING: MQTT listens on non-loopback {mqtt_host}:{mqtt_port} without built-in TLS; terminate TLS before exposing it."
-            );
-        }
-        let mqtt_engine = engine.clone();
-        let mqtt_shutdown = mqtt_engine.shutdown_receiver();
-        let Some(mqtt_metrics) = mqtt_metrics.clone() else {
-            return Err(
-                "internal error: MQTT metrics missing while MQTT bind is configured".into(),
-            );
-        };
-        tokio::spawn(async move {
-            mqtt::serve(
-                mqtt_engine,
-                mqtt_addr,
-                mqtt_shutdown,
-                mqtt::MqttServeConfig {
-                    max_packet_bytes: mqtt_max_packet_bytes,
-                    max_connections: mqtt_max_connections,
-                    max_pending_qos2_bytes: mqtt_max_pending_qos2_bytes,
-                    connect_timeout: Duration::from_millis(mqtt_connect_timeout_ms as u64),
-                    max_preauth_per_ip: mqtt_max_preauth_per_ip,
-                },
-                mqtt_metrics,
-            )
-            .await;
-        });
-    }
     let app = route::build_app(state);
 
     let serve_result = axum::serve(listener, app)

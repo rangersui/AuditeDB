@@ -1,6 +1,6 @@
 //! Adapter-side path canonicalization.
 //!
-//! This is where HTTP/CoAP wire paths like `/foo` become canonical Engine
+//! This is where HTTP wire paths like `/foo` become canonical Engine
 //! world paths like `home/foo`. The library only validates canonical names.
 
 /// Path prefix is policy: `/home/tmp/foo` must stay a durable home world, not

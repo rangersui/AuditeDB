@@ -49,9 +49,6 @@ Common binary environment variables:
 | `AUDITEDB_READ_CACHE_MAX_ENTRIES` | `5000` | Read-cache entry cap. |
 | `AUDITEDB_TRACE_PIPELINE` | unset | Emit request pipeline trace lines when set to `1`, `true`, `yes`, or `on`. |
 
-MQTT and CoAP options live in their adapter READMEs:
-[`mqtt/README.md`](../mqtt/README.md) and [`coap/README.md`](../coap/README.md).
-
 ## World Methods
 
 HTTP world paths use a leading slash on the wire. The adapter canonicalises
@@ -185,7 +182,6 @@ resource exists.
 | `/proc/du` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Per-world byte usage. This is an unpaginated management view. |
 | `/proc/df` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Storage and memory quota snapshot plus world count. |
 | `/proc/pool` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Read-cache, tombstone, and ledger-writer counters/gauges. |
-| `/proc/mqtt/metrics` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | MQTT adapter counters and gauges when MQTT is enabled. |
 | `/proc/audit/<world>/verify` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Verify the durable world's HMAC audit chain. Memory worlds return not-applicable. |
 | `/proc/audit/<world>/head` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Return `200` with `x-audit-head: true`, `x-audit-generation: <32hex>`, `x-audit-seq`, `x-audit-hmac: hmac-<64hex>`, and no body. Worlds with no audit head return `204` with `x-audit-head: n/a` and no proof headers. |
 | `/proc/audit/<world>/stamp/<seq>` | `GET`, `HEAD`, `OPTIONS` | `GET`/`HEAD` read-gated; `OPTIONS` public | Return the verified HMAC at a positive audit-chain ordinal. Existing durable chains without that ordinal return `204` with `x-audit-stamp: n/a`, `x-audit-generation`, and `x-audit-events`; memory worlds return `204` with only `x-audit-stamp: n/a`. |

@@ -19,8 +19,6 @@ pub(crate) mod path {
 }
 
 pub(crate) mod engine {
-    #[cfg(any(feature = "coap", feature = "mqtt"))]
-    pub(crate) use l5::ShutdownToken;
     #[allow(unused_imports)]
     pub(crate) use l5::{Engine, EngineBuilder, EngineError};
 }
@@ -37,8 +35,6 @@ pub(crate) mod engine_trace {
 }
 
 pub(crate) mod engine_types {
-    #[cfg(feature = "mqtt")]
-    pub(crate) use l5::EngineSubscription;
     #[cfg(test)]
     pub(crate) use l5::WriteResult;
     pub(crate) use l5::{

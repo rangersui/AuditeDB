@@ -525,7 +525,7 @@ fn representation_headers(headers: Vec<FfiHeader>) -> Vec<(String, String)> {
 /// Headers pass through without filtering. This is intentional: the Engine
 /// treats headers as opaque metadata, while the HTTP adapter applies persistence
 /// filtering because browsers execute response headers as security policy.
-/// Non-browser adapters such as FFI, MQTT, and CoAP treat headers as plain
+/// Non-browser adapters such as FFI treat headers as plain
 /// key-value metadata with no execution semantics.
 ///
 /// Header names are still normalized and de-duplicated with deterministic

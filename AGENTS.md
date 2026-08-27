@@ -684,8 +684,8 @@ looking for style issues:
 - Path semantics: if core rejects a path form, SDK clients should reject it
   before network I/O too. Include encoded dot segments, empty segments,
   namespace roots, and reserved `/proc/*` exceptions in tests.
-- Cross-surface parity: when a status or limit changes in HTTP, check CoAP
-  mappings, Python SDK behaviour, README, and `.env.example`.
+- Cross-surface parity: when a status or limit changes in HTTP, check
+  Python SDK behaviour, README, and `.env.example`.
 - Resource caps: every new long-lived connection, queue, replay ring, datagram
   in-flight set, or management scan needs a configured cap, an explicit
   overload response, and a regression test for the saturated path.

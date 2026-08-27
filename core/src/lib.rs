@@ -159,7 +159,7 @@
 //! - `unstable-engine` — expose the public [`Engine`] facade. **The API shape
 //!   is allowed to change between minor versions while this gate stays.**
 //!
-//! Binary adapter features such as `coap`, `mqtt`, and `multi-thread` live in
+//! Binary adapter features such as `multi-thread` live in
 //! `bin/Cargo.toml`, not in this library package.
 //!
 //! Minimal library-only build from the repository root:

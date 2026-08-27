@@ -2,7 +2,7 @@
 name: AuditeDB-architecture
 description: >
   Use this skill when making architectural decisions about AuditeDB: whether a
-  capability belongs in the L5 engine library, in the HTTP/CoAP/MQTT
+  capability belongs in the L5 engine library, in the HTTP
   adapter binary, in a worker, in a client, or in an HTTP world. Trigger when the user
   asks whether AuditeDB should execute code, validate formats, proxy or rewrite
   content, add RPC, become synchronous, add a control-plane endpoint, absorb a
@@ -23,7 +23,7 @@ AuditeDB ships as two Cargo packages:
 core/                       bin/
 l5 (library)      auditedb (binary)
 ─────────────────────       ─────────────────────
-Engine + storage + audit    HTTP + CoAP + MQTT + SSE + env
+Engine + storage + audit    HTTP + SSE + env
 + subscription stream       + tokio runtime + signals
                                      │
                                      ▼
@@ -34,12 +34,12 @@ Engine + storage + audit    HTTP + CoAP + MQTT + SSE + env
 
 The library is a protocol-neutral storage engine: paths, bytes, ETags, HMAC
 chain, four-tier auth, five verbs. The binary is one specific projection of
-that engine onto HTTP, CoAP, MQTT, and SSE wires. Every architecture question about
+that engine onto HTTP and SSE wires. Every architecture question about
 AuditeDB reduces to one test:
 
-The canonical path shape is intentionally MQTT-like: no leading slash,
-slash-separated hierarchy, no query string. HTTP `/home/a`, CoAP `home/a`, and a
-MQTT topic such as `sensor/temp` all project onto validated Engine worlds.
+The canonical path shape is intentionally MQTT-topic-like: no leading slash,
+slash-separated hierarchy, no query string. HTTP `/home/a` and sidecar-projected
+topics such as `sensor/temp` all land on validated Engine worlds.
 
 ```text
 Does this keep the engine a storage engine, or does it turn the engine into
@@ -63,11 +63,11 @@ The boundary is structural, not stylistic:
 - **Library knows about**: paths (`ValidatedWorldPath`), bytes (`Bytes`),
   ETags, HMAC chain, four-tier auth (`AccessTier`), five verbs (read, replace,
   append, delete, subscribe), and the typed snapshots behind `/proc/*`.
-- **Library does not know about**: HTTP, CoAP, SSE, axum, hyper, tower,
+- **Library does not know about**: HTTP, SSE, axum, hyper, tower,
   sockets, env vars, the binary's startup banner, or `curl`. A library-only
   build with `--no-default-features --features bundled-sqlite,unstable-engine`
   has zero HTTP-shaped crates in its dependency tree.
-- **Binary owns**: HTTP routing, CoAP datagram parsing, MQTT session handling,
+- **Binary owns**: HTTP routing,
   response rendering, Authorization header parsing, env config, graceful shutdown, the
   `ServerState` adapter handle. The binary consumes the library through the
   public `Engine` API only.
@@ -211,7 +211,7 @@ Usually Already Has the Type (Library)
 
 Before inventing structure, check the existing shape.
 
-### On the binary (HTTP/CoAP adapter)
+### On the binary (HTTP adapter)
 
 | Need | HTTP shape |
 |---|---|
@@ -307,7 +307,6 @@ adapter binary is the wider but shallower center. Both must stay simple.
 **Adapter binary center:**
 
 - HTTP method + status code rendering.
-- CoAP datagram parsing.
 - `Authorization` header parsing.
 - SSE rendering for `/listen/*`.
 - Env config + startup banner + graceful shutdown.

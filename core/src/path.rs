@@ -31,8 +31,8 @@ pub(crate) fn canonicalize_path(p: &str) -> String {
     }
 }
 
-/// Boolean wrapper for callers that only need the yes/no answer (CoAP
-/// surface, top-level reject path). Prefer `validate_world_name` when
+/// Boolean wrapper for callers that only need the yes/no answer
+/// (top-level reject path). Prefer `validate_world_name` when
 /// the rejection reason matters — the bool form is documented to elide
 /// the reason and a 400 with a generic message.
 #[cfg(test)]

@@ -11,11 +11,11 @@ delete · subscribe), one SQLite store.
 
 Two ways to use it:
 
-- **Binary** (`auditedb`): HTTP + CoAP server with `curl` as the control
+- **Binary** (`auditedb`): HTTP server with `curl` as the control
   surface. This skill covers this mode.
 - **Library** (`l5` crate, `unstable-engine` feature): embed the
   protocol-neutral `Engine` directly in a Rust process; bring your own wire
-  shape. In minimal library-only builds it has no HTTP, no CoAP, no env vars,
+  shape. In minimal library-only builds it has no HTTP, no env vars,
   no sockets — see the crate-level rustdoc and `core/src/engine.rs` for the
   public surface.
 
@@ -79,9 +79,10 @@ HTTP wire:        /home/a    /tmp/x
 Engine canonical: home/a     tmp/x
 ```
 
-The canonical form is deliberately MQTT-like: no leading slash, slash-separated
-hierarchy, no query string. The MQTT adapter projects client topics onto the
-same validated world grammar instead of adding a second naming system.
+The canonical form is deliberately MQTT-topic-like: no leading slash,
+slash-separated hierarchy, no query string. Protocol sidecars (e.g. the MQTT
+sidecar) project client topics onto the same validated world grammar instead
+of adding a second naming system.
 
 Unprefixed paths fall under the bare-path rule and are prepended with `home/`:
 

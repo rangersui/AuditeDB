@@ -38,17 +38,19 @@ In this repo the model example is `core/src/read_cache.rs`:
 
 That is the standard: a safety rule becomes the shape of the API.
 
-The newer `core/src/world_ops.rs` is the same idea at the protocol boundary:
+The newer `core/src/world_ops.rs` is the same idea at the protocol boundary
+(built when the binary still shipped both HTTP and CoAP adapters; CoAP is
+retired, the seal remains):
 
-- HTTP and CoAP no longer own separate write implementations.
-- Both adapters call `authorize_read` / `authorize_write`.
+- No adapter owns a separate write implementation.
+- Every adapter calls `authorize_read` / `authorize_write`.
 - Disk transitions require `ReadPermit` or `WritePermit`.
 - The permit is bound to one canonical world.
 - A mismatched request returns `PermitWorldMismatch` instead of writing the
   wrong world.
-- Adapters map typed outcomes and typed errors onto HTTP status codes or CoAP
-  response codes; they do not reimplement auth, locks, preconditions, quota,
-  audit, notify, or storage-error classification.
+- Adapters map typed outcomes and typed errors onto wire status codes; they do
+  not reimplement auth, locks, preconditions, quota, audit, notify, or
+  storage-error classification.
 
 ## Core Principle
 
@@ -254,19 +256,21 @@ fn ensure_write_permit(permit: &WritePermit, world: &str) -> Result<(), WriteErr
 ```
 
 This is still runtime validation, but it is the runtime validation at the only
-shared transition boundary. HTTP and CoAP cannot forget it because neither
-adapter writes bytes directly anymore.
+shared transition boundary. An adapter cannot forget it because no adapter
+writes bytes directly anymore.
 
 ## Protocol-Neutral World Operations
 
 When more than one adapter can mutate the same storage, the safety boundary
-must move below the adapters.
+must move below the adapters. (This shape was forced while the binary shipped
+HTTP and CoAP side by side; CoAP is retired, but the boundary is what lets any
+future adapter — or an embedder calling `Engine` directly — stay safe.)
 
 Current shape:
 
 ```text
 HTTP handler -> world_ops::authorize_write -> world_ops::replace_write
-CoAP handler -> world_ops::authorize_write -> world_ops::replace_write
+any adapter  -> world_ops::authorize_write -> world_ops::replace_write
 ```
 
 `world_ops` owns:
@@ -286,12 +290,13 @@ Adapters own only:
 - parsing their wire format
 - constructing `ReplaceRequest` / `AppendRequest`
 - rendering typed outcomes into their protocol
-- mapping `ReadError` / `WriteError` to HTTP or CoAP response shape
+- mapping `ReadError` / `WriteError` to their wire response shape
 
 Do not let a protocol adapter grow a "temporary" direct path to `Core`,
 `world`, `store`, or `audit` when a `world_ops` path exists. That recreates the
-old split-brain bug: HTTP and CoAP look similar in tests until one of them
-forgets auth, quota, audit, notify, or a status-code distinction.
+old split-brain bug from the retired CoAP-adapter era: HTTP and CoAP looked
+similar in tests until one of them forgot auth, quota, audit, notify, or a
+status-code distinction.
 
 Trace hooks are observers, not owners:
 
@@ -304,8 +309,8 @@ pub(crate) trait WriteTraceHooks {
 }
 ```
 
-HTTP can emit pipeline trace lines. CoAP can pass a no-op hook. Neither gets a
-different storage transition.
+HTTP can emit pipeline trace lines. Another adapter can pass a no-op hook.
+Neither gets a different storage transition.
 
 ## Genesis vs Existing Is A Type Decision
 

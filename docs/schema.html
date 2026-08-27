@@ -93,8 +93,9 @@
 <p>L5 is an embedded audit-trail storage engine. Each key (called a
 <em>world</em>) is a separate SQLite database containing an append-only HMAC
 chain and a content-addressable body store. The engine exposes five verbs:
-read, replace, append, delete, subscribe. Protocol adapters (HTTP, CoAP, MQTT,
-SSE) map onto these verbs; the engine knows nothing about protocols.</p>
+read, replace, append, delete, subscribe. The engine is protocol-neutral and
+knows nothing about wire formats; the official <code>auditedb</code> binary
+projects these verbs onto HTTP and <code>/listen/*</code> SSE.</p>
 
 <p>Everything below describes the on-disk format and the invariants the engine
 enforces. If you can read a SQLite file, you can verify the chain yourself

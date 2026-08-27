@@ -16,8 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTIVE_TEXT_SURFACES = [
     ROOT / "README.md",
     ROOT / "bin" / "src" / "server" / "http" / "README.md",
-    ROOT / "bin" / "src" / "server" / "mqtt" / "README.md",
-    ROOT / "bin" / "src" / "server" / "coap" / "README.md",
     ROOT / "ffi" / "README.md",
 ]
 
