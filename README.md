@@ -4,13 +4,12 @@
 
 AuditeDB is a flat key-value store that borrows the Unix filesystem
 hierarchy as its namespace. `home/` is user data, `etc/` is config,
-`tmp/` is scratch. You `put` and `get` bytes at paths the same way you'd
-`fopen` a file, but durable writes are HMAC-audited, durable paths keep
-verifiable timeline history, and paths can be subscribed to for live
-change events.
+`tmp/` is scratch. The API is `put` and `get` of bytes at paths;
+durable writes are HMAC-audited, durable paths keep verifiable timeline
+history, and paths can be subscribed to for live change events.
 
 Each durable path maps to a percent-encoded directory with one SQLite
-file inside. No cluster, no migration, `cp -r` is your backup.
+file inside. No cluster, no migration, `cp -r` is the backup.
 
 ## Why
 
@@ -185,7 +184,8 @@ curl "http://localhost:3105/home/hello?timeline=1\
 &timeline-body-sha256=ac1b...4b"
 ```
 
-If any coordinate is wrong, you get a typed rejection -- never wrong data:
+If any coordinate is wrong, the read returns a typed rejection -- never
+wrong data:
 
 | Condition          | Response         |
 | ------------------ | ---------------- |

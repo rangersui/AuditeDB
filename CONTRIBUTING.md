@@ -4,7 +4,7 @@ AuditeDB is the db that listens -- powered by the L5 Engine, with HTTP,
 SDK, and FFI adapters. The contribution model is intentionally
 small: one coherent change, one pull request.
 
-## Before You Start
+## Before Starting
 
 - Read `README.md` for the user-facing model.
 - Read `SECURITY.md` before reporting anything security-sensitive.
@@ -45,7 +45,7 @@ inline when opening a PR.
 
 ## Local Checks
 
-Run the narrowest checks that cover your change. For Engine-only work, the
+Run the narrowest checks that cover the change. For Engine-only work, the
 usual gate is:
 
 ```
@@ -78,7 +78,7 @@ Use the [bug report](.github/ISSUE_TEMPLATE/bug_report.yml) or
 [feature request](.github/ISSUE_TEMPLATE/feature_request.yml) template. A
 good issue includes:
 
-- What you expected.
+- Expected behavior.
 - What happened.
 - The command or request that reproduces it.
 - The version, platform, and relevant environment variables.
@@ -105,7 +105,7 @@ Good PRs are small enough to review in one pass. Include:
 
 - The intent of the change.
 - The user-visible behavior, if any.
-- The verification commands you ran.
+- The verification commands that were run.
 - Known follow-ups that are intentionally not part of this PR.
 
 AuditeDB values boring correctness. If a change can be made physically safer by

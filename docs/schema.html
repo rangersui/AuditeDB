@@ -98,8 +98,8 @@ the official <code>auditedb</code> binary projects these verbs onto HTTP and
 <code>/listen/*</code> SSE.</p>
 
 <p>Everything below describes the on-disk format and the invariants the engine
-enforces. If you can read a SQLite file, you can verify the chain yourself
-without the engine binary.</p>
+enforces. Anyone who can read a SQLite file can verify the chain without
+the engine binary.</p>
 
 <!-- ============================================================ -->
 <h2 id="s2">2. Per-world SQLite schema</h2>
@@ -166,7 +166,7 @@ has these tables:</p>
 It is signed into every event HMAC, but it is not an <code>events</code>
 column.</p>
 
-<p>You can inspect any world directly:</p>
+<p>Any world can be inspected directly:</p>
 
 <pre>
 $ sqlite3 data/home%2Fnote/universe.db
@@ -313,7 +313,7 @@ meta_sha256 = SHA256(
 <code>content-type</code>, <code>header-name</code>, <code>header-value</code>.
 The meta_sha256 is then fed into the HMAC computation as field #10.</p>
 
-<p>You can verify it with sqlite3 and Python:</p>
+<p>Verify it with sqlite3 and Python:</p>
 
 <pre>
 $ sqlite3 data/home%2Fnote/universe.db \
@@ -389,7 +389,7 @@ durable write, the engine computes the new floor from the configured retained
 body count, deletes CAS rows that are referenced only before that floor, and
 then advances <code>cas_state</code> in the same SQLite transaction.</p>
 
-<p>Chain rows are permanent. You can always walk the chain and see that event
+<p>Chain rows are permanent. Walking the chain always shows that event
 #3 wrote a body with hash <code>e600da3b...</code>, even if the body bytes
 have been pruned. The chain records <em>what happened</em>; CAS stores
 <em>what it was</em>. Pruning CAS does not break the chain.</p>
@@ -674,7 +674,7 @@ id: home/note@a3f7c2e1b9d04856a3f7c2e1b9d04856=2
 
 <p>The SSE <code>id</code> is a durable subscription cursor:
 <code>world@generation=timeline_seq</code>. On reconnect, pass
-<code>Last-Event-ID</code> to resume from where you left off. Exact durable
+<code>Last-Event-ID</code> to resume from the last received event. Exact durable
 world subscriptions replay from that world's audit timeline. Wildcard
 subscriptions can only replay from the current process's bounded live ring; if
 the marker has fallen out, the stream reports <code>reset</code> with

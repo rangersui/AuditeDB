@@ -54,7 +54,7 @@ Usually outside the L5 Engine's security boundary:
 - Application schemas, business rules, per-user authorization, or validation.
 - Bugs in user plugins, user applications, or content stored via the engine.
 
-If you store an HTML app, that HTML app owns its browser policy. If you expose
-an AuditeDB deployment to a network, that deployment owns its edge policy. The
+A stored HTML app owns its browser policy. A deployment exposed to a network
+owns its edge policy. The
 L5 Engine remains a small storage engine: bytes in, bytes out, with
 token gates and an audit chain.
