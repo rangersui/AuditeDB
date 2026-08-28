@@ -116,6 +116,19 @@ class StorageError(L5Error):
     """The storage backend failed."""
 
 
+class TimelineCorruption(StorageError):
+    """Timeline storage for the coordinate is corrupt."""
+
+    def __init__(
+        self,
+        message: str = "timeline storage corrupt",
+        *,
+        category: str | None = None,
+    ) -> None:
+        self.category = category
+        super().__init__(message)
+
+
 class TransientStorage(StorageError):
     """The storage backend is temporarily unavailable."""
 
@@ -126,6 +139,29 @@ class InsufficientStorage(StorageError):
 
 class SubscriptionLimit(L5Error):
     """The Engine cannot create another subscription."""
+
+
+class TimelineUnavailable(L5Error):
+    """The timeline coordinate did not resolve to a retained body.
+
+    ``kind`` names the Engine outcome: ``gen_mismatch``,
+    ``body_hash_mismatch``, ``non_body_event``, ``expired``,
+    ``missing_row``, or ``unproven``. Storage corruption raises
+    :class:`TimelineCorruption` instead.
+    """
+
+    def __init__(
+        self,
+        message: str = "timeline body unavailable",
+        *,
+        kind: str | None = None,
+        actual_generation: str | None = None,
+        actual_body_sha256: str | None = None,
+    ) -> None:
+        self.kind = kind
+        self.actual_generation = actual_generation
+        self.actual_body_sha256 = actual_body_sha256
+        super().__init__(message)
 
 
 class ShuttingDown(L5Error):
@@ -416,6 +452,67 @@ class Engine:
         """Read ``path`` and parse its body as JSON."""
 
         return json.loads(self.get_text(path, encoding=encoding))
+
+    def get_at(self, event: Mapping[str, object]) -> bytes:
+        """Read the retained body at the timeline coordinate in ``event``.
+
+        ``event`` is a mapping carrying ``timeline_world``,
+        ``timeline_generation``, ``timeline_seq``, and
+        ``timeline_body_sha256`` -- the shape produced by
+        :meth:`subscribe` for body-bearing durable events. Returns the
+        body bytes as they were when that event fired, even after later
+        writes. Raises :class:`TimelineUnavailable` when the coordinate
+        does not resolve to a retained body.
+        """
+
+        try:
+            world = event["timeline_world"]
+            generation = event["timeline_generation"]
+            seq = event["timeline_seq"]
+            body_sha256 = event["timeline_body_sha256"]
+        except KeyError as exc:
+            raise ValueError(f"event carries no timeline coordinate: missing {exc}") from exc
+        for name, value in (
+            ("timeline_world", world),
+            ("timeline_generation", generation),
+            ("timeline_body_sha256", body_sha256),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{name} must be str, got {type(value).__name__}")
+        if type(seq) is not int:
+            raise TypeError(f"timeline_seq must be int, got {type(seq).__name__}")
+        coordinate = self._ffi.FfiTimelineCoordinate(
+            world=world,
+            generation=generation,
+            seq=seq,
+            body_sha256=body_sha256,
+        )
+        engine = self._engine_handle()
+        result = _call_ffi(
+            self._ffi,
+            lambda: engine.dereference_timeline_coordinate(
+                coordinate,
+                self._access_tier("Read"),
+            ),
+        )
+        kinds = self._ffi.FfiTimelineDereferenceKind
+        if result.kind == kinds.BODY:
+            if result.representation is None:
+                raise InternalInvariant("timeline BODY outcome without representation")
+            return bytes(result.representation.body)
+        if result.kind == kinds.CORRUPT:
+            category = None if result.corruption is None else result.corruption.name.lower()
+            detail = "" if category is None else f": {category}"
+            raise TimelineCorruption(f"timeline storage corrupt{detail}", category=category)
+        if result.kind == kinds.UNKNOWN:
+            raise UnknownEngineError("unknown timeline dereference outcome")
+        kind = result.kind.name.lower()
+        raise TimelineUnavailable(
+            f"timeline dereference returned {kind}",
+            kind=kind,
+            actual_generation=result.actual_generation,
+            actual_body_sha256=result.actual_body_sha256,
+        )
 
     def head(self, path: str) -> dict[str, str]:
         """Return metadata for ``path`` without exposing the body."""
@@ -788,6 +885,8 @@ __all__ = [
     "StorageError",
     "Subscription",
     "SubscriptionLimit",
+    "TimelineCorruption",
+    "TimelineUnavailable",
     "TransientStorage",
     "UnknownEngineError",
     "open",

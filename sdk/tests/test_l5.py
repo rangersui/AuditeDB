@@ -94,6 +94,49 @@ class EngineTestCase(unittest.TestCase):
         self.assertEqual(usage["storage_audit_chain_events"], 3)
         self.assertGreaterEqual(usage["storage_used"], len(b"first-second"))
 
+    def test_get_at_reads_historical_bodies_from_events(self) -> None:
+        with self.db.subscribe("home/tl/*") as subscription:
+            self.db.put("home/tl/doc", b"v1")
+            self.db.put("home/tl/doc", b"v2")
+
+            replace_events = []
+            while len(replace_events) < 2:
+                event = subscription.next(timeout_ms=1000)
+                self.assertIsNotNone(event)
+                assert event is not None
+                if event.get("verb") == "replace":
+                    replace_events.append(event)
+
+        first, second = replace_events
+        self.assertIn("timeline_seq", first)
+        self.assertEqual(self.db.get("home/tl/doc"), b"v2")
+        self.assertEqual(self.db.get_at(first), b"v1")
+        self.assertEqual(self.db.get_at(second), b"v2")
+
+        tampered = dict(first)
+        tampered["timeline_body_sha256"] = "0" * 64
+        with self.assertRaises(l5.TimelineUnavailable) as caught:
+            self.db.get_at(tampered)
+        self.assertEqual(caught.exception.kind, "body_hash_mismatch")
+
+        truncating_seq = dict(first)
+        truncating_seq["timeline_seq"] = float(first["timeline_seq"]) + 0.9
+        with self.assertRaises(TypeError):
+            self.db.get_at(truncating_seq)
+
+        bool_seq = dict(first)
+        bool_seq["timeline_seq"] = True
+        with self.assertRaises(TypeError):
+            self.db.get_at(bool_seq)
+
+        non_str_generation = dict(first)
+        non_str_generation["timeline_generation"] = 7
+        with self.assertRaises(TypeError):
+            self.db.get_at(non_str_generation)
+
+        with self.assertRaises(ValueError):
+            self.db.get_at({"kind": "event"})
+
     def test_context_manager_closes_engine(self) -> None:
         with tempfile.TemporaryDirectory(prefix="l5-python-context-") as root:
             with l5.open(root, key=b"1" * 32) as db:

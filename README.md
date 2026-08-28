@@ -228,18 +228,19 @@ tier -- `Write` is not enough.
 ```python
 with db.subscribe("home/*") as sub:
     for event in sub:
-        if event["kind"] == "event":
-            print(event["verb"], event["path"])
+        if event["kind"] == "event" and "timeline_seq" in event:
+            body = db.get_at(event)  # body as it was when this event fired
+            print(event["verb"], event["path"], body)
 ```
 
 ```bash
 curl -N http://localhost:3105/listen/home/*
 ```
 
-Body-bearing durable events carry timeline coordinates -- use them to fetch
-the exact retained body version that triggered the event. Exact-world
-subscriptions can replay from a durable cursor. Wildcard subscriptions stream
-from the in-memory ring.
+Body-bearing durable events carry timeline coordinates; `get_at(event)`
+reads the exact retained body version that triggered the event, even
+after later writes. Exact-world subscriptions can replay from a durable
+cursor. Wildcard subscriptions stream from the in-memory ring.
 
 ## Fail-loud behavior
 
