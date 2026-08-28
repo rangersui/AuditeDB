@@ -2,30 +2,29 @@
 
 `l5-ffi` is the UniFFI adapter for the L5 Engine.
 
-This crate is deliberately not an HTTP binding. Its upstream is the Rust
-`Engine` facade from `l5`; the HTTP adapter and this FFI crate are sibling
-adapters. The Python SDK builds on this FFI crate rather than speaking a
-wire protocol.
+Its upstream is the Rust `Engine` facade from `l5`; the HTTP adapter
+and this FFI crate are sibling adapters over the same facade. The
+Python SDK builds on this FFI crate.
 
 ## Current Surface
 
 - `crate-type = ["lib", "cdylib"]`
 - UniFFI scaffolding compiles
-- `FfiEngine.open(config)` — construct an Engine with an embedded Tokio runtime
-- `engine.config_summary()` — normalized, non-secret configuration accepted by
+- `FfiEngine.open(config)` -- construct an Engine with an embedded Tokio runtime
+- `engine.config_summary()` -- normalized, non-secret configuration accepted by
   the adapter: empty tokens are unset, and `0` is normalized only for Engine
   fields that treat zero as "use the default"
-- `engine.verify_token(token)` — check caller access tier without side effects
-- `engine.read`, `replace`, `append`, `delete` — Engine verbs bound directly
+- `engine.verify_token(token)` -- check caller access tier without side effects
+- `engine.read`, `replace`, `append`, `delete` -- Engine verbs bound directly
 - `delete_with_metadata()` preserves representation content-type and metadata
   headers in the Engine delete audit ledger; plain `delete()` remains the
   empty-metadata convenience wrapper
-- `engine.dereference_timeline_coordinate()` — historical timeline reads return
+- `engine.dereference_timeline_coordinate()` -- historical timeline reads return
   `Body`, `Expired`, `NonBodyEvent`, `MissingRow`, mismatch, unproven, or
   corruption outcomes without falling back to the current body; `Expired`
   carries the row content type, size, and HMAC proof
-- `engine.worlds`, `du`, `df`, `pool`, `audit_verify` — typed introspection
-- `engine.subscribe(pattern, tier, resume)` — synchronously opens the Engine's
+- `engine.worlds`, `du`, `df`, `pool`, `audit_verify` -- typed introspection
+- `engine.subscribe(pattern, tier, resume)` -- synchronously opens the Engine's
   async subscription through the FFI runtime; `FfiSubscription.next(timeout_ms)`
   is the blocking receiver. `close()` releases the slot deterministically in
   garbage-collected languages and wakes a currently blocked `next()` instead
@@ -35,9 +34,9 @@ wire protocol.
 - durable subject-delete events expose `delete_subject_generation`; the signed
   delete-subject proof in the delete ledger contains subject world, generation,
   seq, body-sha256, and row HMAC
-- `engine.shutdown()` — orderly Engine shutdown (also called automatically on drop)
+- `engine.shutdown()` -- orderly Engine shutdown (also called automatically on drop)
 - structured `FfiError` enum with payloads for quota numbers, startup storage
-  diagnostics, auth gate identity, and unknown newer-core variants — errors
+  diagnostics, auth gate identity, and unknown newer-core variants -- errors
   cross the FFI boundary without collapsing into strings
 
 ## Quick Start

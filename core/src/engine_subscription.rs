@@ -113,7 +113,7 @@ impl From<crate::event::AuditEventKind> for AuditEventType {
 ///
 /// Returned by async [`crate::Engine::subscribe`]. Receiving from it is async
 /// through [`EngineSubscription::recv`]. The subscription holds a slot permit
-/// until dropped — drop it promptly when the caller is done so other
+/// until dropped -- drop it promptly when the caller is done so other
 /// subscribers can join.
 pub struct EngineSubscription {
     slot: SubscriptionSlot,
@@ -178,7 +178,7 @@ enum SubscriptionState {
 #[non_exhaustive]
 pub enum SubscriptionRecvError {
     /// The engine is shutting down or the broadcast channel was closed.
-    /// Terminal — subsequent `recv` calls keep returning `Closed`.
+    /// Terminal -- subsequent `recv` calls keep returning `Closed`.
     Closed,
     /// The broadcast ring buffer overflowed and `skipped` events were lost.
     /// Recoverable: the next `recv` resumes with fresh live events.

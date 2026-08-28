@@ -38,9 +38,7 @@ In this repo the model example is `core/src/read_cache.rs`:
 
 That is the standard: a safety rule becomes the shape of the API.
 
-The newer `core/src/world_ops.rs` is the same idea at the protocol boundary
-(built when the binary still shipped both HTTP and CoAP adapters; CoAP is
-retired, the seal remains):
+The newer `core/src/world_ops.rs` is the same idea at the protocol boundary:
 
 - No adapter owns a separate write implementation.
 - Every adapter calls `authorize_read` / `authorize_write`.
@@ -262,9 +260,8 @@ writes bytes directly anymore.
 ## Protocol-Neutral World Operations
 
 When more than one adapter can mutate the same storage, the safety boundary
-must move below the adapters. (This shape was forced while the binary shipped
-HTTP and CoAP side by side; CoAP is retired, but the boundary is what lets any
-future adapter — or an embedder calling `Engine` directly — stay safe.)
+must move below the adapters. The boundary is what keeps every adapter -- and
+every embedder calling `Engine` directly -- on the same storage transition.
 
 Current shape:
 

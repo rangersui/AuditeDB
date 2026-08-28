@@ -20,7 +20,7 @@ use crate::{
 /// Trace hooks for [`Engine::replace_traced`] / [`Engine::append_traced`].
 ///
 /// All methods default to no-ops. Implement only the hooks an adapter cares
-/// about — typical use is a single per-operation struct that flips a flag or
+/// about -- typical use is a single per-operation struct that flips a flag or
 /// emits a structured trace line on each callback.
 ///
 /// Successful durable writes fire hooks in this order:
@@ -71,7 +71,7 @@ pub trait EngineDeleteTraceHooks: Send + Sync {
     /// variants for stable decisions.
     fn audit_commit_failed(&self, _err: &str) {}
     /// `audit_commit_failed` was followed by a successful `delete_commit_failed`
-    /// ledger entry — the audit chain reflects the partial state.
+    /// ledger entry -- the audit chain reflects the partial state.
     fn audit_commit_failed_event_logged(&self) {}
     /// Diagnostic-only debug rendering of the internal blocking storage error.
     ///

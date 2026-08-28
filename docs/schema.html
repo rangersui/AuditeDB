@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>L5 Engine — Storage Internals</title>
+<title>L5 Engine -- Storage Internals</title>
 <style>
   body { font-family: serif; max-width: 680px; margin: 2em auto; padding: 0 1em; line-height: 1.6; }
   h1 { font-size: 1.6em; }
@@ -59,7 +59,7 @@
 </head>
 <body>
 
-<h1>L5 Engine — Storage Internals</h1>
+<h1>L5 Engine -- Storage Internals</h1>
 <p class="subtitle">Per-world SQLite. HMAC chain. CAS. Five verbs. Format v2.</p>
 
 <div class="toc">
@@ -74,7 +74,7 @@
 <a href="#s9">9. Two coordinate systems</a>
 <a href="#s10">10. Append verification</a>
 <a href="#s11">11. Five verbs</a>
-<a href="#s12">12. Delete — two-phase with ledger</a>
+<a href="#s12">12. Delete -- two-phase with ledger</a>
 <a href="#s13">13. Subscribe (SSE)</a>
 <a href="#s14">14. Four trust tiers</a>
 <a href="#s15">15. Path validation</a>
@@ -93,9 +93,9 @@
 <p>L5 is an embedded audit-trail storage engine. Each key (called a
 <em>world</em>) is a separate SQLite database containing an append-only HMAC
 chain and a content-addressable body store. The engine exposes five verbs:
-read, replace, append, delete, subscribe. The engine is protocol-neutral and
-knows nothing about wire formats; the official <code>auditedb</code> binary
-projects these verbs onto HTTP and <code>/listen/*</code> SSE.</p>
+read, replace, append, delete, subscribe. The engine is protocol-neutral;
+the official <code>auditedb</code> binary projects these verbs onto HTTP and
+<code>/listen/*</code> SSE.</p>
 
 <p>Everything below describes the on-disk format and the invariants the engine
 enforces. If you can read a SQLite file, you can verify the chain yourself
@@ -239,7 +239,7 @@ next row's <code>prev_hmac</code> does not match. Delete or insert a row &rarr;
 the verified walk fails. Without the HMAC key, a valid chain cannot be
 forged.</p>
 
-<h3>HMAC computation — 10 fields</h3>
+<h3>HMAC computation -- 10 fields</h3>
 
 <pre>
 hmac = HMAC-SHA256(key,
@@ -424,7 +424,7 @@ $ curl -X PUT -H "Authorization: Bearer $TOKEN" \
 
 $ sqlite3 data/home%2Fnote/universe.db \
     "SELECT generation FROM stage_meta;"
-<span class="val">5b2c7ed2f1a093475b2c7ed2f1a09347</span>   <span class="cmt">← different</span>
+<span class="val">5b2c7ed2f1a093475b2c7ed2f1a09347</span>   <span class="cmt"><- different</span>
 </pre>
 
 <p>Old timeline coordinates that reference the previous generation return
@@ -602,22 +602,22 @@ $ curl -H "Range: bytes=0-9" http://localhost:3105/home/note
 </pre>
 
 <!-- ============================================================ -->
-<h2 id="s12">12. Delete — two-phase with ledger</h2>
+<h2 id="s12">12. Delete -- two-phase with ledger</h2>
 
 <p>Delete is the most complex verb. It writes to two worlds in one
 operation:</p>
 
 <pre>
 1. Acquire target world lock (home/note)
-2. Append <span class="str">delete_intent</span> to ledger     <span class="cmt">← "I intend to delete home/note"</span>
+2. Append <span class="str">delete_intent</span> to ledger     <span class="cmt"><- "I intend to delete home/note"</span>
 3. Install tombstone and drain read-cache fds
 4. Physically delete the target world directory
 5. Clear tombstone, success or failure
 6. If physical delete failed: return 500, with no <span class="str">delete_commit_failed</span> row
 7. Notify subject-world subscribers that the world is gone
-8. Append <span class="str">delete_commit</span> to ledger      <span class="cmt">← "home/note is gone"</span>
+8. Append <span class="str">delete_commit</span> to ledger      <span class="cmt"><- "home/note is gone"</span>
 9. If commit append fails after physical delete:
-     Append <span class="str">delete_commit_failed</span>       <span class="cmt">← "world is gone; normal commit append failed"</span>
+     Append <span class="str">delete_commit_failed</span>       <span class="cmt"><- "world is gone; normal commit append failed"</span>
 </pre>
 
 <p>The delete ledger (<code>var/log/deletes</code>) is a regular world with
@@ -709,15 +709,15 @@ directly onto the HTTP event stream.</p>
 </table>
 
 <pre>
-<span class="cmt"># No token → 401</span>
+<span class="cmt"># No token -> 401</span>
 $ curl -X PUT -d "test" http://localhost:3105/home/note
 <span class="err">401 Unauthorized</span>
 
-<span class="cmt"># Read token → can read, cannot write</span>
+<span class="cmt"># Read token -> can read, cannot write</span>
 $ curl -H "Authorization: Bearer $READ" http://localhost:3105/home/note
 <span class="ok">200 OK</span>
 
-<span class="cmt"># Write token → cannot delete</span>
+<span class="cmt"># Write token -> cannot delete</span>
 $ curl -X DELETE -H "Authorization: Bearer $WRITE" http://localhost:3105/home/note
 <span class="err">401 Unauthorized</span>
 </pre>
@@ -807,7 +807,7 @@ OS-layer attacks. This is the same boundary as any database.</p>
 <pre>
 <span class="cmt"># This is detected and blocked (API layer):</span>
 $ sqlite3 data/home%2Fnote/universe.db "UPDATE events SET hmac='fake';"
-$ curl http://localhost:3105/home/note   <span class="cmt">→ 500</span>
+$ curl http://localhost:3105/home/note   <span class="cmt">-> 500</span>
 
 <span class="cmt"># This is NOT detected (OS layer):</span>
 $ rm -rf data/home%2Fnote/
@@ -882,14 +882,14 @@ GET/HEAD /proc/audit/{world}/stamp/{n} read verified HMAC at chain ordinal n
 <h2 id="s20">20. On-disk layout</h2>
 
 <pre>
-data/                                <span class="cmt">← data root (AUDITEDB_DATA or ./data)</span>
-  home%2Fnote/                       <span class="cmt">← world "home/note" (percent-encoded)</span>
-    universe.db                      <span class="cmt">← SQLite: events + cas_bodies + stage_meta + ...</span>
-  home%2Ftask%2F123/                 <span class="cmt">← world "home/task/123"</span>
+data/                                <span class="cmt"><- data root (AUDITEDB_DATA or ./data)</span>
+  home%2Fnote/                       <span class="cmt"><- world "home/note" (percent-encoded)</span>
+    universe.db                      <span class="cmt"><- SQLite: events + cas_bodies + stage_meta + ...</span>
+  home%2Ftask%2F123/                 <span class="cmt"><- world "home/task/123"</span>
     universe.db
-  var%2Flog%2Fdeletes/               <span class="cmt">← delete ledger (engine-private)</span>
+  var%2Flog%2Fdeletes/               <span class="cmt"><- delete ledger (engine-private)</span>
     universe.db
-  .auditedb-writer-lock.sqlite3      <span class="cmt">← single-writer SQLite lock (local FS only)</span>
+  .auditedb-writer-lock.sqlite3      <span class="cmt"><- single-writer SQLite lock (local FS only)</span>
 </pre>
 
 <p>Each world is one directory with one SQLite file. <code>cp -r

@@ -6,8 +6,8 @@ description: "Deploy and use AuditeDB, powered by the L5 Engine and shipped as a
 # AuditeDB
 
 **the db that listens.** Powered by the L5 Engine. Bytes at paths + versions + HMAC audit chain
-+ four-tier auth + change subscriptions. Five verbs (read · replace · append ·
-delete · subscribe), one SQLite store.
++ four-tier auth + change subscriptions. Five verbs (read , replace , append ,
+delete , subscribe), one SQLite store.
 
 Two ways to use it:
 
@@ -15,9 +15,8 @@ Two ways to use it:
   surface. This skill covers this mode.
 - **Library** (`l5` crate, `unstable-engine` feature): embed the
   protocol-neutral `Engine` directly in a Rust process; bring your own wire
-  shape. In minimal library-only builds it has no HTTP, no env vars,
-  no sockets — see the crate-level rustdoc and `core/src/engine.rs` for the
-  public surface.
+  shape. A minimal library-only build is the engine and SQLite -- see the
+  crate-level rustdoc and `core/src/engine.rs` for the public surface.
 
 AuditeDB (the `auditedb` binary) is a flat HTTP key-value store with an introspection
 plane. The key prefix is policy.
@@ -79,10 +78,9 @@ HTTP wire:        /home/a    /tmp/x
 Engine canonical: home/a     tmp/x
 ```
 
-The canonical form is deliberately MQTT-topic-like: no leading slash,
-slash-separated hierarchy, no query string. Protocol sidecars (e.g. the MQTT
-sidecar) project client topics onto the same validated world grammar instead
-of adding a second naming system.
+The canonical form is MQTT-topic-shaped: no leading slash, slash-separated
+hierarchy, no query string. Protocol sidecars (e.g. the MQTT sidecar) project
+client topics onto the same validated world grammar.
 
 Unprefixed paths fall under the bare-path rule and are prepended with `home/`:
 

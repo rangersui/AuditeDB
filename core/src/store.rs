@@ -1,8 +1,8 @@
-//! Store routing — one core, one port, prefix decides the backend.
+//! Store routing -- one core, one port, prefix decides the backend.
 //!
 //! ```text
-//!     /home/* /etc/* /lib/* /boot/* /usr/* /var/*  → SQLite (durable)
-//!     /tmp/*  /dev/*  /sys/*                       → memory (transient)
+//!     /home/* /etc/* /lib/* /boot/* /usr/* /var/*  -> SQLite (durable)
+//!     /tmp/*  /dev/*  /sys/*                       -> memory (transient)
 //!
 //! ```
 //!
@@ -13,7 +13,7 @@
 //! as control-plane events, but the memory backend itself only stores
 //! latest bytes and metadata.
 //!
-//! Audit/HMAC chain only fires on durable writes — memory worlds are
+//! Audit/HMAC chain only fires on durable writes -- memory worlds are
 //! by definition not tamper-evident across restarts.
 
 use crate::{

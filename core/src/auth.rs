@@ -137,7 +137,7 @@ impl Tokens {
         if !NonEmptyBytes::is_valid(candidate) {
             return Tier::Anon;
         }
-        // Approve first — wins ties because it's the wider tier.
+        // Approve first -- wins ties because it's the wider tier.
         if let Some(t) = &self.approve {
             if ct_eq(candidate, t.as_slice()) {
                 return Tier::Approve;

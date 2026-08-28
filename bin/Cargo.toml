@@ -2,7 +2,7 @@
 name = "auditedb"
 version = "8.3.0"
 edition = "2021"
-description = "AuditeDB server — HTTP and SSE adapters for the L5 Engine."
+description = "AuditeDB server -- HTTP and SSE adapters for the L5 Engine."
 license = "MIT"
 repository = "https://github.com/rangersui/AuditeDB"
 homepage = "https://github.com/rangersui/AuditeDB"

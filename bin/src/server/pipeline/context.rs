@@ -125,7 +125,7 @@ impl TraceCtx {
     /// Surfaces what is happening between Dispatched and
     /// ExecutedRead/CommittedWrite (lock acquisition, SQLite commits,
     /// audit appends, notify dispatch, quota reservations, ...).
-    /// Currently unused — verb handlers wire these up in 4b/4c.
+    /// Currently unused -- verb handlers wire these up in 4b/4c.
     #[allow(dead_code)]
     pub(crate) fn emit_aux(&self, label: &str) {
         if !self.enabled {
@@ -139,7 +139,7 @@ impl TraceCtx {
     }
 
     /// Same as `emit_aux` but with a key=value tail.
-    /// Currently unused — verb handlers wire these up in 4b/4c.
+    /// Currently unused -- verb handlers wire these up in 4b/4c.
     #[allow(dead_code)]
     pub(crate) fn emit_aux_kv(&self, label: &str, kv: &str) {
         if !self.enabled {

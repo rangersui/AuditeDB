@@ -4,15 +4,15 @@
 
 PR economics inverted when AI became the reviewer:
 
-- **Human reviewer**: 10 small PRs = 10 context switches → prefers big PRs.
-- **AI reviewer**: 1 big PR > context window → prefers small PRs.
+- **Human reviewer**: 10 small PRs = 10 context switches -> prefers big PRs.
+- **AI reviewer**: 1 big PR > context window -> prefers small PRs.
 
 This codebase optimizes for the AI reviewer. The 500-line ceiling is the
 forcing function that makes that work.
 
 Direct consequence: **each commit is a PR**. Continuous integration's
 real form when the reviewer is an AI is "every mergeable change ships
-on its own". 30 minutes of coding → commit → PR → AI review → merge →
+on its own". 30 minutes of coding -> commit -> PR -> AI review -> merge ->
 next. No batching. No save-up-for-Friday-review meeting. Human
 programmers find this annoying; AI co-authors thrive on it.
 
@@ -34,7 +34,7 @@ programmers find this annoying; AI co-authors thrive on it.
   independently legible and production code stays reviewable.
 - **Slight overage of the production budget is acceptable when the
   maintainer has read the change in full and explicitly signed off.**
-  The budget is "AI working memory", not arithmetic — 510-550 lines
+  The budget is "AI working memory", not arithmetic -- 510-550 lines
   with a human in the loop is fine, 1500 lines is never fine. The
   hard ceiling is "an AI agent can still hold the whole production
   surface at once"; exact threshold is judgment.
@@ -47,7 +47,7 @@ For most files: total `wc -l` minus the `#[cfg(test)] mod tests { ... }`
 block. The block is contiguous and at the bottom of the file by
 convention, so a quick `grep -n '^#\[cfg(test)\]' core/src/foo.rs`
 gives the start line; the file's total minus that line number is
-the production count (off by one or two for the trailing brace —
+the production count (off by one or two for the trailing brace --
 fine, the rule is judgment, not arithmetic).
 
 When the production count is non-obvious or close to the limit,
@@ -80,7 +80,7 @@ These are not preferences. They are the contract every change must keep.
   quota mutex only for `compare total -> commit DashMap entry -> update total`.
   Body cloning and hashing stay outside that mutex; it is a global allocator
   commit point, not a global write lock.
-- **Mechanism, not policy.** Core provides primitives — token tiers, path
+- **Mechanism, not policy.** Core provides primitives -- token tiers, path
   scopes, HMAC chain, change events, ETag/CAS, byte storage. Business logic
   (validation, transactional flows, schema evolution) lives in reactors and
   SDK code, not in core. Adding policy to core is a Phoenix violation.
@@ -107,7 +107,7 @@ These are not preferences. They are the contract every change must keep.
   validation, dispatch, error logging, and response return. Verb
   handlers do everything else.
 - **Authentication vs authorization split.** The driver does
-  *authentication only* — parses the `Authorization` header into an
+  *authentication only* -- parses the `Authorization` header into an
   `auth::Tier` and stamps it onto `Phase::Authenticated`. The driver
   does **not** check whether that tier is sufficient for the
   requested verb + path. *Authorization* lives inside each
@@ -116,14 +116,14 @@ These are not preferences. They are the contract every change must keep.
   `GET` needs `Read`, `DELETE` needs `Delete`). Hardcoding all
   permutations into a driver-side phase would either duplicate
   `can_read` / `can_write` / `can_delete` logic or require a new
-  `Phase::Authorized` variant per verb — both worse than letting
+  `Phase::Authorized` variant per verb -- both worse than letting
   the verb gate itself.
 - **Audit + notify ordering lives inside the verb handler**, not in
   the driver. The lesson reviewer consensus extracted from DELETE's
   intent / commit two-step. The FSM models the request envelope, not
   the storage transaction inside it. `CommittedWrite` means "this
   write is durably committed *and* its audit chain entry is signed
-  *and* notify has fired" — a single observable boundary instead of
+  *and* notify has fired" -- a single observable boundary instead of
   three driver-level phases.
 - **`ErrorReason` vocabulary is closed.** New error kinds add a
   variant to the `pipeline::ErrorReason` enum; arbitrary strings are
@@ -134,7 +134,7 @@ These are not preferences. They are the contract every change must keep.
   match on.
 - **Cascade audit failures must be visible.** When an intent / commit
   dance hits a double failure (commit append fails AND the
-  subsequent failure-event append also fails — e.g. persistent
+  subsequent failure-event append also fails -- e.g. persistent
   DiskFull), trace must surface BOTH failures via aux lines, not
   elide the second. The `delete_commit_failed` event closes the chain
   ambiguity *when the event itself can be written*; the trace closes
@@ -272,8 +272,8 @@ same reason this rule has its own section in the agent manual: every
 ## Physics, not policy
 
 The rules above ("No fallback to unguarded paths", "Drain before
-remove") are policy. Policy depends on every future contributor —
-human or AI — reading the rule, remembering it, and applying it
+remove") are policy. Policy depends on every future contributor --
+human or AI -- reading the rule, remembering it, and applying it
 correctly. Policy fails probabilistically: the larger the codebase,
 the more contributors, the more bugs slip through review.
 
@@ -282,7 +282,7 @@ the bug. The wall has no window; nobody climbs through.
 
 When you can prevent a class of bug by making that bug uncompilable,
 do that instead of writing a rule. The rules become unnecessary and
-review becomes redundant — both are net wins.
+review becomes redundant -- both are net wins.
 
 ### The pattern
 
@@ -344,9 +344,9 @@ it. Reviewers do not need to catch it. It is physically unwritable.
   and v9 (drain before remove). Four rounds of "we forgot this
   layer." Type encoding turns the rule into the only writable shape.
 - **The invariant is structural, not workload-dependent.** "Reads
-  must hold the slot's read guard" is structural — types can express
+  must hold the slot's read guard" is structural -- types can express
   it. "Don't call this more than 100 times per second" is
-  workload-dependent — types can't express rates.
+  workload-dependent -- types can't express rates.
 - **The cost is one newtype + a couple of constrained signatures.**
   Type encoding pays for itself when it removes a class of bugs and
   costs <50 lines of plumbing.
@@ -358,7 +358,7 @@ it. Reviewers do not need to catch it. It is physically unwritable.
   ripples through downstream signatures.
 - The invariant leaks lifetimes everywhere. Self-referential structs,
   unwieldy `<'a>` parameters propagating through the codebase, or
-  `unsafe` workarounds — the ergonomic cost outweighs the safety
+  `unsafe` workarounds -- the ergonomic cost outweighs the safety
   win. Use a `RefCell`-like runtime guard instead.
 - The invariant is for one release and the surface is moving fast.
   Type encoding is best for invariants that are *contracts*, not
@@ -369,7 +369,7 @@ it. Reviewers do not need to catch it. It is physically unwritable.
 Manufacturing calls this **poka-yoke** (mistake-proofing): plug
 shapes that only fit the right socket; nuclear control rods that
 can't be inserted backwards; medical IV connectors that physically
-cannot connect to the wrong tubing. The principle is the same —
+cannot connect to the wrong tubing. The principle is the same --
 make the wrong action geometrically impossible, not just procedurally
 forbidden.
 
@@ -380,7 +380,7 @@ afford the geometry.
 
 ### Origin
 
-sqlite-connection-pool v9 → v10. Nine review rounds wrote the rule
+sqlite-connection-pool v9 -> v10. Nine review rounds wrote the rule
 "no bypass to unguarded paths." v10 made the rule
 unenforceable-by-policy by removing the policy layer entirely: the
 bypass code does not compile. Review caught the rule violations;
@@ -408,7 +408,7 @@ proof.
 
 New and touched internal APIs MUST consume validated/sealed types
 (`ValidatedWorldPath`, `SecretBytes`, `AuditHmacKey`,
-`TrackedReadConnection`, …) whenever the value carries domain,
+`TrackedReadConnection`, ...) whenever the value carries domain,
 security, authority, resource-lifetime, or storage-layout meaning.
 Existing unsealed APIs are debt, not precedent: a PR may leave
 unrelated legacy debt alone, but it may not spread it to new call
@@ -451,7 +451,7 @@ carries it all the way to SQL.
 
 ### FFI Boundary Rule
 
-FFI exports lower through generated ABI / FFI-shaped types — that is
+FFI exports lower through generated ABI / FFI-shaped types -- that is
 physics, not a style choice.
 
 After crossing back into Rust, FFI code may do only boundary work on
@@ -485,7 +485,7 @@ Validation errors MUST propagate with their reason.
 A validator that returns `Err("must be at least 32 bytes; got 16")`
 exists for exactly one reader: the operator who set the value. Eating
 the error with `.ok()` converts "your key is too short" into
-"no key configured" — a worse lie than a crash.
+"no key configured" -- a worse lie than a crash.
 
 For validation-bearing types, lossy or coercive constructors must be
 boundary-only and named as such (`from_wire_lossy`, `canonicalize_*`,
@@ -534,9 +534,9 @@ local suppressors narrow, documented, and auditable.
 
 ## Security Constants Cite Their Standard
 
-New and touched security-relevant constants — key lengths, hash output
+New and touched security-relevant constants -- key lengths, hash output
 sizes, nonce sizes, iteration counts, length prefixes,
-security-meaningful timeouts — carry a doc comment citing the governing
+security-meaningful timeouts -- carry a doc comment citing the governing
 standard when one determines the value. When the value is local policy
 or capacity engineering, cite the local threat model or design invariant
 instead. Existing bare constants are debt, not precedent.
@@ -545,7 +545,7 @@ A bare `const MIN_KEY: usize = 32;` is magic: a reviewer cannot evaluate
 whether 32 is right, and a future "simplifier" can lower it without
 tripping anything but vibes. `/// RFC 2104: HMAC keys SHOULD be at least
 the hash output length (SHA-256 = 32 bytes)` makes the constant
-falsifiable — wrong values now contradict a citation, not a feeling.
+falsifiable -- wrong values now contradict a citation, not a feeling.
 
 **Origin:** `MIN_HMAC_KEY_BYTES = 32` (#322), grounded in RFC 2104. The
 domain-separation framing in `hmac_field` carries the same obligation
@@ -554,8 +554,8 @@ rationale instead.
 
 ## Design First
 
-Behavior-level changes — new semantics, new wire contracts, storage format
-changes, new subsystems — get a `PLAN-*.md` design document reviewed to
+Behavior-level changes -- new semantics, new wire contracts, storage format
+changes, new subsystems -- get a `PLAN-*.md` design document reviewed to
 convergence BEFORE the first implementation line. Code-level changes
 (bug fixes within existing semantics, refactors, doc sync) do not.
 
@@ -575,7 +575,7 @@ kept. Do not optimize inside a false premise.
 
 Changing a plan is usually much cheaper than changing code. The design
 review's job is to ask "should this machine exist, and is its frame
-right?" — questions a code review structurally cannot ask, because by
+right?" -- questions a code review structurally cannot ask, because by
 then the frame is poured concrete.
 
 Design review exists to catch frame errors before implementation. Keep

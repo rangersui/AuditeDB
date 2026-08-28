@@ -15,7 +15,7 @@ use axum::{
 
 use crate::engine_introspection::{AuditBroken, AuditValid, ChainStampRead, HeadStamp};
 
-// ─── header utility ─────────────────────────────────────────────────
+// --- header utility -------------------------------------------------
 
 pub(crate) fn to_header_map(pairs: Vec<(HeaderName, HeaderValue)>) -> HeaderMap {
     let mut hm = HeaderMap::with_capacity(pairs.len());
@@ -42,7 +42,7 @@ pub(crate) fn unsatisfied_range_value(len: usize) -> HeaderValue {
         .unwrap_or_else(|_| HeaderValue::from_static("bytes */0"))
 }
 
-// ─── basic error responses ──────────────────────────────────────────
+// --- basic error responses ------------------------------------------
 
 pub(crate) fn not_found() -> Response {
     (
@@ -149,7 +149,7 @@ pub(crate) fn options_response(allow: &'static str) -> Response {
         .into_response()
 }
 
-// ─── storage / quota responses ─────────────────────────────────────
+// --- storage / quota responses -------------------------------------
 
 pub(crate) fn insufficient_storage() -> Response {
     (
@@ -201,7 +201,7 @@ pub(crate) fn storage_quota_exceeded(used: usize, quota: usize, projected: usize
         .into_response()
 }
 
-// ─── audit verify responses ────────────────────────────────────────
+// --- audit verify responses ----------------------------------------
 
 pub(crate) fn audit_valid(report: AuditValid) -> Response {
     (
@@ -404,7 +404,7 @@ pub(crate) fn audit_header_value(value: &str) -> HeaderValue {
     HeaderValue::from_str(&out).unwrap_or_else(|_| HeaderValue::from_static("invalid"))
 }
 
-// ─── proc/* response helpers ───────────────────────────────────────
+// --- proc/* response helpers ---------------------------------------
 
 pub(crate) fn proc_text_response(method: Method, body: String) -> Response {
     let mut resp_headers = vec![(

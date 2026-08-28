@@ -4,7 +4,7 @@
 //! configured; `OPTIONS` is public capability discovery. Proc routes do not
 //! enter the HMAC audit chain, do not emit `/listen/*` events, and do not replay
 //! user-controlled headers. Durable-state scans run on the blocking pool. Per
-//! AGENTS.md "`/proc/*` discipline" — proc endpoints are introspection,
+//! AGENTS.md "`/proc/*` discipline" -- proc endpoints are introspection,
 //! not worlds.
 //!
 //! `root_hint` is here too. It is the `/` handler, not a `/proc/*`
@@ -45,7 +45,7 @@ pub(crate) const ROOT_ALLOW: &str = "GET, HEAD, OPTIONS";
 pub(crate) const PROC_ALLOW: &str = "GET, HEAD, OPTIONS";
 pub(crate) const AUDIT_VERIFY_ALLOW: &str = "GET, HEAD, OPTIONS";
 
-/// Bare `GET /` — not protocol, not UI. Just a courtesy text/plain
+/// Bare `GET /` -- not protocol, not UI. Just a courtesy text/plain
 /// signpost so a curious human doesn't white-screen. The protocol
 /// surface starts under `/home`, `/tmp`, `/dev`, `/sys`, `/proc`,
 /// `/etc`, `/lib`, `/var`. Browser shells are SDK-app territory; core
@@ -76,7 +76,7 @@ pub(crate) async fn root_hint(method: Method) -> Response {
     }
 }
 
-// ─── /proc/version ──────────────────────────────────────────────────
+// --- /proc/version --------------------------------------------------
 pub(crate) async fn proc_version(method: Method) -> Response {
     let body = format!("auditedb {VERSION} (rust)\n");
     match method {
@@ -103,7 +103,7 @@ pub(crate) async fn proc_version(method: Method) -> Response {
     }
 }
 
-// ─── /proc/worlds ───────────────────────────────────────────────────
+// --- /proc/worlds ---------------------------------------------------
 pub(crate) async fn proc_worlds(
     State(state): State<ServerState>,
     method: Method,

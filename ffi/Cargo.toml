@@ -2,7 +2,7 @@
 name = "l5-ffi"
 version = "8.3.0"
 edition = "2021"
-description = "L5 Engine FFI — UniFFI binding for AuditeDB embedders."
+description = "L5 Engine FFI -- UniFFI binding for AuditeDB embedders."
 license = "MIT"
 repository = "https://github.com/rangersui/AuditeDB"
 homepage = "https://github.com/rangersui/AuditeDB"

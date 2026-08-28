@@ -155,8 +155,8 @@
 //!
 //! ## Feature flags
 //!
-//! - `bundled-sqlite` *(default)* — link a bundled SQLite via `rusqlite/bundled`.
-//! - `unstable-engine` — expose the public [`Engine`] facade. **The API shape
+//! - `bundled-sqlite` *(default)* -- link a bundled SQLite via `rusqlite/bundled`.
+//! - `unstable-engine` -- expose the public [`Engine`] facade. **The API shape
 //!   is allowed to change between minor versions while this gate stays.**
 //!
 //! Binary adapter features such as `multi-thread` live in
@@ -258,7 +258,7 @@ pub use timeline::{
 #[cfg(feature = "unstable-engine")]
 pub use world_generation::WorldGeneration;
 
-// ─── helpers ────────────────────────────────────────────────────────
+// --- helpers --------------------------------------------------------
 
 pub(crate) fn can_delete(tier: auth::Tier) -> bool {
     matches!(tier, auth::Tier::Approve)

@@ -183,7 +183,7 @@ pub enum AuditVerify {
 ///
 /// This is the unit of external anchoring. In-file verification proves
 /// "nobody tampered with what is here"; it structurally cannot prove
-/// "everything that happened is here" — every non-empty prefix of a valid
+/// "everything that happened is here" -- every non-empty prefix of a valid
 /// chain is itself a valid chain, and a rolled-back file is
 /// self-consistent. A host that remembers a `HeadStamp` (on another machine,
 /// a subscriber, an RFC 3161 timestamp) can later **prove** truncation or
@@ -836,15 +836,15 @@ impl Engine {
     /// [`HeadStamp::seq`] equals [`AuditValid::events`], and
     /// [`HeadStamp::hmac`] equals [`AuditValid::latest`].
     ///
-    /// Push the returned stamp somewhere — ideally somewhere this machine
+    /// Push the returned stamp somewhere -- ideally somewhere this machine
     /// cannot rewrite (another host, a subscriber, an RFC 3161 timestamp;
     /// the further from this machine, the stronger the guarantee). A later
     /// head whose `seq` went backwards proves truncation or rollback that
-    /// in-file verification cannot detect — and so does a durable world
+    /// in-file verification cannot detect -- and so does a durable world
     /// that previously had a stamp **persistently** returning `Ok(None)`
     /// or [`EngineError::NotFound`] (total truncation or deletion). A
     /// delete in flight also reads as `NotFound`, and a delete that failed
-    /// before touching the chain file restores the head — re-poll before
+    /// before touching the chain file restores the head -- re-poll before
     /// treating a single `NotFound` observation as loss.
     ///
     /// This method mints the same proc-path proof used by the HTTP adapter.
@@ -852,11 +852,11 @@ impl Engine {
     /// blocking-boundary discipline before rendering `/proc/audit/<world>/head`.
     ///
     /// # Returns
-    /// - `Ok(Some(HeadStamp))` — the durable world's current chain head.
-    /// - `Ok(None)` — the world exists but has no chain head to anchor:
+    /// - `Ok(Some(HeadStamp))` -- the durable world's current chain head.
+    /// - `Ok(None)` -- the world exists but has no chain head to anchor:
     ///   an in-memory world (no audit chain) or an empty bootstrap-shape
     ///   chain. Note: [`Engine::verify_audit`] reports an existing durable
-    ///   world with an empty chain as `Broken` (`no-events`) — `Ok(None)`
+    ///   world with an empty chain as `Broken` (`no-events`) -- `Ok(None)`
     ///   here is not a clean bill of health.
     ///
     /// # Errors
@@ -1430,7 +1430,7 @@ mod tests {
         ));
 
         // Bootstrap-shape durable DB (schema committed, zero events):
-        // nothing to anchor — while verify_audit reports the same state
+        // nothing to anchor -- while verify_audit reports the same state
         // as Broken (no-events). The contrast is documented on the
         // chain_head facade.
         drop(crate::world::open(&engine.core().data, "home/anchored-bootstrap").unwrap());

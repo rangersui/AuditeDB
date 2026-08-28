@@ -1,6 +1,6 @@
 # Contributing
 
-AuditeDB is the db that listens — powered by the L5 Engine, with HTTP,
+AuditeDB is the db that listens -- powered by the L5 Engine, with HTTP,
 SDK, and FFI adapters. The contribution model is intentionally
 small: one coherent change, one pull request.
 

@@ -304,7 +304,7 @@ impl EngineBuilder {
 
     /// Sets the optional read-tier token.
     ///
-    /// Empty or all-whitespace bytes are treated as "unset" — they never
+    /// Empty or all-whitespace bytes are treated as "unset" -- they never
     /// silently grant access.
     pub fn read_token(mut self, token: impl Into<Vec<u8>>) -> Self {
         self.tokens.read = NonEmptyBytes::new(token);
@@ -313,7 +313,7 @@ impl EngineBuilder {
 
     /// Sets the optional write-tier token (covers read + write).
     ///
-    /// Empty or all-whitespace bytes are treated as "unset" — they never
+    /// Empty or all-whitespace bytes are treated as "unset" -- they never
     /// silently grant access.
     pub fn write_token(mut self, token: impl Into<Vec<u8>>) -> Self {
         self.tokens.write = NonEmptyBytes::new(token);
@@ -323,7 +323,7 @@ impl EngineBuilder {
     /// Sets the optional approve-tier token (covers read + write + system
     /// writes + delete).
     ///
-    /// Empty or all-whitespace bytes are treated as "unset" — they never
+    /// Empty or all-whitespace bytes are treated as "unset" -- they never
     /// silently grant access.
     pub fn approve_token(mut self, token: impl Into<Vec<u8>>) -> Self {
         self.tokens.approve = NonEmptyBytes::new(token);

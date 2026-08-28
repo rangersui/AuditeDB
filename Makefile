@@ -1,10 +1,10 @@
-# AuditeDB — local Rust workflows
+# AuditeDB -- local Rust workflows
 #
 # dev    : edit-iterate-restart loop (cargo run)
 # test   : Rust core/bin/ffi tests + Python FFI smoke
 # build  : release server binary + FFI library
 #
-# 显式 > 隐式. No auto-cargo-build, no implicit fallbacks. If a step
+# Explicit > implicit. No auto-cargo-build, no implicit fallbacks. If a step
 # is missing, the next step refuses with a clear error, not magic.
 #
 # CI is the canonical source of release artifacts.
@@ -32,11 +32,11 @@ info:
 	@echo "  targets installed:"
 	@rustup target list --installed | sed 's/^/    /'
 
-# ── workflow 1: dev ────────────────────────────────────────────────
+# -- workflow 1: dev ------------------------------------------------
 dev:
 	cd bin && $(CARGO) run
 
-# ── workflow 2: test ───────────────────────────────────────────────
+# -- workflow 2: test -----------------------------------------------
 test:
 	cd core && $(CARGO) test --locked
 	cd bin && $(CARGO) test --locked
@@ -46,11 +46,11 @@ test:
 	cp ffi/target/release/libl5_ffi.* sdk/src/l5/_ffi/ 2>/dev/null || cp ffi/target/release/l5_ffi.dll sdk/src/l5/_ffi/
 	PYTHONPATH=sdk/src $(PY) tools/l5_python_smoke.py
 
-# ── workflow 3: build (HOST only) ──────────────────────────────────
+# -- workflow 3: build (HOST only) ----------------------------------
 build: $(RUST_TGT)
 	cd ffi && $(CARGO) build --release
 
-# ── helpers ────────────────────────────────────────────────────────
+# -- helpers --------------------------------------------------------
 $(RUST_TGT):
 	cd bin && $(CARGO) build --release
 

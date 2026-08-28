@@ -4,25 +4,20 @@
 
 AuditeDB is a flat key-value store that borrows the Unix filesystem
 hierarchy as its namespace. `home/` is user data, `etc/` is config,
-`tmp/` is scratch — not by analogy, by design. You `put` and `get`
-bytes at paths the same way you'd `fopen` a file, but durable writes
-are HMAC-audited, durable paths keep verifiable timeline history, and
-paths can be subscribed to for live change events.
+`tmp/` is scratch. You `put` and `get` bytes at paths the same way you'd
+`fopen` a file, but durable writes are HMAC-audited, durable paths keep
+verifiable timeline history, and paths can be subscribed to for live
+change events.
 
 Each durable path maps to a percent-encoded directory with one SQLite
 file inside. No cluster, no migration, `cp -r` is your backup.
 
 ## Why
 
-You're already using SQLite to store things. But:
-
-- **Who changed it?** You don't know — there's no audit trail.
-- **Did it change?** You have to poll to find out.
-- **What was it before?** Gone — you overwrote it.
-
-AuditeDB gives your local storage an audit chain, change subscriptions,
-and timeline history. No infrastructure to add — plain files on disk,
-`cp -r` is backup. Same operational model, but it remembers.
+SQLite alone stores current state. AuditeDB adds three things on top of
+plain files on disk: an audit chain (who changed what, when), change
+subscriptions (no polling), and timeline history (every previous body
+is addressable). `cp -r` is still the backup.
 
 ## Two ways to use it
 
@@ -31,7 +26,7 @@ and timeline history. No infrastructure to add — plain files on disk,
 
 **Run the server:** start the `auditedb` binary and use `curl`.
 
-## Quick start — Python
+## Quick start -- Python
 
 ```python
 import l5, secrets
@@ -47,7 +42,7 @@ with l5.open("./data", key=secrets.token_bytes(32)) as db:
 pip install l5
 ```
 
-## Quick start — Rust
+## Quick start -- Rust
 
 ```rust
 use l5::{AccessTier, AuditHmacKey, Engine, Preconditions, Representation, ValidatedWorldPath};
@@ -81,7 +76,7 @@ l5 = { version = "=8.3.0", features = ["bundled-sqlite", "unstable-engine"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
-## Quick start — curl
+## Quick start -- curl
 
 ```bash
 export AUDITEDB_KEY=$(openssl rand -hex 32)
@@ -135,14 +130,14 @@ survive restart.
 
 Four tiers, each a superset of the previous:
 
-`Anon` → `Read` → `Write` → `Approve`
+`Anon` -> `Read` -> `Write` -> `Approve`
 
 Configure tokens via `AUDITEDB_READ_TOKEN`, `AUDITEDB_WRITE_TOKEN`,
 `AUDITEDB_APPROVE_TOKEN`. Pass them as `Authorization: Bearer <token>`.
 
 ## Audit chain
 
-Every durable write appends to an HMAC chain — each event signs the
+Every durable write appends to an HMAC chain -- each event signs the
 previous HMAC, world path, timestamp, body hash, and metadata hash into
 a new HMAC. The chain is append-only and tamper-evident: modifying an
 event breaks that event's HMAC and, if later rows exist, the subsequent
@@ -180,8 +175,8 @@ exact historical body:
 | `seq`          | Position in this generation's event array        |
 | `body_sha256`  | Content fingerprint of the body at that point    |
 
-The address is absolute — like TCP's `(ip, port, seq)` but content-bound.
-Use it to fetch any retained past body:
+The address is absolute and content-bound. Use it to fetch any retained
+past body:
 
 ```bash
 curl "http://localhost:3105/home/hello?timeline=1\
@@ -190,7 +185,7 @@ curl "http://localhost:3105/home/hello?timeline=1\
 &timeline-body-sha256=ac1b...4b"
 ```
 
-If any coordinate is wrong, you get a typed rejection — never wrong data:
+If any coordinate is wrong, you get a typed rejection -- never wrong data:
 
 | Condition          | Response         |
 | ------------------ | ---------------- |
@@ -208,7 +203,7 @@ conditional writes:
 # Read current value and its ETag
 ETAG=$(curl -s -D- http://localhost:3105/home/hello | grep ETag)
 
-# Conditional write — succeeds only if no one else wrote since
+# Conditional write -- succeeds only if no one else wrote since
 curl -X PUT -H "Authorization: Bearer $WRITE" \
      -H "If-Match: $ETAG" \
      -d 'updated' http://localhost:3105/home/hello
@@ -219,14 +214,14 @@ curl -X PUT -H "Authorization: Bearer $WRITE" \
 
 Delete is two-phase with a separate audit ledger (`var/log/deletes`):
 
-1. **Intent** — `delete_intent` appended to ledger
-2. **Drain** — in-flight readers finish, read cache tombstoned
-3. **Physical delete** — world directory removed from disk
-4. **Commit** — `delete_commit` appended to ledger
+1. **Intent** -- `delete_intent` appended to ledger
+2. **Drain** -- in-flight readers finish, read cache tombstoned
+3. **Physical delete** -- world directory removed from disk
+4. **Commit** -- `delete_commit` appended to ledger
 
 If commit fails after physical delete, a `delete_commit_failed` event
 is recorded. Failure is audited, never silent. Delete requires `Approve`
-tier — `Write` is not enough.
+tier -- `Write` is not enough.
 
 ## Subscriptions
 
@@ -241,21 +236,20 @@ with db.subscribe("home/*") as sub:
 curl -N http://localhost:3105/listen/home/*
 ```
 
-Body-bearing durable events carry timeline coordinates — use them to fetch
+Body-bearing durable events carry timeline coordinates -- use them to fetch
 the exact retained body version that triggered the event. Exact-world
 subscriptions can replay from a durable cursor. Wildcard subscriptions stream
 from the in-memory ring.
 
 ## Fail-loud behavior
 
-AuditeDB refuses to run damaged. There is no safe mode, no degraded
-operation, no "warning and continue":
+AuditeDB refuses to run damaged:
 
-- **Corrupt audit chain at startup** → engine refuses to build
-- **HMAC key shorter than 32 bytes** → engine refuses to build
-- **Invalid path or namespace** → request rejected before touching storage
-- **Write-tier attempts delete** → rejected (requires Approve)
-- **Audit append fails during write** → transaction fails, gap never committed
+- **Corrupt audit chain at startup** -> engine refuses to build
+- **HMAC key shorter than 32 bytes** -> engine refuses to build
+- **Invalid path or namespace** -> request rejected before touching storage
+- **Write-tier attempts delete** -> rejected (requires Approve)
+- **Audit append fails during write** -> transaction fails, gap never committed
 
 ## Things to know
 
@@ -266,7 +260,7 @@ operation, no "warning and continue":
 - **Many server limits treat zero as default, not disabled.**
   `AUDITEDB_MAX_LISTEN_CONNECTIONS=0` reverts to the default (1024), not zero.
 - **Percent encoding eats path length.** `home/a/b/c` encodes to
-  `home%2Fa%2Fb%2Fc` on disk — each `/` becomes 3 bytes toward the
+  `home%2Fa%2Fb%2Fc` on disk -- each `/` becomes 3 bytes toward the
   200-byte limit.
 - **Process-local event IDs reset on restart.** Durable exact-world SSE
   cursors can replay from the audit timeline; wildcard/ring cursors are
@@ -277,10 +271,10 @@ operation, no "warning and continue":
 ## Project layout
 
 ```
-core/   l5 engine library (Rust)     — paths, bytes, ETags, audit, auth
-bin/    auditedb server binary       — HTTP + SSE adapters
-ffi/    UniFFI bridge                — currently packaged for Python
-sdk/    l5 Python package            — in-process Engine handle over FFI
+core/   l5 engine library (Rust)     -- paths, bytes, ETags, audit, auth
+bin/    auditedb server binary       -- HTTP + SSE adapters
+ffi/    UniFFI bridge                -- currently packaged for Python
+sdk/    l5 Python package            -- in-process Engine handle over FFI
 ```
 
 ## Schema reference

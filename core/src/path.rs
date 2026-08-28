@@ -33,7 +33,7 @@ pub(crate) fn canonicalize_path(p: &str) -> String {
 
 /// Boolean wrapper for callers that only need the yes/no answer
 /// (top-level reject path). Prefer `validate_world_name` when
-/// the rejection reason matters — the bool form is documented to elide
+/// the rejection reason matters -- the bool form is documented to elide
 /// the reason and a 400 with a generic message.
 #[cfg(test)]
 pub(crate) fn valid_world_name(world_name: &str) -> bool {
@@ -90,7 +90,7 @@ fn should_disk_encode(byte: u8) -> bool {
 }
 
 /// True if the segment is one of `.`, `..`, `%2e`, `%2e.`, `%2e%2e`,
-/// `.%2e`, `%2E%2E`, etc. — anything an attacker might use to walk out
+/// `.%2e`, `%2E%2E`, etc. -- anything an attacker might use to walk out
 /// of a namespace through URL encoding tricks. Decoded paths AND raw
 /// percent-encoded paths are both rejected.
 ///

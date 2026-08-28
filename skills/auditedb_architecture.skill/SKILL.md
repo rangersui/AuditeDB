@@ -22,11 +22,11 @@ AuditeDB ships as two Cargo packages:
 ```text
 core/                       bin/
 l5 (library)      auditedb (binary)
-─────────────────────       ─────────────────────
+---------------------       ---------------------
 Engine + storage + audit    HTTP + SSE + env
 + subscription stream       + tokio runtime + signals
-                                     │
-                                     ▼
+                                     |
+                                     v
                             consumes the library
                             through the public Engine
                             facade only
@@ -37,7 +37,7 @@ chain, four-tier auth, five verbs. The binary is one specific projection of
 that engine onto HTTP and SSE wires. Every architecture question about
 AuditeDB reduces to one test:
 
-The canonical path shape is intentionally MQTT-topic-like: no leading slash,
+The canonical path shape is MQTT-topic-shaped: no leading slash,
 slash-separated hierarchy, no query string. HTTP `/home/a` and sidecar-projected
 topics such as `sensor/temp` all land on validated Engine worlds.
 
@@ -49,8 +49,8 @@ into a second engine?
 ```
 
 When the answer is "something else," the capability belongs in a separate
-process, client, browser, worker, adapter, or — if the question is about the
-binary — *outside the engine library*.
+process, client, browser, worker, adapter, or -- if the question is about the
+binary -- *outside the engine library*.
 
 Use this skill to prevent architectural drift. Use the regular `AuditeDB` skill
 for hands-on operation: deployment, curl, /proc, /listen, auth tokens, headers,
@@ -251,7 +251,7 @@ exist.
 | Trace observation | `Engine::replace_traced` / `append_traced` / `delete_traced` with `EngineWriteTraceHooks` / `EngineDeleteTraceHooks` |
 
 Do not add new public Engine surface to rename a concept that already has a
-type. Adding a method costs SemVer headroom — it stays forever inside the
+type. Adding a method costs SemVer headroom -- it stays forever inside the
 `unstable-engine` gate's intent to stabilize.
 
 ## Principle 7: Attack Surface Belongs at the Edge
@@ -421,7 +421,7 @@ of rebuilding the same control plane inside every adapter.
 
 Two tests, one per layer.
 
-### Test 1 — Adapter integrity
+### Test 1 -- Adapter integrity
 
 Remove the worker. Remove all clients. Leave only the `auditedb` binary
 running.
@@ -438,7 +438,7 @@ If yes, the adapter is still a storage server.
 If removing the worker breaks the adapter, something entered the adapter
 that belongs in the worker.
 
-### Test 2 — Engine integrity
+### Test 2 -- Engine integrity
 
 Strip the binary entirely. Build only the library:
 

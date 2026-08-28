@@ -1,27 +1,27 @@
 //! Request lifecycle FSM driver. Five phase nodes, two terminals:
 //!
 //! ```text
-//! Received → Authenticated → PathValidated → Dispatched
-//!   ├─ ExecutedRead   → Done    (GET / HEAD; no audit, no notify)
-//!   ├─ CommittedWrite → Done    (PUT / POST / DELETE; verb owns audit + notify)
-//!   └─ Error          → Done    (any phase can short-circuit)
+//! Received -> Authenticated -> PathValidated -> Dispatched
+//!   |- ExecutedRead   -> Done    (GET / HEAD; no audit, no notify)
+//!   |- CommittedWrite -> Done    (PUT / POST / DELETE; verb owns audit + notify)
+//!   `- Error          -> Done    (any phase can short-circuit)
 //! ```
 //!
 //! ## Authentication vs Authorization
 //!
 //! - **Driver (this module)** parses the `Authorization` header into an
 //!   `AccessTier` and stamps it onto `Phase::Authenticated`. That is
-//!   pure authentication — "who is asking".
+//!   pure authentication -- "who is asking".
 //! - **Verb handlers** run the gate check (`can_read` / `can_write` /
 //!   `can_delete`). That is
-//!   authorization — "may this identity do this thing on this
+//!   authorization -- "may this identity do this thing on this
 //!   resource". Gates are verb-and-path-specific (PUT to `/home/`
 //!   needs Write, PUT to `/etc/` needs Approve, etc), so they live
 //!   next to the verb.
 //!
 //! ## `/listen/*` bypass
 //!
-//! `/listen/*` is request → infinite SSE stream, not request →
+//! `/listen/*` is request -> infinite SSE stream, not request ->
 //! response. The Phase enum models the latter. `/listen/*` keeps its
 //! own axum handler in `listen.rs` and never enters this driver.
 //!
@@ -65,7 +65,7 @@ use crate::{
 use query::{TimelineQueryError, TimelineRequestMode};
 use timeline_mode::classify_timeline_request;
 
-// ─── Phase enum ──────────────────────────────────────────────────
+// --- Phase enum --------------------------------------------------
 
 /// FSM state. Five forward nodes plus two terminals (`Done`, `Error`).
 /// Each variant carries the data the next transition needs;
@@ -73,7 +73,7 @@ use timeline_mode::classify_timeline_request;
 /// consumed by the verb handler when it lands in 4b/4c.
 ///
 /// `#[allow(dead_code)]` covers the variants and fields that no caller
-/// uses yet — `ExecutedRead` / `CommittedWrite` are produced by verb
+/// uses yet -- `ExecutedRead` / `CommittedWrite` are produced by verb
 /// handlers (4b/4c), and `Dispatched`'s fields are read by the same
 /// handlers when they extract them. Removing the allow before 4b
 /// would force premature wiring; the allow comes off in 4c when
@@ -117,7 +117,7 @@ pub(crate) enum Phase {
     },
     /// GET / HEAD finished. No audit, no notify.
     ExecutedRead(Response),
-    /// PUT / POST / DELETE finished — the verb handler internally
+    /// PUT / POST / DELETE finished -- the verb handler internally
     /// sequenced its audit + notify before reaching here. The FSM
     /// models the request envelope; storage ordering is not its job.
     CommittedWrite(Response),
@@ -169,7 +169,7 @@ pub(crate) enum ErrorReason {
     TimelineQuery(TimelineQueryError),
     NotFound,
     PreconditionFailed,
-    /// 416 — `Range` header asks for bytes outside the resource.
+    /// 416 -- `Range` header asks for bytes outside the resource.
     /// Read-path only; surfaced from `execute_get` / `execute_head`
     /// when `hs::effective_range` returns `Err(())`. Distinct from
     /// `PreconditionFailed` (412) because the wire status is
@@ -190,7 +190,7 @@ pub(crate) enum ErrorReason {
     TimelineUnprovenCoordinate,
     TimelineCorrupt,
     StorageWriteAudit,
-    /// 409 — `/proc/audit/verify` discovers an HMAC chain break.
+    /// 409 -- `/proc/audit/verify` discovers an HMAC chain break.
     /// Reserved for the proc-side audit verifier (proc.rs); the
     /// pipeline driver itself never emits it. The verifier handler
     /// runs outside `pipeline::run` (proc routes are direct), so the
@@ -218,10 +218,10 @@ fn phase_summary(p: &Phase) -> String {
     }
 }
 
-// ─── Transitions ─────────────────────────────────────────────────
+// --- Transitions -------------------------------------------------
 
-/// `Received → Authenticated`. Pure authentication: parse the
-/// Authorization header into a tier. Never emits an Error — Anon is
+/// `Received -> Authenticated`. Pure authentication: parse the
+/// Authorization header into a tier. Never emits an Error -- Anon is
 /// a valid tier; rejecting Anon is the verb handler's authorization
 /// step, not the driver's.
 fn authenticate(
@@ -242,8 +242,8 @@ fn authenticate(
     }
 }
 
-/// `Authenticated → PathValidated | Error`. Canonicalize the raw URL
-/// path into a world name (`/foo` → `home/foo`, namespace prefix
+/// `Authenticated -> PathValidated | Error`. Canonicalize the raw URL
+/// path into a world name (`/foo` -> `home/foo`, namespace prefix
 /// preserved), and reject malformed shapes (empty, dot segments,
 /// percent-encoded dot, backslash, control bytes, reserved namespace
 /// roots).
@@ -282,7 +282,7 @@ fn validate_path(
     }
 }
 
-/// `PathValidated → Dispatched | Error`. Map the HTTP `Method` onto
+/// `PathValidated -> Dispatched | Error`. Map the HTTP `Method` onto
 /// the closed `Verb` set the pipeline understands. `PATCH` / `TRACE`
 /// / any other method short-circuits to a 405 with `Allow:
 /// GET, HEAD, PUT, POST, DELETE, OPTIONS`.
@@ -320,7 +320,7 @@ fn dispatch(
     }
 }
 
-// ─── Driver ──────────────────────────────────────────────────────
+// --- Driver ------------------------------------------------------
 
 /// Run the FSM end-to-end. Constructs a `TraceCtx` from the shared
 /// atomic flag, drives the request through phase transitions, and
@@ -329,7 +329,7 @@ fn dispatch(
 /// `req_id` is the request identifier assigned by the
 /// `add_server_response_headers` middleware in `server/middleware.rs` and stamped
 /// onto the response as `x-request-id`. The pipeline does NOT
-/// allocate its own id — that would diverge from the response
+/// allocate its own id -- that would diverge from the response
 /// header. Tests calling `run` directly pass an explicit id.
 pub(crate) async fn run(
     method: Method,
@@ -436,16 +436,16 @@ pub(crate) async fn run(
     }
 }
 
-// ─── Local response helpers ──────────────────────────────────────
+// --- Local response helpers --------------------------------------
 //
 // `method_not_allowed` for unsupported verbs uses the canonical helper
 // from `response.rs`, parameterized with the crate-root `WORLD_ALLOW`
-// constant — one source of truth for the Allow header string.
+// constant -- one source of truth for the Allow header string.
 //
 // (4a's `not_yet_wired_response` was relocated to `handler.rs` in 4b
-// — it now only fires for write verbs not yet implemented there.)
+// -- it now only fires for write verbs not yet implemented there.)
 
-// ─── Tests ───────────────────────────────────────────────────────
+// --- Tests -------------------------------------------------------
 //
 // 4a tests cover individual transition functions and the trace API.
 // End-to-end driver tests (Phase::Received all the way through to a
@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(current.representation.body.as_ref(), expected);
     }
 
-    // ── authenticate ───────────────────────────────────────────
+    // -- authenticate -------------------------------------------
 
     #[test]
     fn authenticate_no_auth_header_yields_anon_tier() {
@@ -802,7 +802,7 @@ mod tests {
         }
     }
 
-    // ── validate_path ──────────────────────────────────────────
+    // -- validate_path ------------------------------------------
 
     #[test]
     fn validate_path_canonicalizes_bare_to_home_namespace() {
@@ -935,7 +935,7 @@ mod tests {
         ));
     }
 
-    // ── dispatch ───────────────────────────────────────────────
+    // -- dispatch -----------------------------------------------
 
     #[test]
     fn dispatch_maps_get_to_verb_get() {
@@ -1005,7 +1005,7 @@ mod tests {
         }
     }
 
-    // ── trace ──────────────────────────────────────────────────
+    // -- trace --------------------------------------------------
 
     #[test]
     fn trace_ctx_disabled_emits_nothing() {
@@ -1027,7 +1027,7 @@ mod tests {
     #[test]
     fn phase_summary_distinguishes_terminal_variants() {
         // Sanity-check that phase_summary produces distinct prefixes
-        // per variant — trace consumers (grep / log filters) rely
+        // per variant -- trace consumers (grep / log filters) rely
         // on these being unique.
         use axum::body::Body;
         let resp_ok = Response::builder().status(200).body(Body::empty()).unwrap();
@@ -1041,7 +1041,7 @@ mod tests {
         .starts_with("Error"));
     }
 
-    // ── init_trace_from_env ────────────────────────────────────
+    // -- init_trace_from_env ------------------------------------
 
     #[test]
     fn init_trace_from_env_off_by_default() {
@@ -1058,7 +1058,7 @@ mod tests {
         init_trace_from_env();
     }
 
-    // ── pipeline route-level coverage (PR 4b/4c) ───────────────
+    // -- pipeline route-level coverage (PR 4b/4c) ---------------
     //
     // The white-box tests above cover individual transition functions.
     // The tests below call `pipeline::run` with the same Engine fixture,

@@ -152,7 +152,7 @@ pub struct Preconditions {
 /// ETag matcher parsed by adapters before calling the engine.
 #[non_exhaustive]
 pub enum EtagMatcher {
-    /// Wildcard (`*`) — matches anything.
+    /// Wildcard (`*`) -- matches anything.
     Any,
     /// Strong ETag comparison; must match byte-for-byte.
     Strong(String),
